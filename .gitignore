@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+tsconfig.tsbuildinfo
+
+# Python backend (sd-turbo texture service).
+# .venv is ~20k files and is reproducible from requirements.txt; textures/ is a
+# regenerable cache keyed by mood + palette.
+backend/.venv/
+backend/textures/
+backend/__pycache__/
+*.pyc
+
+# Editor / OS
+.idea/
+.DS_Store
+*.local

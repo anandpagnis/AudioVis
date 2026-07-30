@@ -1,0 +1,790 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #eaf2f7;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  position: fixed;
+  inset: 0;
+}
+
+.stage {
+  position: absolute !important;
+  inset: 0;
+}
+
+/* Tactical HUD overlay — above the WebGL scene, below the control chrome. */
+.tactical-hud {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ---------- collapsible corner menu ---------- */
+
+.menu-dock {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  z-index: 25;
+}
+
+.menu-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auto-chip {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.menu-fab {
+  appearance: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  color: #dbe9f2;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.menu-fab:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.menu-fab.open {
+  background: rgba(255, 255, 255, 0.92);
+  color: #05080c;
+  border-color: transparent;
+}
+
+.menu-panel {
+  width: min(92vw, 344px);
+  max-height: 72vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.menu-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+
+.menu-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.menu-x {
+  appearance: none;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.menu-x:hover {
+  color: #fff;
+}
+
+.menu-section {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.menu-head {
+  width: 100%;
+  appearance: none;
+  background: none;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 8px;
+  color: rgba(219, 233, 242, 0.75);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.menu-head:hover,
+.menu-head.open {
+  color: #fff;
+}
+
+.menu-caret {
+  opacity: 0.45;
+  font-size: 10px;
+}
+
+.menu-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 2px 8px 14px;
+}
+
+.menu-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.menu-sublabel {
+  color: rgba(255, 255, 255, 0.4);
+  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+@media (max-width: 640px) {
+  .menu-dock {
+    right: 10px;
+    bottom: 10px;
+  }
+}
+
+/* ---------- glass chrome ---------- */
+
+.glass {
+  background: rgba(10, 14, 20, 0.55);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+}
+
+.chrome {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: opacity 0.5s ease;
+  /* Above the start overlay so panels/chips stay clickable before audio starts. */
+  z-index: 20;
+}
+
+.chrome.hidden {
+  opacity: 0;
+  /* Invisible chrome must not keep catching clicks meant for the visuals. */
+  pointer-events: none;
+}
+
+.chrome > * {
+  pointer-events: auto;
+}
+
+.top-bar {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  pointer-events: none;
+}
+
+.top-bar > * {
+  pointer-events: auto;
+}
+
+.brand {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chip {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cfe0ea;
+  font-size: 12.5px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  font-family: inherit;
+}
+
+.chip:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.chip.active {
+  background: rgba(255, 255, 255, 0.92);
+  color: #05080c;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.chip.pending {
+  border-color: rgba(255, 255, 255, 0.7);
+  animation: pending-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  50% { background: rgba(255, 255, 255, 0.22); }
+}
+
+.chip.stop {
+  font-size: 10.5px;
+  padding: 4px 10px;
+  letter-spacing: 0.05em;
+}
+
+.chip.swatch {
+  display: flex;
+  gap: 3px;
+  padding: 8px 10px;
+}
+
+.chip.swatch i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: block;
+}
+
+.chip.swatch.active {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.8);
+}
+
+/* ---------- BPM readout ---------- */
+
+.bpm-readout {
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 170px;
+}
+
+.beat-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.9);
+  flex-shrink: 0;
+}
+
+.bpm-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.bpm-value {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.bpm-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  opacity: 0.6;
+}
+
+.bar-label {
+  font-size: 11px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+}
+
+.mood-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  margin-left: 6px;
+  color: #82ffbe;
+  opacity: 0.85;
+  text-transform: uppercase;
+}
+
+.conf-track {
+  width: 46px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.conf-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4fc3f7, #b388ff);
+  width: 0;
+  transition: width 0.3s ease;
+}
+
+/* ---------- settings ---------- */
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.param-row span {
+  width: 68px;
+  opacity: 0.75;
+}
+
+.param-row input[type='range'] {
+  flex: 1;
+  accent-color: #9fb8ff;
+}
+
+.param-row em {
+  width: 44px;
+  text-align: right;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+
+.quality-row {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+
+.quality-row .chip {
+  font-size: 11px;
+  padding: 5px 11px;
+}
+
+/* ---------- presets ---------- */
+
+.layer-label {
+  color: rgba(255, 255, 255, 0.5);
+  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.layer-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.layer-label {
+  min-width: 52px;
+}
+
+.layer-fx-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 11px;
+}
+
+.layer-fx-row input[type='range'] {
+  width: 90px;
+}
+
+.layer-fx-row em {
+  font-style: normal;
+  opacity: 0.6;
+  min-width: 38px;
+  font-variant-numeric: tabular-nums;
+}
+
+.map-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.map-row select {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 6px;
+}
+
+.map-row input[type='range'] {
+  flex: 1;
+  min-width: 70px;
+}
+
+.map-row em {
+  font-style: normal;
+  opacity: 0.6;
+  min-width: 44px;
+  font-variant-numeric: tabular-nums;
+}
+
+.map-arrow {
+  opacity: 0.45;
+}
+
+.cue-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.cue-beat {
+  color: rgba(130, 255, 190, 0.85);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 44px;
+}
+
+.cue-scene {
+  font-weight: 600;
+}
+
+.cue-extra {
+  opacity: 0.55;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip.rec.on {
+  background: rgba(255, 60, 60, 0.85);
+  border-color: rgba(255, 100, 100, 0.9);
+  color: #fff;
+  animation: rec-blink 1.4s ease-in-out infinite;
+}
+
+@keyframes rec-blink {
+  50% {
+    opacity: 0.65;
+  }
+}
+
+.preset-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  border-radius: 8px;
+}
+
+.preset-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.star {
+  appearance: none;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.22);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.star.on {
+  color: #ffd54f;
+}
+
+.preset-name {
+  appearance: none;
+  background: none;
+  border: none;
+  color: #dbe9f2;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  flex: 1;
+  text-align: left;
+  padding: 6px 2px;
+}
+
+.preset-name:hover {
+  color: #fff;
+}
+
+.preset-tag {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  opacity: 0.35;
+  text-transform: uppercase;
+}
+
+.preset-del {
+  appearance: none;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.preset-del:hover {
+  color: #ff8a80;
+}
+
+.preset-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+
+.preset-actions input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: inherit;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+/* ---------- debug ---------- */
+
+.debug-panel {
+  position: absolute;
+  top: 84px;
+  right: 16px;
+  padding: 8px;
+}
+
+.debug-panel canvas {
+  display: block;
+}
+
+/* ---------- start overlay ---------- */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.72));
+  z-index: 10;
+  /* The backdrop is visual only — the HUD stays clickable behind it. */
+  pointer-events: none;
+}
+
+.overlay .start-card {
+  pointer-events: auto;
+}
+
+.start-card {
+  padding: 40px 44px;
+  max-width: 480px;
+  width: calc(100vw - 40px);
+  text-align: center;
+}
+
+.start-card h1 {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, #7cd6ff, #b388ff, #7cffc4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.tagline {
+  margin-top: 8px;
+  font-size: 13.5px;
+  opacity: 0.65;
+}
+
+.start-buttons {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  padding: 15px 20px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+  transform: translateY(-1px);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn.primary {
+  background: linear-gradient(120deg, rgba(74, 165, 255, 0.25), rgba(179, 136, 255, 0.25));
+  border-color: rgba(140, 180, 255, 0.4);
+}
+
+.btn-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.btn-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  opacity: 0.6;
+  line-height: 1.45;
+}
+
+.device-select {
+  margin-top: 14px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.error {
+  margin-top: 16px;
+  color: #ff8a80;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.hint {
+  margin-top: 16px;
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+.hint.keys {
+  margin-top: 22px;
+  letter-spacing: 0.04em;
+  opacity: 0.4;
+}
+
+/* Waiting-for-permission row: the status text and the way out sit together, so
+   the escape hatch is impossible to miss while every source button is disabled. */
+.starting-row {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.starting-row .hint {
+  margin-top: 0;
+}
+
+/* Compact, quiet variant of .btn — the base is a full-width left-aligned card. */
+.btn.ghost {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+@media (max-width: 640px) {
+  .bottom-bar {
+    bottom: 10px;
+    padding: 8px 10px;
+  }
+  .top-bar {
+    top: 10px;
+    left: 10px;
+    right: 10px;
+  }
+  .start-card {
+    padding: 28px 22px;
+  }
+}
