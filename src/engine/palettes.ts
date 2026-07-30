@@ -17,11 +17,19 @@ export const PALETTES: Palette[] = [
   { id: 'solar', name: 'Solar Flare', colors: ['#ffd600', '#ff3d00', '#ff9e80'], bg: '#080401' },
 ]
 
+/**
+ * Look up a palette by id, falling back to the first one. Like {@link getScene},
+ * the fallback matters: a persisted or shared `paletteId` may name a palette that
+ * no longer exists, and scenes read this every frame — it must never throw.
+ */
 export function getPalette(id: string): Palette {
   return PALETTES.find((p) => p.id === id) ?? PALETTES[0]
 }
 
-/** Phase 7 extension point: add a palette from outside the core bundle. */
+/**
+ * Extension point: add a palette from outside the core bundle. Intentionally has
+ * no in-repo callers — public API documented in README.md / ARCHITECTURE.md.
+ */
 export function registerPalette(palette: Palette) {
   if (!PALETTES.some((p) => p.id === palette.id)) PALETTES.push(palette)
 }

@@ -164,8 +164,11 @@ Known remaining levers, in priority order:
 ## 5. Scene cull
 
 The references are shows with **three or four extremely refined looks**, not
-seventeen decent ones. Current count: 16 registered (`ribbons` temporarily
-removed at user request).
+seventeen decent ones.
+
+**Status: done.** Five scenes are registered — `schematic`, `wireframe`,
+`plasma`, `dissolve`, `chrome`. The other sixteen are unregistered (still on
+disk, loader entries kept, absent from `SCENES[]`).
 
 **Do not port all scenes to the new aesthetic.** Keep a small number as raw
 material, delete the rest. Deleting scenes is safe — the engine (audio, mood,

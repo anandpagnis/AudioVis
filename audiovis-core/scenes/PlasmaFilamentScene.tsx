@@ -176,10 +176,12 @@ function buildGeometry(): THREE.BufferGeometry {
     // Core-weighted radial seeding: a random direction at a power-law radius,
     // so density falls off outward and the centre becomes a genuine hot core.
     // (Same radial power-law idea CrystalGrowthScene uses for its shard field.)
-    let x = 0
-    let y = 0
-    let z = 0
-    let len = 0
+    // Rejection-sample a direction inside the unit sphere (uniform on the
+    // sphere once normalized; sampling angles directly would cluster at poles).
+    let x: number
+    let y: number
+    let z: number
+    let len: number
     do {
       x = Math.random() * 2 - 1
       y = Math.random() * 2 - 1
@@ -206,7 +208,7 @@ export function PlasmaFilamentScene() {
   const lastFade = useRef(0)
   const rig = useMemo(() => new CameraRig(), [])
   const blender = useMemo(() => new PaletteBlender(getPalette(useStore.getState().paletteId)), [])
-  const geometry = useMemo(buildGeometry, [])
+  const geometry = useMemo(() => buildGeometry(), [])
 
   const material = useMemo(
     () =>

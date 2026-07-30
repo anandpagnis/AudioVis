@@ -66,23 +66,11 @@ export function isSceneLoaded(id: string): boolean {
   return loaded.has(id)
 }
 
-const NebulaScene = lazyScene('nebula')
-const ParticleGalaxyScene = lazyScene('galaxy')
-const LightTunnelScene = lazyScene('tunnel')
-const FluidScene = lazyScene('fluid')
-const MonolithScene = lazyScene('monolith')
-const NoiseFieldScene = lazyScene('noisefield')
-const VolumetricCloudsScene = lazyScene('clouds')
-const RibbonFieldsScene = lazyScene('ribbons')
-const CrystalGrowthScene = lazyScene('crystal')
-const DigitalAuroraScene = lazyScene('aurora')
-const AngelCoreScene = lazyScene('angelcore')
-const CyberCathedralScene = lazyScene('cathedral')
-const InfiniteTunnelScene = lazyScene('fractaltunnel')
-const HolographicOceanScene = lazyScene('ocean')
-const NeuralNetworkScene = lazyScene('neural')
-const ParticleFlowScene = lazyScene('particles')
-const FluidSimScene = lazyScene('fluidsim')
+// Lazy components exist only for REGISTERED scenes. An unregistered scene needs
+// nothing here — its `loaders` entry above is what preloadScene/isSceneLoaded
+// use, and a lazy() component that no SCENES[] entry references would never be
+// rendered. Re-registering a scene therefore means adding its lazyScene() line
+// back plus one SCENES[] entry.
 const SchematicScene = lazyScene('schematic')
 const WireframeHeroScene = lazyScene('wireframe')
 const PlasmaFilamentScene = lazyScene('plasma')
@@ -206,24 +194,34 @@ export const SCENES: SceneDef[] = [
   },
 ]
 
+/**
+ * Look up a scene by id, falling back to `SCENES[0]`.
+ *
+ * The fallback is deliberate and load-bearing: a persisted `sceneId`, a preset,
+ * a cue, or a `?scene=` param can all name a scene that is no longer registered,
+ * and every one of those must degrade to a working scene rather than throw.
+ */
 export function getScene(id: string): SceneDef {
   return SCENES.find((s) => s.id === id) ?? SCENES[0]
 }
 
+/**
+ * Scenes tagged for a mood, best fit first (`moodFit`, defaulting to 0.5 when a
+ * scene declares the mood but gives it no explicit score). This is the pool both
+ * autonomy directors pick from, so ordering here directly shapes the show.
+ */
 export function getScenesForMood(mood: MoodState): SceneDef[] {
   return SCENES.filter((s) => s.metadata.moods.includes(mood)).sort(
     (a, b) => (b.metadata.moodFit?.[mood] ?? 0.5) - (a.metadata.moodFit?.[mood] ?? 0.5),
   )
 }
 
-export function getScenesForRole(role: SceneRole): SceneDef[] {
-  return SCENES.filter((s) => s.metadata.roles.includes(role))
-}
-
-export function getScenesForBand(band: SceneBand): SceneDef[] {
-  return SCENES.filter((s) => s.metadata.bands.includes(band))
-}
-
+/**
+ * Scenes the given scene is declared to layer well with.
+ *
+ * Silently drops ids that resolve to nothing, which is what makes unregistering
+ * a scene safe without having to scrub every other scene's `compatibleWith`.
+ */
 export function getCompatibleScenes(id: string): SceneDef[] {
   const scene = getScene(id)
   return scene.metadata.compatibleWith
@@ -231,10 +229,11 @@ export function getCompatibleScenes(id: string): SceneDef[] {
     .filter((s): s is SceneDef => Boolean(s))
 }
 
-export function isSceneCompatible(a: string, b: string): boolean {
-  return getScene(a).metadata.compatibleWith.includes(b) || getScene(b).metadata.compatibleWith.includes(a)
-}
-
+/**
+ * Collect problems with a scene definition; empty array means valid. Used by
+ * {@link registerScene} to reject malformed third-party scenes at registration
+ * time rather than letting them fail later inside the render loop.
+ */
 export function validateSceneDef(def: SceneDef): string[] {
   const issues: string[] = []
   if (!def.id.trim()) issues.push('Scene id is required.')
@@ -246,9 +245,12 @@ export function validateSceneDef(def: SceneDef): string[] {
 }
 
 /**
- * Extension point: register a scene from outside the core bundle
- * (plugin, custom build, future marketplace). Call before the app mounts so
- * it appears in the scene bar and can be picked by future directors/composers.
+ * Extension point: register a scene from outside the core bundle (plugin, custom
+ * build, future marketplace). Call before the app mounts so it appears in the
+ * scene bar and can be picked by the autonomy directors.
+ *
+ * Intentionally has no in-repo callers — it is public API documented in
+ * README.md / ARCHITECTURE.md, not dead code. Do not "clean it up".
  */
 export function registerScene(def: SceneDef) {
   const issues = validateSceneDef(def)

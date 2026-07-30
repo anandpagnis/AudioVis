@@ -127,7 +127,7 @@ URLs.
 Configure a chromeless instance entirely from the URL:
 
 ```
-http://localhost:5183/?scene=tunnel&palette=ember&ui=hidden&quality=low&reactivity=1.4
+http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&reactivity=1.4
 ```
 
 `scene`, `accent`, `overlay`, `palette`, `ui=hidden`, `quality=auto|low|medium|high`, `intensity`, `speed`,
@@ -187,18 +187,25 @@ Raw audio → FFT → filtering → feature extraction → onset detection
 - **`src/ui/`** — floating glass HUD, live BPM readout, debug analyzer. High-frequency displays
   write to the DOM directly on rAF; nothing re-renders React at 60 fps.
 
-### Scenes (10)
+### Scenes (5 registered)
 
-**Nebula** · domain-warped fbm clouds, churn speed follows energy, core glow rides the bass
-**Particle Galaxy** · 30k-star spiral, differential rotation accelerates with energy, breathes on beats
-**Light Tunnel** · beat-grid-locked rings (one per beat, downbeats accented), spokes on the highs
-**Fluid** · iteratively advected ink; a dye ring splashes outward on every beat, drops flood the frame
-**Monolith** · lit scene (LightRig) — a black monolith flashes on beats while debris orbits it
-**Noise Field** · endless wireframe terrain, bass-driven relief, flight speed follows tempo
-**Volumetric Clouds** · parallax cloud decks, bass thickens the cover, god-rays pulse on beats
-**Ribbon Fields** · 48 GPU ribbons; a light pulse travels each ribbon once per bar
-**Crystal Growth** · shards grow over a 32-beat cycle and shatter on section changes
-**Digital Aurora** · curtain folds sway with the bar phase, shimmer on the highs
+The roster is deliberately small (see `VISION.md` §5): a few extremely refined
+looks rather than many decent ones. Every registered scene holds one readable
+**subject**, keeps real **negative space**, and carries **hard edges**.
+
+**Schematic** · barycentric wireframe + `fwidth` — resolution-independent 1px edges on dead black
+**Wireframe Hero** · `WireframeGeometry2`/`LineMaterial` true edge geometry, real thickness, dashed annotation ring
+**Plasma Filament** · 70k closed-form curl-noise particles, screen-space streak orientation, hot core
+**Dissolve Cage** · area-weighted surface sampling; a form scatters and reforms inside a wireframe cage
+**Chrome Form** · `PMREMGenerator` + `RoomEnvironment` image-based lighting on `MeshPhysicalMaterial`
+
+Each band drives a distinct job so they stay separable by eye — `bass` mass,
+`mid` hue/rotation, `presence` stroke weight, `high` dedicated elements only,
+`transient` instant flash.
+
+Sixteen earlier scenes remain on disk but are **unregistered** (absent from
+`SCENES[]`, so unreachable by the UI and the directors). Their loader entries are
+kept, so re-registering one is a single array entry.
 
 ### Adding an input source
 

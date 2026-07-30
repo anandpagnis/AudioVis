@@ -47,6 +47,7 @@ export interface MoodMomentum {
   viz: { intensity: number; speed: number; reactivity: number }
 }
 
+/** Neutral mood state for engine construction and reset between sources. */
 export function createEmptyMood(): MoodMomentum {
   return {
     state: 'silence',
@@ -141,6 +142,11 @@ export interface AudioFeatures {
   mood: MoodMomentum
 }
 
+/**
+ * Zeroed feature set. Note `bpm: 120` and `silence: true` rather than 0/false —
+ * the beat grid free-runs at a sane default before any tempo is locked, so idle
+ * motion is musical rather than frozen.
+ */
 export function createEmptyFeatures(): AudioFeatures {
   return {
     time: 0,

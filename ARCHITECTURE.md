@@ -13,7 +13,7 @@ src/audio/    AudioEngine → BpmEstimator, PhraseDetector,
 src/engine/   SceneManager, AutoPilot, PerformanceDirector, GenerativeLayer,
               CameraRig, LightRig, PostFX, PerfMonitor,
               palettes, presets, moodParams, textureGenerator (visual framework)
-src/scenes/   10 scene components + metadata registry         (content)
+src/scenes/   5 registered scenes (+16 unregistered) + registry (content)
 src/ui/       HUD, BpmReadout, DebugPanel                     (chrome)
 src/store.ts  zustand store (persisted)                       (state)
 backend/      local sd-turbo texture server (FastAPI, :8787)  (optional AI art)
@@ -119,7 +119,7 @@ merges; see `sanitizePreset`).
 
 ### OBS / wallpaper mode
 URL parameters configure a chromeless instance (see `src/urlParams.ts`):
-`?scene=tunnel&palette=ember&ui=hidden&quality=low&reactivity=1.4`
+`?scene=wireframe&palette=ember&ui=hidden&quality=low&reactivity=1.4`
 
 ### Parameters
 Global visual params live in the store (`intensity`, `speed`, `reactivity`). New params:

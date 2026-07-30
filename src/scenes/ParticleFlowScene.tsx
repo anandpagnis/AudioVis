@@ -113,9 +113,11 @@ function buildGeometry(): THREE.BufferGeometry {
   const rand = new Float32Array(COUNT * 4)
   for (let i = 0; i < COUNT; i++) {
     // Seed uniformly inside a sphere so the flow has a compact body to shape.
-    let x = 0
-    let y = 0
-    let z = 0
+    // Rejection sampling rather than sampling angles directly, which would
+    // cluster seeds at the poles.
+    let x: number
+    let y: number
+    let z: number
     do {
       x = Math.random() * 2 - 1
       y = Math.random() * 2 - 1
@@ -140,7 +142,7 @@ export function ParticleFlowScene() {
   const lastFade = useRef(0)
   const rig = useMemo(() => new CameraRig(), [])
   const blender = useMemo(() => new PaletteBlender(getPalette(useStore.getState().paletteId)), [])
-  const geometry = useMemo(buildGeometry, [])
+  const geometry = useMemo(() => buildGeometry(), [])
 
   const material = useMemo(
     () =>

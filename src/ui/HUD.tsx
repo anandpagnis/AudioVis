@@ -19,6 +19,26 @@ import { DebugPanel } from './DebugPanel'
 // whole-screen / system audio isn't available, so the copy has to differ.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent)
 
+/**
+ * All 2D chrome: the start card, the top bar, the ☰ control menu, and the global
+ * keyboard shortcuts.
+ *
+ * Deliberately outside the R3F tree — this is plain DOM over the canvas, so it
+ * re-renders on React state rather than per frame. Anything that needs per-frame
+ * audio values (BPM readout, debug panel, tactical overlay) lives in its own
+ * component that reads `audioEngine.features` directly instead of pushing audio
+ * through React state.
+ *
+ * Sections below, in render order:
+ *   1. Keyboard shortcuts        (useEffect, window keydown)
+ *   2. Start card                (shown whenever status !== 'running')
+ *   3. Top bar                   (brand, source, BPM, quality)
+ *   4. Control menu              (collapsible sections: look, tune, layers,
+ *                                 presets, cues, automation, export)
+ *
+ * The start card must never trap the user: while `status === 'starting'` every
+ * source button is disabled, so it always offers a Cancel plus Escape.
+ */
 export function HUD() {
   const status = useStore((s) => s.status)
   const sourceType = useStore((s) => s.sourceType)

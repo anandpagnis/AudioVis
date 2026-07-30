@@ -125,7 +125,7 @@ export function RibbonFieldsScene() {
   const flow = useRef(0)
   const rig = useMemo(() => new CameraRig(), [])
   const blender = useMemo(() => new PaletteBlender(getPalette(useStore.getState().paletteId)), [])
-  const geometry = useMemo(buildGeometry, [])
+  const geometry = useMemo(() => buildGeometry(), [])
 
   const material = useMemo(
     () =>

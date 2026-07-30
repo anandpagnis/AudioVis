@@ -62,6 +62,12 @@ function attachInputs() {
   if (names.length === 0) midiStatus.connected = false
 }
 
+/**
+ * Request MIDI access and start following any incoming clock. Returns false when
+ * Web MIDI is unavailable or the user denies access, so the caller can leave its
+ * toggle off rather than handling an exception. Re-attaches on device
+ * connect/disconnect via `onstatechange`.
+ */
 export async function enableMidiSync(): Promise<boolean> {
   if (!('requestMIDIAccess' in navigator)) return false
   try {
@@ -75,6 +81,11 @@ export async function enableMidiSync(): Promise<boolean> {
   return true
 }
 
+/**
+ * Detach from all MIDI inputs and reset the tick window. The tempo estimator
+ * hands control back to onset tracking on its own once `setExternalTempo` stops
+ * being called (its external override expires after ~2s).
+ */
 export function disableMidiSync() {
   if (access) {
     for (const input of access.inputs.values()) input.onmidimessage = null

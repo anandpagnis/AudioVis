@@ -16,6 +16,25 @@ const GenerativeLayer = lazy(() =>
   import('./GenerativeLayer').then((m) => ({ default: m.GenerativeLayer })),
 )
 
+/**
+ * The WebGL stage: owns the R3F Canvas and the fixed order of engine systems
+ * inside it.
+ *
+ * Child order is not cosmetic — the systems run on explicit `useFrame`
+ * priorities so the audio pipeline ticks before anything reads it:
+ * `SceneManager` (-100, calls `audioEngine.update()`) → `AutoPilot` (-90) →
+ * `CueTimeline` (-88) → `PerformanceDirector` (-85) → scenes (default) → PostFX.
+ *
+ * Two non-obvious Canvas settings:
+ *  - `antialias: false` — PostFX resolves its own AA; MSAA on the default
+ *    framebuffer would be wasted work behind the composer.
+ *  - `preserveDrawingBuffer: true` — required for screenshots/recording. Side
+ *    effect worth knowing while debugging: the canvas retains its last drawn
+ *    frame, so a stalled render loop shows a stale image instead of going black.
+ *
+ * No `dpr` prop: PerfMonitor owns device pixel ratio, driving it from the
+ * quality governor's current tier.
+ */
 export function Stage() {
   const generative = useStore((s) => s.generative)
   const everEnabled = useRef(generative)

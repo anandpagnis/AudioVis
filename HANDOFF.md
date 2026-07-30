@@ -39,7 +39,10 @@ The long-term product is a modular visual instrument:
    - Beat, bar, measure, phrase, section-change, drop, and build flags are available to scenes.
 
 3. **Scene registry and metadata**
-   - Ten built-in scenes are registered in `src/scenes/index.ts`.
+   - Five scenes are registered in `src/scenes/index.ts`: `schematic`, `wireframe`,
+     `plasma`, `dissolve`, `chrome`. Sixteen earlier scenes remain on disk with
+     their loader entries intact but are absent from `SCENES[]`, so nothing can
+     reach them; re-registering one is a single array entry.
    - Each scene declares roles, mood affinity, audio-band affinity, intensity, compatibility, and
      rough performance cost.
    - `registerScene()` and lookup helpers provide the extension contract for custom scenes.
@@ -174,7 +177,7 @@ To test audio, start with a browser tab or screen that has “Share audio” ena
 microphone/line-in device. For OBS, use a URL such as:
 
 ```text
-http://localhost:5183/?scene=tunnel&palette=ember&ui=hidden&quality=low&autopilot=1
+http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autopilot=1
 ```
 
 ## 5. Custom scene workflow
@@ -190,7 +193,7 @@ http://localhost:5183/?scene=tunnel&palette=ember&ui=hidden&quality=low&autopilo
    before mount.
 7. List compatible scenes and the roles the scene can occupy.
 8. Add disposal for all custom materials, geometries, render targets, and event listeners.
-9. Run `npm run typecheck` and `npm run build` before handing it off.
+9. Run `npm run check` (typecheck + lint + build) before handing it off.
 
 ## 6. Known limitations and risks
 
@@ -233,8 +236,9 @@ The numbered phases are complete. What remains are refinements, roughly by value
 
 Before shipping a meaningful change:
 
-- `npm run typecheck`
-- `npm run build`
+- `npm run check` — typecheck + lint + build in one pass (or run them individually
+  via `npm run typecheck`, `npm run lint`, `npm run build`)
+- `npm run format` — Prettier over `src/`
 - Start the dev server and test system audio plus microphone input.
 - Stop and restart audio; confirm beat/mood state starts cleanly.
 - Switch scenes manually during silence and during a beat-rich track.

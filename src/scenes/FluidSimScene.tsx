@@ -1,7 +1,7 @@
 import { useContext, useEffect, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import { audioEngine, beatPulse } from '../audio/AudioEngine'
+import { audioEngine } from '../audio/AudioEngine'
 import { PaletteBlender, getPalette } from '../engine/palettes'
 import { SceneFade } from '../engine/SceneManager'
 import { getEffectiveParams } from '../engine/moodParams'

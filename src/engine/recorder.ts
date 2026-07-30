@@ -6,13 +6,17 @@ import { audioEngine } from '../audio/AudioEngine'
  * Requires preserveDrawingBuffer on the renderer for screenshots.
  */
 
+/** The in-flight recorder, or null when idle. Module-scoped: only one at a time. */
 let recorder: MediaRecorder | null = null
+/** Encoded segments accumulated during the current recording. */
 let chunks: Blob[] = []
 
+/** The R3F canvas. Queried by selector because the renderer is owned by R3F. */
 function stageCanvas(): HTMLCanvasElement | null {
   return document.querySelector<HTMLCanvasElement>('.stage canvas')
 }
 
+/** Filename-safe timestamp, e.g. `2026-07-29-22-31-04`. */
 function stamp(): string {
   return new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
 }
@@ -28,10 +32,20 @@ function download(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
+/** Whether this browser exposes MediaRecorder at all (gates the record button). */
 export function isRecordingSupported(): boolean {
   return typeof MediaRecorder !== 'undefined'
 }
 
+/**
+ * Begin recording the stage canvas, mixing in the analyzed audio when a source is
+ * running. Returns false — rather than throwing — when recording can't start
+ * (no canvas yet, unsupported browser, already recording, or no usable codec), so
+ * the caller can simply leave its toggle off.
+ *
+ * The finished file downloads from the recorder's own `onstop`, so stopping is
+ * fire-and-forget for the caller.
+ */
 export function startRecording(): boolean {
   const canvas = stageCanvas()
   if (!canvas || !isRecordingSupported() || recorder) return false
@@ -69,11 +83,17 @@ export function startRecording(): boolean {
   return true
 }
 
+/** Stop recording and trigger the download. Safe to call when not recording. */
 export function stopRecording() {
   recorder?.stop()
   recorder = null
 }
 
+/**
+ * Download a one-shot PNG of the current frame. Returns false if the canvas isn't
+ * mounted yet. Depends on `preserveDrawingBuffer: true` (set in Stage.tsx) —
+ * without it the buffer is already cleared by the time toBlob reads it.
+ */
 export function saveScreenshot(): boolean {
   const canvas = stageCanvas()
   if (!canvas) return false

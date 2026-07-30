@@ -510,7 +510,6 @@ class AudioEngine {
     let vocal = 0
     let centW = 0
     let centWF = 0
-    let flux = 0
     let bassFlux = 0
     for (let i = 1; i < highEnd; i++) {
       const mag = Math.pow(10, this.freqDb[i] / 20)
@@ -522,11 +521,13 @@ class AudioEngine {
       if (i >= midEnd && i < presenceEnd) presence += mag
       centW += mag
       centWF += mag * i
+      // Half-wave-rectified spectral flux, bass-weighted: only rises count (a
+      // note starting, not one decaying), and low bins count 2.5x because the
+      // kick is what the beat tracker locks onto. `f.flux` is derived from this,
+      // so there is deliberately no full-spectrum accumulator — an unweighted
+      // one used to be computed here and thrown away.
       const diff = mag - this.prevMag[i]
-      if (diff > 0) {
-        flux += diff
-        if (i < midEnd) bassFlux += diff * (i < bassEnd ? 2.5 : 1)
-      }
+      if (diff > 0 && i < midEnd) bassFlux += diff * (i < bassEnd ? 2.5 : 1)
       this.prevMag[i] = mag
     }
     bass /= Math.max(1, bassEnd - 1)

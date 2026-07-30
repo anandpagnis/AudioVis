@@ -12,6 +12,10 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
+    // Unused locals are enforced by ESLint instead (@typescript-eslint/no-unused-vars),
+    // which understands the cases this codebase needs — R3F callbacks that
+    // destructure only part of the frame state, and `catch {}` blocks used for
+    // best-effort cleanup. Left off here to avoid two tools disagreeing.
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true
