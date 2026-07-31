@@ -15,7 +15,7 @@ const CA_INITIAL_OFFSET = new Vector2(0, 0)
  * pulses on beats; chromatic aberration flares briefly on beats and drops.
  *
  * NOTE (July 2026): a filmic grade (AgX tone map + contrast/saturation + grain +
- * scanline) was attempted here and reverted — see VISION.md §3.1. Two hard
+ * scanline) was attempted here and reverted — see docs/09_Rendering_Engine.md. Two hard
  * failures worth remembering before trying again:
  *   1. BrightnessContrast's `brightness` is an ADDITIVE offset, not exposure. A
  *      negative value drives black negative, and negative input to AgX's
@@ -45,7 +45,7 @@ export function PostFX() {
       // Low quality zeroes the aberration instead of removing the pass. Adding
       // or removing an effect rebuilds the composer's merged shader — a
       // multi-hundred-ms stall that repeated has lost the WebGL context outright
-      // (VISION.md §3.1). The effect list must stay FIXED; modulate by uniform.
+      // (docs/09_Rendering_Engine.md). The effect list must stay FIXED; modulate by uniform.
       const amount = quality === 'low' ? 0 : 0.0006 + pulse * 0.0035 + (f.drop ? 0.004 : 0)
       caRef.current.offset.set(amount, amount * 0.6)
     }

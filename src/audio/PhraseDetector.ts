@@ -67,6 +67,7 @@ export class PhraseDetector {
         for (let i = 0; i < 4; i++) {
           novelty += Math.abs(recent[i] / recentN - before[i] / beforeN) * WEIGHTS[i]
         }
+        f.sectionChangeStrength = novelty
         if (novelty > THRESHOLD) {
           f.sectionChange = true
           this.phraseStartBeat = f.beatIndex

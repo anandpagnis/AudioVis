@@ -9,8 +9,16 @@ export interface AudioResponse {
   presence: number
   high: number
   vocal: number
+  /** High-frequency "air" content above `high` — shimmer, cymbal wash, breath. */
+  air: number
   energy: number
   transient: number
+  /** 0..1 — tonal/harmonic (low) vs. noisy/distorted (high) texture. */
+  flatness: number
+  /** 0..1 — brightness cue robust to one dominant bin, complementary to centroid. */
+  rolloff: number
+  /** 0..1 — dynamic headroom; low means pushed/brickwalled, high means dynamic. */
+  dynamics: number
   beatPulse: number
   dropPulse: number
   build: number
@@ -33,8 +41,12 @@ export function getAudioResponse(f: AudioFeatures, sharpness = 3): AudioResponse
     presence: f.presence,
     high: f.high,
     vocal: f.vocal,
+    air: f.air,
     energy: f.energy,
     transient: f.transient,
+    flatness: clamp01(f.spectralFlatness),
+    rolloff: clamp01(f.spectralRolloff),
+    dynamics: clamp01((f.crestFactor - 1) / 9),
     beatPulse: clamp01(pulse),
     dropPulse: f.drop ? clamp01(0.55 + f.transient * 0.45) : 0,
     build: f.buildUp ? clamp01(0.35 + f.energy * 0.65) : 0,

@@ -10,7 +10,7 @@ import { useDispose } from '../engine/useDispose'
 import { useStore } from '../store'
 
 /**
- * Schematic — the first scene of the "crystal-cut" art direction (VISION.md).
+ * Schematic — the first scene of the "crystal-cut" art direction (docs/00_Vision.md).
  *
  * A slowly rotating hero object drawn as pure LINE ART on dead black: a
  * displaced icosphere and a faceted scan-ring rendered as antialiased

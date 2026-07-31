@@ -25,7 +25,7 @@ import { useStore } from '../store'
  *    for free, no extra field evaluations.
  *  - Radial colour ramp, hot accent at the core easing out to the cool primary.
  *
- * Exposure is a hard constraint, not a taste call (VISION.md §3.1): only the
+ * Exposure is a hard constraint, not a taste call (docs/09_Rendering_Engine.md): only the
  * core is allowed near full brightness. Per-particle contribution stays tiny so
  * the periphery accumulates to a fraction of 1.0 and the frame reads as dead
  * black with one hot subject — never an additive haze that would flatten any
@@ -156,7 +156,7 @@ const FRAG = /* glsl */ `
     // than a guess. The core boost is deliberately modest on top of that,
     // because the core-weighted SEEDING is already concentrating density there
     // — brightness and density must not both be stacked, or the core clips and
-    // the frame becomes the additive haze VISION.md §3.1 warns about.
+    // the frame becomes the additive haze docs/09_Rendering_Engine.md warns about.
     float coreBoost = 1.0 - smoothstep(0.0, 0.4, r);
     // Presence lights the SHARDS specifically, so snares and plucks make the
     // hard-edged fragments flare while the soft filaments stay put — two

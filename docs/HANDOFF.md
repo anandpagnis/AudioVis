@@ -71,8 +71,10 @@ The long-term product is a modular visual instrument:
    - Palette blending, mood-driven parameter multipliers, shared camera/light rigs, beat-reactive
      post effects, optional local AI texture overlay, adaptive quality scaling, and disposal
      helpers are in place.
-   - Built-in scenes cover nebula, galaxy, tunnel, fluid, monolith, noise field, clouds, ribbons,
-     crystal growth, and digital aurora aesthetics.
+   - Sixteen legacy scenes (nebula, galaxy, tunnel, fluid, monolith, noise field, clouds, ribbons,
+     crystal growth, digital aurora, and others) remain on disk with their loader entries intact
+     but are unregistered — see item 3 and `docs/09_Rendering_Engine.md` for why the roster was
+     culled to five.
 
 8. **Persistence and operation**
    - Scene, layers, palette, visual parameters, quality, automation toggles, favorites, user
@@ -121,6 +123,43 @@ The long-term product is a modular visual instrument:
    - GPU telemetry in the debug panel: draw calls, triangles, geometry/texture counts, and
      shader program count from `renderer.info`, alongside fps and render scale.
 
+13. **Wider audio detection + numeric analytics/testing**
+    - `AudioFeatures` gained four additive signals, none of which touch the six original bands'
+      calibration: `air` (~9–16 kHz shimmer/cymbal-wash, above where `high` stops), `spectralFlatness`
+      (tonal vs. noisy texture), `spectralRolloff` (a brightness cue robust to one dominant bin),
+      and `crestFactor` (peak/RMS — pushed/brickwalled vs. dynamic material). All four feed new,
+      clearly-labeled additive terms in `MoodEstimator.score()` — existing state weights are
+      untouched. The heavy per-bin spectral loop moved to a pure, unit-tested function,
+      `src/audio/spectralFeatures.ts`.
+    - Three signals that were already computed but silently discarded are now exposed: beat-grid
+      tracking accuracy (`AudioFeatures.beatGridAccuracy`, from `BpmEstimator`'s internal
+      `hitScore`), continuous section-boundary strength (`AudioFeatures.sectionChangeStrength`,
+      the un-thresholded value behind the boolean `sectionChange`), and the full 7-state mood
+      score distribution plus a derived ambiguity score (`MoodMomentum.scores` /
+      `MoodMomentum.ambiguity`).
+    - A live **Analytics panel** (`Y` key / `analytics` chip) replaces "watch the debug panel and
+      eyeball it" with rolling numeric readouts: beat-tracking accuracy, mood confidence/ambiguity
+      trends, the live mood-score bar chart, section-change strength against its firing threshold,
+      frame-time percentiles (not just the FPS average), and a recent-transitions table comparing
+      target vs. actual crossfade duration and frame-time p95 during the fade. Backed by a shared
+      `RollingWindow` utility (`src/engine/RollingWindow.ts`) and two new instrumentation modules,
+      `analyticsMetrics.ts` and `transitionMetrics.ts` — the latter taps a new (and previously
+      nonexistent) transition-lifecycle hook in `SceneManager`.
+    - A Vitest suite (`npm run test`, folded into `npm run check`) unit-tests the pure DSP layer
+      directly — `BpmEstimator` (synthetic click tracks, on-grid vs. jittered `hitScore`, tempo-change
+      persistence), `PhraseDetector`, `MoodEstimator`, `spectralFeatures`, and `RollingWindow` — 28
+      tests, no browser or real audio file required since these classes take plain data. A GitHub
+      Actions workflow (`.github/workflows/ci.yml`) runs `npm run check` on every push and PR to
+      `main`.
+    - Deliberately not built: any AI/ML involvement. The mood system stays pure heuristic DSP by
+      design (see `docs/02_Music_Intelligence.md`); if "does it pick up the vibe correctly" ever
+      needs an outside opinion, the recommended shape is an optional, manual, offline calibration
+      script — never in the render hot path, never gating CI.
+    - Also removed in this pass: `audiovis-core/` (a frozen duplicate snapshot of `src/audio` +
+      parts of `src/engine`/`src/scenes`, never part of the build), and the superseded root docs
+      `ART_DIRECTION_ROADMAP.md` / `PHASE_IMPLEMENTATION_GUIDE.md` / `VISION.md` (content merged into
+      `docs/00_Vision.md` and `docs/09_Rendering_Engine.md`).
+
 ### Recent correctness fixes
 
 - Starting/stopping a source now resets beat, phrase, mood, onset, energy, and normalization
@@ -148,6 +187,7 @@ Important frame priorities:
 
 - `SceneManager` at `-100`: updates audio first and owns scene transitions.
 - `AutoPilot` at `-90`: reacts to mood changes and predictions.
+- `CueTimeline` at `-88`: plays authored cues, overriding the automatic directors while governing.
 - `PerformanceDirector` at `-85`: makes phrase/section composition decisions.
 - Scene components: read the already-updated mutable `audioEngine.features` object.
 
@@ -159,7 +199,7 @@ parameters, and dispose manually-created GPU resources.
 
 | Control | Behavior |
 | --- | --- |
-| `1`–`9`, `0` | Request one of the ten registered scenes |
+| `1`–`9`, `0` | Request a registered scene by position (five registered today; digits past the roster size are no-ops) |
 | `A` | Toggle automatic mood-driven direction |
 | `C` | Capture a performance cue (current look at the current beat) |
 | `R` | Start/stop recording the canvas + audio to .webm |
@@ -170,6 +210,8 @@ parameters, and dispose manually-created GPU resources.
 | `B` | Open presets and composition layers |
 | `T` | Open visual tuning controls |
 | `D` | Open analyzer/debug panel |
+| `J` | Toggle the tactical HUD overlay |
+| `Y` | Open the numeric analytics panel (beat accuracy, mood confidence, transition timing) |
 | `F` | Toggle fullscreen |
 | `H` | Hide/show the interface |
 
@@ -211,15 +253,35 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
   would require a heavier model or an external stem/source input.
 - Preset imports accept scene IDs but do not yet provide a user-facing migration/error report for
   scenes that are no longer registered.
-- No automated browser test suite exists yet. Visual QA still requires running the app with a real
-  audio source and checking transitions, source stop/restart, fullscreen, mobile layout, and GPU
-  quality changes.
+- A Vitest suite unit-tests the pure DSP layer (BPM/phrase/mood estimators, spectral feature math,
+  the rolling-window utility) — see item 13. No automated *browser* test suite exists: visual QA
+  still requires running the app with a real audio source and checking transitions, source
+  stop/restart, fullscreen, mobile layout, and GPU quality changes. The live Analytics panel (`Y`)
+  makes several of those checks numeric rather than purely visual, but doesn't replace them.
 - AI textures require the optional local backend and are intentionally disabled when unavailable.
 
 ## 7. Remaining roadmap
 
-The numbered phases are complete. What remains are refinements, roughly by value:
+The numbered phases are complete. Current priority order (user-set, July 2026):
 
+1. ~~Wider audio-feature detection for mood accuracy~~ — done, see item 13.
+2. ~~Numeric testing and analytics~~ — done, see item 13.
+3. **More scenes** — deliberately last: land a solid system before adding content on top of it.
+   When picked back up, new scenes follow the existing `registerScene()` contract
+   (`docs/05_Scene_Architecture.md`) and the crystal-cut rubric in `docs/09_Rendering_Engine.md`
+   (subject, negative space, hard edges) — not scored against the pre-cull 21-scene roster.
+
+Beyond that, lower-value refinements:
+
+- **Mood-scoring calibration against real tracks**: the new texture-based score nudges (item 13)
+  are principled but untuned by ear yet — the project's own rule is "calibrate against real audio,
+  never an idle frame" (`docs/09_Rendering_Engine.md`).
+- **AI as an offline calibration aid** (recommended, not built): if "does it pick up the vibe
+  correctly" ever needs an outside opinion beyond self-consistency signals, the shape that fits
+  this project's DSP-only, no-ML-in-hot-path philosophy is a manual, offline script — feed fixture
+  tracks through the estimator classes directly (they're plain data, no browser needed), ask an
+  external model for an independent read, diff the two. Never wired into the render loop or `npm
+  run check`/CI, which must stay deterministic.
 - **Cue editing depth**: adjust a cue's beat position after capture, duplicate cues, and a
   visual timeline strip (cues currently support capture/replace/delete/clear).
 - **WebRTC input adapter** and an **OSC/Ableton Link bridge** (needs a small local relay —
@@ -236,9 +298,14 @@ The numbered phases are complete. What remains are refinements, roughly by value
 
 Before shipping a meaningful change:
 
-- `npm run check` — typecheck + lint + build in one pass (or run them individually
-  via `npm run typecheck`, `npm run lint`, `npm run build`)
+- `npm run check` — typecheck + lint + **test** + build in one pass (or run them individually
+  via `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build`)
 - `npm run format` — Prettier over `src/`
+- If you touched `BpmEstimator`/`PhraseDetector`/`MoodEstimator`/`spectralFeatures`, run
+  `npm run test:watch` while iterating — the suite catches a scoring/tempo regression immediately
+- Open the Analytics panel (`Y`) during a real track and confirm beat-tracking accuracy trends
+  toward 1.0 as the tempo locks, and that switching scenes adds a row to the transitions table
+  with actual duration close to target and a clean (unflagged) frame-time p95
 - Start the dev server and test system audio plus microphone input.
 - Stop and restart audio; confirm beat/mood state starts cleanly.
 - Switch scenes manually during silence and during a beat-rich track.
@@ -256,15 +323,19 @@ Before shipping a meaningful change:
 ## 9. Key files
 
 - `src/audio/AudioEngine.ts` — source graph and per-frame analysis.
+- `src/audio/spectralFeatures.ts` — pure, unit-tested band/texture-cue math.
 - `src/audio/types.ts` — scene-facing feature contract.
 - `src/engine/audioResponse.ts` — reusable response envelopes.
-- `src/engine/SceneManager.tsx` — primary/layer mounting and fades.
+- `src/engine/SceneManager.tsx` — primary/layer mounting, fades, and transition telemetry.
 - `src/engine/AutoPilot.tsx` — mood-triggered scene/palette automation.
 - `src/engine/PerformanceDirector.tsx` — phrase-level composition decisions.
+- `src/engine/RollingWindow.ts` / `analyticsMetrics.ts` / `transitionMetrics.ts` — the
+  live-analytics instrumentation layer.
+- `src/ui/AnalyticsPanel.tsx` — the numeric accuracy/smoothness readout (`Y`).
 - `src/scenes/index.ts` — registry, metadata, and extension helpers.
 - `src/store.ts` — persisted application and performance state.
 - `src/engine/presets.ts` — preset schema and import sanitization.
 - `src/ui/HUD.tsx` — controls, presets, layers, and operation chrome.
-- `README.md` — quick start and user-facing feature overview.
+- `../README.md` — quick start and user-facing feature overview.
 - `ARCHITECTURE.md` — implementation-oriented extension guide.
 

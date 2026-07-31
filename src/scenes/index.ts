@@ -103,7 +103,7 @@ export interface SceneDef {
 /**
  * The active roster.
  *
- * Deliberately small (VISION.md §5): the reference shows are three or four
+ * Deliberately small (docs/09_Rendering_Engine.md): the reference shows are three or four
  * extremely refined looks, not seventeen decent ones. Every scene here holds a
  * SUBJECT, keeps real NEGATIVE SPACE, and carries HARD EDGES — the rubric the
  * fullscreen-haze and environment-flythrough scenes all fail.

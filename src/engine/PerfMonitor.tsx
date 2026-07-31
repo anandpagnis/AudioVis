@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { quality } from './quality'
+import { RollingWindow } from './RollingWindow'
 import { useStore } from '../store'
 
 /** Live render stats, readable from anywhere (debug panel, future overlays). */
@@ -16,6 +17,13 @@ export const perf = {
   textures: 0,
   programs: 0,
 }
+
+/**
+ * Raw (unsmoothed) per-frame time, last 10s — for percentile readouts. `perf.ms`
+ * above is a scalar EMA, which is exactly what can't show a hitch buried in an
+ * otherwise-good average; this keeps the samples a p95/max can be read from.
+ */
+export const frameTimeWindow = new RollingWindow(10)
 
 /**
  * Drives the central {@link quality} governor from the measured frame time and
@@ -53,6 +61,7 @@ export function PerfMonitor() {
     ema.current += (ms - ema.current) * 0.05
     perf.ms = ema.current
     perf.fps = 1000 / ema.current
+    frameTimeWindow.push(clock.elapsedTime, ms)
 
     // GPU memory + draw-call telemetry (renderer.info reflects the last
     // rendered frame — close enough for a live readout).

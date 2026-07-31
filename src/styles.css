@@ -177,7 +177,11 @@ body,
 
 .menu-sublabel {
   color: rgba(255, 255, 255, 0.4);
-  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    9px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-top: 2px;
@@ -276,7 +280,9 @@ body,
 }
 
 @keyframes pending-pulse {
-  50% { background: rgba(255, 255, 255, 0.22); }
+  50% {
+    background: rgba(255, 255, 255, 0.22);
+  }
 }
 
 .chip.stop {
@@ -413,7 +419,11 @@ body,
 
 .layer-label {
   color: rgba(255, 255, 255, 0.5);
-  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    9px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -493,7 +503,11 @@ body,
 
 .cue-beat {
   color: rgba(130, 255, 190, 0.85);
-  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    10px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   min-width: 44px;
 }
 
@@ -624,6 +638,17 @@ body,
 }
 
 .debug-panel canvas {
+  display: block;
+}
+
+.analytics-panel {
+  position: absolute;
+  top: 84px;
+  left: 16px;
+  padding: 8px;
+}
+
+.analytics-panel canvas {
   display: block;
 }
 

@@ -26,7 +26,7 @@ import { useStore } from '../store'
  * negative space, not a literal figure.
  *
  * Exposure note: this scene is the one that does NOT blend additively, so it
- * cannot contribute to the whole-frame wash documented in VISION.md §3.1 — its
+ * cannot contribute to the whole-frame wash documented in docs/09_Rendering_Engine.md — its
  * bright regions are small, tight highlights on an otherwise black frame.
  */
 

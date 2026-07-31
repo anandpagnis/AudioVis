@@ -71,7 +71,7 @@ function sanitizeCues(raw: unknown): PerformanceCue[] | undefined {
 
 /**
  * One preset per registered scene, each picking the palette and response that
- * shows that look at its best. Trimmed alongside the scene cull (VISION.md §5)
+ * shows that look at its best. Trimmed alongside the scene cull (docs/09_Rendering_Engine.md)
  * — the previous eight all pointed at unregistered scenes, which would have
  * silently collapsed every one of them onto the SCENES[0] fallback.
  */

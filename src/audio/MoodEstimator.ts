@@ -127,6 +127,8 @@ export class MoodEstimator {
       }
     }
     const margin = Math.max(0, bestScore - Math.max(0, second))
+    m.scores = scores
+    m.ambiguity = bestScore > 1e-6 ? Math.max(0, 1 - margin / bestScore) : 1
 
     // --- Hysteresis: commit only after the candidate holds ---
     if (best !== this.candidate) {
@@ -165,18 +167,23 @@ export class MoodEstimator {
   }
 
   /** Per-state score, 0..~1.5. Deliberately hand-tuned and readable. */
-  private score(
-    f: AudioFeatures,
-    m: MoodMomentum,
-    density: number,
-  ): Record<MoodState, number> {
+  private score(f: AudioFeatures, m: MoodMomentum, density: number): Record<MoodState, number> {
     const e = m.level
     const stable = 1 - Math.min(1, Math.abs(m.energyVel) * 2)
     const fastTempo = f.bpm >= 138 ? Math.min(1, (f.bpm - 138) / 30) : 0
+    // 0..1 headroom above RMS — low for pushed/brickwalled masters, high for
+    // dynamic, quiet-passage material. crestFactor is typically 1..~15.
+    const crestNorm = Math.min(1, Math.max(0, (f.crestFactor - 1) / 9))
 
     return {
       silence: f.silence ? 1.5 : 0,
-      ambient: band(e, 0, 0.32) * (1 - density) * 0.9 + (f.silence ? 0 : 0.05),
+      ambient:
+        band(e, 0, 0.32) * (1 - density) * 0.9 +
+        (f.silence ? 0 : 0.05) +
+        // Breathy/shimmer texture and dynamic headroom read as ambient, but
+        // only in already-sparse passages — a loud, dynamic mix isn't ambient.
+        f.air * 0.15 * (1 - density) +
+        crestNorm * 0.1 * (1 - density),
       mellow:
         band(e, 0.18, 0.55) *
         (0.4 + m.brightness * 0.5) *
@@ -185,22 +192,27 @@ export class MoodEstimator {
         1.1,
       groove:
         band(e, 0.4, 0.78) *
-        (0.35 + f.bass * 0.65) *
-        (0.4 + f.confidence * 0.6) *
-        (0.55 + stable * 0.45),
+          (0.35 + f.bass * 0.65) *
+          (0.4 + f.confidence * 0.6) *
+          (0.55 + stable * 0.45) +
+        // Tonal + rhythmically-locked reads as groove.
+        (1 - f.spectralFlatness) * 0.12 * f.confidence,
       building:
-        (f.buildUp ? 0.55 : 0) +
-        Math.max(0, m.energyVel) * 0.8 +
-        Math.max(0, m.bassVel) * 0.4,
+        (f.buildUp ? 0.55 : 0) + Math.max(0, m.energyVel) * 0.8 + Math.max(0, m.bassVel) * 0.4,
       peak:
-        band(e, 0.68, 1.01) *
-        (0.3 + f.bass * 0.7) *
-        (f.time - this.lastDropAt < 8 ? 1.25 : 0.85),
+        band(e, 0.68, 1.01) * (0.3 + f.bass * 0.7) * (f.time - this.lastDropAt < 8 ? 1.25 : 0.85) +
+        // Pushed/compressed loudness reads as more "peak" than energy alone.
+        (1 - crestNorm) * 0.12,
       aggressive:
         band(e, 0.62, 1.01) *
-        (0.3 + density * 0.7) *
-        (0.5 + m.brightness * 0.3 + fastTempo * 0.4) *
-        (0.6 + f.flux * 0.4),
+          (0.3 + density * 0.7) *
+          (0.5 + m.brightness * 0.3 + fastTempo * 0.4) *
+          (0.6 + f.flux * 0.4) +
+        // Noisy/distorted texture (energy-gated), top-heavy spectral balance,
+        // and pushed loudness all read as harsher independent of energy alone.
+        f.spectralFlatness * 0.28 * band(e, 0.4, 1.01) +
+        f.spectralRolloff * 0.12 +
+        (1 - crestNorm) * 0.1,
     }
   }
 
@@ -228,7 +240,12 @@ export class MoodEstimator {
     }
   }
 
-  private velocity(key: 'energy' | 'bass' | 'centroid', now: number, windowSec: number, scale: number): number {
+  private velocity(
+    key: 'energy' | 'bass' | 'centroid',
+    now: number,
+    windowSec: number,
+    scale: number,
+  ): number {
     if (this.history.length < 3) return 0
     const latest = this.history[this.history.length - 1]
     let past: Snapshot | null = null

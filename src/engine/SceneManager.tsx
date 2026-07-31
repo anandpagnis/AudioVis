@@ -5,6 +5,9 @@ import { audioEngine } from '../audio/AudioEngine'
 import { useStore, type LayerBlend, type LayerRole } from '../store'
 import { getScene, isSceneLoaded } from '../scenes'
 import { quality } from './quality'
+import { perf } from './PerfMonitor'
+import { sampleAnalytics } from './analyticsMetrics'
+import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
 
 /**
  * Per-scene-instance fade weight (0..1, up to 1.5 for boosted layers),
@@ -39,6 +42,11 @@ interface Entry {
 const WARM_FRAMES = 4
 
 let entryKey = 0
+
+/** Crossfade duration in seconds — roughly two beats, clamped to a sane range. */
+function crossfadeDuration(bpm: number): number {
+  return Math.min(2, Math.max(0.7, (60 / bpm) * 2))
+}
 
 function applyBlend(mat: THREE.Material, blend: LayerBlend) {
   if (!mat.transparent) mat.transparent = true
@@ -138,6 +146,7 @@ export function SceneManager() {
     // Audio feature pipeline runs once per frame, before any scene reads it.
     audioEngine.update()
     const f = audioEngine.features
+    sampleAnalytics(f)
 
     // Age warming entries so EntryGroup knows when to hide them — but only once
     // the lazy chunk has actually loaded, so the warm window is spent rendering
@@ -217,15 +226,28 @@ export function SceneManager() {
         // crossfade is a major frame-time spike. When the quality governor only
         // permits one heavy layer and both scenes are heavy, hard-cut on the beat
         // instead — snap the outgoing out and the (shader-warm) incoming in. It's
-        // cheaper and, per VISION.md §3.2, the more deliberate "Ikeda" look.
+        // cheaper and, per docs/09_Rendering_Engine.md, the more deliberate "Ikeda" look.
         const bothHeavy =
           !!outgoing &&
           getScene(outgoing.id).metadata.performanceCost === 'high' &&
           getScene(incoming.id).metadata.performanceCost === 'high'
-        if (bothHeavy && quality.knobs.maxHeavyLayers < 2) {
+        const hardCut = bothHeavy && quality.knobs.maxHeavyLayers < 2
+        if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1
         }
+        beginTransition(
+          {
+            key: incoming.key,
+            fromScene: outgoing?.id ?? null,
+            toScene: pendingSceneId,
+            onDownbeat,
+            hardCut,
+            waitedSec: waited,
+            targetDurationSec: crossfadeDuration(f.bpm),
+          },
+          clock.elapsedTime,
+        )
         force((n) => n + 1)
       }
     } else {
@@ -264,7 +286,7 @@ export function SceneManager() {
 
     // Crossfade over ~two beats when the tempo is known, then weight each
     // entry by its layer intensity (primary is always full strength).
-    const duration = Math.min(2, Math.max(0.7, (60 / f.bpm) * 2))
+    const duration = crossfadeDuration(f.bpm)
     let prune = false
     for (const e of entriesRef.current) {
       if (e.dir === 0) continue // warming: stays at zero until promoted
@@ -273,6 +295,9 @@ export function SceneManager() {
       if (e.fade.value <= 0 && e.dir === -1) prune = true
       const gain = e.role === 'primary' ? 1 : state.layerFx[e.role].intensity
       e.out.value = Math.max(0, e.fade.value) * gain
+      if (e.role === 'primary' && e.dir === 1) {
+        sampleTransitionFrame(e.key, perf.ms, e.fade.value, clock.elapsedTime)
+      }
     }
     if (prune) {
       entriesRef.current = entriesRef.current.filter((e) => !(e.dir === -1 && e.fade.value <= 0))

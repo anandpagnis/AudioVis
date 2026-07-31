@@ -329,9 +329,12 @@ user manual action
 
 ## Testing
 
-- `npm run check` — typecheck + lint + build
-- Manual QA checklist in [Appendix/Verification_Checklist.md](Appendix/Verification_Checklist.md)
-- No automated browser test suite yet
+- `npm run check` — typecheck + lint + test + build
+- A Vitest suite unit-tests the pure DSP layer (BPM/phrase/mood estimators, spectral feature math);
+  see [02_Music_Intelligence.md](02_Music_Intelligence.md#testing)
+- Manual QA checklist in [HANDOFF.md](HANDOFF.md) §8
+- No automated *browser* test suite yet — the live Analytics panel (`Y`) makes some of that
+  checklist numeric, but doesn't replace it
 
 ---
 
@@ -343,4 +346,4 @@ user manual action
 - WebGPU renderer swap in `Stage.tsx` (scenes unchanged)
 - Cloud sync of persisted store slice
 
-See [15_Implementation_Roadmap.md](15_Implementation_Roadmap.md).
+See [HANDOFF.md](HANDOFF.md) §7 for the full, prioritized roadmap.

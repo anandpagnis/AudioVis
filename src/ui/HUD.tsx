@@ -14,6 +14,7 @@ import { saveScreenshot } from '../engine/recorder'
 import { buildShareUrl } from '../urlParams'
 import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
+import { AnalyticsPanel } from './AnalyticsPanel'
 
 // macOS Chrome can only capture a browser TAB's audio via getDisplayMedia —
 // whole-screen / system audio isn't available, so the copy has to differ.
@@ -50,6 +51,7 @@ export function HUD() {
   const paletteId = useStore((s) => s.paletteId)
   const uiHidden = useStore((s) => s.uiHidden)
   const debugOpen = useStore((s) => s.debugOpen)
+  const analyticsOpen = useStore((s) => s.analyticsOpen)
   const params = useStore((s) => s.params)
   const quality = useStore((s) => s.quality)
   const autoPilot = useStore((s) => s.autoPilot)
@@ -141,6 +143,8 @@ export function HUD() {
         saveScreenshot()
       } else if (e.key === 'j' || e.key === 'J') {
         s.toggleTacticalHud()
+      } else if (e.key === 'y' || e.key === 'Y') {
+        s.toggleAnalytics()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -183,7 +187,9 @@ export function HUD() {
         max={1.5}
         step={0.05}
         value={layerFx[role].intensity}
-        onChange={(e) => useStore.getState().setLayerFx(role, { intensity: Number(e.target.value) })}
+        onChange={(e) =>
+          useStore.getState().setLayerFx(role, { intensity: Number(e.target.value) })
+        }
       />
       <em>{layerFx[role].intensity.toFixed(2)}×</em>
       {(['add', 'screen', 'normal', 'multiply'] as LayerBlend[]).map((b) => (
@@ -239,7 +245,11 @@ export function HUD() {
                 onClick={() => void useStore.getState().startAudio('mic')}
               >
                 <span className="btn-title">Microphone / line-in</span>
-                <span className="btn-sub">Live instruments, DJ sets, USB interfaces (virtual cables like BlackHole appear here too). Note: Bluetooth headphones drop to call-quality audio while their mic is open — prefer System audio for music</span>
+                <span className="btn-sub">
+                  Live instruments, DJ sets, USB interfaces (virtual cables like BlackHole appear
+                  here too). Note: Bluetooth headphones drop to call-quality audio while their mic
+                  is open — prefer System audio for music
+                </span>
               </button>
               <button
                 className="btn"
@@ -247,7 +257,10 @@ export function HUD() {
                 onClick={() => audioFileRef.current?.click()}
               >
                 <span className="btn-title">Audio file</span>
-                <span className="btn-sub">Play a local track through your speakers while it drives the visuals — ideal for rehearsing a set or authoring cue timelines</span>
+                <span className="btn-sub">
+                  Play a local track through your speakers while it drives the visuals — ideal for
+                  rehearsing a set or authoring cue timelines
+                </span>
               </button>
               <input
                 ref={audioFileRef}
@@ -288,7 +301,10 @@ export function HUD() {
                 </button>
               </div>
             )}
-            <p className="hint keys">Runs on autopilot by default — open the ☰ menu to customize. 1–0 scenes · A autopilot · P palette · C cue · R record · S shot · J HUD · F fullscreen · H hide</p>
+            <p className="hint keys">
+              Runs on autopilot by default — open the ☰ menu to customize. 1–0 scenes · A autopilot
+              · P palette · C cue · R record · S shot · J HUD · Y analytics · F fullscreen · H hide
+            </p>
           </div>
         </div>
       )}
@@ -307,6 +323,7 @@ export function HUD() {
         </div>
 
         {debugOpen && <DebugPanel />}
+        {analyticsOpen && <AnalyticsPanel />}
 
         {/* ---- Collapsible corner menu: all customization lives here ---- */}
         <div className="menu-dock">
@@ -314,7 +331,9 @@ export function HUD() {
             <div className="menu-panel glass">
               <div className="menu-title">
                 <span>Controls</span>
-                <button className="menu-x" title="Close (Esc)" onClick={() => setMenuOpen(false)}>✕</button>
+                <button className="menu-x" title="Close (Esc)" onClick={() => setMenuOpen(false)}>
+                  ✕
+                </button>
               </div>
 
               {section(
@@ -451,7 +470,9 @@ export function HUD() {
                         max={3}
                         step={0.05}
                         value={responseTuning[key]}
-                        onChange={(e) => useStore.getState().setResponseTuning({ [key]: Number(e.target.value) })}
+                        onChange={(e) =>
+                          useStore.getState().setResponseTuning({ [key]: Number(e.target.value) })
+                        }
                       />
                       <em>{responseTuning[key].toFixed(2)}×</em>
                     </label>
@@ -471,7 +492,9 @@ export function HUD() {
                           key={value}
                           className={`chip ${responseTuning.subdivision === value ? 'active' : ''}`}
                           title="Beat pulses per grid beat (½ = half-time)"
-                          onClick={() => useStore.getState().setResponseTuning({ subdivision: value })}
+                          onClick={() =>
+                            useStore.getState().setResponseTuning({ subdivision: value })
+                          }
                         >
                           {label}
                         </button>
@@ -496,13 +519,27 @@ export function HUD() {
                       <select
                         value={m.source}
                         onChange={(e) =>
-                          useStore.getState().updateBandMapping(m.id, { source: e.target.value as BandSource })
+                          useStore
+                            .getState()
+                            .updateBandMapping(m.id, { source: e.target.value as BandSource })
                         }
                       >
                         {(
-                          ['sub', 'bass', 'mid', 'presence', 'high', 'vocal', 'energy', 'transient', 'beatPulse'] as const
+                          [
+                            'sub',
+                            'bass',
+                            'mid',
+                            'presence',
+                            'high',
+                            'vocal',
+                            'energy',
+                            'transient',
+                            'beatPulse',
+                          ] as const
                         ).map((src) => (
-                          <option key={src} value={src}>{src}</option>
+                          <option key={src} value={src}>
+                            {src}
+                          </option>
                         ))}
                       </select>
                       <span className="map-arrow">→</span>
@@ -515,7 +552,9 @@ export function HUD() {
                         }
                       >
                         {(['intensity', 'speed', 'reactivity'] as const).map((t) => (
-                          <option key={t} value={t}>{t}</option>
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
                         ))}
                       </select>
                       <input
@@ -524,9 +563,16 @@ export function HUD() {
                         max={1}
                         step={0.05}
                         value={m.amount}
-                        onChange={(e) => useStore.getState().updateBandMapping(m.id, { amount: Number(e.target.value) })}
+                        onChange={(e) =>
+                          useStore
+                            .getState()
+                            .updateBandMapping(m.id, { amount: Number(e.target.value) })
+                        }
                       />
-                      <em>{m.amount >= 0 ? '+' : ''}{m.amount.toFixed(2)}</em>
+                      <em>
+                        {m.amount >= 0 ? '+' : ''}
+                        {m.amount.toFixed(2)}
+                      </em>
                       <button
                         className="preset-del"
                         title="Remove mapping"
@@ -545,17 +591,39 @@ export function HUD() {
                 <>
                   <div className="layer-row">
                     <span className="layer-label">accent</span>
-                    <button className={`chip ${accentSceneId === null ? 'active' : ''}`} onClick={() => useStore.getState().setLayer('accent', null)}>none</button>
+                    <button
+                      className={`chip ${accentSceneId === null ? 'active' : ''}`}
+                      onClick={() => useStore.getState().setLayer('accent', null)}
+                    >
+                      none
+                    </button>
                     {SCENES.filter((s) => s.metadata.roles.includes('accent')).map((s) => (
-                      <button key={`accent-${s.id}`} className={`chip ${accentSceneId === s.id ? 'active' : ''}`} onClick={() => useStore.getState().setLayer('accent', s.id)}>{s.name}</button>
+                      <button
+                        key={`accent-${s.id}`}
+                        className={`chip ${accentSceneId === s.id ? 'active' : ''}`}
+                        onClick={() => useStore.getState().setLayer('accent', s.id)}
+                      >
+                        {s.name}
+                      </button>
                     ))}
                   </div>
                   {accentSceneId && layerFxRow('accent')}
                   <div className="layer-row">
                     <span className="layer-label">overlay</span>
-                    <button className={`chip ${overlaySceneId === null ? 'active' : ''}`} onClick={() => useStore.getState().setLayer('overlay', null)}>none</button>
+                    <button
+                      className={`chip ${overlaySceneId === null ? 'active' : ''}`}
+                      onClick={() => useStore.getState().setLayer('overlay', null)}
+                    >
+                      none
+                    </button>
                     {SCENES.filter((s) => s.metadata.roles.includes('overlay')).map((s) => (
-                      <button key={`overlay-${s.id}`} className={`chip ${overlaySceneId === s.id ? 'active' : ''}`} onClick={() => useStore.getState().setLayer('overlay', s.id)}>{s.name}</button>
+                      <button
+                        key={`overlay-${s.id}`}
+                        className={`chip ${overlaySceneId === s.id ? 'active' : ''}`}
+                        onClick={() => useStore.getState().setLayer('overlay', s.id)}
+                      >
+                        {s.name}
+                      </button>
                     ))}
                   </div>
                   {overlaySceneId && layerFxRow('overlay')}
@@ -593,11 +661,18 @@ export function HUD() {
                       <span className="cue-beat">bar {Math.floor(c.beat / 4) + 1}</span>
                       <span className="cue-scene">{getScene(c.sceneId).name}</span>
                       <span className="cue-extra">
-                        {[c.accentSceneId && `+${getScene(c.accentSceneId).name}`, c.overlaySceneId && `+${getScene(c.overlaySceneId).name}`]
+                        {[
+                          c.accentSceneId && `+${getScene(c.accentSceneId).name}`,
+                          c.overlaySceneId && `+${getScene(c.overlaySceneId).name}`,
+                        ]
                           .filter(Boolean)
                           .join(' ')}
                       </span>
-                      <button className="preset-del" title="Delete cue" onClick={() => useStore.getState().deleteCue(c.id)}>
+                      <button
+                        className="preset-del"
+                        title="Delete cue"
+                        onClick={() => useStore.getState().deleteCue(c.id)}
+                      >
                         ×
                       </button>
                     </div>
@@ -619,7 +694,10 @@ export function HUD() {
                         >
                           ★
                         </button>
-                        <button className="preset-name" onClick={() => useStore.getState().applyPreset(p)}>
+                        <button
+                          className="preset-name"
+                          onClick={() => useStore.getState().applyPreset(p)}
+                        >
                           {p.name}
                         </button>
                         {p.builtIn ? (
@@ -660,8 +738,12 @@ export function HUD() {
                     >
                       save
                     </button>
-                    <button className="chip" onClick={() => fileRef.current?.click()}>import</button>
-                    <button className="chip" onClick={exportPresets}>export</button>
+                    <button className="chip" onClick={() => fileRef.current?.click()}>
+                      import
+                    </button>
+                    <button className="chip" onClick={exportPresets}>
+                      export
+                    </button>
                     <button
                       className="chip"
                       title="Copy a URL that reproduces this look (and cues) on load"
@@ -700,8 +782,12 @@ export function HUD() {
                   >
                     {isRecording ? '■ rec' : '● rec'}
                   </button>
-                  <button className="chip" title="Save a PNG (S)" onClick={() => saveScreenshot()}>screenshot</button>
-                  <button className="chip" title="Fullscreen (F)" onClick={toggleFullscreen}>fullscreen</button>
+                  <button className="chip" title="Save a PNG (S)" onClick={() => saveScreenshot()}>
+                    screenshot
+                  </button>
+                  <button className="chip" title="Fullscreen (F)" onClick={toggleFullscreen}>
+                    fullscreen
+                  </button>
                   <button
                     className={`chip ${debugOpen ? 'active' : ''}`}
                     title="Audio-analysis debug panel (D)"
@@ -709,7 +795,18 @@ export function HUD() {
                   >
                     debug
                   </button>
-                  <button className="chip" title="Hide all UI (H)" onClick={() => useStore.getState().toggleUi()}>
+                  <button
+                    className={`chip ${analyticsOpen ? 'active' : ''}`}
+                    title="Numeric accuracy/smoothness analytics: beat-tracking accuracy, mood confidence, transition timing (Y)"
+                    onClick={() => useStore.getState().toggleAnalytics()}
+                  >
+                    analytics
+                  </button>
+                  <button
+                    className="chip"
+                    title="Hide all UI (H)"
+                    onClick={() => useStore.getState().toggleUi()}
+                  >
                     hide UI
                   </button>
                 </div>,
