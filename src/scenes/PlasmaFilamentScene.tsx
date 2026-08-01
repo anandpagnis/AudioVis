@@ -1,6 +1,5 @@
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -232,12 +231,15 @@ export function PlasmaFilamentScene() {
   useDispose(material, geometry)
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, params }) => {
+    ({ f, dt, b, col, vis, params, state }) => {
       const u = material.uniforms
 
-      // The governor's particle budget. Seeds are generated in random order, so
-      // the first N are already an unbiased subset of the whole field.
-      geometry.setDrawRange(0, Math.floor(COUNT * quality.knobs.particleFraction))
+      // The particle budget, read from the performance state rather than the
+      // quality governor directly — the governor is only its current author, and
+      // going through the seam is what lets a director thin the field for
+      // creative reasons too. Seeds are generated in random order, so the first
+      // N are already an unbiased subset of the whole field.
+      geometry.setDrawRange(0, Math.floor(COUNT * state.particleDensity))
 
       flow.current += dt * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
 

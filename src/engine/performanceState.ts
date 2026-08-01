@@ -14,6 +14,16 @@ import type { MoodState } from '../audio/types'
  * every downstream system picks it up with no renderer changes. Likewise a new
  * renderer (TouchDesigner, Notch) only has to consume this object.
  *
+ * ## Every field here must have a reader
+ *
+ * This object went a whole refactor carrying four fields — `complexity`,
+ * `distortion`, `particleDensity` and `visualTension` — that were written every
+ * frame and read by nothing, while the scenes that should have consumed them
+ * reached around the seam to the quality governor instead. A declared-but-inert
+ * field is worse than a missing one: it reads as wired, it gets documented as
+ * working, and it costs frame time. **If nothing downstream consumes a field,
+ * delete the field rather than keeping it "for later".**
+ *
  * ## Single-writer, mutable-by-design
  *
  * Conceptually this is one immutable value per frame. It is implemented as a
@@ -52,8 +62,6 @@ export interface PerformanceState {
   animationIntensity: number
   /** 0..1 — fraction of available particles/detail to draw. */
   particleDensity: number
-  /** 0..1 — how much geometry/shader distortion to apply. */
-  distortion: number
   /**
    * 0..1 — dramatic pressure. Rises through a build, peaks on a drop. Distinct
    * from energy: tension is about *anticipation*, so it can be high while the
@@ -109,7 +117,6 @@ export const performanceState: PerformanceState = {
   cameraMode: 'hover',
   animationIntensity: 1,
   particleDensity: 1,
-  distortion: 0,
   visualTension: 0,
 
   bloom: 1,

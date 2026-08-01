@@ -1,6 +1,5 @@
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -268,12 +267,12 @@ export function FlowRibbonScene() {
   useDispose(material, geometry, waveTex)
 
   useSceneFrame(
-    ({ f, dt, b, col, vis }) => {
+    ({ f, dt, b, col, vis, state }) => {
       const u = material.uniforms
 
-      // Governor budget: whole ribbons drop out rather than every ribbon
+      // Density budget: whole ribbons drop out rather than every ribbon
       // getting shorter, so what remains still reads as continuous flow.
-      const keep = Math.max(4, Math.floor(RIBBONS * quality.knobs.particleFraction))
+      const keep = Math.max(4, Math.floor(RIBBONS * state.particleDensity))
       geometry.setDrawRange(0, keep * (SEGMENTS - 1) * 6)
 
       // ---- Upload the synth waveform ------------------------------------

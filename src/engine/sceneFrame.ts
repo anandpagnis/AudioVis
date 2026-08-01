@@ -92,7 +92,7 @@ export interface SceneFrame {
    * The live performance state, **read-only** for scenes.
    *
    * A scene may consult it to honour a director decision — `particleDensity`,
-   * `complexity`, `distortion`, `visualTension` — but must never write to it.
+   * `visualTension`, `animationIntensity` — but must never write to it.
    * Writing is the decide band's job; a scene that writes here has inverted the
    * architecture.
    */

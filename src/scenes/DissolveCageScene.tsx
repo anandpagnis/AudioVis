@@ -4,7 +4,6 @@ import * as THREE from 'three'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
-import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -303,10 +302,10 @@ export function DissolveCageScene() {
   useDispose(cageMat, cage.geometry, material, geometry)
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, params }) => {
+    ({ f, dt, b, col, vis, params, state }) => {
     const u = material.uniforms
 
-    geometry.setDrawRange(0, Math.floor(COUNT * quality.knobs.particleFraction))
+    geometry.setDrawRange(0, Math.floor(COUNT * state.particleDensity))
 
     // Band jobs here: mid widens the swirl and turns the cage, presence snaps the
     // cage stroke, high sparkles the cloud, transient jitters it.

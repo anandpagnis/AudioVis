@@ -119,9 +119,6 @@ export function PerformanceStateBridge() {
     // subject, a dense one stays close and flat.
     const sparse = 1 - Math.min(1, m.level * 1.3)
     p.fog = approach(p.fog, sparse * 0.6 + (m.state === 'ambient' ? 0.25 : 0), 0.6, f.delta)
-
-    // Distortion tracks tension so a build visibly strains before it releases.
-    p.distortion = approach(p.distortion, p.visualTension * 0.8, 1.5, f.delta)
   }, -95)
 
   return null
