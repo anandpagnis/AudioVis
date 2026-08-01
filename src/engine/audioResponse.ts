@@ -19,9 +19,34 @@ export interface AudioResponse {
   rolloff: number
   /** 0..1 — dynamic headroom; low means pushed/brickwalled, high means dynamic. */
   dynamics: number
+
+  /**
+   * Sustained TONAL content in the vocal range — the vocal band gated by
+   * tonality (`1 - spectralFlatness`).
+   *
+   * Prefer this over the raw `vocal` band for anything meant to track a lead
+   * line. `vocal` is a plain 250 Hz–5 kHz energy sum, so it lights up on hats,
+   * snare body, and distortion just as readily as on a voice; multiplying by
+   * tonality suppresses the noisy half of that range and leaves what is
+   * actually pitched. A held note reads high, a busy percussive bar reads low.
+   *
+   * Still an estimate, not source separation — a real vocal stem needs a model
+   * (see docs/02_Music_Intelligence.md). Good enough to drive a visual layer;
+   * not good enough to claim "this is the singer".
+   */
+  voice: number
   beatPulse: number
   dropPulse: number
   build: number
+
+  /**
+   * Independent drum envelopes. Prefer these over `transient` when a visual
+   * should belong to ONE part of the kit — `transient` fires on everything, so
+   * routing three layers through it makes them move in lockstep.
+   */
+  kick: number
+  snare: number
+  hihat: number
 }
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
@@ -47,8 +72,12 @@ export function getAudioResponse(f: AudioFeatures, sharpness = 3): AudioResponse
     flatness: clamp01(f.spectralFlatness),
     rolloff: clamp01(f.spectralRolloff),
     dynamics: clamp01((f.crestFactor - 1) / 9),
+    voice: clamp01(f.vocal * (1 - clamp01(f.spectralFlatness))),
     beatPulse: clamp01(pulse),
     dropPulse: f.drop ? clamp01(0.55 + f.transient * 0.45) : 0,
     build: f.buildUp ? clamp01(0.35 + f.energy * 0.65) : 0,
+    kick: clamp01(f.percussion.kick.env),
+    snare: clamp01(f.percussion.snare.env),
+    hihat: clamp01(f.percussion.hihat.env),
   }
 }

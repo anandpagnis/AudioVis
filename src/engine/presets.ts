@@ -85,14 +85,6 @@ export const BUILTIN_PRESETS: Preset[] = [
     builtIn: true,
   },
   {
-    id: 'builtin-drafting-table',
-    name: 'Drafting Table',
-    sceneId: 'schematic',
-    paletteId: 'mono',
-    params: { intensity: 0.95, speed: 0.7, reactivity: 1 },
-    builtIn: true,
-  },
-  {
     id: 'builtin-ion-core',
     name: 'Ion Core',
     sceneId: 'plasma',

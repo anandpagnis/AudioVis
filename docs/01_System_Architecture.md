@@ -13,7 +13,7 @@ AudioVis is a browser-based audio-visual performance engine built on **React 19 
 ```
 src/audio/     Musical understanding (DSP, no ML in hot path)
 src/engine/    Visual framework (directors, transitions, quality, post)
-src/scenes/    Content (5 registered + 16 unregistered on disk)
+src/scenes/    Content (7 registered scenes)
 src/ui/        Chrome (HUD, debug, tactical overlay)
 src/store.ts   Zustand persisted state
 backend/       Optional local sd-turbo texture server (:8787)
@@ -148,13 +148,46 @@ Map every subsystem: purpose, inputs, outputs, update frequency, dependencies.
 | **Update frequency** | Every frame |
 | **Dependencies** | PerfMonitor |
 
-#### PostFX
+#### Performance State
+
+| | |
+|---|---|
+| **Purpose** | The single description of what the visuals *should* be doing — the seam between creative decisions and rendering |
+| **Location** | `src/engine/performanceState.ts` |
+| **Input** | Written by the decide band (today via `PerformanceStateBridge`) |
+| **Output** | `performanceState` singleton; single-writer by convention |
+| **Update frequency** | Once per frame, priority −95 |
+| **Dependencies** | None — deliberately a plain data module |
+
+#### Camera Director
+
+| | |
+|---|---|
+| **Purpose** | Owns all camera motion; scenes declare anchors, never move the camera |
+| **Location** | `src/engine/CameraDirector.tsx` |
+| **Input** | `performanceState.cameraMode` + the active scene's `cameraAnchor` |
+| **Output** | Camera position/orientation |
+| **Update frequency** | Every frame; priority **−80** |
+| **Dependencies** | Scene registry metadata |
+
+#### Animation Director
+
+| | |
+|---|---|
+| **Purpose** | Reusable animation primitives (pulse, breathe, inflate, twist, ripple, explode, dissolve, oscillate) as normalized signals |
+| **Location** | `src/engine/AnimationDirector.ts` |
+| **Input** | `AudioFeatures`, `performanceState.animationIntensity` |
+| **Output** | `animationSignals`; `applyToUniforms()` for shader scenes, `applyToObject()` for mesh scenes |
+| **Update frequency** | Once per frame, from SceneManager's tick |
+| **Dependencies** | `audioResponse` |
+
+#### Effects Director
 
 | | |
 |---|---|
 | **Purpose** | Fixed post chain — bloom, chromatic aberration, vignette |
-| **Location** | `src/engine/PostFX.tsx` |
-| **Input** | Rendered scene buffer, audio bands |
+| **Location** | `src/engine/EffectsDirector.tsx` |
+| **Input** | `performanceState.bloom` / `.glitch` — no audio, no decisions |
 | **Output** | Composited framebuffer |
 | **Update frequency** | Every frame (after scenes) |
 | **Dependencies** | `@react-three/postprocessing` |
@@ -199,27 +232,42 @@ Map every subsystem: purpose, inputs, outputs, update frequency, dependencies.
 ```text
 MediaStream
   → AudioEngine.update()                    [−100 SceneManager tick]
-  → AudioFeatures + MoodMomentum
-  → AutoPilot (−90) ──────────► requestScene / setPalette
-  → CueTimeline (−88) ────────► applyCue (if governed)
-  → PerformanceDirector (−85) ► scene + layers
-  → Zustand store
+  → AudioFeatures + MoodMomentum + percussion (kick/snare/hihat)
+  → updateAnimationSignals()                 animation primitives, once centrally
+      │
+      ├─ DECIDE ─────────────────────────────────────────────
+  → PerformanceStateBridge (−95) ─► performanceState
+  → AutoPilot (−90) ──────────────► requestScene / setPalette
+  → CueTimeline (−88) ────────────► applyCue (if governed)
+  → PerformanceDirector (−85) ────► scene + layers
+      │
+      ├─ EXECUTE (read performanceState, never write) ───────
+  → CameraDirector (−80) ─────────► camera, from the scene's anchor
   → SceneManager: warm-up, downbeat commit, crossfade
-  → R3F scenes (read features, SceneFade, quality.knobs)
+  → R3F scenes (features, animationSignals, SceneFade, quality.knobs)
   → GenerativeLayer (optional)
-  → PostFX
+  → EffectsDirector ──────────────► bloom / aberration / vignette
   ▲
 PerfMonitor → QualityGovernor → DPR + complexity knobs
 ```
 
 ### Frame priority order
 
-1. **−100** SceneManager — audio tick first, owns transitions
-2. **−90** AutoPilot — mood/drop reactions
-3. **−88** CueTimeline — authored cues override automation
-4. **−85** PerformanceDirector — phrase composition
-5. **0** Scene components — read pre-updated `audioEngine.features`
-6. **Post** PostFX, PerfMonitor
+Three bands, and the boundary between them is the architecture's central rule:
+**anything in "decide" may write `performanceState`; nothing in "execute" may.**
+Executors only read it and apply. That is what allows a new decision-maker — or
+an entirely different renderer — to be added without touching the other side.
+
+| Band | Priority | System | Role |
+|---|---|---|---|
+| analyse | **−100** | SceneManager | Ticks `audioEngine.update()` first, derives animation signals, owns scene lifecycle |
+| decide | **−95** | PerformanceStateBridge | Composes `performanceState` for this frame |
+| decide | **−90** | AutoPilot | Mood/drop reactions |
+| decide | **−88** | CueTimeline | Authored cues override automation |
+| decide | **−85** | PerformanceDirector | Phrase-level composition |
+| execute | **−80** | CameraDirector | Applies the active camera mode |
+| execute | **0** | Scene components | Read pre-updated features + animation signals |
+| execute | post | EffectsDirector, PerfMonitor | Post chain, telemetry |
 
 ---
 
@@ -228,7 +276,7 @@ PerfMonitor → QualityGovernor → DPR + complexity knobs
 | Layer | Key files |
 |-------|-----------|
 | Audio | `AudioEngine.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`, `MoodEstimator.ts`, `MidiClock.ts`, `types.ts` |
-| Engine | `Stage.tsx`, `SceneManager.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`, `CueTimeline.tsx`, `PostFX.tsx`, `quality.ts`, `CameraRig.ts`, `LightRig.tsx`, `palettes.ts`, `presets.ts`, `moodParams.ts`, `audioResponse.ts`, `GenerativeLayer.tsx`, `recorder.ts` |
+| Engine | `Stage.tsx`, `SceneManager.tsx`, `performanceState.ts`, `PerformanceStateBridge.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`, `CueTimeline.tsx`, `CameraDirector.tsx`, `AnimationDirector.ts`, `EffectsDirector.tsx`, `quality.ts`, `LightRig.tsx`, `palettes.ts`, `presets.ts`, `moodParams.ts`, `audioResponse.ts`, `GenerativeLayer.tsx`, `recorder.ts` |
 | Scenes | 5 registered in `SCENES[]`; 16 legacy on disk |
 | UI | `HUD.tsx`, `TacticalHUD.tsx`, `DebugPanel.tsx`, `BpmReadout.tsx` |
 
@@ -311,7 +359,7 @@ user manual action
 - Quality Governor drops tier above **20 ms** EMA; climbs below **12 ms** after **4 s** sustained headroom.
 - Heavy scene crossfade budget: `maxHeavyLayers` from quality tier.
 - Shader compile must occur during warm-up, not on downbeat.
-- PostFX effect list is **fixed** — never remount effects (GPU context loss risk).
+- The EffectsDirector chain is **fixed** — never remount effects (GPU context loss risk).
 
 ---
 

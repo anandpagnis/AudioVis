@@ -32,7 +32,7 @@ Choose (directly or via store actions):
 - Transition timing (via SceneManager downbeat commit)
 - When to stand down (manual hold, cue governance, silence)
 
-**Not yet centralized:** camera moves (owned per-scene via CameraRig), post FX intensity (audio-reactive in PostFX), generative overlay (mood-gated in GenerativeLayer).
+**Now centralized:** camera moves (CameraDirector), animation primitives (AnimationDirector), and post FX (EffectsDirector) all execute from `performanceState`. **Not yet centralized:** the generative overlay (still mood-gated inside GenerativeLayer), and the choice of camera mode — scenes still run their declared default rather than a director pick.
 
 ---
 

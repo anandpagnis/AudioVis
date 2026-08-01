@@ -1,40 +1,20 @@
 import { lazy, type ComponentType } from 'react'
 import type { MoodState } from '../audio/types'
+import type { CameraAnchor } from '../engine/CameraDirector'
+import type { CameraMode } from '../engine/performanceState'
 
 /**
  * Built-in scenes are code-split: each import() below becomes its own chunk,
  * loaded the first time the scene is mounted (or earlier via preloadScene —
  * requestScene/setLayer call it, so the chunk usually arrives well before the
  * downbeat commit). SceneManager wraps scenes in <Suspense fallback={null}>.
- *
- * NOTE: loaders outlive registration. Several scenes below are deliberately
- * absent from SCENES[] — see the comment on that array. Keeping their loader
- * entry costs nothing at runtime (a lazy() component is never fetched unless
- * something renders it) and makes re-registering a one-line change.
  */
 const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
-  nebula: () => import('./NebulaScene').then((m) => ({ default: m.NebulaScene })),
-  galaxy: () => import('./ParticleGalaxyScene').then((m) => ({ default: m.ParticleGalaxyScene })),
-  tunnel: () => import('./LightTunnelScene').then((m) => ({ default: m.LightTunnelScene })),
-  fluid: () => import('./FluidScene').then((m) => ({ default: m.FluidScene })),
-  monolith: () => import('./MonolithScene').then((m) => ({ default: m.MonolithScene })),
-  noisefield: () => import('./NoiseFieldScene').then((m) => ({ default: m.NoiseFieldScene })),
-  clouds: () => import('./VolumetricCloudsScene').then((m) => ({ default: m.VolumetricCloudsScene })),
-  ribbons: () => import('./RibbonFieldsScene').then((m) => ({ default: m.RibbonFieldsScene })),
-  crystal: () => import('./CrystalGrowthScene').then((m) => ({ default: m.CrystalGrowthScene })),
-  aurora: () => import('./DigitalAuroraScene').then((m) => ({ default: m.DigitalAuroraScene })),
-  angelcore: () => import('./AngelCoreScene').then((m) => ({ default: m.AngelCoreScene })),
-  cathedral: () => import('./CyberCathedralScene').then((m) => ({ default: m.CyberCathedralScene })),
-  fractaltunnel: () => import('./InfiniteTunnelScene').then((m) => ({ default: m.InfiniteTunnelScene })),
-  ocean: () => import('./HolographicOceanScene').then((m) => ({ default: m.HolographicOceanScene })),
-  neural: () => import('./NeuralNetworkScene').then((m) => ({ default: m.NeuralNetworkScene })),
-  particles: () => import('./ParticleFlowScene').then((m) => ({ default: m.ParticleFlowScene })),
-  fluidsim: () => import('./FluidSimScene').then((m) => ({ default: m.FluidSimScene })),
-  schematic: () => import('./SchematicScene').then((m) => ({ default: m.SchematicScene })),
   wireframe: () => import('./WireframeHeroScene').then((m) => ({ default: m.WireframeHeroScene })),
   plasma: () => import('./PlasmaFilamentScene').then((m) => ({ default: m.PlasmaFilamentScene })),
   dissolve: () => import('./DissolveCageScene').then((m) => ({ default: m.DissolveCageScene })),
   chrome: () => import('./ChromeFormScene').then((m) => ({ default: m.ChromeFormScene })),
+  ribbons: () => import('./FlowRibbonScene').then((m) => ({ default: m.FlowRibbonScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -66,16 +46,11 @@ export function isSceneLoaded(id: string): boolean {
   return loaded.has(id)
 }
 
-// Lazy components exist only for REGISTERED scenes. An unregistered scene needs
-// nothing here — its `loaders` entry above is what preloadScene/isSceneLoaded
-// use, and a lazy() component that no SCENES[] entry references would never be
-// rendered. Re-registering a scene therefore means adding its lazyScene() line
-// back plus one SCENES[] entry.
-const SchematicScene = lazyScene('schematic')
 const WireframeHeroScene = lazyScene('wireframe')
 const PlasmaFilamentScene = lazyScene('plasma')
 const DissolveCageScene = lazyScene('dissolve')
 const ChromeFormScene = lazyScene('chrome')
+const FlowRibbonScene = lazyScene('ribbons')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay'
 export type SceneBand = 'bass' | 'mid' | 'high' | 'vocal' | 'energy'
@@ -91,6 +66,16 @@ export interface SceneMetadata {
   performanceCost: ScenePerformanceCost
   /** Higher is a better fit for that mood; used by automatic directors. */
   moodFit?: Partial<Record<MoodState, number>>
+
+  /**
+   * Where this scene can be looked at — subject centre, comfortable distance,
+   * eye height. Declaring it hands camera control to the CameraDirector; a
+   * scene without one keeps driving its own camera (the pre-refactor path).
+   * This is the opt-in switch that lets scenes migrate one at a time.
+   */
+  cameraAnchor?: CameraAnchor
+  /** Camera modes that frame this scene well. First entry is the default. */
+  cameraModes?: CameraMode[]
 }
 
 export interface SceneDef {
@@ -103,36 +88,15 @@ export interface SceneDef {
 /**
  * The active roster.
  *
- * Deliberately small (docs/09_Rendering_Engine.md): the reference shows are three or four
- * extremely refined looks, not seventeen decent ones. Every scene here holds a
- * SUBJECT, keeps real NEGATIVE SPACE, and carries HARD EDGES — the rubric the
- * fullscreen-haze and environment-flythrough scenes all fail.
- *
- * The earlier scenes still exist on disk and keep their loader entries above,
- * but are unregistered: automation only ever selects from this array
- * (AutoPilot/PerformanceDirector go through getScenesForMood/getCompatibleScenes),
- * the HUD builds its scene bar and digit shortcuts by mapping it, and
- * getScene() falls back to SCENES[0] for any id it does not find — so a stale
- * persisted sceneId or preset degrades to the fallback instead of breaking.
- * Re-registering one is a one-line change; nothing else has to be touched.
+ * Automation only ever selects from this array (AutoPilot/PerformanceDirector
+ * go through getScenesForMood/getCompatibleScenes), the HUD builds its scene bar
+ * and digit shortcuts by mapping it, and getScene() falls back to SCENES[0] for
+ * any id it does not find — so a stale persisted sceneId, preset, cue, or
+ * `?scene=` param degrades to the fallback instead of breaking.
  *
  * SCENES[0] is that fallback, so it should always be a safe, cheap default.
  */
 export const SCENES: SceneDef[] = [
-  {
-    id: 'schematic',
-    name: 'Schematic',
-    component: SchematicScene,
-    metadata: {
-      roles: ['primary', 'accent'],
-      moods: ['mellow', 'groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'medium',
-      performanceCost: 'low',
-      compatibleWith: ['wireframe', 'plasma', 'dissolve', 'chrome'],
-      moodFit: { mellow: 0.5, groove: 0.74, building: 0.82, peak: 0.7, aggressive: 0.64 },
-    },
-  },
   {
     id: 'wireframe',
     name: 'Wireframe Hero',
@@ -145,8 +109,10 @@ export const SCENES: SceneDef[] = [
       // Real edge geometry — a few hundred thin quads, cheaper than the
       // barycentric wireframe it supersedes.
       performanceCost: 'low',
-      compatibleWith: ['schematic', 'plasma', 'dissolve', 'chrome'],
+      compatibleWith: ['plasma', 'dissolve', 'chrome'],
       moodFit: { ambient: 0.66, mellow: 0.62, groove: 0.8, building: 0.86, peak: 0.72, aggressive: 0.66 },
+      cameraAnchor: { target: [0, 0, 0], distance: 9.5, height: 1.6 },
+      cameraModes: ['orbit', 'cinematic', 'spiral', 'hover'],
     },
   },
   {
@@ -160,8 +126,11 @@ export const SCENES: SceneDef[] = [
       intensity: 'high',
       // 70k advected points — the one genuinely heavy scene in the roster.
       performanceCost: 'high',
-      compatibleWith: ['schematic', 'wireframe', 'dissolve', 'chrome'],
+      compatibleWith: ['wireframe', 'dissolve', 'chrome'],
       moodFit: { groove: 0.7, building: 0.84, peak: 0.94, aggressive: 0.9 },
+      // Wide field — the particle cloud needs distance to read as a form.
+      cameraAnchor: { target: [0, 0, 0], distance: 17, height: 2.4 },
+      cameraModes: ['orbit', 'spiral', 'handheld', 'cinematic'],
     },
   },
   {
@@ -174,8 +143,10 @@ export const SCENES: SceneDef[] = [
       bands: ['bass', 'mid', 'energy'],
       intensity: 'medium',
       performanceCost: 'medium',
-      compatibleWith: ['schematic', 'wireframe', 'plasma', 'chrome'],
+      compatibleWith: ['wireframe', 'plasma', 'chrome'],
       moodFit: { mellow: 0.66, groove: 0.82, building: 0.88, peak: 0.8 },
+      cameraAnchor: { target: [0, 0, 0], distance: 11.5, height: 1.1 },
+      cameraModes: ['hover', 'push', 'cinematic', 'locked'],
     },
   },
   {
@@ -188,8 +159,28 @@ export const SCENES: SceneDef[] = [
       bands: ['bass', 'high', 'energy'],
       intensity: 'medium',
       performanceCost: 'medium',
-      compatibleWith: ['schematic', 'wireframe', 'plasma', 'dissolve'],
+      compatibleWith: ['wireframe', 'plasma', 'dissolve'],
       moodFit: { ambient: 0.7, mellow: 0.84, groove: 0.78, building: 0.7, peak: 0.62 },
+      // Specular hero — orbiting is what makes the reflections travel.
+      cameraAnchor: { target: [0, 0, 0], distance: 8.2, height: 1.2 },
+      cameraModes: ['orbit', 'cinematic', 'spiral', 'topdown'],
+    },
+  },
+  {
+    id: 'ribbons',
+    name: 'Flow Ribbons',
+    component: FlowRibbonScene,
+    metadata: {
+      roles: ['primary', 'accent', 'overlay'],
+      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
+      bands: ['mid', 'vocal', 'high', 'energy'],
+      intensity: 'medium',
+      // A few dozen strips, all motion in the vertex shader.
+      performanceCost: 'low',
+      compatibleWith: ['wireframe', 'chrome', 'dissolve'],
+      moodFit: { ambient: 0.8, mellow: 0.86, groove: 0.82, building: 0.8, peak: 0.7 },
+      cameraAnchor: { target: [0, 0, 0], distance: 10, height: 1.4 },
+      cameraModes: ['cinematic', 'spiral', 'orbit', 'handheld'],
     },
   },
 ]

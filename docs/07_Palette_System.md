@@ -185,7 +185,7 @@ N/A — palette is stateless definition + store id + blender positions.
 - **Palette metadata:** temperature, saturation, genre tags, energy range.
 - **Mood-adaptive derivation:** shift hue ±15° from base palette without full swap.
 - **AI palette generation** (Phase 8 roadmap) — LLM or clustering from reference images.
-- **Brightness limits:** clamp max luminance for PostFX headroom.
+- **Brightness limits:** clamp max luminance for post-chain headroom.
 - **Scene overrides:** accent color slot per scene while keeping global palette.
 - **Accessibility presets:** high-contrast mono variants.
 

@@ -36,7 +36,7 @@ The target look was derived from six reference images the user supplied (July 20
 
 ## Responsibilities
 
-- The fixed post-processing chain (`src/engine/PostFX.tsx`) and its calibration.
+- The fixed post-processing chain (`src/engine/EffectsDirector.tsx`) and its calibration.
 - The Quality Governor (`src/engine/quality.ts`) and the smoothness mechanisms built around it.
 - Rendering-technique guidance that keeps new scenes compatible with a future grade (output level, edge language).
 
@@ -65,17 +65,19 @@ You cannot tune from glow-soup to crystal-cut — it required a different render
 
 ### Scene roster
 
-**Status: done.** Five scenes are registered — `schematic`, `wireframe`, `plasma`, `dissolve`, `chrome` (see [05_Scene_Architecture.md](05_Scene_Architecture.md) for their contract and technique). The other sixteen legacy scenes are unregistered — still on disk, loader entries kept, absent from `SCENES[]`, safe to delete (the engine doesn't care, and `getScene()` filters dangling `compatibleWith` references automatically).
+Eight entries are registered (seven scenes plus one layer) — `schematic`, `wireframe`, `plasma`, `dissolve`, `chrome`, plus the two fluid additions `liquid` (Liquid Form) and `ribbons` (Flow Ribbons) (see [05_Scene_Architecture.md](05_Scene_Architecture.md) for their contract and technique). The 17 legacy scenes that survived the cull as unregistered files have since been **deleted** (they are in git history if ever wanted).
 
-Selection rubric for any scene, old or new: does it have a **subject**, can it hold **negative space**, can it carry **hard edges**? Fullscreen haze scenes fail all three.
+**The "small roster is the art direction" constraint has been lifted** (July 2026). It was the right call while the look was being found — a handful of refined scenes beat seventeen mediocre ones. But the director refactor makes scenes cheap and reusable in a way they were not before: camera, animation, and effects are no longer per-scene code, so a new scene is geometry plus metadata. Breadth is now the goal, and the library is expected to grow well past five.
+
+The rubric still applies as a quality bar rather than a headcount cap: does it have a **subject**, can it hold **negative space**, can it carry **hard edges**? Fullscreen haze fails all three regardless of how many scenes exist.
 
 ---
 
 ## Algorithms
 
-### The grade — attempted and reverted (`src/engine/PostFX.tsx`)
+### The grade — attempted and reverted (now `src/engine/EffectsDirector.tsx`)
 
-A filmic chain (selective Bloom → BrightnessContrast → HueSaturation → ToneMapping(AgX) → ChromaticAberration → Scanline → Noise → Vignette) was built and **reverted**: it washed the entire frame to flat grey and hid every scene. `PostFX.tsx` is back to the original bloom + aberration + vignette. Three separate failures, each verified by reading real canvas pixels — read this before attempting the grade again:
+A filmic chain (selective Bloom → BrightnessContrast → HueSaturation → ToneMapping(AgX) → ChromaticAberration → Scanline → Noise → Vignette) was built and **reverted**: it washed the entire frame to flat grey and hid every scene. The chain is back to the original bloom + aberration + vignette. Three separate failures, each verified by reading real canvas pixels — read this before attempting the grade again:
 
 1. **Chain order.** AgX is a *display transform* and must come last in the colour pipeline. Grading after it expands an already-mapped signal into clipping — 39% of the frame blown to pure white. Reordering fixed that (0% blown, max luminance 204).
 2. **`BrightnessContrast.brightness` is an additive offset, not exposure.** A negative value (used to try to crush blacks) drives black *negative*, and negative input to AgX's log-space transform comes back as a lifted mid-grey (~193). Verified directly: with all scene output forced to zero, the chain still produced a full-frame grey wash. **Never set it below 0.**

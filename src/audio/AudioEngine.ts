@@ -1,5 +1,6 @@
 import { BpmEstimator } from './BpmEstimator'
 import { MoodEstimator } from './MoodEstimator'
+import { PercussionDetector } from './PercussionDetector'
 import { PhraseDetector } from './PhraseDetector'
 import { computeSpectralBands } from './spectralFeatures'
 import { createEmptyFeatures, type AudioFeatures } from './types'
@@ -97,6 +98,13 @@ class AudioEngine {
 
   private ctx: AudioContext | null = null
   private analyser: AnalyserNode | null = null
+  /**
+   * Second analyser fed through a band-pass, so scenes can trace the waveform
+   * of the LEAD/SYNTH range rather than the full mix. The full-mix waveform is
+   * dominated by kick and bass — tracing it draws the drums, not the melody.
+   */
+  private midAnalyser: AnalyserNode | null = null
+  private midFilter: BiquadFilterNode | null = null
   private stream: MediaStream | null = null
   private sourceNode: AudioNode | null = null
   private mediaEl: HTMLAudioElement | null = null
@@ -149,6 +157,7 @@ class AudioEngine {
   readonly bpmEstimator = new BpmEstimator()
   readonly phraseDetector = new PhraseDetector()
   readonly moodEstimator = new MoodEstimator()
+  readonly percussionDetector = new PercussionDetector()
 
   onEnded: (() => void) | null = null
 
@@ -286,6 +295,7 @@ class AudioEngine {
     analyser.fftSize = FFT_SIZE
     analyser.smoothingTimeConstant = 0
     source.connect(analyser)
+    this.attachMidTap(ctx, source)
     source.connect(ctx.destination) // the user hears the track
     const recDest = ctx.createMediaStreamDestination()
     source.connect(recDest)
@@ -352,6 +362,29 @@ class AudioEngine {
     this.connectStream(ctx, stream, false)
   }
 
+  /**
+   * Build the band-passed analyser tap used for `features.midWaveform`.
+   *
+   * Centred at 1.1 kHz with a wide Q, which covers most lead-synth, vocal and
+   * guitar fundamentals while rejecting kick/sub below and cymbal hiss above.
+   * It is a filter, not source separation: a snare crack still shows up. But
+   * the resulting wave is dominated by sustained tonal material, which is what
+   * makes a ribbon traced along it read as "the synth line".
+   */
+  private attachMidTap(ctx: AudioContext, source: AudioNode) {
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'bandpass'
+    filter.frequency.value = 1100
+    filter.Q.value = 0.7
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = FFT_SIZE
+    analyser.smoothingTimeConstant = 0
+    source.connect(filter)
+    filter.connect(analyser)
+    this.midFilter = filter
+    this.midAnalyser = analyser
+  }
+
   private connectStream(ctx: AudioContext, stream: MediaStream, maybeMonitor: boolean) {
     // Safety net: if the context is still suspended (activation expired or
     // policy quirk), never block startup on it — the analyser just reads
@@ -374,6 +407,7 @@ class AudioEngine {
     analyser.fftSize = FFT_SIZE
     analyser.smoothingTimeConstant = 0 // we do our own smoothing
     source.connect(analyser)
+    this.attachMidTap(ctx, source)
     // Recording tap: never routed to speakers, mixed into canvas captures.
     const recDest = ctx.createMediaStreamDestination()
     source.connect(recDest)
@@ -433,6 +467,8 @@ class AudioEngine {
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl)
     this.ctx = null
     this.analyser = null
+    this.midAnalyser = null
+    this.midFilter = null
     this.stream = null
     this.sourceNode = null
     this.mediaEl = null
@@ -455,6 +491,7 @@ class AudioEngine {
     this.bpmEstimator.reset()
     this.phraseDetector.reset()
     this.moodEstimator.reset()
+    this.percussionDetector.reset()
     for (const band of Object.values(this.bands)) {
       band.peak = 0.15
       band.value = 0
@@ -484,6 +521,8 @@ class AudioEngine {
 
     analyser.getFloatTimeDomainData(f.waveform)
     analyser.getFloatFrequencyData(this.freqDb)
+    // Band-passed time domain — the lead/synth wave scenes can trace.
+    if (this.midAnalyser) this.midAnalyser.getFloatTimeDomainData(f.midWaveform)
 
     // --- Spectrum (dB → linear magnitude, normalized) ---
     const nyquist = ctx.sampleRate / 2
@@ -530,6 +569,12 @@ class AudioEngine {
     // --- Silence ---
     if (rmsRaw > 0.008) this.silenceSince = now
     f.silence = now - this.silenceSince > 0.6
+
+    // --- Independent drum hits (kick / snare / hi-hat) ---
+    // Separate from the broadband onset detector below: that one owns beat
+    // TIMING, this one owns which part of the kit fired, so visual layers can
+    // respond to the three independently.
+    this.percussionDetector.update(f.percussion, spectral, now, delta, f.silence)
 
     // --- Onset detection (adaptive threshold over ~1 s of flux) ---
     this.fluxHistory.push(spectral.bassFlux)

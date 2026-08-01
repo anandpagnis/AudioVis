@@ -169,11 +169,21 @@ previously computed every frame and discarded, now surfaced for accuracy/calibra
 | Spectral centroid | FFT-weighted mean frequency, normalized | 60 Hz |
 | Spectral flux | Onset-oriented brightness change | 60 Hz |
 | Band energies | Fixed Hz ranges, adaptive normalization | 60 Hz |
-| Vocal estimate | 250 Hz–4 kHz blend | 60 Hz |
+| Vocal estimate | 250 Hz–5 kHz blend | 60 Hz |
+| Voice (tonal vocal) | `vocal × (1 - spectralFlatness)` — the vocal band gated by tonality | 60 Hz |
 | Air | ~9–16 kHz band above `high` (shimmer, cymbal wash, breath) — a bin range the original six bands never covered at all | 60 Hz |
 | Spectral flatness | Geometric mean / arithmetic mean of magnitude — tonal (low) vs. noisy/distorted (high) texture | 60 Hz |
 | Spectral rolloff | Normalized frequency below which 85% of energy sits — a brightness cue robust to one dominant bin, unlike centroid | 60 Hz |
 | Crest factor | Peak/RMS ratio — low for pushed/brickwalled masters, high for dynamic material | 60 Hz |
+
+**On `voice` vs `vocal`.** The raw `vocal` band is a plain energy sum over 250 Hz–5 kHz, so it
+lights up on hi-hats, snare body, and distortion exactly as readily as on a singer — which is why
+nothing consumed it for a long time. Multiplying it by tonality (`1 - spectralFlatness`) suppresses
+the noisy half of that range and leaves what is actually pitched, so a held note reads high and a
+busy percussive bar reads low. Exposed as `AudioResponse.voice` and `SceneFrame.b.voice`, and it is
+what the fluid scenes (Liquid Form, Flow Ribbons) key their headline behaviour to. It remains an
+estimate, not source separation — a true vocal stem needs a model, which is deliberately out of
+scope (see [HANDOFF.md](HANDOFF.md) §7).
 
 All four are strictly additive: none change the six original bands' Hz cutoffs or normalization, so the five registered scenes' calibrated band-to-job wiring (see [05_Scene_Architecture.md](05_Scene_Architecture.md)) is untouched.
 

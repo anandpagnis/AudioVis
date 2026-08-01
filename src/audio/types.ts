@@ -1,3 +1,5 @@
+import { createEmptyPercussion, type PercussionState } from './PercussionDetector'
+
 /** Musical mood classes, ordered roughly calm → hype. */
 export type MoodState =
   'silence' | 'ambient' | 'mellow' | 'groove' | 'building' | 'peak' | 'aggressive'
@@ -94,6 +96,16 @@ export interface AudioFeatures {
   waveform: Float32Array
   /** Normalized magnitude spectrum, 0..1 per bin. */
   spectrum: Float32Array
+  /**
+   * Time-domain samples from a band-pass around the lead/synth range
+   * (~1.1 kHz, wide Q), -1..1.
+   *
+   * `waveform` above is the full mix and is dominated by kick and bass, so a
+   * scene that traces it draws the drums. This one is dominated by sustained
+   * tonal material, which is what makes a traced line read as the melody.
+   * A filter, not source separation — percussive transients still leak in.
+   */
+  midWaveform: Float32Array
 
   /** Overall loudness 0..1 (adaptively normalized, smoothed). */
   rms: number
@@ -127,6 +139,14 @@ export interface AudioFeatures {
   flux: number
   /** Fast transient envelope, useful for flashes and particles. */
   transient: number
+
+  /**
+   * Independently detected drum hits (kick / snare / hi-hat), each with a
+   * one-frame trigger and a decaying envelope. Unlike `transient` — which is
+   * one broadband envelope everything must share — these let separate visual
+   * layers respond to separate parts of the kit.
+   */
+  percussion: PercussionState
 
   /** Current tempo estimate. */
   bpm: number
@@ -184,6 +204,7 @@ export function createEmptyFeatures(): AudioFeatures {
     delta: 1 / 60,
     waveform: new Float32Array(1024),
     spectrum: new Float32Array(512),
+    midWaveform: new Float32Array(1024),
     rms: 0,
     energy: 0,
     sub: 0,
@@ -199,6 +220,7 @@ export function createEmptyFeatures(): AudioFeatures {
     crestFactor: 1,
     flux: 0,
     transient: 0,
+    percussion: createEmptyPercussion(),
     bpm: 120,
     beat: false,
     beatStrength: 0,

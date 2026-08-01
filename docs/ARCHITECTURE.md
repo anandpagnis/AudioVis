@@ -11,7 +11,8 @@ remaining roadmap, see [HANDOFF.md](HANDOFF.md).
 src/audio/    AudioEngine → BpmEstimator, PhraseDetector,
               MoodEstimator                                   (musical understanding)
 src/engine/   SceneManager, AutoPilot, PerformanceDirector, GenerativeLayer,
-              CameraRig, LightRig, PostFX, PerfMonitor,
+              CameraDirector, AnimationDirector, EffectsDirector,
+              LightRig, PerfMonitor, performanceState,
               palettes, presets, moodParams, textureGenerator (visual framework)
 src/scenes/   5 registered scenes (+16 unregistered) + registry (content)
 src/ui/       HUD, BpmReadout, DebugPanel                     (chrome)
@@ -84,7 +85,8 @@ registerScene({
 A scene's contract: read `audioEngine.features` inside `useFrame`, multiply visibility by
 `useContext(SceneFade).value` and `params.intensity`, respect `params.speed`/`reactivity`,
 blend palette colors via `PaletteBlender`, keep idle motion during silence, and pass any
-self-created materials/geometries to `useDispose`. Use `CameraRig` for camera motion and
+self-created materials/geometries to `useDispose`. Declare a `cameraAnchor` in metadata
+and let CameraDirector own camera motion (never move the camera yourself), and use
 plain `MeshStandardMaterial` if you want the `LightRig` to light you.
 
 Scene metadata is the contract future composers use to combine scenes:

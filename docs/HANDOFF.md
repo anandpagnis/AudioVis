@@ -1,5 +1,52 @@
 # AudioVis — Project Handoff
 
+## 0. Start here
+
+Orientation for picking this up cold. Everything below is current as of the
+last session; §2 item numbers are a running history, so read this section first
+and treat it as the summary of record.
+
+**What it is.** A browser-based AI VJ engine: it listens to live music,
+interprets structure (tempo, beats, phrases, drops, mood) and performs a
+deliberate visual journey. React 19 + React Three Fiber + Three.js + Zustand.
+Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
+
+**The two rules that override everything else**
+
+1. **Buttery smooth beats visual ambition.** Frame-time variance matters more
+   than richness. A scene that hitches is a failed scene no matter how it looks.
+   *Measure the frame cost of anything heavy before declaring it done* — this
+   has been violated twice (see §2 item 16) and both times the scene shipped
+   unusable at 10 fps.
+2. **Crystal-cut, not glow-soup.** Subject + negative space + hard edges, on
+   dead black. Target exposure is roughly ≤15% of frame lit, mean luma <20, and
+   **0% blown to white**. Full rationale in `docs/09_Rendering_Engine.md`.
+
+**Current roster (5, all primary-capable)**
+
+| id | name | technique |
+|---|---|---|
+| `wireframe` | Wireframe Hero | `Line2`/`LineMaterial` true edge geometry — **this is `SCENES[0]`, the fallback** |
+| `plasma` | Plasma Filament | 70k curl-noise points, screen-space streaks |
+| `dissolve` | Dissolve Cage | particle form scattering inside a wireframe cage |
+| `chrome` | Chrome Form | `MeshPhysicalMaterial` + PMREM env map |
+| `ribbons` | Flow Ribbons | vertex-shader strips that **trace the synth waveform** |
+
+**Architecture in one line.** Audio → `AudioFeatures` → *decide* band writes
+`performanceState` → *execute* band (Camera/Animation/Effects directors +
+scenes) reads it. The decide/execute boundary is the whole design; see §3.
+
+**Before handing off any change:** `npm run check` (typecheck + lint + 54 tests
++ build) and the checklist in §8.
+
+**Biggest open gap:** almost nothing here has been verified against *real
+music*. Exposure, geometry, band response and frame cost are all measured, but
+"does it feel right on a track you'd actually play" is untested — the preview
+browser is backgrounded, which throttles the render loop. That is the single
+most valuable thing to do next.
+
+---
+
 ## 1. Product vision
 
 AudioVis is a browser-based audio-visual performance engine. Its purpose is not merely to draw a
@@ -39,10 +86,10 @@ The long-term product is a modular visual instrument:
    - Beat, bar, measure, phrase, section-change, drop, and build flags are available to scenes.
 
 3. **Scene registry and metadata**
-   - Five scenes are registered in `src/scenes/index.ts`: `schematic`, `wireframe`,
-     `plasma`, `dissolve`, `chrome`. Sixteen earlier scenes remain on disk with
-     their loader entries intact but are absent from `SCENES[]`, so nothing can
-     reach them; re-registering one is a single array entry.
+   - Five scenes are registered in `src/scenes/index.ts` — see the table in §0.
+     `SCENES[0]` (`wireframe`) is the load-bearing fallback: `getScene()` returns
+     it for any unknown id, so a stale persisted `sceneId`, preset, cue, or
+     `?scene=` param degrades instead of breaking. Keep it cheap and safe.
    - Each scene declares roles, mood affinity, audio-band affinity, intensity, compatibility, and
      rough performance cost.
    - `registerScene()` and lookup helpers provide the extension contract for custom scenes.
@@ -71,10 +118,9 @@ The long-term product is a modular visual instrument:
    - Palette blending, mood-driven parameter multipliers, shared camera/light rigs, beat-reactive
      post effects, optional local AI texture overlay, adaptive quality scaling, and disposal
      helpers are in place.
-   - Sixteen legacy scenes (nebula, galaxy, tunnel, fluid, monolith, noise field, clouds, ribbons,
-     crystal growth, digital aurora, and others) remain on disk with their loader entries intact
-     but are unregistered — see item 3 and `docs/09_Rendering_Engine.md` for why the roster was
-     culled to five.
+   - The 17 pre-pivot legacy scenes were deleted outright (in git history if ever
+     wanted); `docs/09_Rendering_Engine.md` explains the cull and why the
+     "small roster" constraint has since been lifted.
 
 8. **Persistence and operation**
    - Scene, layers, palette, visual parameters, quality, automation toggles, favorites, user
@@ -159,6 +205,129 @@ The long-term product is a modular visual instrument:
       parts of `src/engine`/`src/scenes`, never part of the build), and the superseded root docs
       `ART_DIRECTION_ROADMAP.md` / `PHASE_IMPLEMENTATION_GUIDE.md` / `VISION.md` (content merged into
       `docs/00_Vision.md` and `docs/09_Rendering_Engine.md`).
+
+14. **AI Performance Engine refactor — Phases 1–2 of 6**
+    - **`PerformanceState`** (`src/engine/performanceState.ts`) is the new seam.
+      Above it, creative systems decide what the show wants; below it, executors
+      do what it says. Single-writer by convention, mutable singleton for the
+      same zero-allocation reason as `audioEngine.features`. A future ML
+      director, or a non-Three renderer, plugs in at this one object.
+    - **`CameraDirector`** owns all camera motion (9 modes: orbit/hover/push/
+      pull/spiral/handheld/locked/topdown/cinematic). Scenes now declare only a
+      `cameraAnchor` (subject centre, distance, height) and which `cameraModes`
+      suit them — no scene moves the camera. This also deleted the per-scene
+      `fade.value >= lastFade` crossfade arbitration: with one writer, two
+      mounted scenes can no longer fight for the lens.
+    - **`AnimationDirector`** publishes reusable primitives (pulse, breathe,
+      inflate, twist, ripple, explode, dissolve, oscillate, flash + per-drum
+      channels) as normalized signals, computed once centrally. Consumed two
+      ways because the roster is mixed: `applyToUniforms()` for shader scenes
+      (which animate in GLSL and cannot be driven by mutating an Object3D) and
+      `applyToObject()` for mesh scenes.
+    - **`EffectsDirector`** replaces `PostFX.tsx` — same fixed chain, but it now
+      reads `performanceState.bloom`/`.glitch` and makes no decisions of its own.
+    - **Percussion tier**: kick / snare / hi-hat are detected independently via
+      band-limited onset detection (`src/audio/PercussionDetector.ts`), so
+      separate visual layers can respond to separate parts of the kit instead of
+      everything keying off one broadband `transient`. Deterministic DSP, no ML.
+    - The 17 unregistered legacy scenes and `CameraRig.ts` were deleted.
+15. **AI Performance Engine refactor — Phases 3–4**
+    - **`useSceneFrame`** (`src/engine/sceneFrame.ts`) gives every scene a
+      prepared per-frame context: reactivity-scaled bands, animation primitives,
+      blended palette, resolved visibility, and read-only access to
+      `performanceState`. This deleted the six-line preamble every scene used to
+      open with (resolve params, pull reactivity, blend palette, compute pulse,
+      scale each band, derive fade) — five copies, five chances to drift.
+      `useSpin()` covers the accumulate-an-angle pattern four scenes shared.
+    - All five scenes converted. A scene is now geometry, materials, and a
+      mapping from context values onto them — no envelope math, no camera, no
+      palette plumbing, no post.
+    - **What deliberately did NOT move:** the band→job routing (bass=mass,
+      mid=hue/rotation, presence=stroke weight, high=air/dedicated elements).
+      That mapping is the art direction, and it is per-scene on purpose. The
+      context prepares values; the scene decides what each one means.
+    - **Post decisions are now semantic.** Bloom has a per-mood resting level
+      (`BLOOM_BASE`) that the music modulates around, rather than a hardcoded
+      0.65 — so a breakdown reads calm even with sharp transients and a peak
+      reads hot between hits. Glitch is gated on tension and drops. `fog` and
+      `distortion`, previously declared but inert, now do something: fog deepens
+      as the mix thins (tinted to the palette background, mutated in place so it
+      never invalidates the material shader cache), distortion tracks tension.
+    - **Not yet done (Phases 5–6):** SceneManager still owns both lifecycle and
+      some commit policy, and the creative directors still write the store
+      rather than `performanceState` directly. `PerformanceStateBridge` is the
+      adapter that keeps Phase 6 an inversion rather than a rewrite.
+
+15. **Fluid scenes + a usable vocal signal**
+    - **`voice`** — the raw `vocal` band was computed every frame and consumed by
+      *nothing*, because as a plain 250 Hz–5 kHz energy sum it fires on hats and
+      distortion as readily as on a singer. Gating it by tonality
+      (`vocal × (1 - spectralFlatness)`) leaves what is actually pitched. Exposed
+      as `AudioResponse.voice` / `SceneFrame.b.voice`. An estimate, not a stem.
+    - **Liquid Form** (`liquid`) — raymarched SDF metaballs. Voice drives the
+      `opSmoothUnion` blend radius, so a sustained line visibly pulls the lobes
+      *into* the core (measured: +99% lit area, core share 94%→53%) while a
+      percussive bar leaves them as separate drops. Finally puts the previously
+      orphaned `shaderLib.ts` to work, and honours the governor's step/octave caps.
+    - **Flow Ribbons** (`ribbons`) — vertex-shader triangle strips through a curl
+      field. Mid sets curl amplitude, voice sets ribbon width (+381% coverage
+      from quiet to strong vocal), hats put travelling glints along the arc.
+    - Both were verified by compiling *and linking* the GLSL on a real driver and
+      reading back pixels — 0% blown, mean luma 6–8, matching the roster's
+      hot-subject-on-dead-black target. Two composition bugs were caught only
+      this way: ribbons splayed radially when streamed toward the camera, and all
+      of them widened coplanar into "venetian blinds" until each got its own
+      width plane. Neither is visible to typecheck, lint, or the test suite.
+    - Raymarch scenes now read the real camera via `SceneFrame.camera`, so
+      CameraDirector drives fullscreen-quad scenes too instead of skipping them.
+    - Scene shader sources are exported (`VERT`/`FRAG`) specifically so GLSL can
+      be compiled outside the app — it is otherwise completely unchecked.
+
+16. **Liquid Form rebuilt, and layering for mids/vocals**
+    - **The raymarched Liquid Form was a mistake and has been replaced.** It ran
+      at **10 fps** (86 ms mean, p95 100 ms) — 96 march steps × 6 normal samples
+      × multi-octave fbm — and read as a glowing orange lump rather than metal.
+      Exposure and band response had been verified; frame cost had not. *Measure
+      frame cost on any new heavy scene before calling it done.*
+    - Rebuilt on three.js's **`MarchingCubes`**: the field is polygonised on the
+      CPU and drawn as ordinary geometry, so it uses `MeshPhysicalMaterial` with
+      the shared env map and looks like real mercury. Grid resolution per tier is
+      set from measurement, not guesswork (res 40 = 14.2 ms of a 16.7 ms budget,
+      so the top tier is capped at 28 ≈ 5 ms).
+    - Voice drives `isolation` and ball count, so a sung line gathers scattered
+      beads into one body. Tuned to stop short of *total* fusion — driving it all
+      the way collapsed the form into a featureless egg; the visible lobes and
+      necks are what read as liquid.
+    - **`HarmonicAuraLayer`** (`aura`) — an accent/overlay **layer**, not a
+      subject. Mid-band FFT bins are uploaded to a data texture and read by
+      angle, so the ring's silhouette *is* the harmonic content (a chord grows a
+      jagged crown, one note grows one spike). Voice adds a breathing halo and
+      expanding rings. ~90% empty by construction so it composites over any
+      primary instead of washing it out. This is the right shape for the problem:
+      a vocal/mid readout that every look gains, rather than one more scene that
+      only helps while it is on screen.
+    - `getSharedEnvMap()` extracted to `src/engine/envMap.ts` — Chrome Form and
+      Liquid Form now share one PMREM generation.
+
+17. **Roster trim + ribbons trace the synth waveform**
+    - **Removed:** Schematic, Liquid Form, and the Harmonic Aura layer. Schematic
+      was `SCENES[0]`, so the fallback moved to `wireframe`; the store default,
+      `performanceState` defaults, the "Drafting Table" builtin preset, every
+      `compatibleWith` list, and one camera test were all repointed. If you
+      remove a scene, grep for its id — it is referenced in more places than the
+      registry.
+    - **`AudioFeatures.midWaveform`** — a second `AnalyserNode` fed through a
+      band-pass (≈1.1 kHz, wide Q) gives the time-domain wave of the lead/synth
+      range. The full-mix `waveform` is dominated by kick and bass, so tracing it
+      draws the drums; this one is dominated by sustained tonal material. It is a
+      filter, **not** source separation — snare cracks still leak through.
+    - **Flow Ribbons now trace that wave.** It is uploaded to a data texture and
+      sampled along each ribbon's arc, displacing the spine across the flow, so
+      the ribbon is a literal oscilloscope of the synth line bent through the
+      curl field. Verified visually: flat in silence, broad undulations for a
+      pad, tight ripples for an arpeggio. Decimation keeps the **extreme** per
+      bucket, not the mean — averaging a waveform flattens it toward zero, which
+      is exactly how a trace turns into a straight line.
 
 ### Recent correctness fixes
 
@@ -262,16 +431,49 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
 
 ## 7. Remaining roadmap
 
-The numbered phases are complete. Current priority order (user-set, July 2026):
+### Next up, in order
 
-1. ~~Wider audio-feature detection for mood accuracy~~ — done, see item 13.
-2. ~~Numeric testing and analytics~~ — done, see item 13.
-3. **More scenes** — deliberately last: land a solid system before adding content on top of it.
-   When picked back up, new scenes follow the existing `registerScene()` contract
-   (`docs/05_Scene_Architecture.md`) and the crystal-cut rubric in `docs/09_Rendering_Engine.md`
-   (subject, negative space, hard edges) — not scored against the pre-cull 21-scene roster.
+1. **Play real music through it.** Everything recent is verified numerically and
+   in offline shader harnesses, but essentially nothing has been judged against
+   a track you would actually play. Specifically worth watching: does `voice`
+   track the lead on your material, do the ribbons' waveform ripples read at
+   performance distance, does the quality governor hold 60 fps on a real set,
+   and does AutoPilot's scene choice feel musical. **This gates most of the
+   tuning below** — the project's own rule is calibrate against real audio,
+   never an idle frame.
+2. **Finish the director refactor (Phases 5–6).** `SceneManager` still owns both
+   scene lifecycle *and* some commit policy, and the creative directors still
+   write the Zustand store rather than `performanceState` directly.
+   `PerformanceStateBridge` is the temporary adapter that keeps this an
+   inversion rather than a rewrite — collapsing it is the last structural step,
+   after which a new decision-maker (or a whole new renderer) plugs in at one
+   object.
+3. **More scenes.** The contract is now cheap: geometry + metadata +
+   `useSceneFrame`. Camera, animation primitives, and post are no longer
+   per-scene code. Follow `docs/05_Scene_Architecture.md`, keep to the exposure
+   targets in §0, and give each new scene a distinct band-to-job routing so it
+   is separable by eye from the others.
+4. **Mood-scoring calibration.** The texture-based score nudges (item 13) are
+   principled but untuned by ear.
 
-Beyond that, lower-value refinements:
+### Ideas worth considering
+
+- **Layers, not just subjects.** The composition system supports accent +
+  overlay, and a layer is often the better answer than another primary — a
+  readout added as a layer improves *every* look instead of only helping while
+  its own scene is on screen. (An earlier vocal/mid layer was built and then
+  removed on preference; the architectural point still stands.)
+- **AI as an offline calibration aid** (recommended, never built): if "does it
+  pick up the vibe correctly" ever needs an outside opinion, the shape that fits
+  this project's DSP-only, no-ML-in-hot-path design is a manual offline script —
+  feed fixture tracks through the estimator classes (plain data, no browser),
+  ask an external model for an independent read, diff the two. The agreed
+  reasoning is in the "fast DSP owns timing, model owns understanding" split:
+  per-hit timing must stay DSP because stem models add 100–500 ms; only
+  slow-changing *understanding* can tolerate that latency. Never in the render
+  loop or CI, which must stay deterministic.
+
+### Lower-value refinements
 
 - **Mood-scoring calibration against real tracks**: the new texture-based score nudges (item 13)
   are principled but untuned by ear yet — the project's own rule is "calibrate against real audio,
@@ -303,6 +505,15 @@ Before shipping a meaningful change:
 - `npm run format` — Prettier over `src/`
 - If you touched `BpmEstimator`/`PhraseDetector`/`MoodEstimator`/`spectralFeatures`, run
   `npm run test:watch` while iterating — the suite catches a scoring/tempo regression immediately
+- **If you wrote or changed GLSL, compile it.** Shaders are strings: typecheck,
+  lint, tests and the build all pass on a broken shader. Compile *and link* it in
+  a throwaway WebGL context and check `getShaderInfoLog`. Scene shader sources
+  are exported (`VERT`/`FRAG`) precisely so this is possible. Two real
+  composition bugs were caught only this way.
+- **If you added anything heavy, measure its frame cost before calling it done.**
+  Render it standalone and time it against the 16.7 ms budget. Reading back
+  pixels also gives objective exposure numbers (lit %, mean luma, % blown) to
+  check against the §0 targets — far better than eyeballing a screenshot.
 - Open the Analytics panel (`Y`) during a real track and confirm beat-tracking accuracy trends
   toward 1.0 as the tempo locks, and that switching scenes adds a row to the transitions table
   with actual duration close to target and a clean (unflagged) frame-time p95
@@ -324,6 +535,11 @@ Before shipping a meaningful change:
 
 - `src/audio/AudioEngine.ts` — source graph and per-frame analysis.
 - `src/audio/spectralFeatures.ts` — pure, unit-tested band/texture-cue math.
+- `src/audio/PercussionDetector.ts` — independent kick/snare/hi-hat detection.
+- `src/engine/performanceState.ts` — **the seam**; read this first.
+- `src/engine/sceneFrame.ts` — `useSceneFrame()`, the per-frame context every scene uses.
+- `src/engine/CameraDirector.tsx` — all camera motion (9 modes).
+- `src/engine/AnimationDirector.ts` — reusable animation primitives.
 - `src/audio/types.ts` — scene-facing feature contract.
 - `src/engine/audioResponse.ts` — reusable response envelopes.
 - `src/engine/SceneManager.tsx` — primary/layer mounting, fades, and transition telemetry.

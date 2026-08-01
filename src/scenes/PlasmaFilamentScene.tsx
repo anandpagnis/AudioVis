@@ -1,14 +1,8 @@
-import { useContext, useMemo, useRef } from 'react'
-import { useFrame } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { audioEngine, beatPulse } from '../audio/AudioEngine'
-import { CameraRig } from '../engine/CameraRig'
-import { PaletteBlender, getPalette } from '../engine/palettes'
-import { SceneFade } from '../engine/SceneManager'
-import { getEffectiveParams } from '../engine/moodParams'
 import { quality } from '../engine/quality'
+import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
-import { useStore } from '../store'
 
 /**
  * Plasma Filament — one hot core radiating shard filaments into black.
@@ -204,10 +198,6 @@ function buildGeometry(): THREE.BufferGeometry {
 
 export function PlasmaFilamentScene() {
   const flow = useRef(0)
-  const fade = useContext(SceneFade)
-  const lastFade = useRef(0)
-  const rig = useMemo(() => new CameraRig(), [])
-  const blender = useMemo(() => new PaletteBlender(getPalette(useStore.getState().paletteId)), [])
   const geometry = useMemo(() => buildGeometry(), [])
 
   const material = useMemo(
@@ -241,40 +231,34 @@ export function PlasmaFilamentScene() {
 
   useDispose(material, geometry)
 
-  useFrame(({ camera }) => {
-    const f = audioEngine.features
-    const u = material.uniforms
-    const { paletteId } = useStore.getState()
-    const params = getEffectiveParams()
-    const R = params.reactivity
-    blender.update(getPalette(paletteId), f.delta)
+  useSceneFrame(
+    ({ f, dt, b, col, vis, params }) => {
+      const u = material.uniforms
 
-    // The governor's particle budget. Seeds are generated in random order, so
-    // the first N are already an unbiased subset of the whole field.
-    geometry.setDrawRange(0, Math.floor(COUNT * quality.knobs.particleFraction))
+      // The governor's particle budget. Seeds are generated in random order, so
+      // the first N are already an unbiased subset of the whole field.
+      geometry.setDrawRange(0, Math.floor(COUNT * quality.knobs.particleFraction))
 
-    flow.current += f.delta * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
+      flow.current += dt * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
 
-    const drivesCamera = fade.value >= lastFade.current
-    lastFade.current = fade.value
-    if (drivesCamera) {
-      rig.orbit(camera, f, { radius: 17, elev: 2.4, elevSwing: 1.4, speed: 0.04 * params.speed, react: R })
-    }
-
-    u.uFlow.value = flow.current
-    u.uBass.value = f.bass * R
-    u.uMid.value = f.mid * R
-    u.uPresence.value = f.presence * R
-    u.uHigh.value = f.high * R
-    u.uEnergy.value = f.energy * R
-    u.uPulse.value = beatPulse(f) * R
-    u.uTransient.value = f.transient * R
-    u.uFade.value = fade.value * params.intensity
-    // Accent burns at the core, primary through the body, secondary at the rim.
-    u.uColCore.value.copy(blender.c)
-    u.uColMid.value.copy(blender.a)
-    u.uColEdge.value.copy(blender.b)
-  })
+      u.uFlow.value = flow.current
+      u.uBass.value = b.bass
+      u.uMid.value = b.mid
+      u.uPresence.value = b.presence
+      u.uHigh.value = b.high
+      u.uEnergy.value = b.energy
+      u.uPulse.value = b.pulse
+      u.uTransient.value = b.transient
+      u.uFade.value = vis
+      // Accent burns at the core, primary through the body, secondary at the rim.
+      u.uColCore.value.copy(col.c)
+      u.uColMid.value.copy(col.a)
+      u.uColEdge.value.copy(col.b)
+    },
+    // No readability floor: this scene is a particle field, not line art, so it
+    // is allowed to fall away entirely in the quiet.
+    { visCeiling: 1, visFloor: 0 },
+  )
 
   return (
     <points geometry={geometry} frustumCulled={false}>

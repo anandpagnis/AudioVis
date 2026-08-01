@@ -1,17 +1,12 @@
-import { useContext, useMemo, useRef } from 'react'
-import { useFrame } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
+import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
-import { audioEngine, beatPulse } from '../audio/AudioEngine'
-import { CameraRig } from '../engine/CameraRig'
-import { PaletteBlender, getPalette } from '../engine/palettes'
-import { SceneFade } from '../engine/SceneManager'
-import { getEffectiveParams } from '../engine/moodParams'
 import { quality } from '../engine/quality'
+import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
-import { useStore } from '../store'
 
 /**
  * Dissolve Cage — a form scattering into particles and reforming, contained.
@@ -242,10 +237,7 @@ function sampleSurface(source: THREE.BufferGeometry, count: number) {
 }
 
 export function DissolveCageScene() {
-  const fade = useContext(SceneFade)
-  const lastFade = useRef(0)
-  const rig = useMemo(() => new CameraRig(), [])
-  const blender = useMemo(() => new PaletteBlender(getPalette(useStore.getState().paletteId)), [])
+  const gl = useThree((s) => s.gl)
   const dissolve = useRef(0)
   const cycleStart = useRef(-1)
   const cageRef = useRef<THREE.Group>(null)
@@ -310,23 +302,14 @@ export function DissolveCageScene() {
 
   useDispose(cageMat, cage.geometry, material, geometry)
 
-  useFrame(({ camera, gl }) => {
-    const f = audioEngine.features
+  useSceneFrame(
+    ({ f, dt, b, col, vis, params }) => {
     const u = material.uniforms
-    const { paletteId } = useStore.getState()
-    const params = getEffectiveParams()
-    const R = params.reactivity
-    blender.update(getPalette(paletteId), f.delta)
 
     geometry.setDrawRange(0, Math.floor(COUNT * quality.knobs.particleFraction))
 
-    const pulse = beatPulse(f) * R
     // Band jobs here: mid widens the swirl and turns the cage, presence snaps the
     // cage stroke, high sparkles the cloud, transient jitters it.
-    const mid = f.mid * R
-    const pres = f.presence * R
-    const high = f.high * R
-
     // Autonomous cycle: assembled → dispersed → assembled over CYCLE_BEATS, so
     // the scene is never static even on a track that never drops. Section
     // changes restart it, which keeps the arc aligned with the music's own form.
@@ -339,47 +322,39 @@ export function DissolveCageScene() {
     let target = smooth(1 - Math.abs(1 - 2 * phase))
     if (f.drop) target = 1
     // Drops rip it apart fast; the autonomous cycle breathes slowly.
-    dissolve.current += (target - dissolve.current) * Math.min(1, f.delta * (f.drop ? 9 : 2.2))
-
-    const vis = Math.min(1.3, fade.value * (0.55 + 0.45 * params.intensity))
+    dissolve.current += (target - dissolve.current) * Math.min(1, dt * (f.drop ? 9 : 2.2))
 
     cageMat.resolution.set(gl.domElement.width, gl.domElement.height)
     // Overdriven colour rather than low opacity — LineMaterial's alpha caps at
     // 1, so brightness has to come from the colour to read as hot phosphor
     // (same reasoning as WireframeHeroScene). The cage stays below the particle
     // cloud's brightness so the dissolving form remains the subject.
-    cageMat.color.copy(blender.a).multiplyScalar(0.75 + pulse * 0.7 + high * 0.5)
+    cageMat.color.copy(col.a).multiplyScalar(0.75 + b.pulse * 0.7 + b.high * 0.5)
     cageMat.opacity = Math.min(1, vis * 0.85)
     // Presence owns the cage's stroke weight — the frame sharpens on snares.
-    cageMat.linewidth = 1.6 + pres * 1.6 + pulse * 0.6
+    cageMat.linewidth = 1.6 + b.presence * 1.6 + b.pulse * 0.6
 
     if (cageRef.current) {
-      cageRef.current.rotation.y += f.delta * (0.06 + mid * 0.14) * params.speed
+      cageRef.current.rotation.y += dt * (0.06 + b.mid * 0.14) * params.speed
       cageRef.current.rotation.x = Math.sin(f.time * 0.08) * 0.12
     }
 
     u.uDissolve.value = dissolve.current
     u.uTime.value = f.time
-    u.uBass.value = f.bass * R
-    u.uMid.value = mid
-    u.uPresence.value = pres
-    u.uHigh.value = high
-    u.uPulse.value = pulse
-    u.uTransient.value = f.transient * R
-    u.uEnergy.value = f.energy * R
+    u.uBass.value = b.bass
+    u.uMid.value = b.mid
+    u.uPresence.value = b.presence
+    u.uHigh.value = b.high
+    u.uPulse.value = b.pulse
+    u.uTransient.value = b.transient
+    u.uEnergy.value = b.energy
     u.uFade.value = vis
-    u.uColForm.value.copy(blender.a)
-    u.uColHot.value.copy(blender.c)
-    u.uColAir.value.copy(blender.b)
-
-    const drivesCamera = fade.value >= lastFade.current
-    lastFade.current = fade.value
-    if (drivesCamera) {
-      // Hover, not orbit: a caged subject wants a stable frame so the cage
-      // silhouette holds still while the interior comes apart.
-      rig.hover(camera, f, { pos: [0, 1.1, 11.5], look: [0, 0, 0], bob: 0.7 })
-    }
-  })
+    u.uColForm.value.copy(col.a)
+    u.uColHot.value.copy(col.c)
+    u.uColAir.value.copy(col.b)
+    },
+    { visCeiling: 1.3, visFloor: 0.55 },
+  )
 
   return (
     <group>

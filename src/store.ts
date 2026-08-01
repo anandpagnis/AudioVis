@@ -162,7 +162,7 @@ export const useStore = create<AppState>()(
       sourceType: null,
       error: null,
 
-      sceneId: 'schematic',
+      sceneId: 'wireframe',
       pendingSceneId: null,
       accentSceneId: null,
       overlaySceneId: null,

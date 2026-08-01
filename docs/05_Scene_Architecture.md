@@ -80,8 +80,10 @@ Reference implementations:
 | Plasma Filament | `PlasmaFilamentScene.tsx` | Custom particle vertex shader |
 | Dissolve Cage | `DissolveCageScene.tsx` | Particles + wireframe cage |
 | Chrome Form | `ChromeFormScene.tsx` | MeshPhysicalMaterial + PMREM |
+| Liquid Form | `LiquidFormScene.tsx` | Raymarched SDF metaballs, `opSmoothUnion` blend driven by voice |
+| Flow Ribbons | `FlowRibbonScene.tsx` | Vertex-shader triangle strips through a curl field |
 
-Shared utilities: `CameraRig.ts`, `useDispose.ts`, `moodParams.ts`, `audioResponse.ts`, `glsl.ts`, `shaderLib.ts`.
+Shared utilities: `useDispose.ts`, `moodParams.ts`, `audioResponse.ts`, `AnimationDirector.ts`, `glsl.ts`, `shaderLib.ts`.
 
 ---
 
@@ -92,30 +94,54 @@ Shared utilities: `CameraRig.ts`, `useDispose.ts`, `moodParams.ts`, `audioRespon
 ```typescript
 /**
  * A scene is a React component mounted by SceneManager inside R3F Canvas.
- * No props required — reads globals below.
+ * No props required.
+ *
+ * Required:
+ *   useSceneFrame(ctx => { ... })   // prepared per-frame context
+ *   useDispose(materials, geometries, textures)
+ *
+ * A scene does NOT: move the camera (declare `cameraAnchor` in metadata),
+ * touch post-processing (EffectsDirector owns it), blend the palette by hand
+ * (ctx.col), or derive its own envelopes (ctx.b / ctx.anim).
  */
-interface Scene {
-  // Lifecycle: React mount/unmount
-  // Required hooks:
-  //   useFrame(() => { const f = audioEngine.features; ... })
-  //   useContext(SceneFade) for fade multiplier
-  //   useDispose(materials, geometries, textures)
-  // Optional:
-  //   CameraRig instance for camera motion
-  //   PaletteBlender for smooth palette colors
+```
+
+### The per-frame context
+
+`useSceneFrame` replaces a scene's own `useFrame` and hands over everything prepared:
+
+```typescript
+interface SceneFrame {
+  f: AudioFeatures            // raw, for anything not covered below
+  dt: number
+  anim: AnimationSignals      // pulse, breathe, inflate, twist, ripple,
+                              // explode, dissolve, oscillate, flash, kick/snare/hihat
+  b: { sub, bass, mid, presence, high, vocal, air, energy,
+       transient, pulse, kick, snare, hihat }   // reactivity-scaled
+  col: { a, b, c }            // blended palette
+  vis: number                 // crossfade × mood intensity, floored + clamped
+  params: VisualParams
+  state: Readonly<PerformanceState>   // director decisions; NEVER write
 }
 
+// Per-scene readability tuning:
+useSceneFrame(cb, { visCeiling: 1.6, visFloor: 0.5 })
+```
+
+`useSpin()` covers the accumulate-an-angle pattern that rotating scenes share.
+
+**What the context deliberately does *not* do** is decide which band drives which visual property. That routing is the art direction (see Algorithms below) and stays per-scene — the context prepares values, the scene decides what they mean.
+
+### Registration
+
+```typescript
 interface SceneDef {
   id: string
   name: string
   component: ComponentType
   metadata: SceneMetadata
 }
-```
 
-### Registration
-
-```typescript
 registerScene({
   id: 'myscene',
   name: 'My Scene',
@@ -128,6 +154,10 @@ registerScene({
     compatibleWith: ['schematic', 'wireframe'],
     performanceCost: 'medium',
     moodFit: { groove: 0.8, peak: 0.6 },
+    // Hands camera control to CameraDirector. Omit only if the scene
+    // genuinely needs bespoke camera work.
+    cameraAnchor: { target: [0, 0, 0], distance: 10, height: 1.5 },
+    cameraModes: ['orbit', 'cinematic', 'hover'],
   },
 })
 ```
@@ -153,6 +183,8 @@ Each scene must bind **distinct visual parameters** to bands so the audience can
 | `presence` | Line weight, stroke opacity |
 | `high` | Dedicated high-frequency elements |
 | `transient` | Instant flash, particle burst |
+| `voice` | Sustained/melodic lead — merge, width, swell (see below) |
+| `kick`/`snare`/`hihat` | Independent per-drum response |
 | `energy` | Overall amplitude multiplier |
 
 **Anti-pattern:** only binding `bass` and `energy` — mids/highs appear dead.
@@ -202,7 +234,7 @@ Scenes update every frame in `useFrame` (~60 Hz). No React re-renders for audio-
 - Prefer single draw call or instancing for particle-heavy scenes.
 - Read `quality.knobs` — never hard-code max particle count or raymarch steps.
 - Dispose all GPU resources on unmount.
-- Output levels: target **0–1 range** on hero elements — blown additive breaks PostFX (see [09_Rendering_Engine.md](09_Rendering_Engine.md)).
+- Output levels: target **0–1 range** on hero elements — blown additive breaks the post chain (see [09_Rendering_Engine.md](09_Rendering_Engine.md)).
 - Frustum culling: disable on fullscreen quads / GPU-displaced geometry.
 
 ---

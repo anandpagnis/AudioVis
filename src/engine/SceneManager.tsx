@@ -6,6 +6,7 @@ import { useStore, type LayerBlend, type LayerRole } from '../store'
 import { getScene, isSceneLoaded } from '../scenes'
 import { quality } from './quality'
 import { perf } from './PerfMonitor'
+import { updateAnimationSignals } from './AnimationDirector'
 import { sampleAnalytics } from './analyticsMetrics'
 import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
 
@@ -147,6 +148,9 @@ export function SceneManager() {
     audioEngine.update()
     const f = audioEngine.features
     sampleAnalytics(f)
+    // Animation primitives are derived once, centrally, so N scenes reading
+    // them cost the same as one (each scene used to recompute its own).
+    updateAnimationSignals()
 
     // Age warming entries so EntryGroup knows when to hide them — but only once
     // the lazy chunk has actually loaded, so the warm window is spent rendering
