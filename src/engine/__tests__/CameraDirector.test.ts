@@ -1,8 +1,29 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { audioEngine } from '../../audio/AudioEngine'
-import { createEmptyFeatures } from '../../audio/types'
-import { computeDesired, desired, lookAt, type CameraAnchor } from '../CameraDirector'
+import { createEmptyFeatures, type MoodState } from '../../audio/types'
+import {
+  computeDesired,
+  cutCamera,
+  desired,
+  lookAt,
+  pickCameraMode,
+  type CameraAnchor,
+} from '../CameraDirector'
+import { CAMERA_MODES, type CameraMode } from '../performanceState'
 import { SCENES } from '../../scenes'
+
+const MOODS: MoodState[] = [
+  'silence',
+  'ambient',
+  'mellow',
+  'groove',
+  'building',
+  'peak',
+  'aggressive',
+]
+
+/** Moods where a shaky lens would read as a mistake rather than as energy. */
+const CALM_MOODS: MoodState[] = ['silence', 'ambient', 'mellow']
 
 /**
  * Camera framing is the part of the director refactor that can regress
@@ -109,5 +130,132 @@ describe('CameraDirector framing', () => {
         expect(Number.isFinite(desired.z), `${scene.id}/${mode}`).toBe(true)
       }
     }
+  })
+})
+
+/**
+ * Mode SELECTION regresses as invisibly as framing does — a wrong-but-valid mode
+ * still renders a perfectly fine picture, just the wrong one for the music. These
+ * pin the properties that make the choice trustworthy rather than the exact picks,
+ * so the preference tables stay tunable by ear.
+ */
+describe('pickCameraMode', () => {
+  it('only ever returns a mode the scene declared', () => {
+    for (const scene of SCENES) {
+      const modes = scene.metadata.cameraModes
+      for (const mood of MOODS) {
+        for (const tension of [0, 0.9]) {
+          for (const beat of [0, 16, 64, 129]) {
+            const pick = pickCameraMode(modes, mood, tension, beat)
+            expect(modes, `${scene.id}/${mood}/t${tension}/b${beat}`).toContain(pick)
+          }
+        }
+      }
+    }
+  })
+
+  it('never shoots a calm mood handheld, at any tension', () => {
+    // The tension override promotes push/spiral precisely so it cannot introduce
+    // a shaky lens over an ambient passage — including the tense quiet bar
+    // before a drop, which is the case that motivated excluding it.
+    for (const scene of SCENES) {
+      for (const mood of CALM_MOODS) {
+        for (const tension of [0, 0.5, 0.6, 1]) {
+          expect(pickCameraMode(scene.metadata.cameraModes, mood, tension, 0)).not.toBe('handheld')
+        }
+      }
+    }
+  })
+
+  it('gives every scene a range of framing across the moods', () => {
+    // If a mood's preference list missed every mode a scene declares, the pick
+    // would degrade to that scene's first mode — i.e. back to the hardcoded
+    // `cameraModes[0]` this function replaced, which is invisible unless you
+    // look for it. A scene that answers every mood with the same mode is that
+    // failure. This is what keeps the preference tables honest as the roster
+    // changes.
+    for (const scene of SCENES) {
+      const picks = new Set(MOODS.map((mood) => pickCameraMode(scene.metadata.cameraModes, mood, 0, 0)))
+      expect(picks.size, `${scene.id} is shot identically in every mood`).toBeGreaterThan(2)
+    }
+  })
+
+  it('promotes anticipation framing once tension crosses the threshold', () => {
+    // Dissolve Cage declares push; at rest in a groove it should not be pushing,
+    // and under pressure it should be.
+    const modes = SCENES.find((s) => s.id === 'dissolve')!.metadata.cameraModes
+    expect(pickCameraMode(modes, 'groove', 0, 0)).not.toBe('push')
+    expect(pickCameraMode(modes, 'groove', 0.9, 0)).toBe('push')
+  })
+
+  it('leaves peak and aggressive framing alone under tension', () => {
+    // Tension peaks on the drop that RELEASES a build. If the override applied
+    // here too, the release would be shot like the build that preceded it — so
+    // full-energy moods keep their own framing and stay distinguishable.
+    for (const scene of SCENES) {
+      for (const mood of ['peak', 'aggressive'] as MoodState[]) {
+        const modes = scene.metadata.cameraModes
+        expect(pickCameraMode(modes, mood, 0.95, 0), `${scene.id}/${mood}`).toBe(
+          pickCameraMode(modes, mood, 0, 0),
+        )
+      }
+    }
+  })
+
+  it('keeps a build and the drop it resolves into visually distinct', () => {
+    // The regression this guards: an earlier tension override applied to every
+    // mood, which collapsed building and peak onto the same mode for every
+    // scene in the roster.
+    const distinct = SCENES.filter((scene) => {
+      const modes = scene.metadata.cameraModes
+      return pickCameraMode(modes, 'building', 0.9, 0) !== pickCameraMode(modes, 'peak', 0.9, 0)
+    })
+    expect(distinct.length).toBeGreaterThan(SCENES.length / 2)
+  })
+
+  it('varies the pick across sections so a repeated mood is not shot identically', () => {
+    const modes = SCENES.find((s) => s.id === 'wireframe')!.metadata.cameraModes
+    const picks = new Set([0, 16, 32, 48].map((beat) => pickCameraMode(modes, 'groove', 0, beat)))
+    expect(picks.size).toBeGreaterThan(1)
+  })
+
+  it('falls back to hover when a scene declares no modes at all', () => {
+    expect(pickCameraMode(undefined, 'peak', 0, 0)).toBe('hover')
+    expect(pickCameraMode([], 'peak', 0, 0)).toBe('hover')
+  })
+
+  it('cutCamera actually moves the framing on an orbiting mode', () => {
+    // The section-change cut had no caller before this, so nothing had ever
+    // asserted it does anything. A cut that quietly no-ops would look exactly
+    // like a track with no section boundaries.
+    const anchor: CameraAnchor = { target: [0, 0, 0], distance: 10, height: 1 }
+    settle('orbit', anchor, 200)
+    const before = { x: desired.x, z: desired.z }
+    cutCamera()
+    computeDesired('orbit', anchor, 200 / 60, 1 / 60)
+    expect(Math.hypot(desired.x - before.x, desired.z - before.z)).toBeGreaterThan(anchor.distance)
+    // Still on the orbit circle — a cut changes the angle, not the framing.
+    expect(Math.hypot(desired.x, desired.z)).toBeCloseTo(anchor.distance, 0)
+  })
+
+  it('leaves no camera mode unreachable across the roster', () => {
+    // The bug this whole change fixes: the mode was pinned to `cameraModes[0]`,
+    // so six of the nine modes never ran outside this test file. A mode nothing
+    // can select is dead code that still has to be maintained — if a future
+    // roster edit strands one again, this fails rather than going quiet.
+    const reachable = new Set<CameraMode>()
+    for (const scene of SCENES) {
+      for (const mood of MOODS) {
+        for (const tension of [0, 0.9]) {
+          for (const beat of [0, 16]) {
+            reachable.add(pickCameraMode(scene.metadata.cameraModes, mood, tension, beat))
+          }
+        }
+      }
+    }
+    const unreachable = CAMERA_MODES.filter((mode) => !reachable.has(mode))
+    expect(unreachable, `no scene/mood combination can select: ${unreachable.join(', ')}`).toEqual(
+      [],
+    )
   })
 })

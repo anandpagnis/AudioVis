@@ -54,8 +54,6 @@ export interface PerformanceState {
   particleDensity: number
   /** 0..1 — how much geometry/shader distortion to apply. */
   distortion: number
-  /** 0..1 — overall visual busyness; scenes may shed detail below thresholds. */
-  complexity: number
   /**
    * 0..1 — dramatic pressure. Rises through a build, peaks on a drop. Distinct
    * from energy: tension is about *anticipation*, so it can be high while the
@@ -112,7 +110,6 @@ export const performanceState: PerformanceState = {
   animationIntensity: 1,
   particleDensity: 1,
   distortion: 0,
-  complexity: 1,
   visualTension: 0,
 
   bloom: 1,

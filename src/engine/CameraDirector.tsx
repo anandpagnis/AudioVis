@@ -1,6 +1,7 @@
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
+import type { MoodState } from '../audio/types'
 import { getScene } from '../scenes'
 import { approach, performanceState, type CameraMode } from './performanceState'
 
@@ -52,6 +53,82 @@ const state = new CameraState()
 /** Instant angle jump — a VJ-style cut, used on section changes. */
 export function cutCamera(delta = Math.PI / 2) {
   state.angle += delta
+}
+
+/**
+ * Camera behaviour each mood wants, best fit first.
+ *
+ * Only modes a scene actually declares are eligible, so this is a *preference*
+ * order rather than a mapping — a scene never gets framing it wasn't authored
+ * for. The lists are deliberately long enough that every registered scene
+ * resolves to a real preference for every mood instead of falling through.
+ *
+ * Note `handheld` appears only under `peak`/`aggressive`. That is an invariant,
+ * not an accident: a shaky lens over an ambient passage reads as a mistake, and
+ * the tension override below deliberately cannot introduce it.
+ */
+const MODE_PREFERENCE: Record<MoodState, CameraMode[]> = {
+  silence: ['locked', 'hover', 'cinematic', 'orbit'],
+  // `pull` sits high here: retreating from the subject is what gives an ambient
+  // passage its air, and it is the one mode that reads as the show exhaling.
+  ambient: ['hover', 'pull', 'cinematic', 'locked', 'orbit'],
+  mellow: ['cinematic', 'orbit', 'hover', 'spiral', 'pull'],
+  groove: ['orbit', 'spiral', 'cinematic', 'hover', 'topdown'],
+  building: ['push', 'spiral', 'orbit', 'cinematic', 'hover'],
+  peak: ['handheld', 'spiral', 'push', 'orbit', 'topdown'],
+  aggressive: ['handheld', 'topdown', 'spiral', 'push', 'orbit'],
+}
+
+/** Above this dramatic pressure, anticipation framing outranks the mood's own. */
+const TENSION_THRESHOLD = 0.55
+
+/**
+ * Framing that reads as anticipation, promoted while tension is high.
+ *
+ * `push` and `spiral` only — closing on the subject is what a build looks like.
+ * `handheld` is excluded on purpose so the calm-mood invariant above holds at
+ * every tension value, including the quiet bar before a drop.
+ */
+const TENSION_MODES: CameraMode[] = ['push', 'spiral']
+
+/**
+ * Moods the tension override does NOT apply to.
+ *
+ * Tension is highest during a build and on the drop that releases it. If the
+ * override applied everywhere, both would be shot the same way and the release
+ * would look like more of the build — so at full energy the mood's own framing
+ * wins and `handheld` still reads as the arrival.
+ */
+const TENSION_EXEMPT: MoodState[] = ['peak', 'aggressive']
+
+/** Fallback for a scene that declares no modes — matches the old hardcoded default. */
+const DEFAULT_MODES: CameraMode[] = ['hover']
+
+/**
+ * Choose how to shoot the current scene.
+ *
+ * Pure and exported for tests: this decides the whole look of a section and,
+ * like the framing math itself, would regress invisibly — a wrong-but-valid
+ * mode still renders.
+ *
+ * `beatIndex` varies the pick between the top two fits so a track that returns
+ * to the same mood on the same scene is not shot identically each time.
+ */
+export function pickCameraMode(
+  modes: CameraMode[] | undefined,
+  mood: MoodState,
+  tension: number,
+  beatIndex: number,
+): CameraMode {
+  const declared = modes && modes.length > 0 ? modes : DEFAULT_MODES
+  const tense = tension > TENSION_THRESHOLD && !TENSION_EXEMPT.includes(mood)
+  const preference = tense
+    ? [...new Set([...TENSION_MODES, ...MODE_PREFERENCE[mood]])]
+    : MODE_PREFERENCE[mood]
+
+  const ranked = preference.filter((mode) => declared.includes(mode))
+  if (ranked.length === 0) return declared[0]
+  return ranked[Math.floor(Math.max(0, beatIndex) / 16) % Math.min(2, ranked.length)]
 }
 
 /**

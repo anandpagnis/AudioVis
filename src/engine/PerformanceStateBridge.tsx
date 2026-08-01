@@ -1,7 +1,9 @@
+import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
 import type { MoodState } from '../audio/types'
 import { getScene } from '../scenes'
+import { cutCamera, pickCameraMode } from './CameraDirector'
 import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
 import { quality } from './quality'
@@ -40,6 +42,9 @@ const BLOOM_BASE: Record<MoodState, number> = {
  * directors (−90 … −85) and well before any executor.
  */
 export function PerformanceStateBridge() {
+  /** Visible scene the current camera mode was chosen for. */
+  const lastCameraScene = useRef('')
+
   useFrame(() => {
     const f = audioEngine.features
     const s = useStore.getState()
@@ -55,26 +60,43 @@ export function PerformanceStateBridge() {
     p.palette = s.paletteId
     p.mood = m.state
 
-    // Camera mode follows the VISIBLE scene's declared default. Phase 6 hands
-    // this choice to the creative director (picking from `cameraModes`); until
-    // then each scene keeps the framing it was authored with.
-    const active = getScene(p.activeScene)
-    p.cameraMode = active.metadata.cameraModes?.[0] ?? 'hover'
-
     // --- Behaviour ---
     p.animationIntensity = params.intensity
     p.particleDensity = quality.knobs.particleFraction
-    p.complexity = quality.knobs.noiseOctaves / 4
 
     // Dramatic pressure, not loudness: a build with rising energy is tense even
-    // while quiet, and a drop is the release. This is the one genuinely new
-    // signal here — nothing consumes it yet, so it cannot change behaviour.
+    // while quiet, and a drop is the release. Consumed by the camera pick below,
+    // by AnimationDirector's explode/dissolve primitives, and by glitch.
     const buildTension = m.isBuilding ? 0.35 + Math.max(0, m.energyVel) * 0.4 : 0
     const predictionTension =
       m.predictedState === 'peak' && m.beatsTillTransition >= 0
         ? Math.max(0, 1 - m.beatsTillTransition / 16) * 0.5
         : 0
     p.visualTension = Math.min(1, Math.max(buildTension, predictionTension) + (f.drop ? 0.5 : 0))
+
+    // --- Camera ---
+    // Which mode to shoot in is a DECISION, re-taken at section boundaries and
+    // whenever the visible scene changes (a new scene may not declare the mode
+    // that was running). Deliberately NOT re-evaluated every frame: a mode that
+    // flickers reads as noise, and CameraDirector eases toward its target, so
+    // the target has to hold still long enough to converge on.
+    //
+    // This runs regardless of AutoPilot. Framing is not one of the choices the
+    // user is overriding when they pick a scene by hand, so it should keep
+    // being directed either way.
+    const active = getScene(p.activeScene)
+    if (f.sectionChange || active.id !== lastCameraScene.current) {
+      lastCameraScene.current = active.id
+      p.cameraMode = pickCameraMode(
+        active.metadata.cameraModes,
+        m.state,
+        p.visualTension,
+        f.beatIndex,
+      )
+      // A section boundary is the one moment a hard angle jump reads as
+      // deliberate rather than as a glitch — this is the VJ cut.
+      if (f.sectionChange) cutCamera()
+    }
 
     // --- Post / effects ---
     // Phase 4: these are DECISIONS, not a transcription of the audio. The base

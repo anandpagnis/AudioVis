@@ -112,7 +112,9 @@ export const SCENES: SceneDef[] = [
       compatibleWith: ['plasma', 'dissolve', 'chrome'],
       moodFit: { ambient: 0.66, mellow: 0.62, groove: 0.8, building: 0.86, peak: 0.72, aggressive: 0.66 },
       cameraAnchor: { target: [0, 0, 0], distance: 9.5, height: 1.6 },
-      cameraModes: ['orbit', 'cinematic', 'spiral', 'hover'],
+      // `push` is what separates this scene's build from its peak — without it
+      // every high-energy mood resolves to the same spiral.
+      cameraModes: ['orbit', 'cinematic', 'spiral', 'hover', 'push'],
     },
   },
   {
@@ -163,7 +165,7 @@ export const SCENES: SceneDef[] = [
       moodFit: { ambient: 0.7, mellow: 0.84, groove: 0.78, building: 0.7, peak: 0.62 },
       // Specular hero — orbiting is what makes the reflections travel.
       cameraAnchor: { target: [0, 0, 0], distance: 8.2, height: 1.2 },
-      cameraModes: ['orbit', 'cinematic', 'spiral', 'topdown'],
+      cameraModes: ['orbit', 'cinematic', 'spiral', 'topdown', 'pull'],
     },
   },
   {
@@ -180,7 +182,7 @@ export const SCENES: SceneDef[] = [
       compatibleWith: ['wireframe', 'chrome', 'dissolve'],
       moodFit: { ambient: 0.8, mellow: 0.86, groove: 0.82, building: 0.8, peak: 0.7 },
       cameraAnchor: { target: [0, 0, 0], distance: 10, height: 1.4 },
-      cameraModes: ['cinematic', 'spiral', 'orbit', 'handheld'],
+      cameraModes: ['cinematic', 'spiral', 'orbit', 'handheld', 'pull'],
     },
   },
 ]
