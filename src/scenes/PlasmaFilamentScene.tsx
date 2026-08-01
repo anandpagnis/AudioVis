@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
+import { applyToUniforms } from '../engine/AnimationDirector'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -27,13 +28,14 @@ import { useDispose } from '../engine/useDispose'
 const COUNT = 70000
 const SPREAD = 9.0
 
-const VERT = /* glsl */ `
+export const VERT = /* glsl */ `
   attribute vec4 aRand;
   uniform float uFlow;
   uniform float uBass;
   uniform float uEnergy;
   uniform float uPulse;
   uniform float uTransient;
+  uniform float uAnimExplode;
   uniform float uSize;
   varying float vRadius;
   varying vec2 vStreak;
@@ -78,7 +80,10 @@ const VERT = /* glsl */ `
 
     // Transient rides on top of the beat pulse: it reacts faster than any band
     // envelope, so sharp hits kick the whole field outward before bass responds.
-    fp *= 1.0 + uPulse * 0.07 + uTransient * 0.06;
+    // Explode is the slow counterpart: it carries the director's visualTension,
+    // so the field visibly strains apart through a build — while the music
+    // there may still be quiet and no band envelope is moving at all.
+    fp *= 1.0 + uPulse * 0.07 + uTransient * 0.06 + uAnimExplode * 0.18;
     vRadius = length(fp);
 
     vec4 mv = modelViewMatrix * vec4(fp, 1.0);
@@ -100,7 +105,7 @@ const VERT = /* glsl */ `
   }
 `
 
-const FRAG = /* glsl */ `
+export const FRAG = /* glsl */ `
   precision highp float;
   uniform vec3 uColCore;
   uniform vec3 uColMid;
@@ -216,6 +221,7 @@ export function PlasmaFilamentScene() {
           uEnergy: { value: 0 },
           uPulse: { value: 0 },
           uTransient: { value: 0 },
+          uAnimExplode: { value: 0 },
           uSize: { value: 2.1 },
           uFade: { value: 0 },
           uSpread: { value: SPREAD },
@@ -251,6 +257,7 @@ export function PlasmaFilamentScene() {
       u.uEnergy.value = b.energy
       u.uPulse.value = b.pulse
       u.uTransient.value = b.transient
+      applyToUniforms(u)
       u.uFade.value = vis
       // Accent burns at the core, primary through the body, secondary at the rim.
       u.uColCore.value.copy(col.c)

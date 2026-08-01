@@ -114,7 +114,7 @@ export function WireframeHeroScene() {
   const tint = useMemo(() => new THREE.Color(), [])
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, params }) => {
+    ({ f, dt, b, col, vis, params, anim }) => {
     // Each band gets its OWN visual job, so they stay separable by eye:
     //   bass     → mass (scale/breathing)
     //   mid      → harmonic body (hue shift + rotation speed)
@@ -180,10 +180,17 @@ export function WireframeHeroScene() {
     }
     if (coreRef.current) {
       // Counter-rotation is what sells depth on a see-through subject; presence
-      // adds a fast twitch on top of the slow bass swell.
+      // adds a fast twitch on top of the slow bass swell. `twist` is an
+      // accumulating mid-driven shear — unlike b.mid it has memory, so a long
+      // harmonic passage keeps leaning the core over rather than resetting to
+      // centre the moment the chord stops.
       coreRef.current.rotation.y = -angle * 1.9
-      coreRef.current.rotation.z = angle * 0.7 + b.presence * 0.5
-      coreRef.current.scale.setScalar(0.85 + b.bass * 0.3 + b.pulse * 0.12 + b.transient * 0.1)
+      coreRef.current.rotation.z = angle * 0.7 + b.presence * 0.5 + anim.twist * 0.4
+      // Tension pulls the core out of the hero before a drop lands: the two
+      // shells separate, then snap back on the release.
+      coreRef.current.scale.setScalar(
+        0.85 + b.bass * 0.3 + b.pulse * 0.12 + b.transient * 0.1 + anim.explode * 0.3,
+      )
     }
     if (ringRef.current) {
       ringRef.current.rotation.x = Math.PI * 0.5 + Math.sin(f.time * 0.18) * 0.34

@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
+import { applyToUniforms } from '../engine/AnimationDirector'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -143,6 +144,7 @@ export const FRAG = /* glsl */ `
   uniform float uHihat;
   uniform float uEnergy;
   uniform float uTime;
+  uniform float uAnimRipple;
   uniform float uFade;
   varying float vT;
   varying float vSide;
@@ -163,8 +165,12 @@ export const FRAG = /* glsl */ `
     // waveform rather than just a wobble in the ribbon's path.
     col = mix(col, uColC, clamp(abs(vWave) * 2.6, 0.0, 1.0) * 0.7);
 
-    // Hats put a travelling glint on the ribbons and touch nothing else.
-    float glint = pow(max(0.0, sin(vT * 26.0 - uTime * 5.0 + vRand * 6.28)), 18.0);
+    // Hats put a travelling glint on the ribbons and touch nothing else. The
+    // glint travels on the tempo-locked ripple phase rather than wall-clock
+    // time, so on a fast track the sparkle runs fast. uAnimRipple is a 0..1
+    // sawtooth, so its multiplier MUST stay a whole number of turns (5.0 below)
+    // — a fractional one steps the phase at every wrap and the glint stutters.
+    float glint = pow(max(0.0, sin(vT * 26.0 - uAnimRipple * 6.2831853 * 5.0 + vRand * 6.28)), 18.0);
     col += uColC * glint * uHihat * 1.4;
 
     // Exposure discipline: many overlapping additive surfaces, so per-ribbon
@@ -252,6 +258,7 @@ export function FlowRibbonScene() {
           uHihat: { value: 0 },
           uEnergy: { value: 0 },
           uPulse: { value: 0 },
+          uAnimRipple: { value: 0 },
           uFade: { value: 0 },
           uCount: { value: RIBBONS },
           uWave: { value: waveTex },
@@ -309,6 +316,9 @@ export function FlowRibbonScene() {
       u.uHihat.value = b.hihat
       u.uEnergy.value = b.energy
       u.uPulse.value = b.pulse
+      // Opts this material into the director's primitives by name — only the
+      // uniforms declared above are written.
+      applyToUniforms(u)
       u.uFade.value = vis
       u.uColA.value.copy(col.a)
       u.uColB.value.copy(col.b)

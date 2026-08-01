@@ -1,5 +1,5 @@
 import type * as THREE from 'three'
-import { audioEngine, beatPulse } from '../audio/AudioEngine'
+import { audioEngine } from '../audio/AudioEngine'
 import { getAudioResponse } from './audioResponse'
 import { performanceState } from './performanceState'
 
@@ -28,48 +28,48 @@ import { performanceState } from './performanceState'
  * the same across scene types — which is the reuse the refactor is after.
  */
 
-/** The primitive set. Each is a normalized 0..1 (or -1..1 for signed) signal. */
+/**
+ * The primitive set. Each is a normalized 0..1 (or -1..1 for signed) signal.
+ *
+ * Every primitive here is something a scene cannot get from `SceneFrame.b`.
+ * That boundary is deliberate and was learned the hard way: this set originally
+ * also carried `pulse`, `flash` and per-drum `kick`/`snare`/`hihat`, all of
+ * which restated `b.pulse`, `b.transient` and `b.kick`/`b.snare`/`b.hihat` at a
+ * different scale factor. Two sources of truth for "the beat hit" is a bug
+ * waiting to happen, so the duplicates are gone — reach for `b.*` for
+ * instantaneous band energy, and for these when you want STATE that has to
+ * accumulate across frames or a signal derived from the director's own
+ * decisions.
+ */
 export interface AnimationSignals {
-  /** Sharp attack on each beat, fast decay — the classic hit. */
-  pulse: number
-  /** Slow sinusoidal swell, unrelated to beats — life during quiet passages. */
-  breathe: number
-  /** Sustained low-frequency swell driven by bass mass. */
+  /** Sustained low-frequency swell driven by bass mass (bass + sub together). */
   inflate: number
-  /** Signed rotational shear, drifts with mid content. */
+  /** Signed rotational shear, accumulating — drifts with mid content. */
   twist: number
   /** Travelling wave phase, advances with tempo — for radial/linear ripples. */
   ripple: number
-  /** 0..1 scatter amount; rises with tension, slams on a drop. */
+  /**
+   * 0..1 scatter amount; rises with tension, slams on a drop.
+   *
+   * With `dissolve`, this is the only route by which the director's
+   * `visualTension` reaches the screen — the anticipation in the bar before a
+   * drop is not in any band envelope, because the music there is often quiet.
+   */
   explode: number
   /** 0..1 how far a form should be broken apart into particles. */
   dissolve: number
   /** Free-running oscillator, tempo-locked — generic sway/wobble. */
   oscillate: number
-  /** Instantaneous flash from any transient (all-kit). */
-  flash: number
-
-  // Per-instrument channels — these are what let separate layers move
-  // separately instead of everything keying off one broadband envelope.
-  kick: number
-  snare: number
-  hihat: number
 }
 
 /** Live signals. Written once per frame by {@link updateAnimationSignals}. */
 export const animationSignals: AnimationSignals = {
-  pulse: 0,
-  breathe: 0,
   inflate: 0,
   twist: 0,
   ripple: 0,
   explode: 0,
   dissolve: 0,
   oscillate: 0,
-  flash: 0,
-  kick: 0,
-  snare: 0,
-  hihat: 0,
 }
 
 /** Continuous phases that must survive across frames. */
@@ -91,106 +91,49 @@ export function updateAnimationSignals(): void {
   // the whole show's animation up or down without touching a scene.
   const amp = performanceState.animationIntensity
 
-  const beat = beatPulse(f)
-
   phase.ripple += dt * (0.5 + (f.bpm / 120) * 0.8 + f.energy * 0.5)
   phase.oscillate += dt * (0.3 + (f.bpm / 120) * 0.4)
   phase.twist += dt * (r.mid - 0.5) * 0.6
 
-  a.pulse = Math.min(2, beat * amp)
-  a.breathe = (0.5 + Math.sin(f.time * 0.35) * 0.5) * amp
   a.inflate = Math.min(2, (r.bass * 0.8 + r.sub * 0.4) * amp)
   a.twist = Math.max(-1, Math.min(1, Math.sin(phase.twist) * (0.4 + r.mid * 0.6)))
   a.ripple = phase.ripple % 1
   a.oscillate = Math.sin(phase.oscillate * Math.PI * 2)
-  a.flash = Math.min(1, r.transient * amp)
 
   // Tension drives anticipation (things pull apart before the drop); the drop
   // itself is the release, so it slams rather than ramps.
   a.explode = Math.min(1, performanceState.visualTension * 0.7 + r.dropPulse)
   a.dissolve = Math.min(1, performanceState.visualTension * 0.5 + r.build * 0.5)
-
-  a.kick = r.kick * amp
-  a.snare = r.snare * amp
-  a.hihat = r.hihat * amp
 }
 
 /** Standard uniform names a shader scene can declare to receive signals. */
 export interface AnimationUniforms {
-  uAnimPulse?: THREE.IUniform<number>
-  uAnimBreathe?: THREE.IUniform<number>
   uAnimInflate?: THREE.IUniform<number>
   uAnimTwist?: THREE.IUniform<number>
   uAnimRipple?: THREE.IUniform<number>
   uAnimExplode?: THREE.IUniform<number>
   uAnimDissolve?: THREE.IUniform<number>
   uAnimOscillate?: THREE.IUniform<number>
-  uAnimFlash?: THREE.IUniform<number>
-  uAnimKick?: THREE.IUniform<number>
-  uAnimSnare?: THREE.IUniform<number>
-  uAnimHihat?: THREE.IUniform<number>
 }
 
 /**
  * Copy the signals into a shader material's uniforms. Only writes uniforms the
  * material actually declares, so a scene opts in per-primitive just by naming
  * the ones it wants — no base-shader changes, no unused-uniform warnings.
+ *
+ * Mesh scenes have no equivalent helper on purpose. An `applyToObject()` used
+ * to live here, writing absolute scale and position from a captured rest pose;
+ * no scene could call it, because every mesh scene already sets its own scale
+ * and rotation each frame and the two would have fought for the transform.
+ * Mesh scenes read `ctx.anim.*` and fold the values into their own expressions
+ * instead, which also keeps the band-to-job routing per-scene where it belongs.
  */
 export function applyToUniforms(u: AnimationUniforms): void {
   const a = animationSignals
-  if (u.uAnimPulse) u.uAnimPulse.value = a.pulse
-  if (u.uAnimBreathe) u.uAnimBreathe.value = a.breathe
   if (u.uAnimInflate) u.uAnimInflate.value = a.inflate
   if (u.uAnimTwist) u.uAnimTwist.value = a.twist
   if (u.uAnimRipple) u.uAnimRipple.value = a.ripple
   if (u.uAnimExplode) u.uAnimExplode.value = a.explode
   if (u.uAnimDissolve) u.uAnimDissolve.value = a.dissolve
   if (u.uAnimOscillate) u.uAnimOscillate.value = a.oscillate
-  if (u.uAnimFlash) u.uAnimFlash.value = a.flash
-  if (u.uAnimKick) u.uAnimKick.value = a.kick
-  if (u.uAnimSnare) u.uAnimSnare.value = a.snare
-  if (u.uAnimHihat) u.uAnimHihat.value = a.hihat
-}
-
-/** Which primitives an Object3D target should respond to, and how strongly. */
-export interface ObjectAnimation {
-  /** Uniform scale from `pulse`. */
-  pulse?: number
-  /** Uniform scale from `inflate`. */
-  inflate?: number
-  /** Y-axis spin rate, scaled by `twist`. */
-  twist?: number
-  /** Vertical bob from `oscillate`. */
-  bob?: number
-  /** Outward displacement along the object's own position from `explode`. */
-  explode?: number
-}
-
-const baseScale = new WeakMap<THREE.Object3D, number>()
-const basePos = new WeakMap<THREE.Object3D, THREE.Vector3>()
-
-/**
- * Drive a plain Object3D from the signals — the mesh-scene counterpart to
- * {@link applyToUniforms}.
- *
- * The object's scale and position at first call are captured as the rest
- * pose, so repeated application is absolute rather than cumulative (animating
- * relative to the live transform would compound every frame and drift).
- */
-export function applyToObject(obj: THREE.Object3D, spec: ObjectAnimation, delta: number): void {
-  const a = animationSignals
-  if (!baseScale.has(obj)) baseScale.set(obj, obj.scale.x)
-  if (!basePos.has(obj)) basePos.set(obj, obj.position.clone())
-  const s0 = baseScale.get(obj) as number
-  const p0 = basePos.get(obj) as THREE.Vector3
-
-  const scale = s0 * (1 + (spec.pulse ?? 0) * a.pulse * 0.1 + (spec.inflate ?? 0) * a.inflate * 0.12)
-  obj.scale.setScalar(scale)
-
-  if (spec.twist) obj.rotation.y += a.twist * spec.twist * delta
-  obj.position.set(
-    p0.x + p0.x * (spec.explode ?? 0) * a.explode * 0.5,
-    p0.y + (spec.bob ?? 0) * a.oscillate * 0.3 + p0.y * (spec.explode ?? 0) * a.explode * 0.5,
-    p0.z + p0.z * (spec.explode ?? 0) * a.explode * 0.5,
-  )
 }

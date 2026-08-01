@@ -57,7 +57,7 @@ export function ChromeFormScene() {
   const white = useMemo(() => new THREE.Color('#ffffff'), [])
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, params }) => {
+    ({ f, dt, b, col, vis, params, anim }) => {
       heroMat.opacity = vis
 
       // Metal tints its reflections by base colour. Lerp from white rather than
@@ -70,7 +70,9 @@ export function ChromeFormScene() {
       // envelope, which is what reflections alone can never fake.
       heroMat.emissiveIntensity = b.pulse * 0.4 + b.transient * 0.7 + (f.drop ? 0.9 : 0)
       // Reflections swell with the low end: the room "brightens" on the bass.
-      heroMat.envMapIntensity = 0.6 + b.bass * 0.55 + b.pulse * 0.3
+      // `inflate` folds sub in with bass, so a track whose weight sits below
+      // the bass band still moves the reflections — b.bass alone misses it.
+      heroMat.envMapIntensity = 0.6 + b.bass * 0.55 + b.pulse * 0.3 + anim.inflate * 0.25
       // Highs frost the surface. Raised well past the old 0.05 — at that amount it
       // was mathematically present but invisible, which is exactly the complaint.
       // Presence sharpens the clearcoat separately, so hats and snares do visibly
@@ -82,7 +84,7 @@ export function ChromeFormScene() {
       if (heroRef.current) {
         heroRef.current.rotation.y = angle
         heroRef.current.rotation.x = Math.sin(f.time * 0.11) * 0.4
-        heroRef.current.scale.setScalar(1 + b.pulse * 0.055 + b.bass * 0.045)
+        heroRef.current.scale.setScalar(1 + b.pulse * 0.055 + anim.inflate * 0.05)
       }
     },
     { visCeiling: 1, visFloor: 0.6 },

@@ -35,7 +35,7 @@ function smooth(x: number): number {
   return t * t * (3 - 2 * t)
 }
 
-const VERT = /* glsl */ `
+export const VERT = /* glsl */ `
   attribute vec3 aScattered;
   attribute vec4 aRand;
   uniform float uDissolve;
@@ -94,7 +94,7 @@ const VERT = /* glsl */ `
   }
 `
 
-const FRAG = /* glsl */ `
+export const FRAG = /* glsl */ `
   precision highp float;
   uniform vec3 uColForm;
   uniform vec3 uColHot;
@@ -302,7 +302,7 @@ export function DissolveCageScene() {
   useDispose(cageMat, cage.geometry, material, geometry)
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, params, state }) => {
+    ({ f, dt, b, col, vis, params, state, anim }) => {
     const u = material.uniforms
 
     geometry.setDrawRange(0, Math.floor(COUNT * state.particleDensity))
@@ -320,6 +320,12 @@ export function DissolveCageScene() {
     // crossing them at constant speed.
     let target = smooth(1 - Math.abs(1 - 2 * phase))
     if (f.drop) target = 1
+    // The director's dissolve primitive can only ever pull the form further
+    // APART, never hold it together — it carries visualTension, so a build
+    // starts scattering the cloud before the drop lands, on top of whatever the
+    // autonomous cycle was already doing. Taking the max rather than adding
+    // keeps the cycle's dwell at both extremes intact.
+    target = Math.max(target, anim.dissolve)
     // Drops rip it apart fast; the autonomous cycle breathes slowly.
     dissolve.current += (target - dissolve.current) * Math.min(1, dt * (f.drop ? 9 : 2.2))
 
@@ -335,7 +341,9 @@ export function DissolveCageScene() {
 
     if (cageRef.current) {
       cageRef.current.rotation.y += dt * (0.06 + b.mid * 0.14) * params.speed
-      cageRef.current.rotation.x = Math.sin(f.time * 0.08) * 0.12
+      // Tempo-locked sway rather than a wall-clock sine: the cage now tilts in
+      // time with the track instead of drifting against it.
+      cageRef.current.rotation.x = anim.oscillate * 0.12
     }
 
     u.uDissolve.value = dissolve.current
