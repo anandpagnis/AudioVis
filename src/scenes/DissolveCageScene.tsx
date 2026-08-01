@@ -303,62 +303,62 @@ export function DissolveCageScene() {
 
   useSceneFrame(
     ({ f, dt, b, col, vis, params, state, anim }) => {
-    const u = material.uniforms
+      const u = material.uniforms
 
-    geometry.setDrawRange(0, Math.floor(COUNT * state.particleDensity))
+      geometry.setDrawRange(0, Math.floor(COUNT * state.particleDensity))
 
-    // Band jobs here: mid widens the swirl and turns the cage, presence snaps the
-    // cage stroke, high sparkles the cloud, transient jitters it.
-    // Autonomous cycle: assembled → dispersed → assembled over CYCLE_BEATS, so
-    // the scene is never static even on a track that never drops. Section
-    // changes restart it, which keeps the arc aligned with the music's own form.
-    const total = f.beatIndex + f.beatProgress
-    if (cycleStart.current < 0) cycleStart.current = total
-    if (f.sectionChange) cycleStart.current = total
-    const phase = ((total - cycleStart.current) / CYCLE_BEATS) % 1
-    // Triangle wave through a smooth ease — dwells at both extremes instead of
-    // crossing them at constant speed.
-    let target = smooth(1 - Math.abs(1 - 2 * phase))
-    if (f.drop) target = 1
-    // The director's dissolve primitive can only ever pull the form further
-    // APART, never hold it together — it carries visualTension, so a build
-    // starts scattering the cloud before the drop lands, on top of whatever the
-    // autonomous cycle was already doing. Taking the max rather than adding
-    // keeps the cycle's dwell at both extremes intact.
-    target = Math.max(target, anim.dissolve)
-    // Drops rip it apart fast; the autonomous cycle breathes slowly.
-    dissolve.current += (target - dissolve.current) * Math.min(1, dt * (f.drop ? 9 : 2.2))
+      // Band jobs here: mid widens the swirl and turns the cage, presence snaps the
+      // cage stroke, high sparkles the cloud, transient jitters it.
+      // Autonomous cycle: assembled → dispersed → assembled over CYCLE_BEATS, so
+      // the scene is never static even on a track that never drops. Section
+      // changes restart it, which keeps the arc aligned with the music's own form.
+      const total = f.beatIndex + f.beatProgress
+      if (cycleStart.current < 0) cycleStart.current = total
+      if (f.sectionChange) cycleStart.current = total
+      const phase = ((total - cycleStart.current) / CYCLE_BEATS) % 1
+      // Triangle wave through a smooth ease — dwells at both extremes instead of
+      // crossing them at constant speed.
+      let target = smooth(1 - Math.abs(1 - 2 * phase))
+      if (f.drop) target = 1
+      // The director's dissolve primitive can only ever pull the form further
+      // APART, never hold it together — it carries visualTension, so a build
+      // starts scattering the cloud before the drop lands, on top of whatever the
+      // autonomous cycle was already doing. Taking the max rather than adding
+      // keeps the cycle's dwell at both extremes intact.
+      target = Math.max(target, anim.dissolve)
+      // Drops rip it apart fast; the autonomous cycle breathes slowly.
+      dissolve.current += (target - dissolve.current) * Math.min(1, dt * (f.drop ? 9 : 2.2))
 
-    cageMat.resolution.set(gl.domElement.width, gl.domElement.height)
-    // Overdriven colour rather than low opacity — LineMaterial's alpha caps at
-    // 1, so brightness has to come from the colour to read as hot phosphor
-    // (same reasoning as WireframeHeroScene). The cage stays below the particle
-    // cloud's brightness so the dissolving form remains the subject.
-    cageMat.color.copy(col.a).multiplyScalar(0.75 + b.pulse * 0.7 + b.high * 0.5)
-    cageMat.opacity = Math.min(1, vis * 0.85)
-    // Presence owns the cage's stroke weight — the frame sharpens on snares.
-    cageMat.linewidth = 1.6 + b.presence * 1.6 + b.pulse * 0.6
+      cageMat.resolution.set(gl.domElement.width, gl.domElement.height)
+      // Overdriven colour rather than low opacity — LineMaterial's alpha caps at
+      // 1, so brightness has to come from the colour to read as hot phosphor
+      // (same reasoning as WireframeHeroScene). The cage stays below the particle
+      // cloud's brightness so the dissolving form remains the subject.
+      cageMat.color.copy(col.a).multiplyScalar(0.75 + b.pulse * 0.7 + b.high * 0.5)
+      cageMat.opacity = Math.min(1, vis * 0.85)
+      // Presence owns the cage's stroke weight — the frame sharpens on snares.
+      cageMat.linewidth = 1.6 + b.presence * 1.6 + b.pulse * 0.6
 
-    if (cageRef.current) {
-      cageRef.current.rotation.y += dt * (0.06 + b.mid * 0.14) * params.speed
-      // Tempo-locked sway rather than a wall-clock sine: the cage now tilts in
-      // time with the track instead of drifting against it.
-      cageRef.current.rotation.x = anim.oscillate * 0.12
-    }
+      if (cageRef.current) {
+        cageRef.current.rotation.y += dt * (0.06 + b.mid * 0.14) * params.speed
+        // Tempo-locked sway rather than a wall-clock sine: the cage now tilts in
+        // time with the track instead of drifting against it.
+        cageRef.current.rotation.x = anim.oscillate * 0.12
+      }
 
-    u.uDissolve.value = dissolve.current
-    u.uTime.value = f.time
-    u.uBass.value = b.bass
-    u.uMid.value = b.mid
-    u.uPresence.value = b.presence
-    u.uHigh.value = b.high
-    u.uPulse.value = b.pulse
-    u.uTransient.value = b.transient
-    u.uEnergy.value = b.energy
-    u.uFade.value = vis
-    u.uColForm.value.copy(col.a)
-    u.uColHot.value.copy(col.c)
-    u.uColAir.value.copy(col.b)
+      u.uDissolve.value = dissolve.current
+      u.uTime.value = f.time
+      u.uBass.value = b.bass
+      u.uMid.value = b.mid
+      u.uPresence.value = b.presence
+      u.uHigh.value = b.high
+      u.uPulse.value = b.pulse
+      u.uTransient.value = b.transient
+      u.uEnergy.value = b.energy
+      u.uFade.value = vis
+      u.uColForm.value.copy(col.a)
+      u.uColHot.value.copy(col.c)
+      u.uColAir.value.copy(col.b)
     },
     { visCeiling: 1.3, visFloor: 0.55 },
   )

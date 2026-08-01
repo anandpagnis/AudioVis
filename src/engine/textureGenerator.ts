@@ -31,7 +31,8 @@ const MOOD_PROMPTS: Record<MoodState, string> = {
   groove: 'rhythmic flowing curves, smooth neon waves, layered abstract patterns',
   building: 'spiraling energy streams, converging light trails, rising abstract motion',
   peak: 'explosive radiant light burst, intense abstract plasma waves, dramatic energy',
-  aggressive: 'fractured glitch shards, harsh electric arcs, chaotic abstract energy, high contrast',
+  aggressive:
+    'fractured glitch shards, harsh electric arcs, chaotic abstract energy, high contrast',
 }
 
 const PALETTE_WORDS: Record<string, string> = {
@@ -98,7 +99,11 @@ class TextureGenerator {
    * Get (or kick off) the texture for a mood/palette combo. Resolves null
    * when the backend is unavailable or generation fails — callers just skip.
    */
-  async request(state: MoodState, paletteId: string, variant: number): Promise<THREE.Texture | null> {
+  async request(
+    state: MoodState,
+    paletteId: string,
+    variant: number,
+  ): Promise<THREE.Texture | null> {
     if (state === 'silence') return null
     const key = `${state}_${paletteId}_v${variant % STYLE_VARIANTS.length}`
     const cached = this.cache.get(key)

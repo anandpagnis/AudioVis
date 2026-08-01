@@ -37,11 +37,46 @@ export interface QualityKnobs {
  * count and octaves fall first (raymarch dominates), then fluid/particles.
  */
 const TIERS: QualityKnobs[] = [
-  { renderScale: 1.0, raymarchSteps: 96, noiseOctaves: 4, fluidJacobi: 20, particleFraction: 1.0, maxHeavyLayers: 2 },
-  { renderScale: 0.85, raymarchSteps: 72, noiseOctaves: 4, fluidJacobi: 16, particleFraction: 0.8, maxHeavyLayers: 2 },
-  { renderScale: 0.7, raymarchSteps: 54, noiseOctaves: 3, fluidJacobi: 12, particleFraction: 0.6, maxHeavyLayers: 1 },
-  { renderScale: 0.58, raymarchSteps: 40, noiseOctaves: 3, fluidJacobi: 10, particleFraction: 0.45, maxHeavyLayers: 1 },
-  { renderScale: 0.48, raymarchSteps: 28, noiseOctaves: 2, fluidJacobi: 8, particleFraction: 0.33, maxHeavyLayers: 1 },
+  {
+    renderScale: 1.0,
+    raymarchSteps: 96,
+    noiseOctaves: 4,
+    fluidJacobi: 20,
+    particleFraction: 1.0,
+    maxHeavyLayers: 2,
+  },
+  {
+    renderScale: 0.85,
+    raymarchSteps: 72,
+    noiseOctaves: 4,
+    fluidJacobi: 16,
+    particleFraction: 0.8,
+    maxHeavyLayers: 2,
+  },
+  {
+    renderScale: 0.7,
+    raymarchSteps: 54,
+    noiseOctaves: 3,
+    fluidJacobi: 12,
+    particleFraction: 0.6,
+    maxHeavyLayers: 1,
+  },
+  {
+    renderScale: 0.58,
+    raymarchSteps: 40,
+    noiseOctaves: 3,
+    fluidJacobi: 10,
+    particleFraction: 0.45,
+    maxHeavyLayers: 1,
+  },
+  {
+    renderScale: 0.48,
+    raymarchSteps: 28,
+    noiseOctaves: 2,
+    fluidJacobi: 8,
+    particleFraction: 0.33,
+    maxHeavyLayers: 1,
+  },
 ]
 
 /** Fixed store qualities map onto a pinned tier. */

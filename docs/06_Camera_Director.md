@@ -48,7 +48,7 @@ Now a scene declares only **where it can be looked at** (a `cameraAnchor`) and *
 ```text
 Scene metadata
   ├── cameraAnchor: { target, distance, height }
-  └── cameraModes: CameraMode[]        // first entry is the default
+  └── cameraModes: CameraMode[]        // the modes the director may choose from
 
 performanceState.cameraMode ──┐
 performanceState.activeScene ─┴─► CameraDirector (−80)
@@ -188,7 +188,7 @@ Still visual-only: whether a given mode actually *feels* right on a given scene 
 
 ## Future Improvements
 
-- **Director-chosen modes:** `cameraModes` is a ranked list, but the default (first entry) is what runs today. Phase 6 lets the performance director pick from it by mood/energy.
+- **Per-scene mode weighting:** `pickCameraMode()` ranks by mood and tension against one shared preference table. A scene cannot yet say "orbit suits me better than it suits the others", only whether a mode is allowed at all.
 - **Mood mapping:** ambient → slow wide `cinematic`; peak → tight reactive `orbit`.
 - **Blends between modes** over N beats rather than a position lerp.
 - **Look-at damping** for handheld/spiral at high energy.

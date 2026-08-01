@@ -6,15 +6,24 @@ const out: VisualParams = { intensity: 1, speed: 1, reactivity: 1 }
 
 function sourceValue(f: AudioFeatures, source: BandSource): number {
   switch (source) {
-    case 'sub': return f.sub
-    case 'bass': return f.bass
-    case 'mid': return f.mid
-    case 'presence': return f.presence
-    case 'high': return f.high
-    case 'vocal': return f.vocal
-    case 'energy': return f.energy
-    case 'transient': return f.transient
-    case 'beatPulse': return Math.min(1, beatPulse(f))
+    case 'sub':
+      return f.sub
+    case 'bass':
+      return f.bass
+    case 'mid':
+      return f.mid
+    case 'presence':
+      return f.presence
+    case 'high':
+      return f.high
+    case 'vocal':
+      return f.vocal
+    case 'energy':
+      return f.energy
+    case 'transient':
+      return f.transient
+    case 'beatPulse':
+      return Math.min(1, beatPulse(f))
   }
 }
 

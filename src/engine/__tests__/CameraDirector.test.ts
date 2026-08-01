@@ -175,7 +175,9 @@ describe('pickCameraMode', () => {
     // failure. This is what keeps the preference tables honest as the roster
     // changes.
     for (const scene of SCENES) {
-      const picks = new Set(MOODS.map((mood) => pickCameraMode(scene.metadata.cameraModes, mood, 0, 0)))
+      const picks = new Set(
+        MOODS.map((mood) => pickCameraMode(scene.metadata.cameraModes, mood, 0, 0)),
+      )
       expect(picks.size, `${scene.id} is shot identically in every mood`).toBeGreaterThan(2)
     }
   })

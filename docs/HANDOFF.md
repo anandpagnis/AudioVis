@@ -36,7 +36,7 @@ Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
 `performanceState` → *execute* band (Camera/Animation/Effects directors +
 scenes) reads it. The decide/execute boundary is the whole design; see §3.
 
-**Before handing off any change:** `npm run check` (typecheck + lint + 54 tests
+**Before handing off any change:** `npm run check` (typecheck + lint + 61 tests
 + build) and the checklist in §8.
 
 **Biggest open gap:** almost nothing here has been verified against *real
@@ -218,12 +218,9 @@ The long-term product is a modular visual instrument:
       suit them — no scene moves the camera. This also deleted the per-scene
       `fade.value >= lastFade` crossfade arbitration: with one writer, two
       mounted scenes can no longer fight for the lens.
-    - **`AnimationDirector`** publishes reusable primitives (pulse, breathe,
-      inflate, twist, ripple, explode, dissolve, oscillate, flash + per-drum
-      channels) as normalized signals, computed once centrally. Consumed two
-      ways because the roster is mixed: `applyToUniforms()` for shader scenes
-      (which animate in GLSL and cannot be driven by mutating an Object3D) and
-      `applyToObject()` for mesh scenes.
+    - **`AnimationDirector`** publishes reusable primitives as normalized
+      signals, computed once centrally. See item 18 — as originally built it had
+      twelve, half of them duplicating `SceneFrame.b`, and *no consumers at all*.
     - **`EffectsDirector`** replaces `PostFX.tsx` — same fixed chain, but it now
       reads `performanceState.bloom`/`.glitch` and makes no decisions of its own.
     - **Percussion tier**: kick / snare / hi-hat are detected independently via
@@ -249,10 +246,11 @@ The long-term product is a modular visual instrument:
     - **Post decisions are now semantic.** Bloom has a per-mood resting level
       (`BLOOM_BASE`) that the music modulates around, rather than a hardcoded
       0.65 — so a breakdown reads calm even with sharp transients and a peak
-      reads hot between hits. Glitch is gated on tension and drops. `fog` and
-      `distortion`, previously declared but inert, now do something: fog deepens
-      as the mix thins (tinted to the palette background, mutated in place so it
-      never invalidates the material shader cache), distortion tracks tension.
+      reads hot between hits. Glitch is gated on tension and drops. `fog`,
+      previously declared but inert, now deepens as the mix thins (tinted to the
+      palette background, mutated in place so it never invalidates the material
+      shader cache). *This item also claimed `distortion` "now does something";
+      it did not — see item 18.*
     - **Not yet done (Phases 5–6):** SceneManager still owns both lifecycle and
       some commit policy, and the creative directors still write the store
       rather than `performanceState` directly. `PerformanceStateBridge` is the
@@ -328,6 +326,48 @@ The long-term product is a modular visual instrument:
       pad, tight ripples for an arpeggio. Decimation keeps the **extreme** per
       bucket, not the mean — averaging a waveform flattens it toward zero, which
       is exactly how a trace turns into a straight line.
+
+18. **The execute band was built but not connected — now it is**
+    Items 14–15 describe Camera/Animation/Effects directors reading
+    `performanceState`. Most of that was written, documented and unit-tested, but
+    **not wired to anything**: it computed values every frame that no consumer
+    read. Three separate instances, all invisible to typecheck, lint, tests and
+    build, because unread code still compiles and still passes.
+
+    - **Camera mode was pinned to `cameraModes[0]`**, so six of the nine modes
+      (`push`, `pull`, `spiral`, `handheld`, `locked`, `topdown`) never ran
+      outside the test file, and `cutCamera()` — the section-change VJ cut its own
+      docstring promises — had no caller. Now `pickCameraMode()` chooses from the
+      modes a scene declares, by mood, with high tension promoting `push`/`spiral`.
+      Peak and aggressive are exempt from that override: tension peaks on the drop
+      that *releases* a build, and overriding there shot the release exactly like
+      the build. Re-taken at section boundaries and on scene change, never per
+      frame — the camera eases toward its target, so the target has to hold still.
+      Runs regardless of AutoPilot. Wireframe gained `push`, Chrome and Ribbons
+      gained `pull`, and a test now fails if any mode becomes unreachable again.
+    - **`AnimationDirector`'s twelve primitives had zero consumers.** Six were
+      deleted rather than wired: `pulse`, `flash`, `kick`, `snare`, `hihat`
+      duplicated `SceneFrame.b.*` at a different scale factor, and `breathe`
+      would have put every scene's idle sway in lockstep. The remaining six each
+      have a consumer now (inflate→Chrome, twist→Wireframe, ripple→Ribbons,
+      explode→Plasma+Wireframe, dissolve+oscillate→Dissolve Cage). `explode` and
+      `dissolve` are the only path by which `visualTension` reaches the screen —
+      the anticipation before a drop is in no band envelope, because the music
+      there is often quiet. `applyToObject()` was deleted: it wrote absolute
+      scale/position from a captured rest pose, so no scene could call it without
+      surrendering the transform it already sets each frame.
+    - **`distortion`, `complexity` and `particleDensity` had no readers**, while
+      the scenes that should have consumed `particleDensity` reached around the
+      seam to `quality.knobs.particleFraction` directly. Scenes now read the
+      seam; `distortion` and `complexity` are deleted. **The rule, now recorded in
+      `performanceState.ts`: a field with no reader gets deleted, not kept for
+      later.** Declared-but-inert is worse than absent — it reads as wired and
+      gets documented as working, which is exactly what happened here.
+
+    Shaders were compiled *and linked* on a real driver, and the harness itself
+    was checked against a sentinel with a stripped uniform declaration. There is
+    still no committed tool for this (§8 mandates the check but ships nothing to
+    run it) — worth adding.
 
 ### Recent correctness fixes
 
@@ -441,19 +481,34 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
    and does AutoPilot's scene choice feel musical. **This gates most of the
    tuning below** — the project's own rule is calibrate against real audio,
    never an idle frame.
-2. **Finish the director refactor (Phases 5–6).** `SceneManager` still owns both
+2. **Merge `AutoPilot` and `PerformanceDirector` into one planner.** They both
+   call `requestScene` in the same frame; `PerformanceDirector` guards on
+   `pendingSceneId` and `AutoPilot` does not, so AutoPilot can override a pending
+   pick and send `SceneManager` down its stale-warm path — discarding the
+   pre-warmed shader the warm gate exists to protect. One planner emitting one
+   decision per frame removes that by construction. Add the `Decision` record
+   `docs/03_AI_Performance_Director.md` already types, and the four constraints
+   that doc marks ❌ (no-repeat, ≤3 dramatic transitions per 60 s, no heavy
+   visuals in a breakdown, fatigue avoidance).
+
+3. **Finish the director refactor (Phases 5–6).** `SceneManager` still owns both
    scene lifecycle *and* some commit policy, and the creative directors still
    write the Zustand store rather than `performanceState` directly.
    `PerformanceStateBridge` is the temporary adapter that keeps this an
    inversion rather than a rewrite — collapsing it is the last structural step,
    after which a new decision-maker (or a whole new renderer) plugs in at one
-   object.
-3. **More scenes.** The contract is now cheap: geometry + metadata +
+   object. Note the bridge now takes the camera-mode decision (item 18); that
+   moves into the planner when it lands.
+
+4. **More scenes.** The contract is now cheap: geometry + metadata +
    `useSceneFrame`. Camera, animation primitives, and post are no longer
    per-scene code. Follow `docs/05_Scene_Architecture.md`, keep to the exposure
    targets in §0, and give each new scene a distinct band-to-job routing so it
-   is separable by eye from the others.
-4. **Mood-scoring calibration.** The texture-based score nudges (item 13) are
+   is separable by eye from the others. Lower priority than it looks: five
+   scenes across nine camera modes is already more variety than a sixth scene
+   would add.
+
+5. **Mood-scoring calibration.** The texture-based score nudges (item 13) are
    principled but untuned by ear.
 
 ### Ideas worth considering
@@ -500,7 +555,7 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
 
 Before shipping a meaningful change:
 
-- `npm run check` — typecheck + lint + **test** + build in one pass (or run them individually
+- `npm run check` — typecheck + lint + **test** (61) + build in one pass (or run them individually
   via `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build`)
 - `npm run format` — Prettier over `src/`
 - If you touched `BpmEstimator`/`PhraseDetector`/`MoodEstimator`/`spectralFeatures`, run
@@ -538,8 +593,8 @@ Before shipping a meaningful change:
 - `src/audio/PercussionDetector.ts` — independent kick/snare/hi-hat detection.
 - `src/engine/performanceState.ts` — **the seam**; read this first.
 - `src/engine/sceneFrame.ts` — `useSceneFrame()`, the per-frame context every scene uses.
-- `src/engine/CameraDirector.tsx` — all camera motion (9 modes).
-- `src/engine/AnimationDirector.ts` — reusable animation primitives.
+- `src/engine/CameraDirector.tsx` — all camera motion (9 modes) and `pickCameraMode()`.
+- `src/engine/AnimationDirector.ts` — the six animation primitives `SceneFrame.b` cannot supply.
 - `src/audio/types.ts` — scene-facing feature contract.
 - `src/engine/audioResponse.ts` — reusable response envelopes.
 - `src/engine/SceneManager.tsx` — primary/layer mounting, fades, and transition telemetry.

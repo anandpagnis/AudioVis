@@ -27,7 +27,10 @@ export function DebugPanel() {
       ctx.fillStyle = 'rgba(120, 200, 255, 0.75)'
       for (let i = 0; i < bars; i++) {
         const start = Math.floor(Math.pow(i / bars, 1.8) * f.spectrum.length)
-        const end = Math.max(start + 1, Math.floor(Math.pow((i + 1) / bars, 1.8) * f.spectrum.length))
+        const end = Math.max(
+          start + 1,
+          Math.floor(Math.pow((i + 1) / bars, 1.8) * f.spectrum.length),
+        )
         let v = 0
         for (let j = start; j < end; j++) v = Math.max(v, f.spectrum[j])
         const h = Math.min(1, v * 14) * (H - 40)

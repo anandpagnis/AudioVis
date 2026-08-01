@@ -115,90 +115,90 @@ export function WireframeHeroScene() {
 
   useSceneFrame(
     ({ f, dt, b, col, vis, params, anim }) => {
-    // Each band gets its OWN visual job, so they stay separable by eye:
-    //   bass     → mass (scale/breathing)
-    //   mid      → harmonic body (hue shift + rotation speed)
-    //   presence → edge definition (stroke weight snaps on snares/plucks)
-    //   high     → the annotation ring (hats drive it, nothing else does)
-    //   transient→ instantaneous flash, faster than any band envelope
-    // Presence is preferred over high for punch: it spans 2–5 kHz over ~140 FFT
-    // bins, where `high` averages 2–9 kHz over ~325 mostly-noise-floor bins and
-    // so has visibly less dynamic range once normalized.
+      // Each band gets its OWN visual job, so they stay separable by eye:
+      //   bass     → mass (scale/breathing)
+      //   mid      → harmonic body (hue shift + rotation speed)
+      //   presence → edge definition (stroke weight snaps on snares/plucks)
+      //   high     → the annotation ring (hats drive it, nothing else does)
+      //   transient→ instantaneous flash, faster than any band envelope
+      // Presence is preferred over high for punch: it spans 2–5 kHz over ~140 FFT
+      // bins, where `high` averages 2–9 kHz over ~325 mostly-noise-floor bins and
+      // so has visibly less dynamic range once normalized.
 
-    // LineMaterial sizes strokes in CSS pixels, which means it needs the live
-    // drawing-buffer size. PerfMonitor changes DPR whenever the quality tier
-    // steps, so a mount-time value goes wrong the moment load changes — set it
-    // every frame and resize/fullscreen/tier changes all stay correct for free.
-    const w = gl.domElement.width
-    const h = gl.domElement.height
+      // LineMaterial sizes strokes in CSS pixels, which means it needs the live
+      // drawing-buffer size. PerfMonitor changes DPR whenever the quality tier
+      // steps, so a mount-time value goes wrong the moment load changes — set it
+      // every frame and resize/fullscreen/tier changes all stay correct for free.
+      const w = gl.domElement.width
+      const h = gl.domElement.height
 
-    // Body lines sit on the primary; the beat pushes them toward the accent, and
-    // mid content pulls toward the secondary — so harmonic movement shifts hue
-    // independently of rhythm instead of everything keying off the kick.
-    tint
-      .copy(col.a)
-      .lerp(col.c, Math.min(1, b.pulse * 0.8))
-      .lerp(col.b, Math.min(0.6, b.mid * 0.5))
+      // Body lines sit on the primary; the beat pushes them toward the accent, and
+      // mid content pulls toward the secondary — so harmonic movement shifts hue
+      // independently of rhythm instead of everything keying off the kick.
+      tint
+        .copy(col.a)
+        .lerp(col.c, Math.min(1, b.pulse * 0.8))
+        .lerp(col.b, Math.min(0.6, b.mid * 0.5))
 
-    for (const mat of [heroMat, coreMat, ringMat]) {
-      mat.resolution.set(w, h)
-    }
+      for (const mat of [heroMat, coreMat, ringMat]) {
+        mat.resolution.set(w, h)
+      }
 
-    // Brightness lives in the COLOUR, not in opacity — and deliberately runs
-    // past 1.0. LineMaterial's alpha caps at 1, so opacity alone can only ever
-    // reach "half-lit" against a black additive ground; overdriving the colour
-    // is what gives these strokes the same hot phosphor punch SchematicScene
-    // gets from its own >1.0 shader multiplier. Opacity is left to do one job:
-    // carry the crossfade and the mood floor. The three elements' relative
-    // multipliers are the visual hierarchy — hero reads first, ring last.
-    heroMat.color.copy(tint).multiplyScalar(1.2 + b.pulse * 1.3 + b.transient * 0.9)
-    heroMat.opacity = Math.min(1, vis)
-    // Presence, not the beat, owns stroke weight — snares and plucks sharpen the
-    // outline while the kick is busy moving the whole form.
-    heroMat.linewidth = 1.9 + b.presence * 2.4 + b.pulse * 0.8
+      // Brightness lives in the COLOUR, not in opacity — and deliberately runs
+      // past 1.0. LineMaterial's alpha caps at 1, so opacity alone can only ever
+      // reach "half-lit" against a black additive ground; overdriving the colour
+      // is what gives these strokes the same hot phosphor punch SchematicScene
+      // gets from its own >1.0 shader multiplier. Opacity is left to do one job:
+      // carry the crossfade and the mood floor. The three elements' relative
+      // multipliers are the visual hierarchy — hero reads first, ring last.
+      heroMat.color.copy(tint).multiplyScalar(1.2 + b.pulse * 1.3 + b.transient * 0.9)
+      heroMat.opacity = Math.min(1, vis)
+      // Presence, not the beat, owns stroke weight — snares and plucks sharpen the
+      // outline while the kick is busy moving the whole form.
+      heroMat.linewidth = 1.9 + b.presence * 2.4 + b.pulse * 0.8
 
-    coreMat.color.copy(tint).multiplyScalar(0.8 + b.bass * 0.9 + b.transient * 0.5)
-    coreMat.opacity = Math.min(1, vis * 0.9)
-    coreMat.linewidth = 1.1 + b.presence * 1.0
+      coreMat.color.copy(tint).multiplyScalar(0.8 + b.bass * 0.9 + b.transient * 0.5)
+      coreMat.opacity = Math.min(1, vis * 0.9)
+      coreMat.linewidth = 1.1 + b.presence * 1.0
 
-    // The ring is the highs' element, and only the highs': it stays dark through
-    // a kick-only passage and lights up the moment hats/cymbals come in.
-    ringMat.color.copy(tint).multiplyScalar(0.3 + b.high * 1.1 + b.pulse * 0.25)
-    ringMat.opacity = Math.min(1, vis * 0.8)
-    // Dash scroll accumulates with the highs, so the ring visibly speeds up on
-    // busy hat patterns rather than crawling at a fixed rate.
-    dash.current += dt * (0.1 + b.high * 0.9)
-    ringMat.dashOffset = -dash.current
+      // The ring is the highs' element, and only the highs': it stays dark through
+      // a kick-only passage and lights up the moment hats/cymbals come in.
+      ringMat.color.copy(tint).multiplyScalar(0.3 + b.high * 1.1 + b.pulse * 0.25)
+      ringMat.opacity = Math.min(1, vis * 0.8)
+      // Dash scroll accumulates with the highs, so the ring visibly speeds up on
+      // busy hat patterns rather than crawling at a fixed rate.
+      dash.current += dt * (0.1 + b.high * 0.9)
+      ringMat.dashOffset = -dash.current
 
-    // Mid content drives rotation, so a dense chord section visibly moves faster
-    // than a sparse one at identical overall energy.
-    const angle = spin(dt, 0.1 + f.energy * 0.24 + b.mid * 0.4, params.speed)
-    if (heroRef.current) {
-      heroRef.current.rotation.y = angle
-      heroRef.current.rotation.x = Math.sin(f.time * 0.13) * 0.3
-      heroRef.current.scale.setScalar(1 + b.pulse * 0.05 + b.bass * 0.04)
-    }
-    if (coreRef.current) {
-      // Counter-rotation is what sells depth on a see-through subject; presence
-      // adds a fast twitch on top of the slow bass swell. `twist` is an
-      // accumulating mid-driven shear — unlike b.mid it has memory, so a long
-      // harmonic passage keeps leaning the core over rather than resetting to
-      // centre the moment the chord stops.
-      coreRef.current.rotation.y = -angle * 1.9
-      coreRef.current.rotation.z = angle * 0.7 + b.presence * 0.5 + anim.twist * 0.4
-      // Tension pulls the core out of the hero before a drop lands: the two
-      // shells separate, then snap back on the release.
-      coreRef.current.scale.setScalar(
-        0.85 + b.bass * 0.3 + b.pulse * 0.12 + b.transient * 0.1 + anim.explode * 0.3,
-      )
-    }
-    if (ringRef.current) {
-      ringRef.current.rotation.x = Math.PI * 0.5 + Math.sin(f.time * 0.18) * 0.34
-      ringRef.current.rotation.y = angle * 0.4
-      // Cheapest possible degrade: the annotation layer is the first thing to
-      // go when the governor is under real pressure.
-      ringRef.current.visible = quality.tier <= 2
-    }
+      // Mid content drives rotation, so a dense chord section visibly moves faster
+      // than a sparse one at identical overall energy.
+      const angle = spin(dt, 0.1 + f.energy * 0.24 + b.mid * 0.4, params.speed)
+      if (heroRef.current) {
+        heroRef.current.rotation.y = angle
+        heroRef.current.rotation.x = Math.sin(f.time * 0.13) * 0.3
+        heroRef.current.scale.setScalar(1 + b.pulse * 0.05 + b.bass * 0.04)
+      }
+      if (coreRef.current) {
+        // Counter-rotation is what sells depth on a see-through subject; presence
+        // adds a fast twitch on top of the slow bass swell. `twist` is an
+        // accumulating mid-driven shear — unlike b.mid it has memory, so a long
+        // harmonic passage keeps leaning the core over rather than resetting to
+        // centre the moment the chord stops.
+        coreRef.current.rotation.y = -angle * 1.9
+        coreRef.current.rotation.z = angle * 0.7 + b.presence * 0.5 + anim.twist * 0.4
+        // Tension pulls the core out of the hero before a drop lands: the two
+        // shells separate, then snap back on the release.
+        coreRef.current.scale.setScalar(
+          0.85 + b.bass * 0.3 + b.pulse * 0.12 + b.transient * 0.1 + anim.explode * 0.3,
+        )
+      }
+      if (ringRef.current) {
+        ringRef.current.rotation.x = Math.PI * 0.5 + Math.sin(f.time * 0.18) * 0.34
+        ringRef.current.rotation.y = angle * 0.4
+        // Cheapest possible degrade: the annotation layer is the first thing to
+        // go when the governor is under real pressure.
+        ringRef.current.visible = quality.tier <= 2
+      }
     },
     // Floored like SchematicScene: a line-art hero must stay readable through
     // quiet passages. Mood modulates it, but never crushes the subject away.

@@ -80,15 +80,7 @@ export interface PerformanceState {
 
 /** Camera behaviours the CameraDirector can run. Scenes only supply anchors. */
 export type CameraMode =
-  | 'orbit'
-  | 'hover'
-  | 'push'
-  | 'pull'
-  | 'spiral'
-  | 'handheld'
-  | 'locked'
-  | 'topdown'
-  | 'cinematic'
+  'orbit' | 'hover' | 'push' | 'pull' | 'spiral' | 'handheld' | 'locked' | 'topdown' | 'cinematic'
 
 export const CAMERA_MODES: CameraMode[] = [
   'orbit',

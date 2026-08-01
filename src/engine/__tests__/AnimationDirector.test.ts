@@ -95,5 +95,4 @@ describe('AnimationDirector', () => {
       expect(u.uAnimTwist).toBeUndefined()
     })
   })
-
 })

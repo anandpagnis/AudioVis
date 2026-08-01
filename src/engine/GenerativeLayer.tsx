@@ -140,9 +140,7 @@ export function GenerativeLayer() {
       if ((m.changed || !kicked.current) && lastRequested.current !== key) {
         kicked.current = true
         lastRequested.current = key
-        void textureGenerator
-          .request(m.state, s.paletteId, m.changeCount)
-          .then(applyTexture)
+        void textureGenerator.request(m.state, s.paletteId, m.changeCount).then(applyTexture)
       }
       // Predictive prefetch: have the peak's art ready before the drop hits.
       const pKey = `${m.predictedState}_${s.paletteId}`

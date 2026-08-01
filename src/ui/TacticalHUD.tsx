@@ -102,7 +102,7 @@ export function TacticalHUD() {
       ctx.fillText(`SYS.LINK ● ${status}`, m + 12, m + 26)
 
       // ---- Scan line (CRT sweep) --------------------------------------------
-      const scanY = (t * 90) % (H + 120) - 60
+      const scanY = ((t * 90) % (H + 120)) - 60
       const grd = ctx.createLinearGradient(0, scanY - 40, 0, scanY + 4)
       grd.addColorStop(0, rgba(col, 0))
       grd.addColorStop(1, rgba(col, 0.06))

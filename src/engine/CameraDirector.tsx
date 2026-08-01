@@ -152,7 +152,12 @@ export function computeDesired(mode: CameraMode, anchor: CameraAnchor, time: num
     case 'orbit':
       state.angle += dt * 0.05 * (1 + f.energy * 0.6)
       state.dist = approach(state.dist, baseDist, 3, dt)
-      state.height = approach(state.height, anchor.height + Math.sin(barPhase * Math.PI * 2) * 1.6, 3, dt)
+      state.height = approach(
+        state.height,
+        anchor.height + Math.sin(barPhase * Math.PI * 2) * 1.6,
+        3,
+        dt,
+      )
       desired.set(
         tx + Math.cos(state.angle) * state.dist,
         ty + state.height,
@@ -163,7 +168,12 @@ export function computeDesired(mode: CameraMode, anchor: CameraAnchor, time: num
     case 'spiral':
       state.angle += dt * 0.12 * (1 + f.energy)
       state.dist = approach(state.dist, baseDist * (0.7 + Math.sin(time * 0.09) * 0.3), 2, dt)
-      state.height = approach(state.height, anchor.height + Math.sin(time * 0.13) * anchor.distance * 0.35, 2, dt)
+      state.height = approach(
+        state.height,
+        anchor.height + Math.sin(time * 0.13) * anchor.distance * 0.35,
+        2,
+        dt,
+      )
       desired.set(
         tx + Math.cos(state.angle) * state.dist,
         ty + state.height,
@@ -194,8 +204,17 @@ export function computeDesired(mode: CameraMode, anchor: CameraAnchor, time: num
       const jitter = 0.06 + pulse * 0.05 + f.percussion.kick.env * 0.06
       state.dist = approach(state.dist, baseDist, 2.5, dt)
       desired.set(
-        tx + (Math.sin(state.shakeX) + Math.sin(state.shakeX * 2.3) * 0.4) * jitter * anchor.distance * 0.25,
-        ty + anchor.height + (Math.sin(state.shakeY) + Math.sin(state.shakeY * 1.7) * 0.4) * jitter * anchor.distance * 0.18,
+        tx +
+          (Math.sin(state.shakeX) + Math.sin(state.shakeX * 2.3) * 0.4) *
+            jitter *
+            anchor.distance *
+            0.25,
+        ty +
+          anchor.height +
+          (Math.sin(state.shakeY) + Math.sin(state.shakeY * 1.7) * 0.4) *
+            jitter *
+            anchor.distance *
+            0.18,
         tz + state.dist,
       )
       break

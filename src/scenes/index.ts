@@ -110,7 +110,14 @@ export const SCENES: SceneDef[] = [
       // barycentric wireframe it supersedes.
       performanceCost: 'low',
       compatibleWith: ['plasma', 'dissolve', 'chrome'],
-      moodFit: { ambient: 0.66, mellow: 0.62, groove: 0.8, building: 0.86, peak: 0.72, aggressive: 0.66 },
+      moodFit: {
+        ambient: 0.66,
+        mellow: 0.62,
+        groove: 0.8,
+        building: 0.86,
+        peak: 0.72,
+        aggressive: 0.66,
+      },
       cameraAnchor: { target: [0, 0, 0], distance: 9.5, height: 1.6 },
       // `push` is what separates this scene's build from its peak — without it
       // every high-energy mood resolves to the same spiral.
@@ -233,7 +240,8 @@ export function validateSceneDef(def: SceneDef): string[] {
   if (!def.name.trim()) issues.push(`Scene "${def.id}" needs a display name.`)
   if (def.metadata.roles.length === 0) issues.push(`Scene "${def.id}" needs at least one role.`)
   if (def.metadata.moods.length === 0) issues.push(`Scene "${def.id}" needs at least one mood.`)
-  if (def.metadata.bands.length === 0) issues.push(`Scene "${def.id}" needs at least one audio band.`)
+  if (def.metadata.bands.length === 0)
+    issues.push(`Scene "${def.id}" needs at least one audio band.`)
   return issues
 }
 

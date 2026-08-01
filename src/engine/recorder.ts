@@ -54,11 +54,9 @@ export function startRecording(): boolean {
   const audio = audioEngine.recordingStream
   if (audio) for (const track of audio.getAudioTracks()) stream.addTrack(track)
 
-  const mime = [
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm',
-  ].find((m) => MediaRecorder.isTypeSupported(m))
+  const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(
+    (m) => MediaRecorder.isTypeSupported(m),
+  )
 
   try {
     recorder = new MediaRecorder(stream, {
