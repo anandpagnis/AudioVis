@@ -2,6 +2,7 @@ import { lazy, type ComponentType } from 'react'
 import type { MoodState } from '../audio/types'
 import type { CameraAnchor } from '../engine/CameraDirector'
 import type { CameraMode } from '../engine/performanceState'
+import { resolveManifest, type SceneManifestExt } from '../engine/streaming/sceneManifest'
 
 /**
  * Built-in scenes are code-split: each import() below becomes its own chunk,
@@ -76,6 +77,14 @@ export interface SceneMetadata {
   cameraAnchor?: CameraAnchor
   /** Camera modes that frame this scene well. First entry is the default. */
   cameraModes?: CameraMode[]
+
+  /**
+   * Streaming/cost hints for the scene streamer (asset dependencies, VRAM/
+   * build-time estimates, load priority). Additive and optional — absent
+   * means `resolveManifest()` computes sane defaults from `performanceCost`,
+   * so nothing here forces hand-authoring for existing or third-party scenes.
+   */
+  streaming?: Partial<SceneManifestExt>
 }
 
 export interface SceneDef {
@@ -203,6 +212,25 @@ export const SCENES: SceneDef[] = [
  */
 export function getScene(id: string): SceneDef {
   return SCENES.find((s) => s.id === id) ?? SCENES[0]
+}
+
+/** Resolved manifests, memoized per scene id — computed once, not per-frame. */
+const manifestCache = new Map<string, SceneManifestExt>()
+
+/**
+ * The scene's fully-resolved streaming manifest (cost/priority/assets),
+ * computed from `metadata.streaming` with defaults filled in from
+ * `performanceCost`. Never called from `getScene()`'s own lookup path, so a
+ * stale id still degrades via the `SCENES[0]` fallback exactly as before this
+ * existed.
+ */
+export function getResolvedManifest(id: string): SceneManifestExt {
+  const cached = manifestCache.get(id)
+  if (cached) return cached
+  const scene = getScene(id)
+  const resolved = resolveManifest(scene.metadata.performanceCost, scene.metadata.streaming)
+  manifestCache.set(id, resolved)
+  return resolved
 }
 
 /**
