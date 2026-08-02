@@ -1,5 +1,5 @@
 import { Suspense, createContext, useRef, useState, type ReactNode } from 'react'
-import { useFrame } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { audioEngine } from '../audio/AudioEngine'
 import { useStore, type LayerBlend, type LayerRole } from '../store'
@@ -9,6 +9,7 @@ import { perf } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
 import { sampleAnalytics } from './analyticsMetrics'
 import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
+import { prewarmShaders } from './streaming/shaderPrewarm'
 
 /**
  * Per-scene-instance fade weight (0..1, up to 1.5 for boosted layers),
@@ -25,6 +26,13 @@ interface Entry {
   dir: 1 | -1 | 0
   /** Frames this entry has spent warming; drives the compile-then-hide dance. */
   warmFrames: number
+  /**
+   * True once `compileAsync` has confirmed — on a driver that can actually
+   * confirm it — that this entry's programs are ready. When set, the visible
+   * warm-render frames are skipped entirely, which is what removes the
+   * two-scenes-rendering-at-once frame-time spike.
+   */
+  prewarmed: boolean
   /** Raw crossfade 0..1. */
   fade: { value: number }
   /** What scenes see: fade × per-layer intensity. */
@@ -101,7 +109,8 @@ function BlendedLayer({ role, children }: { role: LayerRole; children: ReactNode
 }
 
 /**
- * Controls whether an entry actually renders.
+ * Controls whether an entry actually renders, and kicks off shader
+ * precompilation for it.
  *
  * A scene's shader compiles the first time its material renders, and that
  * compile can stall for hundreds of milliseconds. Mounting the incoming scene
@@ -109,12 +118,51 @@ function BlendedLayer({ role, children }: { role: LayerRole; children: ReactNode
  * worst-timed hitch in the app. Instead we mount it as soon as it's requested,
  * let it render WARM_FRAMES frames (compiling it), then hide it so it costs
  * nothing until the transition promotes it with a shader already warm.
+ *
+ * `prewarmShaders` runs alongside that, not instead of it. It gives the
+ * driver's compile thread a head start, and on drivers exposing
+ * `KHR_parallel_shader_compile` it can genuinely confirm the program is ready
+ * — at which point `entry.prewarmed` lets the visible warm frames be skipped
+ * entirely, removing the double-render spike. Where the extension is absent,
+ * three's `isReady()` reports ready immediately whether or not it is, so the
+ * visible warm render still has to happen. See shaderPrewarm.ts.
  */
+/** Does this subtree contain anything with a material yet? See EntryGroup. */
+function hasRenderable(node: THREE.Object3D): boolean {
+  let found = false
+  node.traverse((child) => {
+    if (!found && (child as Partial<THREE.Mesh>).material) found = true
+  })
+  return found
+}
+
 function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) {
   const group = useRef<THREE.Group>(null)
+  const gl = useThree((s) => s.gl)
+  const camera = useThree((s) => s.camera)
+  const started = useRef(false)
+
   useFrame(() => {
-    if (group.current) group.current.visible = entry.dir !== 0 || entry.warmFrames <= WARM_FRAMES
+    const node = group.current
+    if (!node) return
+
+    // Wait for the scene's lazy chunk to actually resolve and mount something
+    // renderable. Scenes render inside <Suspense>, so this group is EMPTY for
+    // the first frames after mount — and compileAsync on an empty subtree
+    // resolves instantly having compiled nothing. Trusting that would set
+    // `prewarmed`, skip the warm frames, and hand the real compile stall
+    // straight to the first post-promotion draw: the exact failure this whole
+    // mechanism exists to prevent, and one that looks like success.
+    if (!started.current && hasRenderable(node)) {
+      started.current = true
+      void prewarmShaders(gl, node, camera).then((result) => {
+        entry.prewarmed = result.skippedWarmFrames
+      })
+    }
+
+    node.visible = entry.dir !== 0 || (!entry.prewarmed && entry.warmFrames <= WARM_FRAMES)
   })
+
   return <group ref={group}>{children}</group>
 }
 
@@ -136,6 +184,7 @@ export function SceneManager() {
       role: 'primary',
       dir: 1,
       warmFrames: 0,
+      prewarmed: false,
       fade: { value: 0 },
       out: { value: 0 },
     },
@@ -176,6 +225,7 @@ export function SceneManager() {
           role: 'primary',
           dir: 0,
           warmFrames: 0,
+          prewarmed: false,
           fade: { value: 0 },
           out: { value: 0 },
         })
@@ -190,6 +240,7 @@ export function SceneManager() {
           role: 'primary',
           dir: 0,
           warmFrames: 0,
+          prewarmed: false,
           fade: { value: 0 },
           out: { value: 0 },
         })
@@ -221,6 +272,7 @@ export function SceneManager() {
             role: 'primary',
             dir: 1,
             warmFrames: 0,
+            prewarmed: false,
             fade: { value: 0 },
             out: { value: 0 },
           }
@@ -281,6 +333,7 @@ export function SceneManager() {
           role: desired.role,
           dir: 1,
           warmFrames: 0,
+          prewarmed: false,
           fade: { value: 0 },
           out: { value: 0 },
         })
