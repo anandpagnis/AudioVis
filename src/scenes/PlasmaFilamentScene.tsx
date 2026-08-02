@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { applyToUniforms } from '../engine/AnimationDirector'
+import { CURL_NOISE_GLSL } from '../engine/shaderLib'
 import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
@@ -42,29 +43,7 @@ export const VERT = /* glsl */ `
   varying vec2 vStreak;
   varying vec4 vRand;
 
-  // Cheap sine field; its curl is divergence-free, so particles ride
-  // streamlines instead of collapsing into sinks.
-  vec3 snoiseVec3(vec3 x) {
-    return vec3(
-      sin(x.y * 1.7 + x.z * 0.9),
-      sin(x.z * 1.3 + x.x * 1.1),
-      sin(x.x * 1.9 + x.y * 0.7)
-    );
-  }
-
-  vec3 curl(vec3 p) {
-    const float e = 0.15;
-    vec3 dx = vec3(e, 0.0, 0.0);
-    vec3 dy = vec3(0.0, e, 0.0);
-    vec3 dz = vec3(0.0, 0.0, e);
-    vec3 x1 = snoiseVec3(p + dx), x0 = snoiseVec3(p - dx);
-    vec3 y1 = snoiseVec3(p + dy), y0 = snoiseVec3(p - dy);
-    vec3 z1 = snoiseVec3(p + dz), z0 = snoiseVec3(p - dz);
-    float cx = (y1.z - y0.z) - (z1.y - z0.y);
-    float cy = (z1.x - z0.x) - (x1.z - x0.z);
-    float cz = (x1.y - x0.y) - (y1.x - y0.x);
-    return vec3(cx, cy, cz) / (2.0 * e);
-  }
+  ${CURL_NOISE_GLSL}
 
   void main() {
     vRand = aRand;
@@ -75,7 +54,8 @@ export const VERT = /* glsl */ `
     float step = 0.26 + uBass * 0.26;
     vec3 dir = vec3(0.0, 1.0, 0.0);
     for (int i = 0; i < 4; i++) {
-      dir = curl(fp * 0.22 + vec3(0.0, 0.0, uFlow * 0.14) + aRand.x);
+      // 0.15: Plasma's authored central-difference epsilon, unchanged.
+      dir = curlNoise(fp * 0.22 + vec3(0.0, 0.0, uFlow * 0.14) + aRand.x, 0.15);
       fp += dir * step;
     }
 

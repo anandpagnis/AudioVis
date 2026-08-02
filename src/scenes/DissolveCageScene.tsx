@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
+import { CURL_NOISE_GLSL } from '../engine/shaderLib'
 import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
@@ -49,25 +50,7 @@ export const VERT = /* glsl */ `
   varying float vT;
   varying vec4 vRand;
 
-  vec3 snoiseVec3(vec3 x) {
-    return vec3(
-      sin(x.y * 1.7 + x.z * 0.9),
-      sin(x.z * 1.3 + x.x * 1.1),
-      sin(x.x * 1.9 + x.y * 0.7)
-    );
-  }
-
-  vec3 curl(vec3 p) {
-    const float e = 0.2;
-    vec3 x1 = snoiseVec3(p + vec3(e, 0.0, 0.0)), x0 = snoiseVec3(p - vec3(e, 0.0, 0.0));
-    vec3 y1 = snoiseVec3(p + vec3(0.0, e, 0.0)), y0 = snoiseVec3(p - vec3(0.0, e, 0.0));
-    vec3 z1 = snoiseVec3(p + vec3(0.0, 0.0, e)), z0 = snoiseVec3(p - vec3(0.0, 0.0, e));
-    return vec3(
-      (y1.z - y0.z) - (z1.y - z0.y),
-      (z1.x - z0.x) - (x1.z - x0.z),
-      (x1.y - x0.y) - (y1.x - y0.x)
-    ) / (2.0 * e);
-  }
+  ${CURL_NOISE_GLSL}
 
   void main() {
     vRand = aRand;
@@ -83,7 +66,9 @@ export const VERT = /* glsl */ `
     // Mid content widens the swirl, so the cloud churns harder through dense
     // harmonic passages rather than only responding to the kick.
     float env = sin(t * 3.14159265);
-    p += curl(p * 0.45 + uTime * 0.06 + aRand.x) * env * (0.26 + uBass * 0.34 + uMid * 0.3);
+    // 0.2: Dissolve's authored epsilon — a wider sample than Plasma's, giving
+    // a softer swirl. Preserved exactly rather than reconciled.
+    p += curlNoise(p * 0.45 + uTime * 0.06 + aRand.x, 0.2) * env * (0.26 + uBass * 0.34 + uMid * 0.3);
     // Transient jitter: a per-particle scatter on sharp hits, strongest mid-flight.
     p += normalize(p + 0.001) * uTransient * env * 0.22 * (aRand.z - 0.5);
     p *= 1.0 + uPulse * 0.03;
