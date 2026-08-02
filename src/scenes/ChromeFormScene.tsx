@@ -1,7 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import { getSharedEnvMap } from '../engine/envMap'
+import { getSharedEnvMap, releaseSharedEnvMap } from '../engine/envMap'
 import { useSceneFrame, useSpin } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -49,10 +49,15 @@ export function ChromeFormScene() {
     [gl],
   )
 
-  // Only the geometry and material are ours to free. The shared environment
-  // texture is a session-lifetime singleton by design — disposing it here would
-  // break the next mount (and any concurrent layer using it).
+  // The geometry and material are ours to free outright. The shared
+  // environment texture goes through the resource cache's refcounting
+  // instead — releasing here is now safe even though it's pinned (a pinned
+  // entry just ignores reaching a zero refcount), so this scene no longer
+  // has to special-case excluding it from cleanup.
   useDispose(heroGeo, heroMat)
+  useEffect(() => {
+    return () => releaseSharedEnvMap()
+  }, [])
 
   const white = useMemo(() => new THREE.Color('#ffffff'), [])
 

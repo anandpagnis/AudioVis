@@ -9,6 +9,7 @@ import { LightRig } from './LightRig'
 import { PerfMonitor } from './PerfMonitor'
 import { PerformanceDirector } from './PerformanceDirector'
 import { PerformanceStateBridge } from './PerformanceStateBridge'
+import { resourceCache } from './streaming/resourceCache'
 import { useStore } from '../store'
 
 // The AI-texture path ships as its own chunk and only downloads the first
@@ -68,6 +69,11 @@ export function Stage() {
       false,
     )
     canvas.addEventListener('webglcontextrestored', () => {
+      // Every cached GPU resource — pinned or not — is dead: the handles
+      // belong to a context that no longer exists. Clear the cache before
+      // remounting so the first post-restore acquire() rebuilds from
+      // scratch rather than handing back a texture pointing at nothing.
+      resourceCache.invalidateAll()
       console.warn('[AudioVis] WebGL context restored — remounting render tree')
       setGlEpoch((n) => n + 1)
     })
