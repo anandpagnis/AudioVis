@@ -20,5 +20,8 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts"],
+  // Typechecked separately under the `webworker` lib — see tsconfig.worker.json.
+  // TypeScript cannot mix `dom` and `webworker` globals in one program.
+  "exclude": ["src/engine/streaming/proceduralGen.worker.ts"]
 }

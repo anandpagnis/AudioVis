@@ -1,9 +1,10 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
+import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -132,107 +133,40 @@ export const FRAG = /* glsl */ `
 `
 
 /**
- * Area-weighted surface sample of a geometry. Uniform-random triangle picking
- * would over-sample dense small triangles (a torus knot's are not equal-area),
- * clumping the particles; a cumulative-area CDF plus a barycentric sample
- * inside the chosen triangle distributes them evenly over the real surface.
+ * Fixed seed, so the particle field is identical every mount — what makes a
+ * recording or screenshot reproducible. Previously reseeded from Math.random().
  */
-function sampleSurface(source: THREE.BufferGeometry, count: number) {
-  const geo = source.index ? source.toNonIndexed() : source
-  const pos = geo.getAttribute('position')
-  const nrm = geo.getAttribute('normal')
-  const triCount = pos.count / 3
+const SEED = 0xd1550
 
-  const cdf = new Float64Array(triCount)
-  const a = new THREE.Vector3()
-  const b = new THREE.Vector3()
-  const c = new THREE.Vector3()
-  const ab = new THREE.Vector3()
-  const ac = new THREE.Vector3()
-  let total = 0
-  for (let t = 0; t < triCount; t++) {
-    a.fromBufferAttribute(pos, t * 3)
-    b.fromBufferAttribute(pos, t * 3 + 1)
-    c.fromBufferAttribute(pos, t * 3 + 2)
-    ab.subVectors(b, a)
-    ac.subVectors(c, a)
-    total += ab.cross(ac).length() * 0.5
-    cdf[t] = total
-  }
+/**
+ * An empty shell with correctly-shaped (zero-filled) attributes and a zero
+ * draw range. The area-weighted surface sampling that fills it runs on a
+ * worker (see the effect below); allocating these arrays is a memset, while
+ * the CDF build plus 24k binary searches it replaces cost milliseconds on the
+ * mounting frame.
+ */
+function buildEmptyGeometry(): THREE.BufferGeometry {
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(COUNT * 3), 3))
+  geo.setAttribute('aScattered', new THREE.BufferAttribute(new Float32Array(COUNT * 3), 3))
+  geo.setAttribute('aRand', new THREE.BufferAttribute(new Float32Array(COUNT * 4), 4))
+  geo.setDrawRange(0, 0)
+  return geo
+}
 
-  const formed = new Float32Array(count * 3)
-  const scattered = new Float32Array(count * 3)
-  const rand = new Float32Array(count * 4)
-  const na = new THREE.Vector3()
-  const nb = new THREE.Vector3()
-  const nc = new THREE.Vector3()
-  const limit = CAGE * 0.5 * 0.93 // stay inside the cage walls
-
-  for (let i = 0; i < count; i++) {
-    // Binary search the CDF for an area-proportional triangle.
-    const target = Math.random() * total
-    let lo = 0
-    let hi = triCount - 1
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (cdf[mid] < target) lo = mid + 1
-      else hi = mid
-    }
-
-    // Uniform barycentric point inside triangle `lo`.
-    let u = Math.random()
-    let v = Math.random()
-    if (u + v > 1) {
-      u = 1 - u
-      v = 1 - v
-    }
-    const w = 1 - u - v
-
-    a.fromBufferAttribute(pos, lo * 3)
-    b.fromBufferAttribute(pos, lo * 3 + 1)
-    c.fromBufferAttribute(pos, lo * 3 + 2)
-    const fx = a.x * w + b.x * u + c.x * v
-    const fy = a.y * w + b.y * u + c.y * v
-    const fz = a.z * w + b.z * u + c.z * v
-    formed[i * 3] = fx
-    formed[i * 3 + 1] = fy
-    formed[i * 3 + 2] = fz
-
-    // Scatter along the interpolated surface normal, so the dispersed cloud
-    // keeps a ghost of the form instead of collapsing to a featureless shell.
-    na.fromBufferAttribute(nrm, lo * 3)
-    nb.fromBufferAttribute(nrm, lo * 3 + 1)
-    nc.fromBufferAttribute(nrm, lo * 3 + 2)
-    const push = 0.7 + Math.random() * 1.5
-    let sx = fx + (na.x * w + nb.x * u + nc.x * v) * push + (Math.random() - 0.5) * 0.7
-    let sy = fy + (na.y * w + nb.y * u + nc.y * v) * push + (Math.random() - 0.5) * 0.7
-    let sz = fz + (na.z * w + nb.z * u + nc.z * v) * push + (Math.random() - 0.5) * 0.7
-    // Scale back along the ray rather than clamping per-axis — a hard clamp
-    // would flatten stray particles onto visible planes at the cage faces.
-    const worst = Math.max(Math.abs(sx), Math.abs(sy), Math.abs(sz))
-    if (worst > limit) {
-      const k = limit / worst
-      sx *= k
-      sy *= k
-      sz *= k
-    }
-    scattered[i * 3] = sx
-    scattered[i * 3 + 1] = sy
-    scattered[i * 3 + 2] = sz
-
-    rand[i * 4] = Math.random() * 6.28
-    rand[i * 4 + 1] = Math.random()
-    rand[i * 4 + 2] = Math.random()
-    rand[i * 4 + 3] = Math.random()
-  }
-
-  if (geo !== source) geo.dispose()
-
-  const out = new THREE.BufferGeometry()
-  out.setAttribute('position', new THREE.BufferAttribute(formed, 3))
-  out.setAttribute('aScattered', new THREE.BufferAttribute(scattered, 3))
-  out.setAttribute('aRand', new THREE.BufferAttribute(rand, 4))
-  return out
+/**
+ * Pull the source surface out as a plain non-indexed triangle soup.
+ * `BufferGeometry` is not structured-cloneable, so the worker takes raw typed
+ * arrays; this throwaway source is disposed immediately either way.
+ */
+function extractSurface(): { position: Float32Array; normal: Float32Array } {
+  const src = new THREE.TorusKnotGeometry(1.3, 0.42, 180, 24)
+  const nonIndexed = src.index ? src.toNonIndexed() : src
+  const position = new Float32Array(nonIndexed.getAttribute('position').array)
+  const normal = new Float32Array(nonIndexed.getAttribute('normal').array)
+  if (nonIndexed !== src) nonIndexed.dispose()
+  src.dispose()
+  return { position, normal }
 }
 
 export function DissolveCageScene() {
@@ -264,12 +198,28 @@ export function DissolveCageScene() {
     return wf
   }, [cageMat])
 
-  const geometry = useMemo(() => {
-    const src = new THREE.TorusKnotGeometry(1.3, 0.42, 180, 24)
-    const sampled = sampleSurface(src, COUNT)
-    src.dispose()
-    return sampled
-  }, [])
+  const geometry = useMemo(() => buildEmptyGeometry(), [])
+  /** False until the worker's field lands; gates the draw range so the
+   *  un-generated (all-at-origin) placeholder never renders as one bright dot. */
+  const filled = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const { position, normal } = extractSurface()
+    void proceduralDispatcher
+      .requestDissolve({ position, normal, count: COUNT, cage: CAGE, seed: SEED })
+      .then(({ formed, scattered, rand }) => {
+        if (cancelled) return
+        // Adopt the transferred buffers directly rather than copying.
+        geometry.setAttribute('position', new THREE.BufferAttribute(formed, 3))
+        geometry.setAttribute('aScattered', new THREE.BufferAttribute(scattered, 3))
+        geometry.setAttribute('aRand', new THREE.BufferAttribute(rand, 4))
+        filled.current = true
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [geometry])
 
   const material = useMemo(
     () =>
@@ -305,7 +255,7 @@ export function DissolveCageScene() {
     ({ f, dt, b, col, vis, params, state, anim }) => {
       const u = material.uniforms
 
-      geometry.setDrawRange(0, Math.floor(COUNT * state.particleDensity))
+      geometry.setDrawRange(0, filled.current ? Math.floor(COUNT * state.particleDensity) : 0)
 
       // Band jobs here: mid widens the swirl and turns the cage, presence snaps the
       // cage stroke, high sparkles the cloud, transient jitters it.

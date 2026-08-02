@@ -1,6 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { applyToUniforms } from '../engine/AnimationDirector'
+import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -166,43 +167,52 @@ export const FRAG = /* glsl */ `
   }
 `
 
-function buildGeometry(): THREE.BufferGeometry {
+/**
+ * Fixed seed, so the field is identical every mount. Previously each mount
+ * reseeded from `Math.random()`; a stable seed is what makes a recording or
+ * screenshot reproducible.
+ */
+const SEED = 0x51a5
+
+/**
+ * An empty shell with correctly-shaped (zero-filled) attributes and a zero
+ * draw range. The 70k-particle field itself is generated on a worker and
+ * swapped in when it arrives — see the effect below. Allocating the arrays
+ * here is a memset, microseconds; it is the per-particle rejection-sampling
+ * loop that used to cost milliseconds on the mounting frame.
+ */
+function buildEmptyGeometry(): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry()
-  const positions = new Float32Array(COUNT * 3)
-  const rand = new Float32Array(COUNT * 4)
-  for (let i = 0; i < COUNT; i++) {
-    // Core-weighted radial seeding: a random direction at a power-law radius,
-    // so density falls off outward and the centre becomes a genuine hot core.
-    // (Same radial power-law idea CrystalGrowthScene uses for its shard field.)
-    // Rejection-sample a direction inside the unit sphere (uniform on the
-    // sphere once normalized; sampling angles directly would cluster at poles).
-    let x: number
-    let y: number
-    let z: number
-    let len: number
-    do {
-      x = Math.random() * 2 - 1
-      y = Math.random() * 2 - 1
-      z = Math.random() * 2 - 1
-      len = Math.sqrt(x * x + y * y + z * z)
-    } while (len < 1e-4 || len > 1)
-    const dist = Math.pow(Math.random(), 1.4) * SPREAD
-    positions[i * 3] = (x / len) * dist
-    positions[i * 3 + 1] = (y / len) * dist * 0.85 // slightly flattened body
-    positions[i * 3 + 2] = (z / len) * dist
-    rand[i * 4] = Math.random() * 6.28
-    rand[i * 4 + 1] = Math.random()
-    rand[i * 4 + 2] = Math.random()
-    rand[i * 4 + 3] = Math.random()
-  }
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geo.setAttribute('aRand', new THREE.BufferAttribute(rand, 4))
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(COUNT * 3), 3))
+  geo.setAttribute('aRand', new THREE.BufferAttribute(new Float32Array(COUNT * 4), 4))
+  geo.setDrawRange(0, 0)
   return geo
 }
 
 export function PlasmaFilamentScene() {
   const flow = useRef(0)
-  const geometry = useMemo(() => buildGeometry(), [])
+  const geometry = useMemo(() => buildEmptyGeometry(), [])
+  /** False until the worker's field has been swapped in; gates the draw range
+   *  so the un-generated (all-at-origin) placeholder never renders as one
+   *  blindingly bright dot at the centre of the frame. */
+  const filled = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void proceduralDispatcher
+      .requestPlasma({ count: COUNT, spread: SPREAD, seed: SEED })
+      .then(({ positions, rand }) => {
+        if (cancelled) return
+        // Adopt the transferred buffers directly rather than copying into the
+        // placeholders — the worker's arrays arrive owned by this thread.
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+        geometry.setAttribute('aRand', new THREE.BufferAttribute(rand, 4))
+        filled.current = true
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [geometry])
 
   const material = useMemo(
     () =>
@@ -244,8 +254,9 @@ export function PlasmaFilamentScene() {
       // quality governor directly — the governor is only its current author, and
       // going through the seam is what lets a director thin the field for
       // creative reasons too. Seeds are generated in random order, so the first
-      // N are already an unbiased subset of the whole field.
-      geometry.setDrawRange(0, Math.floor(COUNT * state.particleDensity))
+      // N are already an unbiased subset of the whole field. Draws nothing at
+      // all until the worker's field has landed.
+      geometry.setDrawRange(0, filled.current ? Math.floor(COUNT * state.particleDensity) : 0)
 
       flow.current += dt * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
 
