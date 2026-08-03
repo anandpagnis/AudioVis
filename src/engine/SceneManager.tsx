@@ -3,12 +3,13 @@ import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { audioEngine } from '../audio/AudioEngine'
 import { useStore, type LayerBlend, type LayerRole } from '../store'
-import { getScene, isSceneLoaded } from '../scenes'
+import { getResolvedManifest, getScene, isSceneLoaded } from '../scenes'
 import { quality } from './quality'
 import { perf } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
 import { sampleAnalytics } from './analyticsMetrics'
 import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
+import { sceneStreamer } from './streaming/sceneStreamer'
 import { prewarmShaders } from './streaming/shaderPrewarm'
 
 /**
@@ -51,6 +52,27 @@ interface Entry {
 const WARM_FRAMES = 4
 
 let entryKey = 0
+
+function makeEntry(id: string, role: 'primary' | LayerRole, dir: 1 | -1 | 0): Entry {
+  return {
+    key: entryKey++,
+    id,
+    role,
+    dir,
+    warmFrames: 0,
+    prewarmed: false,
+    fade: { value: 0 },
+    out: { value: 0 },
+  }
+}
+
+/** True once this entry's shaders are compiled — either confirmed by
+ *  `compileAsync` on a capable driver, or assumed after enough visible frames
+ *  on one that cannot confirm. Drives both visibility and the PREWARMING ->
+ *  READY transition. */
+function isWarmComplete(entry: Entry): boolean {
+  return entry.prewarmed || entry.warmFrames > WARM_FRAMES
+}
 
 /** Crossfade duration in seconds — roughly two beats, clamped to a sane range. */
 function crossfadeDuration(bpm: number): number {
@@ -160,7 +182,7 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
       })
     }
 
-    node.visible = entry.dir !== 0 || (!entry.prewarmed && entry.warmFrames <= WARM_FRAMES)
+    node.visible = entry.dir !== 0 || !isWarmComplete(entry)
   })
 
   return <group ref={group}>{children}</group>
@@ -177,18 +199,18 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
  * own intensity/blend settings.
  */
 export function SceneManager() {
-  const entriesRef = useRef<Entry[]>([
-    {
-      key: entryKey++,
-      id: useStore.getState().sceneId,
-      role: 'primary',
-      dir: 1,
-      warmFrames: 0,
-      prewarmed: false,
-      fade: { value: 0 },
-      out: { value: 0 },
-    },
-  ])
+  // Lazy initializer so the streamer's bookkeeping is seeded exactly once, in
+  // the same breath as the entry it describes. Reset first: this component is
+  // remounted (keyed on glEpoch) after a WebGL context loss, and candidates
+  // describing the dead context must not survive that.
+  const [initialEntries] = useState<Entry[]>(() => {
+    const initialId = useStore.getState().sceneId
+    sceneStreamer.reset()
+    sceneStreamer.promote(initialId, 0, getResolvedManifest(initialId).priority)
+    return [makeEntry(initialId, 'primary', 1)]
+  })
+  const entriesRef = useRef<Entry[]>(initialEntries)
+
   const [, force] = useState(0)
   const pendingSince = useRef(-1)
 
@@ -201,13 +223,17 @@ export function SceneManager() {
     // them cost the same as one (each scene used to recompute its own).
     updateAnimationSignals()
 
-    // Age warming entries so EntryGroup knows when to hide them — but only once
-    // the lazy chunk has actually loaded, so the warm window is spent rendering
-    // (compiling the shader) after mount rather than ticking away while the chunk
-    // is still downloading. Without this gate a slow load closes the window
-    // before the shader compiles, putting the stall back on the beat.
+    // Advance warming entries through their lifecycle. warmFrames only ticks
+    // once the lazy chunk has actually resolved, so the warm window is spent
+    // rendering (compiling the shader) after mount rather than ticking away
+    // while the chunk is still downloading — without that gate a slow load
+    // closes the window before the shader compiles and the stall lands back on
+    // the beat.
     for (const e of entriesRef.current) {
-      if (e.dir === 0 && isSceneLoaded(e.id)) e.warmFrames++
+      if (e.dir !== 0 || !isSceneLoaded(e.id)) continue
+      sceneStreamer.noteLoaded(e.id)
+      e.warmFrames++
+      if (isWarmComplete(e)) sceneStreamer.noteReady(e.id)
     }
 
     const state = useStore.getState()
@@ -217,33 +243,23 @@ export function SceneManager() {
 
       // Pre-warm: mount the incoming scene the moment it's requested so its
       // shader compiles now, well before the downbeat we actually switch on.
-      const warming = entriesRef.current.find((e) => e.dir === 0)
-      if (!warming) {
-        entriesRef.current.push({
-          key: entryKey++,
-          id: pendingSceneId,
-          role: 'primary',
-          dir: 0,
-          warmFrames: 0,
-          prewarmed: false,
-          fade: { value: 0 },
-          out: { value: 0 },
-        })
+      // How many candidates may be resident at once is the streamer's call, not
+      // this loop's — at MAX_PENDING = 1 it evicts whatever else was warming,
+      // reproducing the old behaviour exactly.
+      sceneStreamer.preload(
+        pendingSceneId,
+        clock.elapsedTime,
+        getResolvedManifest(pendingSceneId).priority,
+      )
+      const evicted = sceneStreamer.retainPending(pendingSceneId)
+      if (evicted.length > 0) {
+        entriesRef.current = entriesRef.current.filter(
+          (e) => !(e.dir === 0 && evicted.includes(e.id)),
+        )
         force((n) => n + 1)
-      } else if (warming.id !== pendingSceneId) {
-        // The request changed while warming — drop the stale one and warm the
-        // new target instead.
-        entriesRef.current = entriesRef.current.filter((e) => e !== warming)
-        entriesRef.current.push({
-          key: entryKey++,
-          id: pendingSceneId,
-          role: 'primary',
-          dir: 0,
-          warmFrames: 0,
-          prewarmed: false,
-          fade: { value: 0 },
-          out: { value: 0 },
-        })
+      }
+      if (!entriesRef.current.some((e) => e.dir === 0 && e.id === pendingSceneId)) {
+        entriesRef.current.push(makeEntry(pendingSceneId, 'primary', 0))
         force((n) => n + 1)
       }
 
@@ -257,7 +273,10 @@ export function SceneManager() {
         // lifetime and must survive a primary crossfade unchanged. (Invariant:
         // at most one primary is fading in at a time.)
         const outgoing = entriesRef.current.find((e) => e.role === 'primary' && e.dir === 1)
-        if (outgoing) outgoing.dir = -1
+        if (outgoing) {
+          outgoing.dir = -1
+          sceneStreamer.retire(outgoing.id, clock.elapsedTime)
+        }
         // Promote the pre-warmed entry rather than mounting a cold one, so the
         // crossfade starts with an already-compiled shader (no hitch on the beat).
         const warm = entriesRef.current.find((e) => e.dir === 0 && e.id === pendingSceneId)
@@ -266,18 +285,17 @@ export function SceneManager() {
           warm.dir = 1
           incoming = warm
         } else {
-          incoming = {
-            key: entryKey++,
-            id: pendingSceneId,
-            role: 'primary',
-            dir: 1,
-            warmFrames: 0,
-            prewarmed: false,
-            fade: { value: 0 },
-            out: { value: 0 },
-          }
+          // Nothing warm to promote — the commit beat this scene's warm-up
+          // (an untrusted grid commits on the spot). Mounting cold can stall;
+          // this is the safety net, not the intended path.
+          incoming = makeEntry(pendingSceneId, 'primary', 1)
           entriesRef.current.push(incoming)
         }
+        sceneStreamer.promote(
+          pendingSceneId,
+          clock.elapsedTime,
+          getResolvedManifest(pendingSceneId).priority,
+        )
         // Smoothness guard: overlapping two heavy fullscreen scenes through a
         // crossfade is a major frame-time spike. When the quality governor only
         // permits one heavy layer and both scenes are heavy, hard-cut on the beat
@@ -309,7 +327,8 @@ export function SceneManager() {
     } else {
       pendingSince.current = -1
       // No pending switch — discard any orphaned warming entry.
-      if (entriesRef.current.some((e) => e.dir === 0)) {
+      const dropped = sceneStreamer.clearPending()
+      if (dropped.length > 0) {
         entriesRef.current = entriesRef.current.filter((e) => e.dir !== 0)
         force((n) => n + 1)
       }
@@ -327,16 +346,10 @@ export function SceneManager() {
       if (current?.id === desired.id) continue
       if (current) current.dir = -1
       if (desired.id && desired.id !== state.sceneId && desired.id !== state.pendingSceneId) {
-        entriesRef.current.push({
-          key: entryKey++,
-          id: desired.id,
-          role: desired.role,
-          dir: 1,
-          warmFrames: 0,
-          prewarmed: false,
-          fade: { value: 0 },
-          out: { value: 0 },
-        })
+        // Layers deliberately skip the streamer's lifecycle: they have their
+        // own independent fade and never participate in the beat-locked primary
+        // commit, so there is no warm slot to arbitrate over.
+        entriesRef.current.push(makeEntry(desired.id, desired.role, 1))
         force((n) => n + 1)
       }
     }
@@ -357,7 +370,13 @@ export function SceneManager() {
       }
     }
     if (prune) {
+      const gone = entriesRef.current.filter((e) => e.dir === -1 && e.fade.value <= 0)
       entriesRef.current = entriesRef.current.filter((e) => !(e.dir === -1 && e.fade.value <= 0))
+      // Fully faded out and unmounted — the streamer can forget it. Only for
+      // primaries: layers were never registered with it.
+      for (const e of gone) {
+        if (e.role === 'primary') sceneStreamer.release(e.id)
+      }
       force((n) => n + 1)
     }
   }, -100)
