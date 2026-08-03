@@ -205,7 +205,16 @@ export const useStore = create<AppState>()(
           await audioEngine.start(kind, deviceId ?? get().micDeviceId ?? undefined)
           // start() resolves without connecting when it was cancelled or
           // superseded mid-prompt, so success cannot be inferred from resolve.
-          if (!audioEngine.running || get().status !== 'starting') return
+          if (get().status !== 'starting') return // already moved on by whoever cancelled
+          if (!audioEngine.running) {
+            // Resolved without connecting, yet we're still the live attempt —
+            // so nothing else is going to reset the card. Any stop() bumps the
+            // engine's start token (the track-'ended' handlers call it
+            // directly), and returning silently here left the selector stuck on
+            // "Waiting for permission" forever with no error and no way out.
+            set({ status: 'idle', sourceType: null })
+            return
+          }
           audioEngine.onEnded = () => set({ status: 'idle', sourceType: null })
           set({ status: 'running', sourceType: kind })
           if (kind === 'mic') void get().refreshDevices()
@@ -228,7 +237,12 @@ export const useStore = create<AppState>()(
         set({ status: 'starting', error: null })
         try {
           await audioEngine.startWithFile(file)
-          if (!audioEngine.running || get().status !== 'starting') return
+          if (get().status !== 'starting') return
+          if (!audioEngine.running) {
+            // Same dead-end as startAudio() — see the note there.
+            set({ status: 'idle', sourceType: null })
+            return
+          }
           audioEngine.onEnded = () => set({ status: 'idle', sourceType: null })
           set({ status: 'running', sourceType: 'file' })
         } catch (err) {
