@@ -2,10 +2,13 @@
 import {
   generateDissolveField,
   generatePlasmaField,
+  generatePointCloudField,
   type DissolveGenParams,
   type DissolveGenResult,
   type PlasmaGenParams,
   type PlasmaGenResult,
+  type PointCloudGenParams,
+  type PointCloudGenResult,
 } from './proceduralGen'
 
 /**
@@ -22,10 +25,12 @@ import {
 export type ProceduralRequest =
   | { kind: 'plasma'; id: number; params: PlasmaGenParams }
   | { kind: 'dissolve'; id: number; params: DissolveGenParams }
+  | { kind: 'pointcloud'; id: number; params: PointCloudGenParams }
 
 export type ProceduralResponse =
   | { kind: 'plasma'; id: number; result: PlasmaGenResult }
   | { kind: 'dissolve'; id: number; result: DissolveGenResult }
+  | { kind: 'pointcloud'; id: number; result: PointCloudGenResult }
   | { kind: 'error'; id: number; message: string }
 
 self.onmessage = (e: MessageEvent<ProceduralRequest>) => {
@@ -34,6 +39,10 @@ self.onmessage = (e: MessageEvent<ProceduralRequest>) => {
     if (req.kind === 'plasma') {
       const result = generatePlasmaField(req.params)
       const response: ProceduralResponse = { kind: 'plasma', id: req.id, result }
+      self.postMessage(response, { transfer: [result.positions.buffer, result.rand.buffer] })
+    } else if (req.kind === 'pointcloud') {
+      const result = generatePointCloudField(req.params)
+      const response: ProceduralResponse = { kind: 'pointcloud', id: req.id, result }
       self.postMessage(response, { transfer: [result.positions.buffer, result.rand.buffer] })
     } else {
       const result = generateDissolveField(req.params)

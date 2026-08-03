@@ -16,6 +16,8 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   dissolve: () => import('./DissolveCageScene').then((m) => ({ default: m.DissolveCageScene })),
   chrome: () => import('./ChromeFormScene').then((m) => ({ default: m.ChromeFormScene })),
   ribbons: () => import('./FlowRibbonScene').then((m) => ({ default: m.FlowRibbonScene })),
+  network: () => import('./NetworkConstellationScene').then((m) => ({ default: m.NetworkConstellationScene })),
+  pointcloud: () => import('./PointCloudScanScene').then((m) => ({ default: m.PointCloudScanScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -52,6 +54,8 @@ const PlasmaFilamentScene = lazyScene('plasma')
 const DissolveCageScene = lazyScene('dissolve')
 const ChromeFormScene = lazyScene('chrome')
 const FlowRibbonScene = lazyScene('ribbons')
+const NetworkConstellationScene = lazyScene('network')
+const PointCloudScanScene = lazyScene('pointcloud')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay'
 export type SceneBand = 'bass' | 'mid' | 'high' | 'vocal' | 'energy'
@@ -189,16 +193,62 @@ export const SCENES: SceneDef[] = [
     name: 'Flow Ribbons',
     component: FlowRibbonScene,
     metadata: {
-      roles: ['primary', 'accent', 'overlay'],
+      roles: ['accent', 'overlay'],
       moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
       bands: ['mid', 'vocal', 'high', 'energy'],
       intensity: 'medium',
       // A few dozen strips, all motion in the vertex shader.
       performanceCost: 'low',
       compatibleWith: ['wireframe', 'chrome', 'dissolve'],
-      moodFit: { ambient: 0.8, mellow: 0.86, groove: 0.82, building: 0.8, peak: 0.7 },
+      moodFit: { ambient: 0.97, mellow: 0.96, groove: 0.92, building: 0.98, peak: 0.97 },
       cameraAnchor: { target: [0, 0, 0], distance: 10, height: 1.4 },
       cameraModes: ['cinematic', 'spiral', 'orbit', 'handheld', 'pull'],
+    },
+  },
+  {
+    id: 'network',
+    name: 'Network Constellation',
+    component: NetworkConstellationScene,
+    metadata: {
+      roles: ['background', 'accent', 'overlay'],
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'energy'],
+      intensity: 'medium',
+      // Dynamic line buffer updating scales cleanly up to ~800 nodes
+      performanceCost: 'low',
+      compatibleWith: ['wireframe', 'chrome', 'pointcloud'],
+      moodFit: {
+        ambient: 0.90,
+        mellow: 0.84,
+        groove: 0.76,
+        building: 0.70,
+      },
+      cameraAnchor: { target: [0, 0, 0], distance: 14.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'pointcloud',
+    name: 'PCD LIDAR Scan',
+    component: PointCloudScanScene,
+    metadata: {
+      // Exclusively primary as requested, serving as the central visual subject
+      roles: ['primary'],
+      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'high', 'energy'],
+      intensity: 'high',
+      // High particle density (60k points), similar to PlasmaFilamentScene
+      performanceCost: 'high',
+      compatibleWith: ['wireframe', 'dissolve', 'ribbons'],
+      moodFit: {
+        ambient: 0.78,
+        mellow: 0.82,
+        groove: 0.86,
+        building: 0.90,
+        peak: 0.88,
+      },
+      cameraAnchor: { target: [0, 0, 0], distance: 11.0, height: 1.4 },
+      cameraModes: ['orbit', 'cinematic', 'spiral', 'handheld', 'push'],
     },
   },
 ]

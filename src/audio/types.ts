@@ -1,8 +1,23 @@
 import { createEmptyPercussion, type PercussionState } from './PercussionDetector'
 
-/** Musical mood classes, ordered roughly calm → hype. */
-export type MoodState =
-  'silence' | 'ambient' | 'mellow' | 'groove' | 'building' | 'peak' | 'aggressive'
+/**
+ * Musical mood classes, ordered roughly calm → hype.
+ *
+ * The runtime array is the single source of truth and the type is derived from
+ * it, so anything that needs to iterate every mood (registry coverage checks,
+ * score tables, the analytics bar chart) cannot drift out of sync with the type.
+ */
+export const MOOD_STATES = [
+  'silence',
+  'ambient',
+  'mellow',
+  'groove',
+  'building',
+  'peak',
+  'aggressive',
+] as const
+
+export type MoodState = (typeof MOOD_STATES)[number]
 
 /**
  * The live mood read: where the song is, where it's heading, and how the

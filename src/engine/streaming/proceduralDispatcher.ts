@@ -3,8 +3,14 @@ import type {
   DissolveGenResult,
   PlasmaGenParams,
   PlasmaGenResult,
+  PointCloudGenParams,
+  PointCloudGenResult,
 } from './proceduralGen'
-import { generateDissolveField, generatePlasmaField } from './proceduralGen'
+import {
+  generateDissolveField,
+  generatePlasmaField,
+  generatePointCloudField,
+} from './proceduralGen'
 import type { ProceduralRequest, ProceduralResponse } from './proceduralGen.worker'
 
 /**
@@ -97,6 +103,15 @@ class ProceduralDispatcher {
       return await this.dispatch<PlasmaGenResult>({ kind: 'plasma', params })
     } catch {
       return generatePlasmaField(params)
+    }
+  }
+
+  async requestPointCloud(params: PointCloudGenParams): Promise<PointCloudGenResult> {
+    if (!this.ensurePool()) return generatePointCloudField(params)
+    try {
+      return await this.dispatch<PointCloudGenResult>({ kind: 'pointcloud', params })
+    } catch {
+      return generatePointCloudField(params)
     }
   }
 

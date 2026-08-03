@@ -95,6 +95,57 @@ export function generatePlasmaField({ count, spread, seed }: PlasmaGenParams): P
 }
 
 // ---------------------------------------------------------------------------
+// PCD LIDAR Scan — volumetric spherical point cloud
+// ---------------------------------------------------------------------------
+
+export interface PointCloudGenParams {
+  count: number
+  radius: number
+  seed: number
+}
+
+export interface PointCloudGenResult {
+  positions: Float32Array
+  rand: Float32Array
+}
+
+/**
+ * Volumetric spherical distribution, biased toward the outer shell.
+ *
+ * `acos(2u - 1)` for the polar angle is what makes this uniform over the
+ * sphere — sampling `phi` directly would pile points at the poles. The
+ * `pow(u, 0.4)` radius bias then pushes density outward so the cloud reads as
+ * a scanned surface with volume behind it rather than a solid ball.
+ */
+export function generatePointCloudField({
+  count,
+  radius,
+  seed,
+}: PointCloudGenParams): PointCloudGenResult {
+  const random = mulberry32(seed)
+  const positions = new Float32Array(count * 3)
+  const rand = new Float32Array(count * 4)
+
+  for (let i = 0; i < count; i++) {
+    const theta = random() * Math.PI * 2
+    const phi = Math.acos(random() * 2 - 1)
+    const rad = radius * Math.pow(random(), 0.4)
+    const sinPhi = Math.sin(phi)
+
+    positions[i * 3] = rad * sinPhi * Math.cos(theta)
+    positions[i * 3 + 1] = rad * sinPhi * Math.sin(theta)
+    positions[i * 3 + 2] = rad * Math.cos(phi)
+
+    rand[i * 4] = random() // displacement variance
+    rand[i * 4 + 1] = random() // scan response seed
+    rand[i * 4 + 2] = random() // sparkle seed
+    rand[i * 4 + 3] = random() // point size variance
+  }
+
+  return { positions, rand }
+}
+
+// ---------------------------------------------------------------------------
 // Dissolve Cage — area-weighted surface sampling
 // ---------------------------------------------------------------------------
 
