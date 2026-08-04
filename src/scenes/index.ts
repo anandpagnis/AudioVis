@@ -18,6 +18,10 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   ribbons: () => import('./FlowRibbonScene').then((m) => ({ default: m.FlowRibbonScene })),
   network: () => import('./NetworkConstellationScene').then((m) => ({ default: m.NetworkConstellationScene })),
   pointcloud: () => import('./PointCloudScanScene').then((m) => ({ default: m.PointCloudScanScene })),
+  inversion: () => import('./InversionMachineScene').then((m) => ({ default: m.InversionMachineScene })),
+  foldpath: () => import('./FoldPathScene').then((m) => ({ default: m.FoldPathScene })),
+  torusfold: () => import('./TorusFoldScene').then((m) => ({ default: m.TorusFoldScene })),
+  juliawings: () => import('./JuliaWingsScene').then((m) => ({ default: m.JuliaWingsScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -56,6 +60,10 @@ const ChromeFormScene = lazyScene('chrome')
 const FlowRibbonScene = lazyScene('ribbons')
 const NetworkConstellationScene = lazyScene('network')
 const PointCloudScanScene = lazyScene('pointcloud')
+const InversionMachineScene = lazyScene('inversion')
+const FoldPathScene = lazyScene('foldpath')
+const TorusFoldScene = lazyScene('torusfold')
+const JuliaWingsScene = lazyScene('juliawings')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay'
 export type SceneBand = 'bass' | 'mid' | 'high' | 'vocal' | 'energy'
@@ -210,11 +218,15 @@ export const SCENES: SceneDef[] = [
     name: 'Network Constellation',
     component: NetworkConstellationScene,
     metadata: {
-      roles: ['background', 'accent', 'overlay'],
+      // Now primary-capable: a fullscreen procedural network shader, bold
+      // enough to stand alone rather than only composite under/over another
+      // scene.
+      roles: ['background', 'accent', 'overlay', 'primary'],
       moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'energy'],
+      bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'medium',
-      // Dynamic line buffer updating scales cleanly up to ~800 nodes
+      // Fullscreen shader, ~36 hash evals/pixel — cheaper than the CPU
+      // O(n^2) link scan it replaced.
       performanceCost: 'low',
       compatibleWith: ['wireframe', 'chrome', 'pointcloud'],
       moodFit: {
@@ -223,6 +235,14 @@ export const SCENES: SceneDef[] = [
         groove: 0.76,
         building: 0.70,
       },
+      // The scene's own rendering ignores these entirely (fullscreen quad,
+      // no ctx.camera read — its motion is audio/autonomous-driven, see
+      // NetworkConstellationScene's header comment). But CameraDirector's
+      // test suite (CameraDirector.test.ts) enforces that every registered
+      // scene — not just primary ones — declares enough camera-mode variety
+      // to be framed meaningfully, since the director doesn't know per-scene
+      // whether the camera matters. Restored rather than left off: found via
+      // a failing `npm run check` I should have run before the first push.
       cameraAnchor: { target: [0, 0, 0], distance: 14.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
@@ -249,6 +269,134 @@ export const SCENES: SceneDef[] = [
       },
       cameraAnchor: { target: [0, 0, 0], distance: 11.0, height: 1.4 },
       cameraModes: ['orbit', 'cinematic', 'spiral', 'handheld', 'push'],
+    },
+  },
+  {
+    id: 'inversion',
+    name: 'Inversion Machine',
+    component: InversionMachineScene,
+    metadata: {
+      // The first true raymarched-SDF scene in the roster: a sphere-inversion
+      // fractal, dense and alien enough to carry a frame on its own.
+      roles: ['primary'],
+      // Fills a real gap: aggressive was previously only covered by
+      // wireframe/plasma, and nothing else brought lit-surface raymarching.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // ~60-step raymarch + 6 calcNormal() calls/pixel, governed by uMaxSteps.
+      performanceCost: 'high',
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        groove: 0.68,
+        building: 0.82,
+        peak: 0.92,
+        aggressive: 0.9,
+      },
+      // The field's own coordinate scale is small (see InversionMachineScene's
+      // ANCHOR_DISTANCE comment) — a much closer anchor than other scenes'
+      // 8-17 range, tuned to the source shader's original ~1.2-unit distance.
+      cameraAnchor: { target: [0, 0, 0], distance: 1.4, height: 0.15 },
+      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
+    },
+  },
+  {
+    id: 'foldpath',
+    name: 'Fold Path',
+    component: FoldPathScene,
+    metadata: {
+      // Dense and glowing enough to carry a frame alone, same reasoning as
+      // pointcloud/inversion.
+      roles: ['primary'],
+      // A hypnotic flythrough rather than a violent one — sits alongside
+      // inversion's aggressive slot instead of doubling up on it.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // Fixed-step heightfield march, up to 600 steps/pixel plus a 20-step
+      // binary-search refine and 4 normal() samples — the heaviest scene in
+      // the roster; see FoldPathScene's own quality-governor comment.
+      performanceCost: 'high',
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        ambient: 0.72,
+        mellow: 0.8,
+        groove: 0.76,
+        building: 0.7,
+      },
+      // The scene flies its own scripted path() camera rather than reading
+      // the real one (see FoldPathScene's header comment — the flythrough IS
+      // the piece, unlike inversion's orbit-a-static-object case), so these
+      // are inert to its own rendering. Declared anyway: every registered
+      // scene needs enough camera-mode variety for CameraDirector's own
+      // bookkeeping, per CameraDirector.test.ts — same fix as network.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'torusfold',
+    name: 'Torus Fold',
+    component: TorusFoldScene,
+    metadata: {
+      // A fixed, orbitable fold+torus structure — dense enough to carry a
+      // frame alone, same reasoning as the other raymarch scenes.
+      roles: ['primary'],
+      // Hypnotic ring-pulse rather than glitchy or violent — spans a wider
+      // mood range than foldpath since it has real punch at peak too.
+      moods: ['mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // 100-step adaptive SDF march, 6-iteration fold per step — cheaper
+      // than inversion (no per-step normal calc) but still substantial.
+      performanceCost: 'high',
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        mellow: 0.7,
+        groove: 0.8,
+        building: 0.78,
+        peak: 0.74,
+      },
+      // Real camera, like inversion: the fold+torus structure sits fixed at
+      // the origin (only its internal fold rotates), so orbiting it is the
+      // natural fit — see TorusFoldScene's header comment for the
+      // camera-vs-self-contained decision this session settled on.
+      cameraAnchor: { target: [0, 0, 0], distance: 3.3, height: 0 },
+      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
+    },
+  },
+  {
+    id: 'juliawings',
+    name: 'Julia Wings',
+    component: JuliaWingsScene,
+    metadata: {
+      // Vivid and dense enough to hold a frame alone — deliberately not
+      // accent/overlay: this one was explicitly tuned brighter than the
+      // roster's usual budget (see JuliaWingsScene's BRIGHTNESS comment),
+      // which would read as too loud composited as a layer over a primary.
+      roles: ['primary'],
+      // Broad range on purpose — a hypnotic, colorful piece rather than a
+      // violent one, versatile enough to hold peak too.
+      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // 64 iterations x up to 3 AA taps/pixel, quality-gated on both axes
+      // (iteration count and whether the extra taps run at all).
+      performanceCost: 'high',
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        ambient: 0.8,
+        mellow: 0.85,
+        groove: 0.8,
+        building: 0.78,
+        peak: 0.82,
+      },
+      // Pure 2D math, no ray/camera concept at all (unlike inversion/
+      // torusfold) — inert to this scene's own rendering, same as network/
+      // foldpath. Declared anyway for CameraDirector.test.ts's invariant:
+      // every registered scene needs real camera-mode variety.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
 ]
