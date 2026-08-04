@@ -1,12 +1,15 @@
 import { Suspense, lazy, useRef, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { AutoPilot } from './AutoPilot'
+import { CameraDirector } from './CameraDirector'
 import { CueTimeline } from './CueTimeline'
+import { EffectsDirector } from './EffectsDirector'
 import { SceneManager } from './SceneManager'
 import { LightRig } from './LightRig'
-import { PostFX } from './PostFX'
 import { PerfMonitor } from './PerfMonitor'
 import { PerformanceDirector } from './PerformanceDirector'
+import { PerformanceStateBridge } from './PerformanceStateBridge'
+import { resourceCache } from './streaming/resourceCache'
 import { useStore } from '../store'
 
 // The AI-texture path ships as its own chunk and only downloads the first
@@ -21,9 +24,17 @@ const GenerativeLayer = lazy(() =>
  * inside it.
  *
  * Child order is not cosmetic — the systems run on explicit `useFrame`
- * priorities so the audio pipeline ticks before anything reads it:
- * `SceneManager` (-100, calls `audioEngine.update()`) → `AutoPilot` (-90) →
- * `CueTimeline` (-88) → `PerformanceDirector` (-85) → scenes (default) → PostFX.
+ * priorities, in three bands:
+ *
+ *   analysis   `SceneManager` (-100, calls `audioEngine.update()` first)
+ *   decide     `PerformanceStateBridge` (-95) → `AutoPilot` (-90) →
+ *              `CueTimeline` (-88) → `PerformanceDirector` (-85)
+ *   execute    `CameraDirector` (-80) → scenes (0) → `EffectsDirector`
+ *
+ * The rule the bands encode: everything in "decide" may write
+ * `performanceState`, nothing in "execute" may — executors only read it and
+ * apply. Keeping that boundary is what allows a new decision-maker (or a whole
+ * new renderer) to be added without touching the other side.
  *
  * Two non-obvious Canvas settings:
  *  - `antialias: false` — PostFX resolves its own AA; MSAA on the default
@@ -58,6 +69,11 @@ export function Stage() {
       false,
     )
     canvas.addEventListener('webglcontextrestored', () => {
+      // Every cached GPU resource — pinned or not — is dead: the handles
+      // belong to a context that no longer exists. Clear the cache before
+      // remounting so the first post-restore acquire() rebuilds from
+      // scratch rather than handing back a texture pointing at nothing.
+      resourceCache.invalidateAll()
       console.warn('[AudioVis] WebGL context restored — remounting render tree')
       setGlEpoch((n) => n + 1)
     })
@@ -74,9 +90,13 @@ export function Stage() {
       {/* PerfMonitor owns the DPR, so no static dpr prop — it sets it from the
           quality governor on mount and as tiers change. */}
       <PerfMonitor />
+      {/* decide */}
+      <PerformanceStateBridge />
       <AutoPilot />
       <CueTimeline />
       <PerformanceDirector />
+      {/* execute */}
+      <CameraDirector />
       <LightRig />
       <SceneManager key={`scenes-${glEpoch}`} />
       {everEnabled.current && (
@@ -84,7 +104,7 @@ export function Stage() {
           <GenerativeLayer key={`gen-${glEpoch}`} />
         </Suspense>
       )}
-      <PostFX key={`fx-${glEpoch}`} />
+      <EffectsDirector key={`fx-${glEpoch}`} />
     </Canvas>
   )
 }

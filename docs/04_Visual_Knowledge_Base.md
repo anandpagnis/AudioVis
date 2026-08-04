@@ -42,9 +42,9 @@ Every visual asset in AudioVis is described by **metadata**, not just a filename
 ```text
 SceneDef { id, name, component, metadata: SceneMetadata }
 Palette { id, name, colors, bg }
-CameraRig modes { orbit, hover, cut } — per-scene choice
+CameraDirector modes { orbit, hover, push, pull, spiral, handheld, locked, topdown, cinematic } — per-scene cameraModes
 Transitions — SceneManager crossfade + hard-cut (see 08)
-Effects — PostFX chain entries
+Effects — EffectsDirector chain entries
 ```
 
 Registration: `registerScene()`, `registerPalette()` at boot.
@@ -63,7 +63,7 @@ Directors query VKB → rank candidates → store actions → SceneManager rende
 |------------|-----------------|-----------|
 | Scenes | `SceneMetadata` in `src/scenes/index.ts` | `getScenesForMood`, `getCompatibleScenes`, `getScene` |
 | Palettes | `Palette` in `src/engine/palettes.ts` | `getPalette`, `MOOD_PALETTES` in AutoPilot |
-| Cameras | `CameraRig` modes | Per-scene imperative |
+| Cameras | `CameraMode` catalog | Declared in scene metadata (`cameraAnchor` + `cameraModes`) |
 | Transitions | SceneManager fade | Implicit crossfade |
 | AI textures | Mood×palette×variant keys | `textureGenerator.ts` cache |
 
@@ -89,22 +89,6 @@ interface SceneMetadata {
 
 ### Registered scene catalog
 
-#### Schematic (`schematic`)
-
-```yaml
-Name: Schematic
-Themes: Technical, Cyberpunk, Annotation
-Mood: Mellow, Groove, Building, Peak, Aggressive
-Genres: Techno, Industrial, IDM
-Energy: 0.4–0.9
-Bands: bass (mass), mid (hue), presence (linewidth), high (elements), transient (flash)
-Camera: Orbit
-Negative Space: High
-Performance Cost: Low
-Roles: primary, accent
-Compatible: wireframe, plasma, dissolve, chrome
-moodFit: building 0.82, groove 0.74
-```
 
 #### Wireframe Hero (`wireframe`)
 
@@ -119,7 +103,7 @@ Camera: Orbit
 Negative Space: High
 Performance Cost: Low
 Roles: primary, accent
-Compatible: schematic, plasma, dissolve, chrome
+Compatible: plasma, dissolve, chrome
 moodFit: building 0.86, groove 0.80
 Technique: WireframeGeometry2 + LineMaterial
 ```
@@ -137,7 +121,7 @@ Camera: Orbit
 Negative Space: Medium
 Performance Cost: High
 Roles: primary, accent, overlay
-Compatible: schematic, wireframe, dissolve, chrome
+Compatible: wireframe, dissolve, chrome
 moodFit: peak 0.94, aggressive 0.90
 Technique: 70k curl-noise particles
 ```
@@ -155,7 +139,7 @@ Camera: Hover
 Negative Space: High
 Performance Cost: Medium
 Roles: primary
-Compatible: schematic, wireframe, plasma, chrome
+Compatible: wireframe, plasma, chrome
 moodFit: building 0.88, groove 0.82
 ```
 
@@ -172,7 +156,7 @@ Camera: Orbit
 Negative Space: High
 Performance Cost: Medium
 Roles: primary
-Compatible: schematic, wireframe, plasma, dissolve
+Compatible: wireframe, plasma, dissolve
 moodFit: mellow 0.84, ambient 0.70
 Technique: MeshPhysicalMaterial + PMREM IBL
 ```

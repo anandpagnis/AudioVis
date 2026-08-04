@@ -1,6 +1,8 @@
 import { BpmEstimator } from './BpmEstimator'
 import { MoodEstimator } from './MoodEstimator'
+import { PercussionDetector } from './PercussionDetector'
 import { PhraseDetector } from './PhraseDetector'
+import { computeSpectralBands } from './spectralFeatures'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 
 export type SourceKind = 'system' | 'mic' | 'file'
@@ -96,6 +98,13 @@ class AudioEngine {
 
   private ctx: AudioContext | null = null
   private analyser: AnalyserNode | null = null
+  /**
+   * Second analyser fed through a band-pass, so scenes can trace the waveform
+   * of the LEAD/SYNTH range rather than the full mix. The full-mix waveform is
+   * dominated by kick and bass — tracing it draws the drums, not the melody.
+   */
+  private midAnalyser: AnalyserNode | null = null
+  private midFilter: BiquadFilterNode | null = null
   private stream: MediaStream | null = null
   private sourceNode: AudioNode | null = null
   private mediaEl: HTMLAudioElement | null = null
@@ -137,6 +146,7 @@ class AudioEngine {
     presence: makeBand(),
     high: makeBand(),
     vocal: makeBand(),
+    air: makeBand(),
     flux: makeBand(),
   }
 
@@ -147,6 +157,7 @@ class AudioEngine {
   readonly bpmEstimator = new BpmEstimator()
   readonly phraseDetector = new PhraseDetector()
   readonly moodEstimator = new MoodEstimator()
+  readonly percussionDetector = new PercussionDetector()
 
   onEnded: (() => void) | null = null
 
@@ -284,6 +295,7 @@ class AudioEngine {
     analyser.fftSize = FFT_SIZE
     analyser.smoothingTimeConstant = 0
     source.connect(analyser)
+    this.attachMidTap(ctx, source)
     source.connect(ctx.destination) // the user hears the track
     const recDest = ctx.createMediaStreamDestination()
     source.connect(recDest)
@@ -350,6 +362,29 @@ class AudioEngine {
     this.connectStream(ctx, stream, false)
   }
 
+  /**
+   * Build the band-passed analyser tap used for `features.midWaveform`.
+   *
+   * Centred at 1.1 kHz with a wide Q, which covers most lead-synth, vocal and
+   * guitar fundamentals while rejecting kick/sub below and cymbal hiss above.
+   * It is a filter, not source separation: a snare crack still shows up. But
+   * the resulting wave is dominated by sustained tonal material, which is what
+   * makes a ribbon traced along it read as "the synth line".
+   */
+  private attachMidTap(ctx: AudioContext, source: AudioNode) {
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'bandpass'
+    filter.frequency.value = 1100
+    filter.Q.value = 0.7
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = FFT_SIZE
+    analyser.smoothingTimeConstant = 0
+    source.connect(filter)
+    filter.connect(analyser)
+    this.midFilter = filter
+    this.midAnalyser = analyser
+  }
+
   private connectStream(ctx: AudioContext, stream: MediaStream, maybeMonitor: boolean) {
     // Safety net: if the context is still suspended (activation expired or
     // policy quirk), never block startup on it — the analyser just reads
@@ -372,6 +407,7 @@ class AudioEngine {
     analyser.fftSize = FFT_SIZE
     analyser.smoothingTimeConstant = 0 // we do our own smoothing
     source.connect(analyser)
+    this.attachMidTap(ctx, source)
     // Recording tap: never routed to speakers, mixed into canvas captures.
     const recDest = ctx.createMediaStreamDestination()
     source.connect(recDest)
@@ -431,6 +467,8 @@ class AudioEngine {
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl)
     this.ctx = null
     this.analyser = null
+    this.midAnalyser = null
+    this.midFilter = null
     this.stream = null
     this.sourceNode = null
     this.mediaEl = null
@@ -453,6 +491,7 @@ class AudioEngine {
     this.bpmEstimator.reset()
     this.phraseDetector.reset()
     this.moodEstimator.reset()
+    this.percussionDetector.reset()
     for (const band of Object.values(this.bands)) {
       band.peak = 0.15
       band.value = 0
@@ -482,6 +521,8 @@ class AudioEngine {
 
     analyser.getFloatTimeDomainData(f.waveform)
     analyser.getFloatFrequencyData(this.freqDb)
+    // Band-passed time domain — the lead/synth wave scenes can trace.
+    if (this.midAnalyser) this.midAnalyser.getFloatTimeDomainData(f.midWaveform)
 
     // --- Spectrum (dB → linear magnitude, normalized) ---
     const nyquist = ctx.sampleRate / 2
@@ -491,64 +532,37 @@ class AudioEngine {
       f.spectrum[i] = mag
     }
 
-    // --- RMS ---
+    // --- RMS + crest factor (peak/RMS — pushed/brickwalled vs. dynamic) ---
     let sq = 0
-    for (let i = 0; i < f.waveform.length; i++) sq += f.waveform[i] * f.waveform[i]
-    const rmsRaw = Math.sqrt(sq / f.waveform.length)
-
-    // --- Bands + centroid + flux ---
-    const bassEnd = Math.min(this.freqDb.length, Math.ceil(160 / binHz))
-    const midEnd = Math.min(this.freqDb.length, Math.ceil(2000 / binHz))
-    const presenceEnd = Math.min(this.freqDb.length, Math.ceil(5000 / binHz))
-    const highEnd = Math.min(this.freqDb.length, Math.ceil(9000 / binHz))
-    const subEnd = Math.min(this.freqDb.length, Math.ceil(80 / binHz))
-    let bass = 0
-    let mid = 0
-    let sub = 0
-    let presence = 0
-    let high = 0
-    let vocal = 0
-    let centW = 0
-    let centWF = 0
-    let bassFlux = 0
-    for (let i = 1; i < highEnd; i++) {
-      const mag = Math.pow(10, this.freqDb[i] / 20)
-      if (i < bassEnd) bass += mag
-      else if (i < midEnd) mid += mag
-      else high += mag
-      if (i < subEnd) sub += mag
-      if (i >= Math.ceil(250 / binHz) && i < presenceEnd) vocal += mag
-      if (i >= midEnd && i < presenceEnd) presence += mag
-      centW += mag
-      centWF += mag * i
-      // Half-wave-rectified spectral flux, bass-weighted: only rises count (a
-      // note starting, not one decaying), and low bins count 2.5x because the
-      // kick is what the beat tracker locks onto. `f.flux` is derived from this,
-      // so there is deliberately no full-spectrum accumulator — an unweighted
-      // one used to be computed here and thrown away.
-      const diff = mag - this.prevMag[i]
-      if (diff > 0 && i < midEnd) bassFlux += diff * (i < bassEnd ? 2.5 : 1)
-      this.prevMag[i] = mag
+    let peakAbs = 0
+    for (let i = 0; i < f.waveform.length; i++) {
+      const s = f.waveform[i]
+      sq += s * s
+      const a = Math.abs(s)
+      if (a > peakAbs) peakAbs = a
     }
-    bass /= Math.max(1, bassEnd - 1)
-    mid /= Math.max(1, midEnd - bassEnd)
-    sub /= Math.max(1, subEnd - 1)
-    presence /= Math.max(1, presenceEnd - midEnd)
-    high /= Math.max(1, highEnd - midEnd)
-    vocal /= Math.max(1, presenceEnd - Math.ceil(250 / binHz))
-    const centroidRaw = centW > 1e-6 ? centWF / centW / highEnd : 0
+    const rmsRaw = Math.sqrt(sq / f.waveform.length)
+    const crestRaw = Math.min(20, peakAbs / (rmsRaw + 1e-6))
+
+    // --- Bands + centroid + flux + texture cues (flatness/rolloff/air) ---
+    const spectral = computeSpectralBands(this.freqDb, this.prevMag, binHz)
 
     // --- Adaptive normalization + attack/release smoothing ---
     f.rms = this.norm(this.bands.rms, rmsRaw, delta)
-    f.bass = this.norm(this.bands.bass, bass, delta)
-    f.mid = this.norm(this.bands.mid, mid, delta)
-    f.sub = this.norm(this.bands.sub, sub, delta)
-    f.presence = this.norm(this.bands.presence, presence, delta)
-    f.high = this.norm(this.bands.high, high, delta)
-    f.vocal = this.norm(this.bands.vocal, vocal, delta)
-    f.flux = this.norm(this.bands.flux, bassFlux, delta)
+    f.bass = this.norm(this.bands.bass, spectral.bass, delta)
+    f.mid = this.norm(this.bands.mid, spectral.mid, delta)
+    f.sub = this.norm(this.bands.sub, spectral.sub, delta)
+    f.presence = this.norm(this.bands.presence, spectral.presence, delta)
+    f.high = this.norm(this.bands.high, spectral.high, delta)
+    f.vocal = this.norm(this.bands.vocal, spectral.vocal, delta)
+    f.air = this.norm(this.bands.air, spectral.air, delta)
+    f.flux = this.norm(this.bands.flux, spectral.bassFlux, delta)
     f.transient += (Math.min(1, f.flux * 1.5) - f.transient) * Math.min(1, delta * 20)
-    f.centroid += (Math.min(1, centroidRaw * 3) - f.centroid) * Math.min(1, delta * 8)
+    f.centroid += (Math.min(1, spectral.centroidRaw * 3) - f.centroid) * Math.min(1, delta * 8)
+    f.spectralFlatness += (spectral.spectralFlatness - f.spectralFlatness) * Math.min(1, delta * 8)
+    f.spectralRolloff += (spectral.spectralRolloff - f.spectralRolloff) * Math.min(1, delta * 8)
+    // Slower smoothing: crest factor is a "character" cue, not a fast envelope.
+    f.crestFactor += (crestRaw - f.crestFactor) * Math.min(1, delta * 4)
     const energyTarget = Math.min(1, f.bass * 0.5 + f.mid * 0.3 + f.high * 0.2 + f.rms * 0.3)
     f.energy += (energyTarget - f.energy) * Math.min(1, delta * (energyTarget > f.energy ? 14 : 4))
 
@@ -556,8 +570,14 @@ class AudioEngine {
     if (rmsRaw > 0.008) this.silenceSince = now
     f.silence = now - this.silenceSince > 0.6
 
+    // --- Independent drum hits (kick / snare / hi-hat) ---
+    // Separate from the broadband onset detector below: that one owns beat
+    // TIMING, this one owns which part of the kit fired, so visual layers can
+    // respond to the three independently.
+    this.percussionDetector.update(f.percussion, spectral, now, delta, f.silence)
+
     // --- Onset detection (adaptive threshold over ~1 s of flux) ---
-    this.fluxHistory.push(bassFlux)
+    this.fluxHistory.push(spectral.bassFlux)
     if (this.fluxHistory.length > 60) this.fluxHistory.shift()
     if (this.fluxHistory.length > 20 && !f.silence) {
       let mean = 0
@@ -567,9 +587,9 @@ class AudioEngine {
       for (const v of this.fluxHistory) variance += (v - mean) * (v - mean)
       const std = Math.sqrt(variance / this.fluxHistory.length)
       const threshold = mean + 1.6 * std + 1e-6
-      if (bassFlux > threshold && now - this.lastOnsetTime > 0.18) {
+      if (spectral.bassFlux > threshold && now - this.lastOnsetTime > 0.18) {
         this.lastOnsetTime = now
-        const strength = Math.min(1, (bassFlux - mean) / (std * 4 + 1e-6))
+        const strength = Math.min(1, (spectral.bassFlux - mean) / (std * 4 + 1e-6))
         this.bpmEstimator.addOnset(now, strength)
       }
     }
@@ -602,6 +622,7 @@ class AudioEngine {
     const est = this.bpmEstimator
     f.bpm = est.bpm
     f.confidence = est.confidence
+    f.beatGridAccuracy = est.hitScore
     const idx = Math.floor((now - est.phase) / est.period)
     f.beatProgress = (now - est.phase) / est.period - idx
     f.nextBeatTime = est.phase + (idx + 1) * est.period

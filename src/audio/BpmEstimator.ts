@@ -32,7 +32,9 @@ export class BpmEstimator {
   private lastEval = 0
   private lastCandidate = 0
   private stableCount = 0
-  private hitScore = 0 // how often onsets land on the predicted grid
+  /** How tightly onsets are landing on the predicted grid, 0..1. Already fed
+   * into `confidence`; exposed on its own as a beat-tracking-accuracy signal. */
+  hitScore = 0
   private externalUntil = -1
 
   reset(phase = 0) {

@@ -27,9 +27,7 @@ function applySharedLook(patch: Record<string, unknown>) {
   const encoded = new URLSearchParams(window.location.hash.slice(1)).get('look')
   if (!encoded) return
   try {
-    const json = decodeURIComponent(
-      escape(atob(encoded.replace(/-/g, '+').replace(/_/g, '/'))),
-    )
+    const json = decodeURIComponent(escape(atob(encoded.replace(/-/g, '+').replace(/_/g, '/'))))
     const p = sanitizePreset(JSON.parse(json))
     if (!p) return
     if (SCENES.some((s) => s.id === p.sceneId)) patch.sceneId = p.sceneId

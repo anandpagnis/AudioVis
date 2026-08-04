@@ -49,7 +49,8 @@ Music Intelligence is the heart of AudioVis. It transforms raw audio into a **st
 MediaStream
   → AudioContext graph (analyser + optional playback tap)
   → FFT 2048 → spectrum + waveform
-  → Band extraction (sub, bass, mid, presence, high, vocal)
+  → Band extraction (sub, bass, mid, presence, high, vocal, air)
+    + texture cues (spectral flatness, spectral rolloff, crest factor)
   → Adaptive normalization + attack/release shaping
   → Onset flux → BpmEstimator (IOI histogram + PLL)
   → PhraseDetector (spectral novelty on downbeats)
@@ -57,7 +58,7 @@ MediaStream
   → AudioFeatures (single mutable object)
 ```
 
-**Key files:** `src/audio/AudioEngine.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`, `MoodEstimator.ts`, `MidiClock.ts`, `types.ts`
+**Key files:** `src/audio/AudioEngine.ts`, `spectralFeatures.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`, `MoodEstimator.ts`, `MidiClock.ts`, `types.ts`. The per-bin spectral loop is a pure function in `spectralFeatures.ts` (unit-tested in `src/audio/__tests__/`) — `AudioEngine.ts` only owns the Web Audio graph and normalization/smoothing around it.
 
 ---
 
@@ -110,6 +111,7 @@ See [14_Data_Models.md](14_Data_Models.md) — `AudioFeatures`, `MoodMomentum`, 
 | Beat grid | Phase-locked loop | Last tempo + phase | 60 Hz | Inherited from BPM |
 | Beat flags | Grid crossing | `beatIndex`, `beatInBar`, `bar`, `measure` | Per beat | Grid trust |
 | External tempo | Override + 2 s expiry | MIDI clock ticks | Per tick | High when clock active |
+| Beat-grid accuracy | `BpmEstimator`'s internal per-onset hit rate against the predicted grid, exposed as `AudioFeatures.beatGridAccuracy` | Onset timestamps | Per onset | Already blended into `confidence`; useful standalone for accuracy analytics (live Analytics panel, `Y`) |
 
 **Future:** Essentia `RhythmExtractor2013` off-thread for difficult genres; beat tracking fusion with onset PLL.
 
@@ -128,7 +130,7 @@ See [14_Data_Models.md](14_Data_Models.md) — `AudioFeatures`, `MoodMomentum`, 
 | Feature | Algorithm | Update rate | Confidence |
 |---------|-----------|-------------|------------|
 | Phrase grid | 16 beats, re-anchored at sections | Per downbeat | Implicit |
-| Section change | Spectral profile novelty (bass/mid/high/centroid) on downbeats | Event | Binary flag |
+| Section change | Spectral profile novelty (bass/mid/high/centroid) on downbeats, thresholded at 0.45 | Event | Binary flag (`sectionChange`) plus the continuous strength behind it (`sectionChangeStrength`) |
 | Drop | Energy jump + bass threshold, 0.6 s pulse | Event | Heuristic |
 | Build-up | Sustained energy slope | Continuous | Heuristic |
 | Silence | RMS below threshold | Continuous | High |
@@ -139,13 +141,17 @@ See [14_Data_Models.md](14_Data_Models.md) — `AudioFeatures`, `MoodMomentum`, 
 
 | Feature | Algorithm | Update rate | Confidence |
 |---------|-----------|-------------|------------|
-| Mood (7 states) | Weighted score of energy, bass, brightness, flux + hysteresis | 60 Hz | `mood.confidence` |
+| Mood (7 states) | Weighted score of energy, bass, brightness, flux, spectral flatness/rolloff, crest factor, air + hysteresis | 60 Hz | `mood.confidence` |
 | Prediction | Trend velocities → projected state + `beatsTillTransition` | 60 Hz | Drops when unstable |
 | Viz multipliers | Smoothed intensity/speed/reactivity per mood | 60 Hz | N/A |
 
 **States:** `silence` → `ambient` → `mellow` → `groove` → `building` → `peak` → `aggressive`
 
-**Future:** ONNX mood classifier trained on labeled DJ sets; ensemble with heuristic (heuristic wins on latency).
+The full per-state score distribution and a derived ambiguity score (`MoodMomentum.scores` /
+`.ambiguity`, 0 = decisive winner, 1 = near-tie) are exposed alongside the committed state —
+previously computed every frame and discarded, now surfaced for accuracy/calibration analytics.
+
+**Future:** ONNX mood classifier trained on labeled DJ sets; ensemble with heuristic (heuristic wins on latency). If an external opinion is ever needed to validate "does it pick up the vibe correctly," the shape that fits this project's DSP-only philosophy is an *offline, manual* calibration script — never in the render hot path (see [HANDOFF.md](HANDOFF.md) §7).
 
 ### Chapter: Genre
 
@@ -163,9 +169,25 @@ See [14_Data_Models.md](14_Data_Models.md) — `AudioFeatures`, `MoodMomentum`, 
 | Spectral centroid | FFT-weighted mean frequency, normalized | 60 Hz |
 | Spectral flux | Onset-oriented brightness change | 60 Hz |
 | Band energies | Fixed Hz ranges, adaptive normalization | 60 Hz |
-| Vocal estimate | 250 Hz–4 kHz blend | 60 Hz |
+| Vocal estimate | 250 Hz–5 kHz blend | 60 Hz |
+| Voice (tonal vocal) | `vocal × (1 - spectralFlatness)` — the vocal band gated by tonality | 60 Hz |
+| Air | ~9–16 kHz band above `high` (shimmer, cymbal wash, breath) — a bin range the original six bands never covered at all | 60 Hz |
+| Spectral flatness | Geometric mean / arithmetic mean of magnitude — tonal (low) vs. noisy/distorted (high) texture | 60 Hz |
+| Spectral rolloff | Normalized frequency below which 85% of energy sits — a brightness cue robust to one dominant bin, unlike centroid | 60 Hz |
+| Crest factor | Peak/RMS ratio — low for pushed/brickwalled masters, high for dynamic material | 60 Hz |
 
-**Future:** MFCC + timbre clustering for scene selection; Essentia `SpectralComplexity`.
+**On `voice` vs `vocal`.** The raw `vocal` band is a plain energy sum over 250 Hz–5 kHz, so it
+lights up on hi-hats, snare body, and distortion exactly as readily as on a singer — which is why
+nothing consumed it for a long time. Multiplying it by tonality (`1 - spectralFlatness`) suppresses
+the noisy half of that range and leaves what is actually pitched, so a held note reads high and a
+busy percussive bar reads low. Exposed as `AudioResponse.voice` and `SceneFrame.b.voice`, and it is
+what the fluid scenes (Liquid Form, Flow Ribbons) key their headline behaviour to. It remains an
+estimate, not source separation — a true vocal stem needs a model, which is deliberately out of
+scope (see [HANDOFF.md](HANDOFF.md) §7).
+
+All four are strictly additive: none change the six original bands' Hz cutoffs or normalization, so the five registered scenes' calibrated band-to-job wiring (see [05_Scene_Architecture.md](05_Scene_Architecture.md)) is untouched.
+
+**Future:** MFCC + timbre clustering for scene selection; Essentia `SpectralComplexity`; full ITU-R BS.1770 loudness (crest factor above is a cheap proxy, not true LUFS).
 
 ### Chapter: Energy
 
@@ -248,10 +270,18 @@ clock stops > 2 s → resume onset tracking
 
 ## Testing
 
+- `npm run test` (Vitest, `src/audio/__tests__/`) — unit tests for `BpmEstimator` (synthetic click
+  tracks: tempo lock, on-grid vs. jittered `hitScore`, tempo-change persistence, free-run decay,
+  external-tempo override), `PhraseDetector` (boundary detection, cooldown, silence guard),
+  `MoodEstimator` (state commitment, hysteresis, score distribution, ambiguity), and
+  `spectralFeatures` (band isolation, flatness/rolloff on synthetic spectra). None of these need a
+  browser or `AudioContext` — the estimator classes take plain data.
+- Analytics panel (`Y`): rolling beat-tracking accuracy, mood confidence/ambiguity trends, and the
+  live mood-score distribution — the numeric counterpart to the checks below.
 - Debug panel (`D`): live BPM, confidence, mood prediction, bands, section/drop flags
 - Manual: play track with clear drops → verify `drop` rising edge triggers AutoPilot
 - Manual: stop/restart source → verify clean state reset
-- `npm run check` for type safety
+- `npm run check` for type safety (now includes the test suite)
 
 ---
 

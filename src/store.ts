@@ -26,15 +26,7 @@ export interface VisualParams {
 
 /** Envelopes a band mapping can listen to. */
 export type BandSource =
-  | 'sub'
-  | 'bass'
-  | 'mid'
-  | 'presence'
-  | 'high'
-  | 'vocal'
-  | 'energy'
-  | 'transient'
-  | 'beatPulse'
+  'sub' | 'bass' | 'mid' | 'presence' | 'high' | 'vocal' | 'energy' | 'transient' | 'beatPulse'
 
 /** Declarative band → visual-parameter routing, applied in getEffectiveParams. */
 export interface BandMapping {
@@ -91,6 +83,7 @@ interface AppState {
 
   uiHidden: boolean
   debugOpen: boolean
+  analyticsOpen: boolean
   params: VisualParams
   quality: Quality
 
@@ -148,6 +141,7 @@ interface AppState {
   setPalette: (id: string, opts?: { auto?: boolean }) => void
   toggleUi: () => void
   toggleDebug: () => void
+  toggleAnalytics: () => void
   setParam: (key: keyof VisualParams, value: number) => void
   setQuality: (q: Quality) => void
 
@@ -168,7 +162,7 @@ export const useStore = create<AppState>()(
       sourceType: null,
       error: null,
 
-      sceneId: 'schematic',
+      sceneId: 'wireframe',
       pendingSceneId: null,
       accentSceneId: null,
       overlaySceneId: null,
@@ -176,6 +170,7 @@ export const useStore = create<AppState>()(
 
       uiHidden: false,
       debugOpen: false,
+      analyticsOpen: false,
       params: { intensity: 1, speed: 1, reactivity: 1 },
       quality: 'auto',
 
@@ -210,7 +205,16 @@ export const useStore = create<AppState>()(
           await audioEngine.start(kind, deviceId ?? get().micDeviceId ?? undefined)
           // start() resolves without connecting when it was cancelled or
           // superseded mid-prompt, so success cannot be inferred from resolve.
-          if (!audioEngine.running || get().status !== 'starting') return
+          if (get().status !== 'starting') return // already moved on by whoever cancelled
+          if (!audioEngine.running) {
+            // Resolved without connecting, yet we're still the live attempt —
+            // so nothing else is going to reset the card. Any stop() bumps the
+            // engine's start token (the track-'ended' handlers call it
+            // directly), and returning silently here left the selector stuck on
+            // "Waiting for permission" forever with no error and no way out.
+            set({ status: 'idle', sourceType: null })
+            return
+          }
           audioEngine.onEnded = () => set({ status: 'idle', sourceType: null })
           set({ status: 'running', sourceType: kind })
           if (kind === 'mic') void get().refreshDevices()
@@ -233,7 +237,12 @@ export const useStore = create<AppState>()(
         set({ status: 'starting', error: null })
         try {
           await audioEngine.startWithFile(file)
-          if (!audioEngine.running || get().status !== 'starting') return
+          if (get().status !== 'starting') return
+          if (!audioEngine.running) {
+            // Same dead-end as startAudio() — see the note there.
+            set({ status: 'idle', sourceType: null })
+            return
+          }
           audioEngine.onEnded = () => set({ status: 'idle', sourceType: null })
           set({ status: 'running', sourceType: 'file' })
         } catch (err) {
@@ -368,7 +377,12 @@ export const useStore = create<AppState>()(
             : {
                 bandMappings: [
                   ...s.bandMappings,
-                  { id: crypto.randomUUID(), source: 'bass' as const, target: 'intensity' as const, amount: 0.5 },
+                  {
+                    id: crypto.randomUUID(),
+                    source: 'bass' as const,
+                    target: 'intensity' as const,
+                    amount: 0.5,
+                  },
                 ],
               },
         ),
@@ -402,9 +416,14 @@ export const useStore = create<AppState>()(
       },
 
       setPalette: (id, opts) =>
-        set(opts?.auto ? { paletteId: id } : { paletteId: id, lastManualAt: audioEngine.features.time }),
+        set(
+          opts?.auto
+            ? { paletteId: id }
+            : { paletteId: id, lastManualAt: audioEngine.features.time },
+        ),
       toggleUi: () => set((s) => ({ uiHidden: !s.uiHidden })),
       toggleDebug: () => set((s) => ({ debugOpen: !s.debugOpen })),
+      toggleAnalytics: () => set((s) => ({ analyticsOpen: !s.analyticsOpen })),
       setParam: (key, value) => set((s) => ({ params: { ...s.params, [key]: value } })),
       setQuality: (q) => set({ quality: q }),
 

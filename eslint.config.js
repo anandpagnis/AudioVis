@@ -13,7 +13,7 @@ import tseslint from 'typescript-eslint'
  * actively wrong for this codebase.
  */
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', 'audiovis-core', 'backend'] },
+  { ignores: ['dist', 'node_modules', 'backend'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['src/**/*.{ts,tsx}'],

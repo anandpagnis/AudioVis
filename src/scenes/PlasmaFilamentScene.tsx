@@ -1,14 +1,10 @@
-import { useContext, useMemo, useRef } from 'react'
-import { useFrame } from '@react-three/fiber'
+import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { audioEngine, beatPulse } from '../audio/AudioEngine'
-import { CameraRig } from '../engine/CameraRig'
-import { PaletteBlender, getPalette } from '../engine/palettes'
-import { SceneFade } from '../engine/SceneManager'
-import { getEffectiveParams } from '../engine/moodParams'
-import { quality } from '../engine/quality'
+import { applyToUniforms } from '../engine/AnimationDirector'
+import { CURL_NOISE_GLSL } from '../engine/shaderLib'
+import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
+import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
-import { useStore } from '../store'
 
 /**
  * Plasma Filament — one hot core radiating shard filaments into black.
@@ -25,7 +21,7 @@ import { useStore } from '../store'
  *    for free, no extra field evaluations.
  *  - Radial colour ramp, hot accent at the core easing out to the cool primary.
  *
- * Exposure is a hard constraint, not a taste call (VISION.md §3.1): only the
+ * Exposure is a hard constraint, not a taste call (docs/09_Rendering_Engine.md): only the
  * core is allowed near full brightness. Per-particle contribution stays tiny so
  * the periphery accumulates to a fraction of 1.0 and the frame reads as dead
  * black with one hot subject — never an additive haze that would flatten any
@@ -34,41 +30,20 @@ import { useStore } from '../store'
 const COUNT = 70000
 const SPREAD = 9.0
 
-const VERT = /* glsl */ `
+export const VERT = /* glsl */ `
   attribute vec4 aRand;
   uniform float uFlow;
   uniform float uBass;
   uniform float uEnergy;
   uniform float uPulse;
   uniform float uTransient;
+  uniform float uAnimExplode;
   uniform float uSize;
   varying float vRadius;
   varying vec2 vStreak;
   varying vec4 vRand;
 
-  // Cheap sine field; its curl is divergence-free, so particles ride
-  // streamlines instead of collapsing into sinks.
-  vec3 snoiseVec3(vec3 x) {
-    return vec3(
-      sin(x.y * 1.7 + x.z * 0.9),
-      sin(x.z * 1.3 + x.x * 1.1),
-      sin(x.x * 1.9 + x.y * 0.7)
-    );
-  }
-
-  vec3 curl(vec3 p) {
-    const float e = 0.15;
-    vec3 dx = vec3(e, 0.0, 0.0);
-    vec3 dy = vec3(0.0, e, 0.0);
-    vec3 dz = vec3(0.0, 0.0, e);
-    vec3 x1 = snoiseVec3(p + dx), x0 = snoiseVec3(p - dx);
-    vec3 y1 = snoiseVec3(p + dy), y0 = snoiseVec3(p - dy);
-    vec3 z1 = snoiseVec3(p + dz), z0 = snoiseVec3(p - dz);
-    float cx = (y1.z - y0.z) - (z1.y - z0.y);
-    float cy = (z1.x - z0.x) - (x1.z - x0.z);
-    float cz = (x1.y - x0.y) - (y1.x - y0.x);
-    return vec3(cx, cy, cz) / (2.0 * e);
-  }
+  ${CURL_NOISE_GLSL}
 
   void main() {
     vRand = aRand;
@@ -79,13 +54,17 @@ const VERT = /* glsl */ `
     float step = 0.26 + uBass * 0.26;
     vec3 dir = vec3(0.0, 1.0, 0.0);
     for (int i = 0; i < 4; i++) {
-      dir = curl(fp * 0.22 + vec3(0.0, 0.0, uFlow * 0.14) + aRand.x);
+      // 0.15: Plasma's authored central-difference epsilon, unchanged.
+      dir = curlNoise(fp * 0.22 + vec3(0.0, 0.0, uFlow * 0.14) + aRand.x, 0.15);
       fp += dir * step;
     }
 
     // Transient rides on top of the beat pulse: it reacts faster than any band
     // envelope, so sharp hits kick the whole field outward before bass responds.
-    fp *= 1.0 + uPulse * 0.07 + uTransient * 0.06;
+    // Explode is the slow counterpart: it carries the director's visualTension,
+    // so the field visibly strains apart through a build — while the music
+    // there may still be quiet and no band envelope is moving at all.
+    fp *= 1.0 + uPulse * 0.07 + uTransient * 0.06 + uAnimExplode * 0.18;
     vRadius = length(fp);
 
     vec4 mv = modelViewMatrix * vec4(fp, 1.0);
@@ -107,7 +86,7 @@ const VERT = /* glsl */ `
   }
 `
 
-const FRAG = /* glsl */ `
+export const FRAG = /* glsl */ `
   precision highp float;
   uniform vec3 uColCore;
   uniform vec3 uColMid;
@@ -156,7 +135,7 @@ const FRAG = /* glsl */ `
     // than a guess. The core boost is deliberately modest on top of that,
     // because the core-weighted SEEDING is already concentrating density there
     // — brightness and density must not both be stacked, or the core clips and
-    // the frame becomes the additive haze VISION.md §3.1 warns about.
+    // the frame becomes the additive haze docs/09_Rendering_Engine.md warns about.
     float coreBoost = 1.0 - smoothstep(0.0, 0.4, r);
     // Presence lights the SHARDS specifically, so snares and plucks make the
     // hard-edged fragments flare while the soft filaments stay put — two
@@ -168,47 +147,52 @@ const FRAG = /* glsl */ `
   }
 `
 
-function buildGeometry(): THREE.BufferGeometry {
+/**
+ * Fixed seed, so the field is identical every mount. Previously each mount
+ * reseeded from `Math.random()`; a stable seed is what makes a recording or
+ * screenshot reproducible.
+ */
+const SEED = 0x51a5
+
+/**
+ * An empty shell with correctly-shaped (zero-filled) attributes and a zero
+ * draw range. The 70k-particle field itself is generated on a worker and
+ * swapped in when it arrives — see the effect below. Allocating the arrays
+ * here is a memset, microseconds; it is the per-particle rejection-sampling
+ * loop that used to cost milliseconds on the mounting frame.
+ */
+function buildEmptyGeometry(): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry()
-  const positions = new Float32Array(COUNT * 3)
-  const rand = new Float32Array(COUNT * 4)
-  for (let i = 0; i < COUNT; i++) {
-    // Core-weighted radial seeding: a random direction at a power-law radius,
-    // so density falls off outward and the centre becomes a genuine hot core.
-    // (Same radial power-law idea CrystalGrowthScene uses for its shard field.)
-    // Rejection-sample a direction inside the unit sphere (uniform on the
-    // sphere once normalized; sampling angles directly would cluster at poles).
-    let x: number
-    let y: number
-    let z: number
-    let len: number
-    do {
-      x = Math.random() * 2 - 1
-      y = Math.random() * 2 - 1
-      z = Math.random() * 2 - 1
-      len = Math.sqrt(x * x + y * y + z * z)
-    } while (len < 1e-4 || len > 1)
-    const dist = Math.pow(Math.random(), 1.4) * SPREAD
-    positions[i * 3] = (x / len) * dist
-    positions[i * 3 + 1] = (y / len) * dist * 0.85 // slightly flattened body
-    positions[i * 3 + 2] = (z / len) * dist
-    rand[i * 4] = Math.random() * 6.28
-    rand[i * 4 + 1] = Math.random()
-    rand[i * 4 + 2] = Math.random()
-    rand[i * 4 + 3] = Math.random()
-  }
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geo.setAttribute('aRand', new THREE.BufferAttribute(rand, 4))
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(COUNT * 3), 3))
+  geo.setAttribute('aRand', new THREE.BufferAttribute(new Float32Array(COUNT * 4), 4))
+  geo.setDrawRange(0, 0)
   return geo
 }
 
 export function PlasmaFilamentScene() {
   const flow = useRef(0)
-  const fade = useContext(SceneFade)
-  const lastFade = useRef(0)
-  const rig = useMemo(() => new CameraRig(), [])
-  const blender = useMemo(() => new PaletteBlender(getPalette(useStore.getState().paletteId)), [])
-  const geometry = useMemo(() => buildGeometry(), [])
+  const geometry = useMemo(() => buildEmptyGeometry(), [])
+  /** False until the worker's field has been swapped in; gates the draw range
+   *  so the un-generated (all-at-origin) placeholder never renders as one
+   *  blindingly bright dot at the centre of the frame. */
+  const filled = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void proceduralDispatcher
+      .requestPlasma({ count: COUNT, spread: SPREAD, seed: SEED })
+      .then(({ positions, rand }) => {
+        if (cancelled) return
+        // Adopt the transferred buffers directly rather than copying into the
+        // placeholders — the worker's arrays arrive owned by this thread.
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+        geometry.setAttribute('aRand', new THREE.BufferAttribute(rand, 4))
+        filled.current = true
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [geometry])
 
   const material = useMemo(
     () =>
@@ -227,6 +211,7 @@ export function PlasmaFilamentScene() {
           uEnergy: { value: 0 },
           uPulse: { value: 0 },
           uTransient: { value: 0 },
+          uAnimExplode: { value: 0 },
           uSize: { value: 2.1 },
           uFade: { value: 0 },
           uSpread: { value: SPREAD },
@@ -241,40 +226,39 @@ export function PlasmaFilamentScene() {
 
   useDispose(material, geometry)
 
-  useFrame(({ camera }) => {
-    const f = audioEngine.features
-    const u = material.uniforms
-    const { paletteId } = useStore.getState()
-    const params = getEffectiveParams()
-    const R = params.reactivity
-    blender.update(getPalette(paletteId), f.delta)
+  useSceneFrame(
+    ({ f, dt, b, col, vis, params, state }) => {
+      const u = material.uniforms
 
-    // The governor's particle budget. Seeds are generated in random order, so
-    // the first N are already an unbiased subset of the whole field.
-    geometry.setDrawRange(0, Math.floor(COUNT * quality.knobs.particleFraction))
+      // The particle budget, read from the performance state rather than the
+      // quality governor directly — the governor is only its current author, and
+      // going through the seam is what lets a director thin the field for
+      // creative reasons too. Seeds are generated in random order, so the first
+      // N are already an unbiased subset of the whole field. Draws nothing at
+      // all until the worker's field has landed.
+      geometry.setDrawRange(0, filled.current ? Math.floor(COUNT * state.particleDensity) : 0)
 
-    flow.current += f.delta * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
+      flow.current += dt * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
 
-    const drivesCamera = fade.value >= lastFade.current
-    lastFade.current = fade.value
-    if (drivesCamera) {
-      rig.orbit(camera, f, { radius: 17, elev: 2.4, elevSwing: 1.4, speed: 0.04 * params.speed, react: R })
-    }
-
-    u.uFlow.value = flow.current
-    u.uBass.value = f.bass * R
-    u.uMid.value = f.mid * R
-    u.uPresence.value = f.presence * R
-    u.uHigh.value = f.high * R
-    u.uEnergy.value = f.energy * R
-    u.uPulse.value = beatPulse(f) * R
-    u.uTransient.value = f.transient * R
-    u.uFade.value = fade.value * params.intensity
-    // Accent burns at the core, primary through the body, secondary at the rim.
-    u.uColCore.value.copy(blender.c)
-    u.uColMid.value.copy(blender.a)
-    u.uColEdge.value.copy(blender.b)
-  })
+      u.uFlow.value = flow.current
+      u.uBass.value = b.bass
+      u.uMid.value = b.mid
+      u.uPresence.value = b.presence
+      u.uHigh.value = b.high
+      u.uEnergy.value = b.energy
+      u.uPulse.value = b.pulse
+      u.uTransient.value = b.transient
+      applyToUniforms(u)
+      u.uFade.value = vis
+      // Accent burns at the core, primary through the body, secondary at the rim.
+      u.uColCore.value.copy(col.c)
+      u.uColMid.value.copy(col.a)
+      u.uColEdge.value.copy(col.b)
+    },
+    // No readability floor: this scene is a particle field, not line art, so it
+    // is allowed to fall away entirely in the quiet.
+    { visCeiling: 1, visFloor: 0 },
+  )
 
   return (
     <points geometry={geometry} frustumCulled={false}>

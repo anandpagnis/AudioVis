@@ -15,6 +15,48 @@
  *   void main() { ...set up ro/rd, call raymarch()... }
  */
 
+/**
+ * Divergence-free curl of a cheap sine field — the transport both
+ * PlasmaFilamentScene and DissolveCageScene advect their particles through.
+ *
+ * Each scene previously carried a byte-for-byte copy of this inline in its own
+ * vertex shader. Two copies of the same field is two places to fix a bug and
+ * two chances to drift — and they HAD drifted: Plasma sampled the central
+ * difference at e=0.15, Dissolve at e=0.2, with nothing recording why.
+ *
+ * `e` is therefore a parameter rather than a constant, and each scene passes
+ * the epsilon it was authored and tuned with. That is the important detail:
+ * this consolidation is exactly source-level, so both scenes produce
+ * bit-identical output to before. The epsilon difference was never a bug to
+ * reconcile — it is a per-scene tuning value that simply had nowhere to live.
+ *
+ * The curl of a vector field is divergence-free, which is what makes particles
+ * ride streamlines instead of collapsing into sinks.
+ */
+export const CURL_NOISE_GLSL = /* glsl */ `
+  vec3 snoiseVec3(vec3 x) {
+    return vec3(
+      sin(x.y * 1.7 + x.z * 0.9),
+      sin(x.z * 1.3 + x.x * 1.1),
+      sin(x.x * 1.9 + x.y * 0.7)
+    );
+  }
+
+  vec3 curlNoise(vec3 p, float e) {
+    vec3 dx = vec3(e, 0.0, 0.0);
+    vec3 dy = vec3(0.0, e, 0.0);
+    vec3 dz = vec3(0.0, 0.0, e);
+    vec3 x1 = snoiseVec3(p + dx), x0 = snoiseVec3(p - dx);
+    vec3 y1 = snoiseVec3(p + dy), y0 = snoiseVec3(p - dy);
+    vec3 z1 = snoiseVec3(p + dz), z0 = snoiseVec3(p - dz);
+    return vec3(
+      (y1.z - y0.z) - (z1.y - z0.y),
+      (z1.x - z0.x) - (x1.z - x0.z),
+      (x1.y - x0.y) - (y1.x - y0.x)
+    ) / (2.0 * e);
+  }
+`
+
 /** Hash + value noise in 3D, plus fbm. Uses Dave Hoskins' hash13. */
 export const NOISE3D_GLSL = /* glsl */ `
   float hash13(vec3 p3) {

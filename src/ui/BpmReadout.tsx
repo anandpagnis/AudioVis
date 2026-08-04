@@ -33,9 +33,7 @@ export function BpmReadout() {
       if (moodRef.current) {
         const m = f.mood
         const arrow =
-          m.predictedState !== m.state && m.beatsTillTransition >= 0
-            ? ` → ${m.predictedState}`
-            : ''
+          m.predictedState !== m.state && m.beatsTillTransition >= 0 ? ` → ${m.predictedState}` : ''
         moodRef.current.textContent = f.silence ? '' : `${m.state}${arrow}`
       }
       raf = requestAnimationFrame(tick)
@@ -48,9 +46,13 @@ export function BpmReadout() {
     <div className="bpm-readout glass">
       <div ref={dotRef} className="beat-dot" />
       <div className="bpm-main">
-        <span ref={bpmRef} className="bpm-value">—</span>
+        <span ref={bpmRef} className="bpm-value">
+          —
+        </span>
         <span className="bpm-label">BPM</span>
-        <span ref={barRef} className="bar-label">1·1</span>
+        <span ref={barRef} className="bar-label">
+          1·1
+        </span>
         <span ref={moodRef} className="mood-label" />
       </div>
       <div className="conf-track">

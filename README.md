@@ -137,14 +137,14 @@ settings — ideal for OBS browser sources or a projector rig
 
 ## Extending
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full extension guide: `registerScene()` /
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full extension guide: `registerScene()` /
 `registerPalette()` plugin APIs, `audioEngine.startWithStream()` for arbitrary audio
 inputs (virtual cables, OBS, network, MIDI-driven synths), the scene contract, and the
 WebGPU migration path.
 
 For a detailed engineering handoff — including the current vision, implemented phases, known
 limitations, verification checklist, and next implementation sequence — see
-[HANDOFF.md](HANDOFF.md).
+[docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Architecture
 
@@ -189,7 +189,7 @@ Raw audio → FFT → filtering → feature extraction → onset detection
 
 ### Scenes (5 registered)
 
-The roster is deliberately small (see `VISION.md` §5): a few extremely refined
+The roster is deliberately small (see `docs/09_Rendering_Engine.md`): a few extremely refined
 looks rather than many decent ones. Every registered scene holds one readable
 **subject**, keeps real **negative space**, and carries **hard edges**.
 

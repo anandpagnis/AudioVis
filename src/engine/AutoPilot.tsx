@@ -78,8 +78,7 @@ export function AutoPilot() {
       .map((scene) => scene.id)
       .filter((id) => id !== s.sceneId && id !== s.pendingSceneId)
     if (options.length > 0) {
-      const pick =
-        options.length > 1 && Math.random() < 0.3 ? options[1] : options[0]
+      const pick = options.length > 1 && Math.random() < 0.3 ? options[1] : options[0]
       s.requestScene(pick, { auto: true })
     }
 

@@ -58,11 +58,10 @@ function sanitizeCues(raw: unknown): PerformanceCue[] | undefined {
         speed: num(p.speed, 1),
         reactivity: num(p.reactivity, 1),
       },
-      layerFx:
-        sanitizeLayerFx(c.layerFx) ?? {
-          accent: { intensity: 1, blend: 'add' },
-          overlay: { intensity: 1, blend: 'add' },
-        },
+      layerFx: sanitizeLayerFx(c.layerFx) ?? {
+        accent: { intensity: 1, blend: 'add' },
+        overlay: { intensity: 1, blend: 'add' },
+      },
     })
   }
   cues.sort((a, b) => a.beat - b.beat)
@@ -71,7 +70,7 @@ function sanitizeCues(raw: unknown): PerformanceCue[] | undefined {
 
 /**
  * One preset per registered scene, each picking the palette and response that
- * shows that look at its best. Trimmed alongside the scene cull (VISION.md §5)
+ * shows that look at its best. Trimmed alongside the scene cull (docs/09_Rendering_Engine.md)
  * — the previous eight all pointed at unregistered scenes, which would have
  * silently collapsed every one of them onto the SCENES[0] fallback.
  */
@@ -82,14 +81,6 @@ export const BUILTIN_PRESETS: Preset[] = [
     sceneId: 'wireframe',
     paletteId: 'aurora',
     params: { intensity: 1, speed: 0.8, reactivity: 1.1 },
-    builtIn: true,
-  },
-  {
-    id: 'builtin-drafting-table',
-    name: 'Drafting Table',
-    sceneId: 'schematic',
-    paletteId: 'mono',
-    params: { intensity: 0.95, speed: 0.7, reactivity: 1 },
     builtIn: true,
   },
   {
@@ -122,7 +113,11 @@ export const BUILTIN_PRESETS: Preset[] = [
 export function sanitizePreset(raw: unknown): Preset | null {
   if (typeof raw !== 'object' || raw === null) return null
   const o = raw as Record<string, unknown>
-  if (typeof o.name !== 'string' || typeof o.sceneId !== 'string' || typeof o.paletteId !== 'string')
+  if (
+    typeof o.name !== 'string' ||
+    typeof o.sceneId !== 'string' ||
+    typeof o.paletteId !== 'string'
+  )
     return null
   const p = (o.params ?? {}) as Record<string, unknown>
   const num = (v: unknown, d: number) =>

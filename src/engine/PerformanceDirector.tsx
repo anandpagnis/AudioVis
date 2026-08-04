@@ -41,15 +41,28 @@ export function PerformanceDirector() {
     if (!f.sectionChange && f.beatIndex - lastSwitchBeat.current < PHRASE_HOLD_BEATS) return
 
     const response = getAudioResponse(f)
-    const moodFits = getScenesForMood(f.mood.predictedState === 'silence' ? f.mood.state : f.mood.predictedState)
+    const moodFits = getScenesForMood(
+      f.mood.predictedState === 'silence' ? f.mood.state : f.mood.predictedState,
+    )
     const compatible = getCompatibleScenes(s.sceneId)
-    const pool = moodFits.filter((scene) => compatible.some((candidate) => candidate.id === scene.id))
+    const pool = moodFits.filter((scene) =>
+      compatible.some((candidate) => candidate.id === scene.id),
+    )
     const candidates = (pool.length > 0 ? pool : moodFits).filter((scene) => scene.id !== s.sceneId)
     if (candidates.length === 0) return
 
     // Prefer scenes that express the strongest current musical layer, then
     // let a small tie-break vary the journey between repeated sections.
-    const band = response.sub > response.bass * 0.9 ? 'bass' : response.high > response.mid ? 'high' : response.vocal > 0.5 ? 'vocal' : response.energy > 0.6 ? 'energy' : 'mid'
+    const band =
+      response.sub > response.bass * 0.9
+        ? 'bass'
+        : response.high > response.mid
+          ? 'high'
+          : response.vocal > 0.5
+            ? 'vocal'
+            : response.energy > 0.6
+              ? 'energy'
+              : 'mid'
     const ranked = candidates.slice().sort((a, b) => {
       const aBand = a.metadata.bands.includes(band) ? 1 : 0
       const bBand = b.metadata.bands.includes(band) ? 1 : 0
@@ -75,7 +88,9 @@ export function PerformanceDirector() {
 
     const layerRole = response.energy > 0.58 || response.dropPulse > 0 ? 'overlay' : 'accent'
     const layerPick = allowLayer
-      ? candidates.find((scene) => scene.id !== primaryId && scene.metadata.roles.includes(layerRole))
+      ? candidates.find(
+          (scene) => scene.id !== primaryId && scene.metadata.roles.includes(layerRole),
+        )
       : undefined
     if (layerPick) s.setLayer(layerRole, layerPick.id, { auto: true })
     else s.setLayer(layerRole, null, { auto: true })

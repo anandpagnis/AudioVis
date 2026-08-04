@@ -1,0 +1,34 @@
+// The worker is typechecked as its own independent program.
+//
+// TypeScript cannot mix the `dom` and `webworker` libs in one compilation —
+// they declare incompatible globals (`self`, `postMessage`, `onmessage`), and
+// a `/// <reference lib="webworker" />` comment does not scope the lib to one
+// file when that file shares a program with dom-lib files.
+//
+// Deliberately NOT a project reference: `composite: true` (which references
+// require) is incompatible with the root config's `noEmit: true`, and nothing
+// here needs to consume declaration output — Vite bundles the worker via
+// esbuild and never reads tsconfig references anyway. Two independent `tsc`
+// passes is the simpler correct answer; see the `typecheck` script.
+//
+// `proceduralGen.ts` appears in both programs on purpose: it uses neither DOM
+// nor WebWorker globals, so it is valid under either lib set.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "WebWorker"],
+    "types": [],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": [
+    "src/engine/streaming/proceduralGen.worker.ts",
+    "src/engine/streaming/proceduralGen.ts"
+  ]
+}

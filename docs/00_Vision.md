@@ -257,5 +257,9 @@ Sixteen legacy scenes remain on disk but are **unregistered** — reachable only
 | [03](03_AI_Performance_Director.md) | Autonomous composition |
 | [04](04_Visual_Knowledge_Base.md) | Scene/palette metadata |
 | [05](05_Scene_Architecture.md) | Scene contract |
-| [09](09_Rendering_Engine.md) | GPU, quality, post |
-| [15](15_Implementation_Roadmap.md) | Phased delivery |
+| [06](06_Camera_Director.md) | Camera motion |
+| [07](07_Palette_System.md) | Color system |
+| [08](08_Transition_Engine.md) | How looks change |
+| [09](09_Rendering_Engine.md) | GPU, quality, post, the crystal-cut aesthetic |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Extension guide: registering scenes/palettes/inputs |
+| [HANDOFF.md](HANDOFF.md) | Implementation status, verification checklist, prioritized roadmap |
