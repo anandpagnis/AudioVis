@@ -235,13 +235,16 @@ export const SCENES: SceneDef[] = [
         groove: 0.76,
         building: 0.70,
       },
-      // No cameraAnchor/cameraModes: the scene is a fullscreen quad whose
-      // vertex shader ignores the camera transform entirely (clip-space
-      // positions, per FULLSCREEN_VERT), and — unlike an earlier version of
-      // this scene — it no longer reads ctx.camera either, so declaring
-      // camera fields here would be dead config. Its motion is driven by
-      // audio (bass/mid/high/energy/pulse) and an autonomous slow drift
-      // instead.
+      // The scene's own rendering ignores these entirely (fullscreen quad,
+      // no ctx.camera read — its motion is audio/autonomous-driven, see
+      // NetworkConstellationScene's header comment). But CameraDirector's
+      // test suite (CameraDirector.test.ts) enforces that every registered
+      // scene — not just primary ones — declares enough camera-mode variety
+      // to be framed meaningfully, since the director doesn't know per-scene
+      // whether the camera matters. Restored rather than left off: found via
+      // a failing `npm run check` I should have run before the first push.
+      cameraAnchor: { target: [0, 0, 0], distance: 14.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
   {
@@ -321,10 +324,14 @@ export const SCENES: SceneDef[] = [
         groove: 0.76,
         building: 0.7,
       },
-      // No cameraAnchor/cameraModes: the scene flies its own scripted path()
-      // camera rather than reading the real one — see FoldPathScene's header
-      // comment for why (the flythrough IS the piece, unlike inversion's
-      // orbit-a-static-object case).
+      // The scene flies its own scripted path() camera rather than reading
+      // the real one (see FoldPathScene's header comment — the flythrough IS
+      // the piece, unlike inversion's orbit-a-static-object case), so these
+      // are inert to its own rendering. Declared anyway: every registered
+      // scene needs enough camera-mode variety for CameraDirector's own
+      // bookkeeping, per CameraDirector.test.ts — same fix as network.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
   {
@@ -384,8 +391,12 @@ export const SCENES: SceneDef[] = [
         building: 0.78,
         peak: 0.82,
       },
-      // No cameraAnchor/cameraModes: pure 2D math, no ray/camera concept at
-      // all (unlike inversion/torusfold) — same reasoning as network/foldpath.
+      // Pure 2D math, no ray/camera concept at all (unlike inversion/
+      // torusfold) — inert to this scene's own rendering, same as network/
+      // foldpath. Declared anyway for CameraDirector.test.ts's invariant:
+      // every registered scene needs real camera-mode variety.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
 ]
