@@ -435,11 +435,17 @@ export function getResolvedManifest(id: string): SceneManifestExt {
  * Scenes tagged for a mood, best fit first (`moodFit`, defaulting to 0.5 when a
  * scene declares the mood but gives it no explicit score). This is the pool both
  * autonomy directors pick from, so ordering here directly shapes the show.
+ *
+ * Pass `role` to restrict the pool to scenes that can actually occupy that
+ * slot. Callers choosing a PRIMARY must pass `'primary'`: several scenes are
+ * layer-only (`ribbons` is `['accent','overlay']`) yet carry the highest
+ * `moodFit` in their moods, so an unfiltered pick installs a scene as the
+ * subject that was authored to composite over one.
  */
-export function getScenesForMood(mood: MoodState): SceneDef[] {
-  return SCENES.filter((s) => s.metadata.moods.includes(mood)).sort(
-    (a, b) => (b.metadata.moodFit?.[mood] ?? 0.5) - (a.metadata.moodFit?.[mood] ?? 0.5),
-  )
+export function getScenesForMood(mood: MoodState, role?: SceneRole): SceneDef[] {
+  return SCENES.filter(
+    (s) => s.metadata.moods.includes(mood) && (!role || s.metadata.roles.includes(role)),
+  ).sort((a, b) => (b.metadata.moodFit?.[mood] ?? 0.5) - (a.metadata.moodFit?.[mood] ?? 0.5))
 }
 
 /**

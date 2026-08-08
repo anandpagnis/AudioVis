@@ -5,10 +5,31 @@ import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { quality } from './quality'
 import { getCompatibleScenes, getScene, getScenesForMood } from '../scenes'
-import { useStore } from '../store'
+import { useStore, type LayerRole } from '../store'
 
 const MANUAL_HOLD_SEC = 45
 const PHRASE_HOLD_BEATS = 16 // fallback recompose cadence when no section fires
+
+/**
+ * Resolve both layer slots for one composition decision.
+ *
+ * Exactly one slot is ever occupied, so the slot we did NOT choose must be
+ * cleared every time. Clearing only 'overlay' (the old behaviour) meant a
+ * switch from accent-mode to overlay-mode left the previous accent mounted
+ * indefinitely — it composited additively over the primary and every
+ * subsequent scene change, because nothing else writes that slot.
+ *
+ * Exported for the unit test; the component is the only production caller.
+ */
+export function resolveLayerSlots(
+  layerRole: LayerRole,
+  pickId: string | null,
+): Record<LayerRole, string | null> {
+  return {
+    accent: layerRole === 'accent' ? pickId : null,
+    overlay: layerRole === 'overlay' ? pickId : null,
+  }
+}
 
 /**
  * Phrase-level scene composer. A true section change recomposes instantly; when
@@ -72,9 +93,14 @@ export function PerformanceDirector() {
     // Only pick a new primary when one isn't already mid-commit; otherwise we'd
     // fight AutoPilot's in-flight switch. Either way we (re)compose the layers
     // against whichever primary is landing.
+    // `ranked` still holds layer-only scenes — the layer pick below needs them.
+    // The primary pick must not: installing an accent/overlay-only scene as the
+    // subject is what `roles` exists to prevent.
+    const primaryRanked = ranked.filter((scene) => scene.metadata.roles.includes('primary'))
     let primaryId = s.pendingSceneId ?? s.sceneId
-    if (!s.pendingSceneId) {
-      const pick = ranked[Math.min(ranked.length - 1, f.bar % Math.min(2, ranked.length))]
+    if (!s.pendingSceneId && primaryRanked.length > 0) {
+      const pick =
+        primaryRanked[Math.min(primaryRanked.length - 1, f.bar % Math.min(2, primaryRanked.length))]
       s.requestScene(pick.id, { auto: true })
       primaryId = pick.id
     }
@@ -92,9 +118,9 @@ export function PerformanceDirector() {
           (scene) => scene.id !== primaryId && scene.metadata.roles.includes(layerRole),
         )
       : undefined
-    if (layerPick) s.setLayer(layerRole, layerPick.id, { auto: true })
-    else s.setLayer(layerRole, null, { auto: true })
-    if (layerRole === 'accent' || !allowLayer) s.setLayer('overlay', null, { auto: true })
+    const slots = resolveLayerSlots(layerRole, layerPick?.id ?? null)
+    s.setLayer('accent', slots.accent, { auto: true })
+    s.setLayer('overlay', slots.overlay, { auto: true })
     lastSwitchBeat.current = f.beatIndex
   }, -85)
 

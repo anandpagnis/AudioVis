@@ -79,6 +79,26 @@ function crossfadeDuration(bpm: number): number {
   return Math.min(2, Math.max(0.7, (60 / bpm) * 2))
 }
 
+/**
+ * What a layer slot should actually hold, given the primary.
+ *
+ * A layer must never duplicate the primary. The collision check used to guard
+ * only entry *creation*, so a layer that mounted legitimately and was then
+ * overtaken by the primary switching to that same scene stayed up — rendering
+ * the scene twice, the copy compositing additively over itself and everything
+ * else. Resolving to null here makes the existing entry fade out instead.
+ *
+ * Exported for the unit test; SceneManager is the only production caller.
+ */
+export function resolveLayerId(
+  desiredId: string | null,
+  sceneId: string,
+  pendingSceneId: string | null,
+): string | null {
+  if (desiredId === null) return null
+  return desiredId === sceneId || desiredId === pendingSceneId ? null : desiredId
+}
+
 function applyBlend(mat: THREE.Material, blend: LayerBlend) {
   if (!mat.transparent) mat.transparent = true
   switch (blend) {
@@ -342,14 +362,15 @@ export function SceneManager() {
       { role: 'overlay', id: state.overlaySceneId },
     ]
     for (const desired of desiredLayers) {
+      const wanted = resolveLayerId(desired.id, state.sceneId, state.pendingSceneId)
       const current = entriesRef.current.find((e) => e.role === desired.role && e.dir === 1)
-      if (current?.id === desired.id) continue
+      if ((current?.id ?? null) === wanted) continue
       if (current) current.dir = -1
-      if (desired.id && desired.id !== state.sceneId && desired.id !== state.pendingSceneId) {
+      if (wanted) {
         // Layers deliberately skip the streamer's lifecycle: they have their
         // own independent fade and never participate in the beat-locked primary
         // commit, so there is no warm slot to arbitrate over.
-        entriesRef.current.push(makeEntry(desired.id, desired.role, 1))
+        entriesRef.current.push(makeEntry(wanted, desired.role, 1))
         force((n) => n + 1)
       }
     }

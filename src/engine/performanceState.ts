@@ -68,6 +68,25 @@ export interface PerformanceState {
    * music is quiet (the bar before a drop).
    */
   visualTension: number
+  /**
+   * 0..1 — how much the show should be listening to the voice right now.
+   *
+   * Derived from the classifier's `vocalPresence`, which is a SECTION-scale
+   * fact (12 s cadence), not a waveform. That distinction is the whole point:
+   * driving motion directly from `vocalPresence` would step visibly every 12 s.
+   * Instead this is the slow half of a two-timescale pair — it grants
+   * *permission*, and the fast per-frame `voice` band supplies the movement.
+   * An instrumental section drives this to ~0, so the fast term vanishes
+   * rather than firing on hats and distortion leaking into the vocal range.
+   *
+   * Readers: the bridge's own bloom term and CameraDirector's mode bias. It
+   * earns a field rather than a local because those two are different
+   * consumers on different sides of the seam; scenes can also reach it through
+   * `ctx.state`, though none currently do — Flow Ribbons deliberately still
+   * tracks the raw `b.voice` band, since tracing an instrumental synth line is
+   * the feature there, not a bug to gate away.
+   */
+  voiceFocus: number
 
   // ---- Post / effects ----------------------------------------------------
   /** 0..2 — bloom strength multiplier. */
@@ -110,6 +129,7 @@ export const performanceState: PerformanceState = {
   animationIntensity: 1,
   particleDensity: 1,
   visualTension: 0,
+  voiceFocus: 0,
 
   bloom: 1,
   glitch: 0,

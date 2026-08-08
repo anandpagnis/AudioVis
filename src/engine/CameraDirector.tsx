@@ -92,6 +92,28 @@ const TENSION_THRESHOLD = 0.55
 const TENSION_MODES: CameraMode[] = ['push', 'spiral']
 
 /**
+ * Above this share of recent segments carrying a vocal, framing leans intimate.
+ *
+ * Deliberately high: `vocalPresence` is a fraction over ~48s of audio, so 0.5
+ * means the voice is a defining feature of the section rather than a passing
+ * sample. A lower bar would pull the lens in on tracks with one vocal hook.
+ */
+const VOICE_FOCUS_THRESHOLD = 0.5
+
+/**
+ * Framing for a vocal section: get closer to the subject.
+ *
+ * A voice is the human element in a track, and closing distance is how film
+ * shoots one. `locked` and `push` only — both hold the subject centred and
+ * near. Orbiting modes are excluded because circling a singer reads as
+ * restless, and `handheld` stays out for the same calm-mood invariant as above.
+ *
+ * Ranked BELOW tension: a build that happens to be sung should still be shot
+ * as a build. Intimacy is the resting preference, not an override.
+ */
+const VOICE_MODES: CameraMode[] = ['locked', 'push']
+
+/**
  * Moods the tension override does NOT apply to.
  *
  * Tension is highest during a build and on the drop that releases it. If the
@@ -119,12 +141,15 @@ export function pickCameraMode(
   mood: MoodState,
   tension: number,
   beatIndex: number,
+  voiceFocus = 0,
 ): CameraMode {
   const declared = modes && modes.length > 0 ? modes : DEFAULT_MODES
   const tense = tension > TENSION_THRESHOLD && !TENSION_EXEMPT.includes(mood)
-  const preference = tense
-    ? [...new Set([...TENSION_MODES, ...MODE_PREFERENCE[mood]])]
-    : MODE_PREFERENCE[mood]
+  // Tension outranks intimacy: a sung build is still shot as a build.
+  const vocal = !tense && voiceFocus > VOICE_FOCUS_THRESHOLD
+  let preference = MODE_PREFERENCE[mood]
+  if (tense) preference = [...new Set([...TENSION_MODES, ...preference])]
+  else if (vocal) preference = [...new Set([...VOICE_MODES, ...preference])]
 
   const ranked = preference.filter((mode) => declared.includes(mode))
   if (ranked.length === 0) return declared[0]

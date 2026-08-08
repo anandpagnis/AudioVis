@@ -65,6 +65,19 @@ export class MoodEstimator {
     return 2.0
   }
 
+  /**
+   * Minimum time (s) the committed state must persist before a challenger's
+   * hold clock is even allowed to start. Complements holdFor() — that gates
+   * how long a candidate must lead before winning; this gates how soon after
+   * a commit the race can begin at all, so a fresh state can't be unseated
+   * the moment it lands.
+   */
+  private dwellFor(committed: MoodState): number {
+    if (committed === 'silence') return 0.2
+    if (committed === 'peak' || committed === 'aggressive') return 2.8
+    return 1.8
+  }
+
   update(f: AudioFeatures): void {
     const m = f.mood
     const now = f.time
@@ -133,7 +146,14 @@ export class MoodEstimator {
     // --- Hysteresis: commit only after the candidate holds ---
     if (best !== this.candidate) {
       this.candidate = best
-      this.candidateSince = now
+      // Post-commit dwell lock: a new challenger's hold clock doesn't start
+      // until the committed state has dwelt long enough. Silence and
+      // drop-cued hype jumps bypass it — those must stay near-instant.
+      const bypassDwell =
+        best === 'silence' || (f.drop && (best === 'peak' || best === 'aggressive'))
+      this.candidateSince = bypassDwell
+        ? now
+        : Math.max(now, this.committedAt + this.dwellFor(m.state))
     }
     const viaDrop = f.drop && (best === 'peak' || best === 'aggressive')
     if (
@@ -175,6 +195,24 @@ export class MoodEstimator {
     // dynamic, quiet-passage material. crestFactor is typically 1..~15.
     const crestNorm = Math.min(1, Math.max(0, (f.crestFactor - 1) / 9))
 
+    /**
+     * MusiCNN's `party` head as a groove bonus.
+     *
+     * Measured against the labelled set, this separates club material from
+     * ambient far better than the DFA `danceability` it stands in for: house
+     * 0.93-0.99 vs ambient 0.00-0.06, where danceability ranked ambient
+     * (2.38) ABOVE house (1.39) and would have inverted this score outright.
+     *
+     * ADDITIVE, and zero whenever the classifier hasn't produced a real read.
+     * Multiplying here would collapse groove to nothing for anyone who never
+     * fetched the model weights (they're gitignored), during the first ~18 s
+     * of every track, and any time the worker fails — three silent regressions
+     * for one convenience. Additive means an absent signal simply costs
+     * nothing. Capped low (0.18) for the same reason: a slow 12 s read biases
+     * the race, it does not decide it.
+     */
+    const partyBonus = f.moodsValid ? f.moods.party * 0.18 * band(e, 0.35, 1.01) : 0
+
     return {
       silence: f.silence ? 1.5 : 0,
       ambient:
@@ -196,7 +234,8 @@ export class MoodEstimator {
           (0.4 + f.confidence * 0.6) *
           (0.55 + stable * 0.45) +
         // Tonal + rhythmically-locked reads as groove.
-        (1 - f.spectralFlatness) * 0.12 * f.confidence,
+        (1 - f.spectralFlatness) * 0.12 * f.confidence +
+        partyBonus,
       building:
         (f.buildUp ? 0.55 : 0) + Math.max(0, m.energyVel) * 0.8 + Math.max(0, m.bassVel) * 0.4,
       peak:

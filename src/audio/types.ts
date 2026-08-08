@@ -199,6 +199,72 @@ export interface AudioFeatures {
    * evaluations, similar to `phraseProgress`. */
   sectionChangeStrength: number
 
+  /**
+   * Estimated tonic ('C', 'F#', …) and mode, from Essentia's KeyExtractor in
+   * the analysis worker. Empty string until the first read lands, and it holds
+   * its last value between reads (re-evaluated on section boundaries, not per
+   * frame). Nothing reads these yet — surfaced for the debug/analytics panels
+   * so accuracy can be judged before they drive anything.
+   */
+  key: string
+  scale: 'major' | 'minor' | ''
+  /**
+   * KeyExtractor's `strength` for the winning profile, 0..1.
+   *
+   * NOT a "is there a key at all" gate: measured 0.765 on pure white noise and
+   * 0.662 on unpitched drums, against 0.94 for a clean triad progression. Treat
+   * it as a relative margin between key candidates, not an absolute presence
+   * score.
+   */
+  keyConfidence: number
+  /**
+   * RAW Essentia Danceability (DFA-based). Deliberately not renormalized.
+   *
+   * The algorithm documents "normally 0 to ~3", but measured values run higher
+   * on real input (~7.8 for a four-on-the-floor beat with bass, ~0.6 for a
+   * beatless pad) and go *wildly* out of range on degenerate input — white
+   * noise and near-silence both read ≈97. The bridge skips analysis during
+   * silence for that reason, but anything consuming this must clamp/guard
+   * rather than assume the documented range.
+   */
+  danceability: number
+
+  /**
+   * Share of recent ~3 s segments in which a vocal was detected, 0..1, from
+   * the MusiCNN voice/instrumental classifier in the voice worker.
+   *
+   * A FRACTION, not an average confidence. Vocals enter and leave, so "does
+   * this have vocals" is a some-segment question: averaging p(voice) over a
+   * track with a long instrumental intro reads as instrumental even when it
+   * plainly is not (measured: averaging scored 5/8 on the labelled test set
+   * where the fraction scores 7/8). Pooled over the last 16 patches (~48 s)
+   * so the value has usable resolution rather than jumping in quarters.
+   *
+   * Stays 0 when the models are absent or the worker failed. Nothing reads
+   * this yet — surfaced for the debug/analytics panels first.
+   */
+  vocalPresence: number
+  /**
+   * MusiCNN mood-head activations, 0..1 for the POSITIVE class of each.
+   * Means over the window, unlike `vocalPresence` — mood is sustained
+   * character rather than an intermittent event.
+   *
+   * Read-only diagnostics for now; deliberately NOT connected to
+   * `mood.state`, which stays pure heuristic DSP.
+   */
+  moods: { happy: number; aggressive: number; party: number; relaxed: number }
+  /**
+   * True once the classifier has produced at least one real read.
+   *
+   * Without this, `moods.party === 0` is ambiguous in a way that matters: it
+   * means "this is ambient" AND "the weights were never fetched" AND "we are
+   * still in the first ~18s" AND "the worker died". Consumers that treat 0 as
+   * evidence would silently mis-read three of those four as the fourth. Every
+   * consumer must additionally stay ADDITIVE with a neutral zero, so an absent
+   * signal costs nothing rather than suppressing what it was meant to boost.
+   */
+  moodsValid: boolean
+
   /** Musical structure heuristics. */
   drop: boolean
   buildUp: boolean
@@ -251,6 +317,13 @@ export function createEmptyFeatures(): AudioFeatures {
     phraseProgress: 0,
     sectionChange: false,
     sectionChangeStrength: 0,
+    key: '',
+    scale: '',
+    keyConfidence: 0,
+    danceability: 0,
+    vocalPresence: 0,
+    moods: { happy: 0, aggressive: 0, party: 0, relaxed: 0 },
+    moodsValid: false,
     drop: false,
     buildUp: false,
     silence: true,
