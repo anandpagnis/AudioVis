@@ -4,7 +4,13 @@ import { audioEngine } from '../audio/AudioEngine'
 import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { quality } from './quality'
-import { getCompatibleScenes, getScene, getScenesForMood } from '../scenes'
+import {
+  getCompatibleScenes,
+  getPrimaryScenesForMood,
+  getScene,
+  getScenesForMood,
+  pickVariedScene,
+} from '../scenes'
 import { useStore } from '../store'
 
 const MANUAL_HOLD_SEC = 45
@@ -41,18 +47,30 @@ export function PerformanceDirector() {
     if (!f.sectionChange && f.beatIndex - lastSwitchBeat.current < PHRASE_HOLD_BEATS) return
 
     const response = getAudioResponse(f)
-    const moodFits = getScenesForMood(
-      f.mood.predictedState === 'silence' ? f.mood.state : f.mood.predictedState,
-    )
+    const mood = f.mood.predictedState === 'silence' ? f.mood.state : f.mood.predictedState
     const compatible = getCompatibleScenes(s.sceneId)
-    const pool = moodFits.filter((scene) =>
-      compatible.some((candidate) => candidate.id === scene.id),
-    )
-    const candidates = (pool.length > 0 ? pool : moodFits).filter((scene) => scene.id !== s.sceneId)
-    if (candidates.length === 0) return
+    const compatibleIds = new Set(compatible.map((c) => c.id))
 
-    // Prefer scenes that express the strongest current musical layer, then
-    // let a small tie-break vary the journey between repeated sections.
+    // Primary pool is role-safe (getScenesForMood alone is NOT — it also
+    // returns accent/overlay-only scenes like `ribbons`, which used to be
+    // reachable as a primary pick since `requestScene` has no role check of
+    // its own). Layer pool deliberately stays role-agnostic; that's exactly
+    // the scenes an accent/overlay slot wants.
+    const primaryFits = getPrimaryScenesForMood(mood)
+    const primaryPool = primaryFits.filter((scene) => compatibleIds.has(scene.id))
+    const primaryCandidates = (primaryPool.length > 0 ? primaryPool : primaryFits).filter(
+      (scene) => scene.id !== s.sceneId,
+    )
+
+    const layerFits = getScenesForMood(mood)
+    const layerPool = layerFits.filter((scene) => compatibleIds.has(scene.id))
+    const layerCandidates = layerPool.length > 0 ? layerPool : layerFits
+
+    if (primaryCandidates.length === 0 && layerCandidates.length === 0) return
+
+    // Prefer scenes that express the strongest current musical layer — folded
+    // into pickVariedScene as a weight boost rather than a hard sort, so it
+    // shapes the odds without collapsing back to a deterministic pick.
     const band =
       response.sub > response.bass * 0.9
         ? 'bass'
@@ -63,20 +81,19 @@ export function PerformanceDirector() {
             : response.energy > 0.6
               ? 'energy'
               : 'mid'
-    const ranked = candidates.slice().sort((a, b) => {
-      const aBand = a.metadata.bands.includes(band) ? 1 : 0
-      const bBand = b.metadata.bands.includes(band) ? 1 : 0
-      return bBand - aBand
-    })
+    const bandBoost = (scene: (typeof primaryCandidates)[number]) =>
+      scene.metadata.bands.includes(band) ? 1.6 : 1
 
     // Only pick a new primary when one isn't already mid-commit; otherwise we'd
     // fight AutoPilot's in-flight switch. Either way we (re)compose the layers
     // against whichever primary is landing.
     let primaryId = s.pendingSceneId ?? s.sceneId
-    if (!s.pendingSceneId) {
-      const pick = ranked[Math.min(ranked.length - 1, f.bar % Math.min(2, ranked.length))]
-      s.requestScene(pick.id, { auto: true })
-      primaryId = pick.id
+    if (!s.pendingSceneId && primaryCandidates.length > 0) {
+      const pick = pickVariedScene(primaryCandidates, mood, s.recentSceneIds, bandBoost)
+      if (pick) {
+        s.requestScene(pick.id, { auto: true })
+        primaryId = pick.id
+      }
     }
 
     // Composition budget: how many high-cost scenes may render at once, from the
@@ -87,10 +104,14 @@ export function PerformanceDirector() {
     const allowLayer = quality.knobs.maxHeavyLayers >= 2 || !primaryHeavy
 
     const layerRole = response.energy > 0.58 || response.dropPulse > 0 ? 'overlay' : 'accent'
+    const layerRoleCandidates = layerCandidates.filter(
+      (scene) => scene.id !== primaryId && scene.metadata.roles.includes(layerRole),
+    )
+    // Same variety treatment as the primary pick — `.find()`'s first-match
+    // had the identical bias problem (favors whichever eligible scene sits
+    // earliest in SCENES[], i.e. wireframe, every time).
     const layerPick = allowLayer
-      ? candidates.find(
-          (scene) => scene.id !== primaryId && scene.metadata.roles.includes(layerRole),
-        )
+      ? pickVariedScene(layerRoleCandidates, mood, s.recentSceneIds)
       : undefined
     if (layerPick) s.setLayer(layerRole, layerPick.id, { auto: true })
     else s.setLayer(layerRole, null, { auto: true })

@@ -4,7 +4,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import type { MoodState } from '../audio/types'
 import { cueState } from './CueTimeline'
 import { PALETTES } from './palettes'
-import { getScenesForMood } from '../scenes'
+import { getPrimaryScenesForMood, pickVariedScene } from '../scenes'
 import { useStore } from '../store'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
@@ -73,14 +73,17 @@ export function AutoPilot() {
     }
     if (!target) return
 
-    // Pick among the top fits, skipping whatever is already showing/pending.
-    const options = getScenesForMood(target)
-      .map((scene) => scene.id)
-      .filter((id) => id !== s.sceneId && id !== s.pendingSceneId)
-    if (options.length > 0) {
-      const pick = options.length > 1 && Math.random() < 0.3 ? options[1] : options[0]
-      s.requestScene(pick, { auto: true })
-    }
+    // Weighted pick among PRIMARY-capable fits (getScenesForMood is not
+    // role-filtered — using it directly here used to let an accent/overlay-
+    // only scene like `ribbons` get requested as primary), skipping
+    // whatever is already showing/pending and softly avoiding whatever
+    // just played (pickVariedScene) so the same 1-2 scenes don't monopolize
+    // a mood.
+    const candidates = getPrimaryScenesForMood(target).filter(
+      (scene) => scene.id !== s.sceneId && scene.id !== s.pendingSceneId,
+    )
+    const pick = pickVariedScene(candidates, target, s.recentSceneIds)
+    if (pick) s.requestScene(pick.id, { auto: true })
 
     // Nudge the palette into the mood's family if it's out of place.
     const palettes = MOOD_PALETTES[target]

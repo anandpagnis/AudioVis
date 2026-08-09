@@ -433,13 +433,75 @@ export function getResolvedManifest(id: string): SceneManifestExt {
 
 /**
  * Scenes tagged for a mood, best fit first (`moodFit`, defaulting to 0.5 when a
- * scene declares the mood but gives it no explicit score). This is the pool both
- * autonomy directors pick from, so ordering here directly shapes the show.
+ * scene declares the mood but gives it no explicit score).
+ *
+ * NOT role-filtered — this includes accent/overlay-only scenes. Use
+ * {@link getPrimaryScenesForMood} when picking what to show as the PRIMARY
+ * scene; using this one directly for that was a real bug (an accent-only
+ * scene like `ribbons` could get requested as primary, since `requestScene`
+ * has no role check of its own).
  */
 export function getScenesForMood(mood: MoodState): SceneDef[] {
   return SCENES.filter((s) => s.metadata.moods.includes(mood)).sort(
     (a, b) => (b.metadata.moodFit?.[mood] ?? 0.5) - (a.metadata.moodFit?.[mood] ?? 0.5),
   )
+}
+
+/** {@link getScenesForMood}, filtered to scenes actually eligible to be primary. */
+export function getPrimaryScenesForMood(mood: MoodState): SceneDef[] {
+  return getScenesForMood(mood).filter((s) => s.metadata.roles.includes('primary'))
+}
+
+/**
+ * Weighted-random pick with recency avoidance — the "good mix" primitive
+ * both AutoPilot and PerformanceDirector use instead of deterministically
+ * taking the single best-fit scene every time.
+ *
+ * Two failure modes this replaces: (1) always picking rank 0 (occasionally
+ * rank 1) meant only the top 1-2 `moodFit` scenes for a mood were EVER
+ * reachable, no matter how many others were registered for it; (2) ties in
+ * `moodFit` resolve by `SCENES[]` array order (stable sort), which
+ * structurally favors whichever scene sits earliest — `wireframe` is
+ * `SCENES[0]` and is deliberately tagged for every mood as the safe
+ * fallback, so it kept winning ties across the board. Fixing the algorithm
+ * generalizes to every scene rather than special-casing wireframe's numbers.
+ *
+ * `recentIds` should be ordered most-recent-first. Recency is a soft
+ * multiplicative penalty, not a hard exclusion — a mood with only 2-3
+ * registered scenes (e.g. `aggressive`) must still be able to return
+ * something rather than dead-end because both options were "recent."
+ */
+export function pickVariedScene(
+  candidates: readonly SceneDef[],
+  mood: MoodState,
+  recentIds: readonly string[],
+  /** Optional per-candidate weight multiplier — e.g. PerformanceDirector uses
+   *  this to keep preferring whichever scene expresses the current dominant
+   *  band, a signal `moodFit` alone doesn't carry. */
+  boost?: (scene: SceneDef) => number,
+): SceneDef | undefined {
+  if (candidates.length === 0) return undefined
+  if (candidates.length === 1) return candidates[0]
+
+  const weights = candidates.map((scene) => {
+    // Floor above zero: every candidate keeps a real (if small) chance,
+    // which is what actually breaks the "only the top pick is reachable"
+    // problem — a hard rank cutoff would just move the ceiling, not remove it.
+    const fit = Math.max(0.2, scene.metadata.moodFit?.[mood] ?? 0.5)
+    const recentIndex = recentIds.indexOf(scene.id)
+    // Decaying penalty: the most recently shown scene is heavily
+    // discounted, less so further back, gone after 4 picks.
+    const recencyPenalty = recentIndex === -1 ? 1 : [0.1, 0.3, 0.55, 0.8][recentIndex]
+    return fit * recencyPenalty * (boost ? boost(scene) : 1)
+  })
+
+  const total = weights.reduce((sum, w) => sum + w, 0)
+  let roll = Math.random() * total
+  for (let i = 0; i < candidates.length; i++) {
+    roll -= weights[i]
+    if (roll <= 0) return candidates[i]
+  }
+  return candidates[candidates.length - 1]
 }
 
 /**
