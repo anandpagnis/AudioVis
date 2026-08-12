@@ -675,6 +675,25 @@ body,
   max-width: 480px;
   width: calc(100vw - 40px);
   text-align: center;
+  animation: card-arrive 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.3s;
+}
+
+@keyframes card-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .start-card {
+    animation: none;
+  }
 }
 
 .start-card h1 {
@@ -703,6 +722,9 @@ body,
 
 .btn {
   appearance: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(255, 255, 255, 0.06);
   border-radius: 14px;
@@ -710,12 +732,18 @@ body,
   color: inherit;
   cursor: pointer;
   text-align: left;
-  transition: all 0.2s ease;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
   font-family: inherit;
 }
 
 .btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(140, 200, 255, 0.3);
+  box-shadow: 0 8px 24px -14px rgba(124, 214, 255, 0.5);
   transform: translateY(-1px);
 }
 
@@ -727,6 +755,40 @@ body,
 .btn.primary {
   background: linear-gradient(120deg, rgba(74, 165, 255, 0.25), rgba(179, 136, 255, 0.25));
   border-color: rgba(140, 180, 255, 0.4);
+}
+
+.btn-icon {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(237, 233, 255, 0.55);
+  transition:
+    background 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease;
+}
+
+.btn:hover:not(:disabled) .btn-icon {
+  background: rgba(124, 214, 255, 0.14);
+  border-color: rgba(124, 214, 255, 0.35);
+  color: #9fdcff;
+}
+
+.btn.primary .btn-icon {
+  background: rgba(124, 214, 255, 0.16);
+  border-color: rgba(140, 180, 255, 0.4);
+  color: #9fdcff;
+}
+
+.btn-body {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .btn-title {
@@ -791,6 +853,8 @@ body,
 /* Compact, quiet variant of .btn — the base is a full-width left-aligned card. */
 .btn.ghost {
   flex: 0 0 auto;
+  justify-content: center;
+  align-items: center;
   padding: 8px 16px;
   border-radius: 10px;
   font-size: 12.5px;

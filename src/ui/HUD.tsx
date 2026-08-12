@@ -16,6 +16,7 @@ import { buildShareUrl } from '../urlParams'
 import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
 import { AnalyticsPanel } from './AnalyticsPanel'
+import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
 
 // macOS Chrome can only capture a browser TAB's audio via getDisplayMedia —
 // whole-screen / system audio isn't available, so the copy has to differ.
@@ -238,19 +239,24 @@ export function HUD() {
                 disabled={status === 'starting' || !SYSTEM_AUDIO_SUPPORTED}
                 onClick={() => void useStore.getState().startAudio('system')}
               >
-                <span className="btn-title">
-                  {SYSTEM_AUDIO_SUPPORTED
-                    ? IS_MAC
-                      ? 'Browser-tab audio'
-                      : 'System audio'
-                    : 'System audio — not supported in this browser'}
+                <span className="btn-icon">
+                  <IconSystemAudio />
                 </span>
-                <span className="btn-sub">
-                  {SYSTEM_AUDIO_SUPPORTED
-                    ? IS_MAC
-                      ? 'Play music in a Chrome tab (Spotify, YouTube…), then in the picker choose that tab and tick “Share tab audio”. macOS can’t capture whole-screen audio.'
-                      : 'Spotify, YouTube, anything playing — choose “Entire Screen” with “Also share system audio”, or a browser tab with “Share tab audio”.'
-                    : 'Safari can’t capture tab/system audio. Use Chrome or Edge for this source, or pick Microphone / Audio file below.'}
+                <span className="btn-body">
+                  <span className="btn-title">
+                    {SYSTEM_AUDIO_SUPPORTED
+                      ? IS_MAC
+                        ? 'Browser-tab audio'
+                        : 'System audio'
+                      : 'System audio — not supported in this browser'}
+                  </span>
+                  <span className="btn-sub">
+                    {SYSTEM_AUDIO_SUPPORTED
+                      ? IS_MAC
+                        ? 'Play music in a Chrome tab (Spotify, YouTube…), then in the picker choose that tab and tick “Share tab audio”. macOS can’t capture whole-screen audio.'
+                        : 'Spotify, YouTube, anything playing — choose “Entire Screen” with “Also share system audio”, or a browser tab with “Share tab audio”.'
+                      : 'Safari can’t capture tab/system audio. Use Chrome or Edge for this source, or pick Microphone / Audio file below.'}
+                  </span>
                 </span>
               </button>
               <button
@@ -258,11 +264,16 @@ export function HUD() {
                 disabled={status === 'starting'}
                 onClick={() => void useStore.getState().startAudio('mic')}
               >
-                <span className="btn-title">Microphone / line-in</span>
-                <span className="btn-sub">
-                  Live instruments, DJ sets, USB interfaces (virtual cables like BlackHole appear
-                  here too). Note: Bluetooth headphones drop to call-quality audio while their mic
-                  is open — prefer System audio for music
+                <span className="btn-icon">
+                  <IconMic />
+                </span>
+                <span className="btn-body">
+                  <span className="btn-title">Microphone / line-in</span>
+                  <span className="btn-sub">
+                    Live instruments, DJ sets, USB interfaces (virtual cables like BlackHole appear
+                    here too). Note: Bluetooth headphones drop to call-quality audio while their mic
+                    is open — prefer System audio for music
+                  </span>
                 </span>
               </button>
               <button
@@ -270,10 +281,15 @@ export function HUD() {
                 disabled={status === 'starting'}
                 onClick={() => audioFileRef.current?.click()}
               >
-                <span className="btn-title">Audio file</span>
-                <span className="btn-sub">
-                  Play a local track through your speakers while it drives the visuals — ideal for
-                  rehearsing a set or authoring cue timelines
+                <span className="btn-icon">
+                  <IconAudioFile />
+                </span>
+                <span className="btn-body">
+                  <span className="btn-title">Audio file</span>
+                  <span className="btn-sub">
+                    Play a local track through your speakers while it drives the visuals — ideal for
+                    rehearsing a set or authoring cue timelines
+                  </span>
                 </span>
               </button>
               <input
