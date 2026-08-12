@@ -31,6 +31,9 @@ public/models/
 # so the voice worker never has to reach a CDN.
 public/tfjs/
 
+# Wrangler local cache/logs (Cloudflare deploy tooling)
+.wrangler/
+
 # Editor / OS
 .idea/
 .DS_Store
