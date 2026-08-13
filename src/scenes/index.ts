@@ -65,7 +65,28 @@ const FoldPathScene = lazyScene('foldpath')
 const TorusFoldScene = lazyScene('torusfold')
 const JuliaWingsScene = lazyScene('juliawings')
 
-export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay'
+export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
+
+/** Musical events an effect scene can be triggered by. Rising edges, not levels. */
+export type EffectTrigger = 'drop' | 'buildPeak' | 'sectionChange' | 'transient'
+
+/**
+ * What an `effect`-role scene declares.
+ *
+ * Effects are the one slot with a lifecycle rather than a tenancy: they are
+ * fired by an event, run for `durationSec`, and retire themselves. A scene in
+ * this slot receives `ctx.slotProgress` (0→1 across its lifetime) and **must
+ * reach visual zero by 1** — the engine unmounts it there and does not fade it
+ * out for you.
+ */
+export interface SceneEffectSpec {
+  /** Events that can fire this effect. At least one required. */
+  triggers: EffectTrigger[]
+  /** Lifetime in seconds. Must be > 0. */
+  durationSec: number
+  /** Minimum gap between firings of THIS effect. Per-effect, not global. */
+  cooldownSec?: number
+}
 export type SceneBand = 'bass' | 'mid' | 'high' | 'vocal' | 'energy'
 export type SceneIntensity = 'calm' | 'medium' | 'high'
 export type ScenePerformanceCost = 'low' | 'medium' | 'high'
@@ -97,6 +118,21 @@ export interface SceneMetadata {
    * so nothing here forces hand-authoring for existing or third-party scenes.
    */
   streaming?: Partial<SceneManifestExt>
+
+  /**
+   * This scene genuinely reduces its own shader work when it is not the
+   * primary — it reads `ctx.role` and scales step counts, iterations or
+   * particle counts down accordingly.
+   *
+   * Opt-in because the composition budget discounts a scene one cost step in a
+   * secondary slot, and discounting a scene that ignores `ctx.role` would be
+   * budgeting for work it is still doing at full price. Absent means "charge me
+   * full cost everywhere", which is always safe.
+   */
+  roleScalable?: boolean
+
+  /** Required when `roles` includes `'effect'`; ignored otherwise. */
+  effect?: SceneEffectSpec
 }
 
 export interface SceneDef {
@@ -221,7 +257,13 @@ export const SCENES: SceneDef[] = [
       // Now primary-capable: a fullscreen procedural network shader, bold
       // enough to stand alone rather than only composite under/over another
       // scene.
-      roles: ['background', 'accent', 'overlay', 'primary'],
+      //
+      // Deliberately NOT tagged 'background' despite being a plausible fit.
+      // The background slot exists but has no authored content yet, and this
+      // scene was composed as a subject — letting it default into the new slot
+      // would debut the composition model with a scene never art-directed for
+      // it. Re-add once intentional background scenes exist to compare against.
+      roles: ['accent', 'overlay', 'primary'],
       moods: ['ambient', 'mellow', 'groove', 'building'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'medium',
@@ -456,6 +498,23 @@ export function getPrimaryScenesForMood(mood: MoodState): SceneDef[] {
 }
 
 /**
+ * Every registered scene that can occupy the effect slot.
+ *
+ * Empty today — no effect scenes are authored yet — and that is a supported
+ * steady state, not an error. Callers treat an empty result as "there is
+ * nothing to fire" and carry on, which is what lets the effect machinery ship
+ * ahead of its content.
+ *
+ * (There is deliberately no general `getScenesForRole` helper beside this:
+ * `getScenesForMood(mood, role)` already covers it, and the layer pools go
+ * through the director's own `compatibleWith` filtering rather than a
+ * registry-level lookup.)
+ */
+export function getEffectScenes(): SceneDef[] {
+  return SCENES.filter((s) => s.metadata.roles.includes('effect') && s.metadata.effect)
+}
+
+/**
  * Weighted-random pick with recency avoidance — the "good mix" primitive
  * both AutoPilot and PerformanceDirector use instead of deterministically
  * taking the single best-fit scene every time.
@@ -533,6 +592,19 @@ export function validateSceneDef(def: SceneDef): string[] {
   if (def.metadata.moods.length === 0) issues.push(`Scene "${def.id}" needs at least one mood.`)
   if (def.metadata.bands.length === 0)
     issues.push(`Scene "${def.id}" needs at least one audio band.`)
+  // The effect slot has a lifecycle, so its contract is enforced here rather
+  // than discovered inside the render loop when a burst never retires.
+  if (def.metadata.roles.includes('effect')) {
+    const fx = def.metadata.effect
+    if (!fx) {
+      issues.push(`Effect scene "${def.id}" needs an \`effect\` spec.`)
+    } else {
+      if (fx.triggers.length === 0)
+        issues.push(`Effect scene "${def.id}" needs at least one trigger.`)
+      if (!(fx.durationSec > 0))
+        issues.push(`Effect scene "${def.id}" needs a positive durationSec.`)
+    }
+  }
   return issues
 }
 

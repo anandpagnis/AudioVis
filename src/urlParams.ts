@@ -1,4 +1,4 @@
-import { useStore, type Quality } from './store'
+import { LAYER_ROLES, useStore, type LayerRole, type Quality } from './store'
 import { SCENES } from './scenes'
 import { PALETTES } from './engine/palettes'
 import { sanitizePreset } from './engine/presets'
@@ -9,8 +9,7 @@ export function buildShareUrl(): string {
   const look = {
     name: 'shared',
     sceneId: s.sceneId,
-    accentSceneId: s.accentSceneId,
-    overlaySceneId: s.overlaySceneId,
+    layerSceneIds: s.layerSceneIds,
     paletteId: s.paletteId,
     params: s.params,
     layerFx: s.layerFx,
@@ -33,8 +32,11 @@ function applySharedLook(patch: Record<string, unknown>) {
     if (SCENES.some((s) => s.id === p.sceneId)) patch.sceneId = p.sceneId
     if (PALETTES.some((pl) => pl.id === p.paletteId)) patch.paletteId = p.paletteId
     patch.params = p.params
-    patch.accentSceneId = p.accentSceneId ?? null
-    patch.overlaySceneId = p.overlaySceneId ?? null
+    patch.layerSceneIds = {
+      background: p.layerSceneIds?.background ?? null,
+      accent: p.layerSceneIds?.accent ?? p.accentSceneId ?? null,
+      overlay: p.layerSceneIds?.overlay ?? p.overlaySceneId ?? null,
+    }
     if (p.layerFx) patch.layerFx = p.layerFx
     if (p.cues) patch.cues = p.cues
   } catch {
@@ -48,7 +50,7 @@ function applySharedLook(patch: Record<string, unknown>) {
  * engines. Examples:
  *
  *   ?scene=tunnel&palette=ember          preselect scene + palette
- *   ?accent=ribbons&overlay=aurora       compose persistent secondary layers
+ *   ?background=x&accent=ribbons&overlay=y  compose persistent secondary layers
  *   ?ui=hidden                           start with all chrome hidden
  *   ?quality=low                         pin render quality
  *   ?intensity=1.2&speed=0.8&reactivity=1.4
@@ -62,13 +64,16 @@ export function applyUrlParams() {
   const scene = q.get('scene')
   if (scene && SCENES.some((s) => s.id === scene)) patch.sceneId = scene
 
-  for (const [param, key] of [
-    ['accent', 'accentSceneId'],
-    ['overlay', 'overlaySceneId'],
-  ] as const) {
-    const id = q.get(param)
-    if (id === 'none' || id === 'off') patch[key] = null
-    else if (id && SCENES.some((s) => s.id === id)) patch[key] = id
+  // Slot params only touch the slots actually named, so `?accent=ribbons`
+  // leaves a persisted background alone rather than blanking the record.
+  const slots: Partial<Record<LayerRole, string | null>> = {}
+  for (const role of LAYER_ROLES) {
+    const id = q.get(role)
+    if (id === 'none' || id === 'off') slots[role] = null
+    else if (id && SCENES.some((s) => s.id === id)) slots[role] = id
+  }
+  if (Object.keys(slots).length > 0) {
+    patch.layerSceneIds = { ...useStore.getState().layerSceneIds, ...slots }
   }
 
   const palette = q.get('palette')

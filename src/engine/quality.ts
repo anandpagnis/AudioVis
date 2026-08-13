@@ -27,8 +27,15 @@ export interface QualityKnobs {
   fluidJacobi: number
   /** Fraction of the full particle budget to draw (setDrawRange). */
   particleFraction: number
-  /** How many high-cost scenes may render at once (crossfade budget). */
-  maxHeavyLayers: number
+  /**
+   * Composition budget in scene-cost units (low 1 / medium 2 / high 4).
+   *
+   * Replaces the old `maxHeavyLayers` count, which could not express "one high
+   * plus two lows" — the shape a background/primary/accent composition actually
+   * takes. See slotBudget.ts for the calibration and for why exact parity with
+   * the old rule is not achievable (it was never a budget).
+   */
+  layerBudget: number
 }
 
 /**
@@ -43,7 +50,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 4,
     fluidJacobi: 20,
     particleFraction: 1.0,
-    maxHeavyLayers: 2,
+    layerBudget: 8,
   },
   {
     renderScale: 0.85,
@@ -51,7 +58,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 4,
     fluidJacobi: 16,
     particleFraction: 0.8,
-    maxHeavyLayers: 2,
+    layerBudget: 6,
   },
   {
     renderScale: 0.7,
@@ -59,7 +66,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 3,
     fluidJacobi: 12,
     particleFraction: 0.6,
-    maxHeavyLayers: 1,
+    layerBudget: 4,
   },
   {
     renderScale: 0.58,
@@ -67,7 +74,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 3,
     fluidJacobi: 10,
     particleFraction: 0.45,
-    maxHeavyLayers: 1,
+    layerBudget: 3,
   },
   {
     renderScale: 0.48,
@@ -75,7 +82,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 2,
     fluidJacobi: 8,
     particleFraction: 0.33,
-    maxHeavyLayers: 1,
+    layerBudget: 2,
   },
 ]
 

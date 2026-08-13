@@ -1,5 +1,17 @@
 import type { MoodState } from '../audio/types'
 
+/** One live firing of an effect scene. Owned by EffectDirector. */
+export interface ActiveEffect {
+  /** Scene id. */
+  id: string
+  /** Engine time (`features.time`) the firing began. */
+  startedAt: number
+  /** Lifetime, copied from the scene's `effect.durationSec` at fire time. */
+  durationSec: number
+  /** Distinguishes successive firings of the SAME scene, so a re-fire remounts. */
+  key: number
+}
+
 /**
  * The single description of what the visuals SHOULD be doing right now.
  *
@@ -46,10 +58,21 @@ export interface PerformanceState {
    * scene change never swings the lens before its scene is visible.
    */
   activeScene: string
-  /** Accent layer scene id, or null. */
-  accent: string | null
-  /** Overlay layer scene id, or null. */
-  overlay: string | null
+  /**
+   * The composition around the primary.
+   *
+   * `background`/`accent`/`overlay` are tenancies — a scene id or null. Effects
+   * are a lifecycle: each entry is one firing with its own clock, and
+   * SceneManager retires it when `startedAt + durationSec` passes. Effects live
+   * here rather than in the store because they are engine state driven by
+   * musical events, not a user setting.
+   */
+  layers: {
+    background: string | null
+    accent: string | null
+    overlay: string | null
+    effects: ActiveEffect[]
+  }
   /** Palette id. */
   palette: string
   /** The mood this state was composed for — context for downstream easing. */
@@ -91,8 +114,27 @@ export interface PerformanceState {
   // ---- Post / effects ----------------------------------------------------
   /** 0..2 — bloom strength multiplier. */
   bloom: number
+  /**
+   * Luminance above which a pixel blooms. LOWER means more of the frame blooms,
+   * so this falls on a drop rather than rising.
+   *
+   * The most expressive single float in the post chain: `bloom` scales what is
+   * already blooming, while this changes *how much of the image* is eligible at
+   * all — a whole-frame event from one uniform, with no change to the pass list.
+   */
+  bloomThreshold: number
   /** 0..1 — chromatic aberration / lens-break amount. */
   glitch: number
+  /**
+   * Direction of the chromatic-aberration smear, in radians.
+   *
+   * The offset was a fixed x/y ratio, so aberration always broke the image the
+   * same way. Rotating it lets the glitch have a direction that tracks the
+   * music instead of reading as a static lens defect.
+   */
+  caAngle: number
+  /** 0..1 — vignette darkness. Rises through a build to tighten the frame. */
+  vignette: number
   /** 0..1 — atmospheric depth. */
   fog: number
 }
@@ -120,8 +162,7 @@ export const CAMERA_MODES: CameraMode[] = [
 export const performanceState: PerformanceState = {
   scene: 'wireframe',
   activeScene: 'wireframe',
-  accent: null,
-  overlay: null,
+  layers: { background: null, accent: null, overlay: null, effects: [] },
   palette: 'aurora',
   mood: 'silence',
 
@@ -132,7 +173,10 @@ export const performanceState: PerformanceState = {
   voiceFocus: 0,
 
   bloom: 1,
+  bloomThreshold: 0.18,
   glitch: 0,
+  caAngle: 0,
+  vignette: 0.85,
   fog: 0,
 }
 

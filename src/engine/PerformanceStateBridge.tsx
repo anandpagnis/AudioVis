@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
 import type { MoodState } from '../audio/types'
+import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
 import { cutCamera, pickCameraMode } from './CameraDirector'
 import { getEffectiveParams } from './moodParams'
@@ -14,6 +15,14 @@ import { useStore } from '../store'
  * 0.65 was standing in for. Quiet moods sit darker so the music has somewhere
  * to go; hype moods start hot and stay there between hits.
  */
+/**
+ * Resting bloom threshold — the value the pass was hardcoded to before this was
+ * directed. Kept as the base so a calm passage looks exactly as it always did.
+ */
+const BLOOM_THRESHOLD_BASE = 0.18
+/** Resting vignette darkness — likewise the pass's former hardcoded value. */
+const VIGNETTE_BASE = 0.85
+
 const BLOOM_BASE: Record<MoodState, number> = {
   silence: 0.4,
   ambient: 0.5,
@@ -55,8 +64,11 @@ export function PerformanceStateBridge() {
     // --- What is on screen (currently owned by the store) ---
     p.scene = s.pendingSceneId ?? s.sceneId
     p.activeScene = s.sceneId
-    p.accent = s.accentSceneId
-    p.overlay = s.overlaySceneId
+    // Effects are NOT mirrored from the store — EffectDirector owns that list
+    // outright, so it must survive this write untouched.
+    p.layers.background = s.layerSceneIds.background
+    p.layers.accent = s.layerSceneIds.accent
+    p.layers.overlay = s.layerSceneIds.overlay
     p.palette = s.paletteId
     p.mood = m.state
 
@@ -119,6 +131,27 @@ export function PerformanceStateBridge() {
     const fastVoice = Math.max(0, Math.min(1, f.vocal * (1 - Math.min(1, f.spectralFlatness))))
     const voiceLift = fastVoice * p.voiceFocus * 0.45 * params.reactivity
     p.bloom = (BLOOM_BASE[m.state] + reactive + voiceLift) * params.intensity
+
+    // Threshold FALLS as pressure rises, so more of the frame becomes eligible
+    // to bloom — the image opens up rather than merely getting brighter. Floored
+    // well above zero: at 0 everything blooms and the picture turns to soup.
+    p.bloomThreshold = Math.max(
+      0.05,
+      BLOOM_THRESHOLD_BASE - p.visualTension * 0.06 - (f.drop ? 0.07 : 0) - pulse * 0.02,
+    )
+
+    // Aberration direction tracks the accumulating mid-driven shear, so the
+    // break has a heading that drifts with the harmony instead of sitting on a
+    // fixed diagonal. Free — the offset vector was already being written.
+    p.caAngle = animationSignals.twist * Math.PI
+
+    // The frame tightens through a build and releases on the drop.
+    p.vignette = approach(
+      p.vignette,
+      Math.min(1, VIGNETTE_BASE + p.visualTension * 0.16 - (f.drop ? 0.2 : 0)),
+      1.5,
+      f.delta,
+    )
 
     // Glitch is punctuation, so it is gated on tension and drops rather than
     // running continuously. Low quality zeroes it — the pass stays in the chain

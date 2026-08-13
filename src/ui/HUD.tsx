@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { supportsSystemAudioCapture } from '../audio/capabilities'
 import {
+  LAYER_ROLES,
   MAX_BAND_MAPPINGS,
   useStore,
   type BandSource,
@@ -52,8 +53,7 @@ export function HUD() {
   const sourceType = useStore((s) => s.sourceType)
   const error = useStore((s) => s.error)
   const sceneId = useStore((s) => s.sceneId)
-  const accentSceneId = useStore((s) => s.accentSceneId)
-  const overlaySceneId = useStore((s) => s.overlaySceneId)
+  const layerSceneIds = useStore((s) => s.layerSceneIds)
   const pendingSceneId = useStore((s) => s.pendingSceneId)
   const paletteId = useStore((s) => s.paletteId)
   const uiHidden = useStore((s) => s.uiHidden)
@@ -619,44 +619,37 @@ export function HUD() {
                 'layers',
                 'Composition layers',
                 <>
-                  <div className="layer-row">
-                    <span className="layer-label">accent</span>
-                    <button
-                      className={`chip ${accentSceneId === null ? 'active' : ''}`}
-                      onClick={() => useStore.getState().setLayer('accent', null)}
-                    >
-                      none
-                    </button>
-                    {SCENES.filter((s) => s.metadata.roles.includes('accent')).map((s) => (
-                      <button
-                        key={`accent-${s.id}`}
-                        className={`chip ${accentSceneId === s.id ? 'active' : ''}`}
-                        onClick={() => useStore.getState().setLayer('accent', s.id)}
-                      >
-                        {s.name}
-                      </button>
-                    ))}
-                  </div>
-                  {accentSceneId && layerFxRow('accent')}
-                  <div className="layer-row">
-                    <span className="layer-label">overlay</span>
-                    <button
-                      className={`chip ${overlaySceneId === null ? 'active' : ''}`}
-                      onClick={() => useStore.getState().setLayer('overlay', null)}
-                    >
-                      none
-                    </button>
-                    {SCENES.filter((s) => s.metadata.roles.includes('overlay')).map((s) => (
-                      <button
-                        key={`overlay-${s.id}`}
-                        className={`chip ${overlaySceneId === s.id ? 'active' : ''}`}
-                        onClick={() => useStore.getState().setLayer('overlay', s.id)}
-                      >
-                        {s.name}
-                      </button>
-                    ))}
-                  </div>
-                  {overlaySceneId && layerFxRow('overlay')}
+                  {LAYER_ROLES.map((role) => {
+                    const eligible = SCENES.filter((s) => s.metadata.roles.includes(role))
+                    // A slot with no scenes authored for it gets no control
+                    // rather than an empty row — `background` is in exactly
+                    // that state until background scenes exist.
+                    if (eligible.length === 0) return null
+                    const current = layerSceneIds[role]
+                    return (
+                      <div key={role}>
+                        <div className="layer-row">
+                          <span className="layer-label">{role}</span>
+                          <button
+                            className={`chip ${current === null ? 'active' : ''}`}
+                            onClick={() => useStore.getState().setLayer(role, null)}
+                          >
+                            none
+                          </button>
+                          {eligible.map((s) => (
+                            <button
+                              key={`${role}-${s.id}`}
+                              className={`chip ${current === s.id ? 'active' : ''}`}
+                              onClick={() => useStore.getState().setLayer(role, s.id)}
+                            >
+                              {s.name}
+                            </button>
+                          ))}
+                        </div>
+                        {current && layerFxRow(role)}
+                      </div>
+                    )
+                  })}
                 </>,
               )}
 
@@ -692,8 +685,9 @@ export function HUD() {
                       <span className="cue-scene">{getScene(c.sceneId).name}</span>
                       <span className="cue-extra">
                         {[
-                          c.accentSceneId && `+${getScene(c.accentSceneId).name}`,
-                          c.overlaySceneId && `+${getScene(c.overlaySceneId).name}`,
+                          ...LAYER_ROLES.map(
+                            (r) => c.layerSceneIds?.[r] && `+${getScene(c.layerSceneIds[r]).name}`,
+                          ),
                         ]
                           .filter(Boolean)
                           .join(' ')}

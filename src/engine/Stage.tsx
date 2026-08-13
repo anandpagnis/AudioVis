@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { AutoPilot } from './AutoPilot'
 import { CameraDirector } from './CameraDirector'
 import { CueTimeline } from './CueTimeline'
+import { EffectDirector } from './EffectDirector'
 import { EffectsDirector } from './EffectsDirector'
 import { SceneManager } from './SceneManager'
 import { LightRig } from './LightRig'
@@ -28,7 +29,8 @@ const GenerativeLayer = lazy(() =>
  *
  *   analysis   `SceneManager` (-100, calls `audioEngine.update()` first)
  *   decide     `PerformanceStateBridge` (-95) → `AutoPilot` (-90) →
- *              `CueTimeline` (-88) → `PerformanceDirector` (-85)
+ *              `CueTimeline` (-88) → `EffectDirector` (-86) →
+ *              `PerformanceDirector` (-85)
  *   execute    `CameraDirector` (-80) → scenes (0) → `EffectsDirector`
  *
  * The rule the bands encode: everything in "decide" may write
@@ -94,6 +96,7 @@ export function Stage() {
       <PerformanceStateBridge />
       <AutoPilot />
       <CueTimeline />
+      <EffectDirector />
       <PerformanceDirector />
       {/* execute */}
       <CameraDirector />

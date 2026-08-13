@@ -5,6 +5,14 @@ export interface Preset {
   id: string
   name: string
   sceneId: string
+  /**
+   * Composition slots. Optional and partial so a preset shared before the
+   * background slot existed — or one authored by hand — still loads; the
+   * sanitizer fills the rest. `accentSceneId`/`overlaySceneId` are the pre-v1
+   * spelling, still read here because presets also arrive by import and URL,
+   * paths the store's persist migration never sees.
+   */
+  layerSceneIds?: Partial<Record<LayerRole, string | null>>
   accentSceneId?: string | null
   overlaySceneId?: string | null
   /** Per-layer intensity/blend captured with the preset (optional, additive). */
@@ -30,7 +38,31 @@ function sanitizeLayerFx(raw: unknown): Record<LayerRole, LayerFx> | undefined {
       ? (v?.blend as LayerFx['blend'])
       : 'add',
   })
-  return { accent: clean(o.accent), overlay: clean(o.overlay) }
+  // Background defaults dimmer than the detail slots — it is the ground, not a
+  // second subject. Matches the store's own defaultLayerFx.
+  return {
+    background: o.background ? clean(o.background) : { intensity: 0.4, blend: 'add' },
+    accent: clean(o.accent),
+    overlay: clean(o.overlay),
+  }
+}
+
+/**
+ * Composition slots from a stored/imported object, accepting both the record
+ * and the pre-v1 pair of scalars. Unknown scene ids are dropped rather than
+ * carried, matching how the rest of this file treats a stale id.
+ */
+function sanitizeLayerScenes(
+  raw: unknown,
+  legacy: { accentSceneId?: unknown; overlaySceneId?: unknown },
+): Record<LayerRole, string | null> {
+  const known = (id: unknown) => (typeof id === 'string' && SCENES.some((s) => s.id === id) ? id : null)
+  const o = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    background: known(o.background),
+    accent: known(o.accent) ?? known(legacy.accentSceneId),
+    overlay: known(o.overlay) ?? known(legacy.overlaySceneId),
+  }
 }
 
 /** Validate imported cues; cues pointing at unregistered scenes are dropped. */
@@ -50,8 +82,7 @@ function sanitizeCues(raw: unknown): PerformanceCue[] | undefined {
       id: typeof c.id === 'string' ? c.id : crypto.randomUUID(),
       beat: Math.round(c.beat),
       sceneId: c.sceneId as string,
-      accentSceneId: known(c.accentSceneId) ? (c.accentSceneId as string) : null,
-      overlaySceneId: known(c.overlaySceneId) ? (c.overlaySceneId as string) : null,
+      layerSceneIds: sanitizeLayerScenes(c.layerSceneIds, c),
       paletteId: typeof c.paletteId === 'string' ? c.paletteId : 'aurora',
       params: {
         intensity: num(p.intensity, 1),
@@ -59,6 +90,7 @@ function sanitizeCues(raw: unknown): PerformanceCue[] | undefined {
         reactivity: num(p.reactivity, 1),
       },
       layerFx: sanitizeLayerFx(c.layerFx) ?? {
+        background: { intensity: 0.4, blend: 'add' },
         accent: { intensity: 1, blend: 'add' },
         overlay: { intensity: 1, blend: 'add' },
       },
@@ -126,8 +158,7 @@ export function sanitizePreset(raw: unknown): Preset | null {
     id: typeof o.id === 'string' && !o.id.startsWith('builtin-') ? o.id : crypto.randomUUID(),
     name: o.name.slice(0, 40),
     sceneId: o.sceneId,
-    accentSceneId: typeof o.accentSceneId === 'string' ? o.accentSceneId : null,
-    overlaySceneId: typeof o.overlaySceneId === 'string' ? o.overlaySceneId : null,
+    layerSceneIds: sanitizeLayerScenes(o.layerSceneIds, o),
     layerFx: sanitizeLayerFx(o.layerFx),
     cues: sanitizeCues(o.cues),
     paletteId: o.paletteId,

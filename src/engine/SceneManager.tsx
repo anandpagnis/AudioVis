@@ -2,9 +2,11 @@ import { Suspense, createContext, useRef, useState, type ReactNode } from 'react
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { audioEngine } from '../audio/AudioEngine'
-import { useStore, type LayerBlend, type LayerRole } from '../store'
-import { getResolvedManifest, getScene, isSceneLoaded } from '../scenes'
+import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store'
+import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded } from '../scenes'
+import { performanceState, type ActiveEffect } from './performanceState'
 import { quality } from './quality'
+import { canFundOverlap, slotCost } from './slotBudget'
 import { perf } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
 import { sampleAnalytics } from './analyticsMetrics'
@@ -12,17 +14,83 @@ import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
 import { sceneStreamer } from './streaming/sceneStreamer'
 import { prewarmShaders } from './streaming/shaderPrewarm'
 
+/** Every slot a mounted scene instance can occupy. */
+export type SlotName = 'primary' | LayerRole | 'effect'
+
 /**
- * Per-scene-instance fade weight (0..1, up to 1.5 for boosted layers),
- * mutated by the transition manager each frame and read by scenes inside
- * useFrame — no React re-renders.
+ * Render-order band per slot.
+ *
+ * Irrelevant while everything blends additively (additive is commutative), but
+ * load-bearing the moment a layer is set to `normal`/`multiply`/`screen` — those
+ * composite against whatever is already in the buffer, so "background first,
+ * effects last" has to be a real ordering rather than an emergent one.
  */
-export const SceneFade = createContext<{ value: number }>({ value: 1 })
+const SLOT_RENDER_ORDER: Record<SlotName, number> = {
+  background: 0,
+  primary: 10,
+  accent: 20,
+  overlay: 30,
+  effect: 40,
+}
+
+/**
+ * Gain applied to slots the user has no control over.
+ *
+ * Background and accent/overlay take theirs from `layerFx`; effects are engine
+ * state with no UI, so their level lives here.
+ */
+const EFFECT_GAIN = 0.85
+
+/**
+ * What a mounted scene instance sees about its own slot.
+ *
+ * Mutated in place each frame and read inside `useFrame` — no React re-renders,
+ * same contract the bare fade value had before.
+ */
+export interface SlotView {
+  /** Fade × slot gain. The number scenes multiply their output by. */
+  value: number
+  /** Which slot this instance occupies. */
+  role: SlotName
+  /**
+   * The slot's gain alone, without the crossfade.
+   *
+   * Separate from `value` because a scene otherwise cannot tell "I am dim
+   * because I am mid-crossfade" from "I am dim because I am the background" —
+   * and only the second is a reason to change what it draws rather than how
+   * brightly.
+   */
+  gain: number
+  /**
+   * 0→1 across an effect's lifetime; always 0 for every other slot.
+   *
+   * An effect scene must reach visual zero by 1: the engine unmounts it there
+   * and does not fade it out.
+   */
+  progress: number
+}
+
+/**
+ * Per-scene-instance slot view, mutated by the transition manager each frame
+ * and read by scenes inside useFrame — no React re-renders.
+ */
+export const SceneFade = createContext<SlotView>({
+  value: 1,
+  role: 'primary',
+  gain: 1,
+  progress: 0,
+})
 
 interface Entry {
   key: number
   id: string
-  role: 'primary' | LayerRole
+  role: SlotName
+  /**
+   * One firing of an effect scene, or null for a tenancy slot. Effect entries
+   * stay mounted for the whole session (pinned, so their shaders never compile
+   * on a trigger) and simply become inactive between firings.
+   */
+  effect: ActiveEffect | null
   /** 1 = fading in, -1 = fading out, 0 = mounted but warming (see WARM_FRAMES). */
   dir: 1 | -1 | 0
   /** Frames this entry has spent warming; drives the compile-then-hide dance. */
@@ -36,8 +104,8 @@ interface Entry {
   prewarmed: boolean
   /** Raw crossfade 0..1. */
   fade: { value: number }
-  /** What scenes see: fade × per-layer intensity. */
-  out: { value: number }
+  /** What scenes see: fade × slot gain, plus the slot's identity. */
+  out: SlotView
 }
 
 /**
@@ -53,16 +121,22 @@ const WARM_FRAMES = 4
 
 let entryKey = 0
 
-function makeEntry(id: string, role: 'primary' | LayerRole, dir: 1 | -1 | 0): Entry {
+function makeEntry(
+  id: string,
+  role: SlotName,
+  dir: 1 | -1 | 0,
+  effect: ActiveEffect | null = null,
+): Entry {
   return {
     key: entryKey++,
     id,
     role,
+    effect,
     dir,
     warmFrames: 0,
     prewarmed: false,
     fade: { value: 0 },
-    out: { value: 0 },
+    out: { value: 0, role, gain: 1, progress: 0 },
   }
 }
 
@@ -80,23 +154,112 @@ function crossfadeDuration(bpm: number): number {
 }
 
 /**
- * What a layer slot should actually hold, given the primary.
+ * What each layer slot should actually hold, given the primary.
  *
- * A layer must never duplicate the primary. The collision check used to guard
- * only entry *creation*, so a layer that mounted legitimately and was then
- * overtaken by the primary switching to that same scene stayed up — rendering
- * the scene twice, the copy compositing additively over itself and everything
- * else. Resolving to null here makes the existing entry fade out instead.
+ * No scene may occupy two slots at once. The collision check used to guard only
+ * entry *creation*, so a layer that mounted legitimately and was then overtaken
+ * by the primary switching to that same scene stayed up — rendering the scene
+ * twice, the copy compositing additively over itself and everything else.
+ * Resolving to null here makes the existing entry fade out instead.
+ *
+ * With three layer slots instead of one this becomes an ALL-PAIRS rule rather
+ * than a check against the primary: two layers can now collide with each other,
+ * which was structurally impossible when only one could be occupied. Earlier
+ * slots in {@link LAYER_ROLES} win, so the more structural layer keeps the scene
+ * and the later one yields — a background outranks an accent.
  *
  * Exported for the unit test; SceneManager is the only production caller.
  */
-export function resolveLayerId(
-  desiredId: string | null,
+export function resolveLayerIds(
+  desired: Record<LayerRole, string | null>,
   sceneId: string,
   pendingSceneId: string | null,
-): string | null {
-  if (desiredId === null) return null
-  return desiredId === sceneId || desiredId === pendingSceneId ? null : desiredId
+): Record<LayerRole, string | null> {
+  const taken = new Set<string>([sceneId])
+  if (pendingSceneId) taken.add(pendingSceneId)
+  const out: Record<LayerRole, string | null> = { background: null, accent: null, overlay: null }
+  for (const role of LAYER_ROLES) {
+    const id = desired[role]
+    if (id === null || taken.has(id)) continue
+    taken.add(id)
+    out[role] = id
+  }
+  return out
+}
+
+/**
+ * Grace period before a drop-triggered switch gives up waiting for the incoming
+ * scene's shader and commits anyway. Long enough for `prewarmShaders` to resolve
+ * on a normal driver (a few frames), short enough that the cut still reads as
+ * part of the drop rather than as a late reaction.
+ */
+const IMMEDIATE_WARM_GRACE_SEC = 0.35
+
+/**
+ * Should the pending switch commit this frame, and should it cut rather than
+ * crossfade?
+ *
+ * Pure and exported for tests: this is the timing of every scene change in the
+ * app, it depends on four interacting conditions, and it fails *silently* —
+ * a switch that lands a bar late still renders perfectly, which is exactly how
+ * the "drops don't switch" bug survived for as long as it did.
+ *
+ * `incomingWarm` is null when no warm entry exists yet (nothing to wait for).
+ */
+export function resolveCommit(opts: {
+  gridTrusted: boolean
+  onDownbeat: boolean
+  pendingImmediate: boolean
+  incomingWarm: boolean | null
+  waited: number
+}): { commit: boolean; immediate: boolean } {
+  const { gridTrusted, onDownbeat, pendingImmediate, incomingWarm, waited } = opts
+  const immediate =
+    pendingImmediate &&
+    (incomingWarm === null || incomingWarm || waited > IMMEDIATE_WARM_GRACE_SEC)
+  return {
+    commit: !gridTrusted || onDownbeat || immediate || waited > 2.5,
+    immediate,
+  }
+}
+
+/**
+ * Flip pinned effect entries between idle and firing to match the director's
+ * active list.
+ *
+ * Mounts and unmounts nothing: every effect scene is mounted once for the whole
+ * session (see the entry seeding in SceneManager) precisely so a trigger never
+ * pays a shader compile — an effect fires *because* something just happened, so
+ * a cold compile would land on the event. Only `dir` and `effect` change here.
+ *
+ * Matches on the firing `key` rather than the scene id, so re-firing the same
+ * effect while it is still fading out restarts it cleanly.
+ *
+ * Returns true when React needs a re-render (never, currently — dir is read in
+ * useFrame — but kept honest so a future change that does need one is visible).
+ * Exported for the unit test; SceneManager is the only production caller.
+ */
+export function syncEffectEntries(entries: Entry[], active: readonly ActiveEffect[]): boolean {
+  let changed = false
+  for (const e of entries) {
+    if (e.role !== 'effect') continue
+    const firing = active.find((a) => a.id === e.id)
+    if (firing) {
+      if (e.effect?.key !== firing.key) {
+        e.effect = firing
+        e.fade.value = 0
+        changed = true
+      }
+      if (e.dir !== 1) {
+        e.dir = 1
+        changed = true
+      }
+    } else if (e.dir === 1) {
+      e.dir = -1
+      changed = true
+    }
+  }
+  return changed
 }
 
 function applyBlend(mat: THREE.Material, blend: LayerBlend) {
@@ -127,13 +290,17 @@ function applyBlend(mat: THREE.Material, blend: LayerBlend) {
  * traverse for a few frames after mount (and after each blend change) to
  * catch everything, then go quiet.
  */
-function BlendedLayer({ role, children }: { role: LayerRole; children: ReactNode }) {
+function BlendedLayer({ role, children }: { role: SlotName; children: ReactNode }) {
   const group = useRef<THREE.Group>(null)
   const applied = useRef<LayerBlend | null>(null)
   const framesLeft = useRef(0)
 
   useFrame(() => {
-    const blend = useStore.getState().layerFx[role].blend
+    // Effects have no user-facing look controls, so they always composite
+    // additively — the blend that makes a burst read as light rather than as
+    // an object occluding the frame.
+    const blend: LayerBlend =
+      role === 'effect' || role === 'primary' ? 'add' : useStore.getState().layerFx[role].blend
     if (applied.current !== blend) {
       applied.current = blend
       framesLeft.current = 30
@@ -202,10 +369,20 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
       })
     }
 
-    node.visible = entry.dir !== 0 || !isWarmComplete(entry)
+    // An idle pinned effect is never visible: unlike a warming candidate it has
+    // no promotion coming, so the `!isWarmComplete` escape would leave it
+    // rendering forever once it had compiled.
+    node.visible =
+      entry.role === 'effect' ? entry.dir !== 0 : entry.dir !== 0 || !isWarmComplete(entry)
   })
 
-  return <group ref={group}>{children}</group>
+  // Only meaningful for non-additive layer blends, which composite against
+  // whatever is already in the buffer — see SLOT_RENDER_ORDER.
+  return (
+    <group ref={group} renderOrder={SLOT_RENDER_ORDER[entry.role]}>
+      {children}
+    </group>
+  )
 }
 
 /**
@@ -227,7 +404,15 @@ export function SceneManager() {
     const initialId = useStore.getState().sceneId
     sceneStreamer.reset()
     sceneStreamer.promote(initialId, 0, getResolvedManifest(initialId).priority)
-    return [makeEntry(initialId, 'primary', 1)]
+    // Effect scenes are PINNED for the session: mounted once here, idle at
+    // dir 0, so their shaders compile during startup rather than on the first
+    // trigger. An effect that had to compile when fired would stall on exactly
+    // the musical event it exists to punctuate. Empty until effect scenes are
+    // authored, so this costs nothing today.
+    return [
+      makeEntry(initialId, 'primary', 1),
+      ...getEffectScenes().map((s) => makeEntry(s.id, 'effect', 0)),
+    ]
   })
   const entriesRef = useRef<Entry[]>(initialEntries)
 
@@ -286,7 +471,36 @@ export function SceneManager() {
       const waited = clock.elapsedTime - pendingSince.current
       const onDownbeat = f.beat && f.beatInBar === 0
       const gridTrusted = f.confidence > 0.25 && !f.silence
-      if (!gridTrusted || onDownbeat || waited > 2.5) {
+
+      // Drop-triggered switches do NOT wait for the next downbeat.
+      //
+      // Drop detection averages a 0.35 s window (see AudioEngine's energyLog),
+      // so `f.drop` necessarily rises a beat or so AFTER the transient that
+      // caused it — by which point the downbeat the drop landed on has already
+      // passed. On a trusted grid that meant waiting almost a full bar (~2 s at
+      // 120 BPM) and then easing over two more beats, so the visual change
+      // finished ~3 s late. `f.drop` itself is only true for 0.6 s: the flag had
+      // long expired before anything moved. That is the "drops don't switch"
+      // report — the switch fires correctly, it just lands in the next section.
+      //
+      // Note the failing case is a TRUSTED grid, not an untrusted one: a
+      // confidence dip makes `gridTrusted` false, which already commits on the
+      // spot. The downbeat gate is what delays it.
+      //
+      // Still gated on the incoming scene being shader-warm (or a short grace),
+      // because the one thing worse than a late cut is a compile stall exactly
+      // on the drop — the very hitch the warm-up machinery exists to prevent.
+      // In practice prewarm resolves in a few frames, so this lands ~50 ms in.
+      const pendingWarm = entriesRef.current.find((e) => e.dir === 0 && e.id === pendingSceneId)
+      const { commit, immediate } = resolveCommit({
+        gridTrusted,
+        onDownbeat,
+        pendingImmediate: state.pendingImmediate,
+        incomingWarm: pendingWarm ? isWarmComplete(pendingWarm) : null,
+        waited,
+      })
+
+      if (commit) {
         commitScene()
         pendingSince.current = -1
         // Only replace the primary scene. Composition layers have their own
@@ -299,7 +513,7 @@ export function SceneManager() {
         }
         // Promote the pre-warmed entry rather than mounting a cold one, so the
         // crossfade starts with an already-compiled shader (no hitch on the beat).
-        const warm = entriesRef.current.find((e) => e.dir === 0 && e.id === pendingSceneId)
+        const warm = pendingWarm
         let incoming: Entry
         if (warm) {
           warm.dir = 1
@@ -325,7 +539,23 @@ export function SceneManager() {
           !!outgoing &&
           getScene(outgoing.id).metadata.performanceCost === 'high' &&
           getScene(incoming.id).metadata.performanceCost === 'high'
-        const hardCut = bothHeavy && quality.knobs.maxHeavyLayers < 2
+        // Can the budget carry both primaries through the overlap? The
+        // `bothHeavy` conjunct is kept deliberately: a pure budget test would
+        // also start hard-cutting medium-cost pairs at the bottom tiers, and
+        // this guard's documented intent is specifically about overlapping two
+        // heavy fullscreen scenes.
+        const fundsOverlap = canFundOverlap(
+          quality.knobs.layerBudget,
+          slotCost(getScene(incoming.id).metadata.performanceCost, 'primary'),
+        )
+        // A drop always cuts, whatever the two scenes cost. Crossfading a drop
+        // over ~two beats is the second half of the "drops don't switch"
+        // report: even once the timing above lands it on the transient, a
+        // 1 s dissolve reads as the picture slowly changing its mind rather
+        // than as an event. The cost-based guard below is a SMOOTHNESS
+        // measure; this one is editorial, so they're deliberately separate
+        // conditions rather than one merged predicate.
+        const hardCut = immediate || (bothHeavy && !fundsOverlap)
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1
@@ -349,56 +579,88 @@ export function SceneManager() {
       // No pending switch — discard any orphaned warming entry.
       const dropped = sceneStreamer.clearPending()
       if (dropped.length > 0) {
-        entriesRef.current = entriesRef.current.filter((e) => e.dir !== 0)
+        // Idle pinned effects also sit at dir === 0 and must survive this —
+        // they are not orphaned warm candidates, they are waiting to fire.
+        entriesRef.current = entriesRef.current.filter((e) => e.dir !== 0 || e.role === 'effect')
         force((n) => n + 1)
       }
     }
 
-    // Persistent accent/overlay layers are composed independently from the
-    // primary scene. A layer change gets a short fade, while the primary scene
-    // continues to use beat-locked transitions above.
-    const desiredLayers: { role: LayerRole; id: string | null }[] = [
-      { role: 'accent', id: state.accentSceneId },
-      { role: 'overlay', id: state.overlaySceneId },
-    ]
-    for (const desired of desiredLayers) {
-      const wanted = resolveLayerId(desired.id, state.sceneId, state.pendingSceneId)
-      const current = entriesRef.current.find((e) => e.role === desired.role && e.dir === 1)
+    // Persistent background/accent/overlay layers are composed independently
+    // from the primary scene. A layer change gets a short fade, while the
+    // primary scene continues to use beat-locked transitions above.
+    const wantedLayers = resolveLayerIds(
+      state.layerSceneIds,
+      state.sceneId,
+      state.pendingSceneId,
+    )
+    for (const role of LAYER_ROLES) {
+      const wanted = wantedLayers[role]
+      const current = entriesRef.current.find((e) => e.role === role && e.dir === 1)
       if ((current?.id ?? null) === wanted) continue
       if (current) current.dir = -1
       if (wanted) {
         // Layers deliberately skip the streamer's lifecycle: they have their
         // own independent fade and never participate in the beat-locked primary
         // commit, so there is no warm slot to arbitrate over.
-        entriesRef.current.push(makeEntry(wanted, desired.role, 1))
+        entriesRef.current.push(makeEntry(wanted, role, 1))
         force((n) => n + 1)
       }
     }
 
+    // Effects: pinned entries whose ACTIVE firing is owned by EffectDirector.
+    // Nothing is mounted or unmounted here — pinning is the whole point, so a
+    // trigger never pays a shader compile — only `dir` flips.
+    if (syncEffectEntries(entriesRef.current, performanceState.layers.effects)) {
+      force((n) => n + 1)
+    }
+
     // Crossfade over ~two beats when the tempo is known, then weight each
-    // entry by its layer intensity (primary is always full strength).
+    // entry by its slot gain (primary is always full strength).
     const duration = crossfadeDuration(f.bpm)
     let prune = false
     for (const e of entriesRef.current) {
-      if (e.dir === 0) continue // warming: stays at zero until promoted
+      if (e.dir === 0) continue // warming (or an idle pinned effect): stays at zero
       e.fade.value += (f.delta / duration) * e.dir
       if (e.fade.value >= 1) e.fade.value = 1
       if (e.fade.value <= 0 && e.dir === -1) prune = true
-      const gain = e.role === 'primary' ? 1 : state.layerFx[e.role].intensity
+      const gain =
+        e.role === 'primary'
+          ? 1
+          : e.role === 'effect'
+            ? EFFECT_GAIN
+            : state.layerFx[e.role].intensity
+      e.out.gain = gain
       e.out.value = Math.max(0, e.fade.value) * gain
+      e.out.progress = e.effect
+        ? Math.min(1, Math.max(0, (f.time - e.effect.startedAt) / e.effect.durationSec))
+        : 0
       if (e.role === 'primary' && e.dir === 1) {
         sampleTransitionFrame(e.key, perf.ms, e.fade.value, clock.elapsedTime)
       }
     }
     if (prune) {
-      const gone = entriesRef.current.filter((e) => e.dir === -1 && e.fade.value <= 0)
-      entriesRef.current = entriesRef.current.filter((e) => !(e.dir === -1 && e.fade.value <= 0))
-      // Fully faded out and unmounted — the streamer can forget it. Only for
-      // primaries: layers were never registered with it.
-      for (const e of gone) {
-        if (e.role === 'primary') sceneStreamer.release(e.id)
+      // A retired EFFECT is never unmounted — it returns to its idle pinned
+      // state so the next firing costs no compile. That is the entire reason
+      // effects are pinned, so it has to be excluded from the prune below
+      // rather than relying on it never matching.
+      for (const e of entriesRef.current) {
+        if (e.role === 'effect' && e.dir === -1 && e.fade.value <= 0) {
+          e.dir = 0
+          e.effect = null
+        }
       }
-      force((n) => n + 1)
+      const dead = (e: Entry) => e.role !== 'effect' && e.dir === -1 && e.fade.value <= 0
+      const gone = entriesRef.current.filter(dead)
+      if (gone.length > 0) {
+        entriesRef.current = entriesRef.current.filter((e) => !dead(e))
+        // Fully faded out and unmounted — the streamer can forget it. Only for
+        // primaries: layers were never registered with it.
+        for (const e of gone) {
+          if (e.role === 'primary') sceneStreamer.release(e.id)
+        }
+        force((n) => n + 1)
+      }
     }
   }, -100)
 

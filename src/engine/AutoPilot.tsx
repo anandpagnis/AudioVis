@@ -200,7 +200,12 @@ export function AutoPilot() {
     const voiceBoost = (scene: (typeof candidates)[number]) =>
       f.moodsValid && f.vocalPresence > 0.5 && scene.metadata.bands.includes('vocal') ? 1.6 : 1
     const pick = pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost)
-    if (pick) s.requestScene(pick.id, { auto: true })
+    // A drop is the one trigger that must land on the moment rather than on the
+    // next bar: SceneManager skips the downbeat wait and hard-cuts. Every other
+    // trigger here (a mood change, a predicted transition) is a section-scale
+    // fact with no exact instant to hit, so those keep the beat-locked
+    // crossfade — the drop is the exception, not the new default.
+    if (pick) s.requestScene(pick.id, { auto: true, immediate: dropEdge })
   }, -90) // right after the audio engine tick (-100), before scenes
   return null
 }

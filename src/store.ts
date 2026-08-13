@@ -48,12 +48,72 @@ export interface LayerFx {
   blend: LayerBlend
 }
 
-export type LayerRole = 'accent' | 'overlay'
+/**
+ * Composition slots that hold a persistent, user-controllable scene.
+ *
+ * `effect` is deliberately absent: effect scenes are transient and
+ * event-triggered, so they live in `performanceState.layers.effects` (engine
+ * state) rather than here (user state). `primary` is absent because it has its
+ * own beat-locked commit path.
+ */
+export type LayerRole = 'background' | 'accent' | 'overlay'
 
+export const LAYER_ROLES: LayerRole[] = ['background', 'accent', 'overlay']
+
+/**
+ * Default per-slot look.
+ *
+ * Background sits at 0.40 by default — it is the ground, not a second subject,
+ * and this is the gain that makes a scene authored at full strength read as
+ * behind rather than alongside the primary.
+ */
 const defaultLayerFx = (): Record<LayerRole, LayerFx> => ({
+  background: { intensity: 0.4, blend: 'add' },
   accent: { intensity: 1, blend: 'add' },
   overlay: { intensity: 1, blend: 'add' },
 })
+
+const emptyLayerScenes = (): Record<LayerRole, string | null> => ({
+  background: null,
+  accent: null,
+  overlay: null,
+})
+
+/** Deep-copy the per-slot look, filling in any slot a stored value predates. */
+const cloneLayerFx = (fx: Partial<Record<LayerRole, LayerFx>>): Record<LayerRole, LayerFx> => {
+  const base = defaultLayerFx()
+  for (const role of LAYER_ROLES) if (fx[role]) base[role] = { ...fx[role] }
+  return base
+}
+
+/** Pre-v1 shape of anything that embedded composition slots. */
+interface LegacyLayers {
+  accentSceneId?: string | null
+  overlaySceneId?: string | null
+  layerSceneIds?: Partial<Record<LayerRole, string | null>>
+  layerFx?: Partial<Record<LayerRole, LayerFx>>
+}
+type LegacyCue = LegacyLayers & Record<string, unknown>
+type LegacyPreset = LegacyLayers & Record<string, unknown>
+
+/**
+ * Lift a stored cue or preset from the two-scalar slot shape to the record.
+ *
+ * Shared by the persist migration and `sanitizePreset`, because a preset can
+ * also arrive by import or URL rather than out of localStorage — those paths
+ * never see the migration, so they need the same conversion.
+ */
+export function migrateLegacyLayers<T extends LegacyLayers>(item: T): T {
+  const { accentSceneId, overlaySceneId, ...rest } = item
+  return {
+    ...rest,
+    layerSceneIds: {
+      background: item.layerSceneIds?.background ?? null,
+      accent: item.layerSceneIds?.accent ?? accentSceneId ?? null,
+      overlay: item.layerSceneIds?.overlay ?? overlaySceneId ?? null,
+    },
+  } as T
+}
 
 /**
  * Phase 5: one authored moment in a performance — the complete look, anchored
@@ -63,8 +123,7 @@ export interface PerformanceCue {
   id: string
   beat: number
   sceneId: string
-  accentSceneId: string | null
-  overlaySceneId: string | null
+  layerSceneIds: Record<LayerRole, string | null>
   paletteId: string
   params: VisualParams
   layerFx: Record<LayerRole, LayerFx>
@@ -77,14 +136,24 @@ interface AppState {
 
   sceneId: string
   pendingSceneId: string | null
+  /**
+   * The pending switch should land NOW rather than on the next downbeat, and
+   * hard-cut rather than crossfade.
+   *
+   * Set by drop-triggered requests. A drop is the one musical event whose whole
+   * point is the instant of arrival: waiting for the next bar and then easing
+   * over two beats is precisely the "nothing happened" failure. Transient — it
+   * describes one pending transition, not persisted state.
+   */
+  pendingImmediate: boolean
   /** Most-recently-committed primary scene ids, newest first, capped at 4.
    *  Transient (not persisted) — feeds `pickVariedScene`'s recency penalty so
    *  AutoPilot/PerformanceDirector don't show the same handful of scenes on
    *  repeat. Updated in `commitScene`, not `requestScene` — a scene only
    *  counts once it's actually on screen, not merely requested. */
   recentSceneIds: string[]
-  accentSceneId: string | null
-  overlaySceneId: string | null
+  /** Persistent, user-controllable composition slots. Effects are NOT here. */
+  layerSceneIds: Record<LayerRole, string | null>
   paletteId: string
 
   uiHidden: boolean
@@ -132,8 +201,8 @@ interface AppState {
   applyCue: (cue: PerformanceCue) => void
   toggleMidiSync: () => Promise<void>
   toggleRecording: () => void
-  requestScene: (id: string, opts?: { auto?: boolean }) => void
-  setLayer: (role: 'accent' | 'overlay', id: string | null, opts?: { auto?: boolean }) => void
+  requestScene: (id: string, opts?: { auto?: boolean; immediate?: boolean }) => void
+  setLayer: (role: LayerRole, id: string | null, opts?: { auto?: boolean }) => void
   setLayerFx: (role: LayerRole, patch: Partial<LayerFx>) => void
   setResponseTuning: (patch: Partial<ResponseTuning>) => void
   addBandMapping: () => void
@@ -170,9 +239,9 @@ export const useStore = create<AppState>()(
 
       sceneId: 'wireframe',
       pendingSceneId: null,
+      pendingImmediate: false,
       recentSceneIds: [],
-      accentSceneId: null,
-      overlaySceneId: null,
+      layerSceneIds: emptyLayerScenes(),
       paletteId: 'aurora',
 
       uiHidden: false,
@@ -289,11 +358,10 @@ export const useStore = create<AppState>()(
           id: crypto.randomUUID(),
           beat,
           sceneId: s.sceneId,
-          accentSceneId: s.accentSceneId,
-          overlaySceneId: s.overlaySceneId,
+          layerSceneIds: { ...s.layerSceneIds },
           paletteId: s.paletteId,
           params: { ...s.params },
-          layerFx: { accent: { ...s.layerFx.accent }, overlay: { ...s.layerFx.overlay } },
+          layerFx: cloneLayerFx(s.layerFx),
         }
         // Re-capturing near an existing cue replaces it.
         const cues = s.cues
@@ -311,9 +379,8 @@ export const useStore = create<AppState>()(
         set({
           paletteId: cue.paletteId,
           params: { ...cue.params },
-          accentSceneId: cue.accentSceneId,
-          overlaySceneId: cue.overlaySceneId,
-          layerFx: { accent: { ...cue.layerFx.accent }, overlay: { ...cue.layerFx.overlay } },
+          layerSceneIds: { ...emptyLayerScenes(), ...cue.layerSceneIds },
+          layerFx: cloneLayerFx(cue.layerFx),
         })
         get().requestScene(cue.sceneId, { auto: true })
       },
@@ -341,13 +408,13 @@ export const useStore = create<AppState>()(
         if (!opts?.auto) set({ lastManualAt: audioEngine.features.time })
         if (id === get().sceneId) return
         preloadScene(id) // start fetching the lazy chunk before the downbeat commit
-        set({ pendingSceneId: id })
+        set({ pendingSceneId: id, pendingImmediate: opts?.immediate === true })
       },
 
       setLayer: (role, id, opts) => {
         if (id === get().sceneId) id = null
         if (id) preloadScene(id)
-        const patch = role === 'accent' ? { accentSceneId: id } : { overlaySceneId: id }
+        const patch = { layerSceneIds: { ...get().layerSceneIds, [role]: id } }
         set(opts?.auto ? patch : { ...patch, lastManualAt: audioEngine.features.time })
       },
 
@@ -421,7 +488,12 @@ export const useStore = create<AppState>()(
         const pending = get().pendingSceneId
         if (pending) {
           const recent = [pending, ...get().recentSceneIds.filter((id) => id !== pending)].slice(0, 4)
-          set({ sceneId: pending, pendingSceneId: null, recentSceneIds: recent })
+          set({
+            sceneId: pending,
+            pendingSceneId: null,
+            pendingImmediate: false,
+            recentSceneIds: recent,
+          })
         }
       },
 
@@ -441,8 +513,7 @@ export const useStore = create<AppState>()(
         set({
           paletteId: p.paletteId,
           params: { ...p.params },
-          accentSceneId: p.accentSceneId ?? null,
-          overlaySceneId: p.overlaySceneId ?? null,
+          layerSceneIds: { ...emptyLayerScenes(), ...p.layerSceneIds },
           ...(p.layerFx ? { layerFx: { ...defaultLayerFx(), ...p.layerFx } } : {}),
           // Presets carrying a performance timeline restore it; plain "look"
           // presets leave the current cue list alone.
@@ -457,11 +528,10 @@ export const useStore = create<AppState>()(
           id: crypto.randomUUID(),
           name: name.trim().slice(0, 40) || 'Untitled',
           sceneId: s.sceneId,
-          accentSceneId: s.accentSceneId,
-          overlaySceneId: s.overlaySceneId,
+          layerSceneIds: { ...s.layerSceneIds },
           paletteId: s.paletteId,
           params: { ...s.params },
-          layerFx: { accent: { ...s.layerFx.accent }, overlay: { ...s.layerFx.overlay } },
+          layerFx: cloneLayerFx(s.layerFx),
           ...(s.cues.length > 0 ? { cues: s.cues.map((c) => ({ ...c })) } : {}),
         }
         set({ userPresets: [...s.userPresets, preset] })
@@ -511,10 +581,43 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'audiovis-settings',
+      /**
+       * v1 — composition slots moved from two scalars (`accentSceneId`,
+       * `overlaySceneId`) to a `layerSceneIds` record that can also hold a
+       * background.
+       *
+       * There was no `version` before this, so persisted state written by any
+       * earlier build reports 0. Without the migration those two keys would
+       * simply be dropped on rehydrate and every user would silently lose their
+       * layer setup — including saved cues and presets, which embed the same
+       * shape. `layerFx` needs no branch: `cloneLayerFx` fills the new
+       * background slot from defaults whatever the stored value looks like.
+       */
+      version: 1,
+      migrate: (persisted, version) => {
+        if (version >= 1) return persisted
+        const old = (persisted ?? {}) as Record<string, unknown> & {
+          accentSceneId?: string | null
+          overlaySceneId?: string | null
+          layerFx?: Partial<Record<LayerRole, LayerFx>>
+          cues?: LegacyCue[]
+          userPresets?: LegacyPreset[]
+        }
+        return {
+          ...old,
+          layerSceneIds: {
+            background: null,
+            accent: old.accentSceneId ?? null,
+            overlay: old.overlaySceneId ?? null,
+          },
+          layerFx: cloneLayerFx(old.layerFx ?? {}),
+          cues: (old.cues ?? []).map(migrateLegacyLayers),
+          userPresets: (old.userPresets ?? []).map(migrateLegacyLayers),
+        }
+      },
       partialize: (s) => ({
         sceneId: s.sceneId,
-        accentSceneId: s.accentSceneId,
-        overlaySceneId: s.overlaySceneId,
+        layerSceneIds: s.layerSceneIds,
         paletteId: s.paletteId,
         params: s.params,
         quality: s.quality,

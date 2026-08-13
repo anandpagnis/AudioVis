@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { FogExp2, Vector2 } from 'three'
 import { EffectComposer, Bloom, ChromaticAberration, Vignette } from '@react-three/postprocessing'
-import type { BloomEffect, ChromaticAberrationEffect } from 'postprocessing'
+import type { BloomEffect, ChromaticAberrationEffect, VignetteEffect } from 'postprocessing'
 import { getPalette } from './palettes'
 import { performanceState } from './performanceState'
 import { useStore } from '../store'
@@ -34,6 +34,7 @@ const CA_INITIAL_OFFSET = new Vector2(0, 0)
 export function EffectsDirector() {
   const bloomRef = useRef<BloomEffect>(null)
   const caRef = useRef<ChromaticAberrationEffect>(null)
+  const vignetteRef = useRef<VignetteEffect>(null)
   const scene = useThree((s) => s.scene)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
   // would invalidate every material's shader cache.
@@ -41,8 +42,18 @@ export function EffectsDirector() {
 
   useFrame(() => {
     const p = performanceState
-    if (bloomRef.current) bloomRef.current.intensity = p.bloom
-    if (caRef.current) caRef.current.offset.set(p.glitch, p.glitch * 0.6)
+    if (bloomRef.current) {
+      bloomRef.current.intensity = p.bloom
+      bloomRef.current.luminanceMaterial.threshold = p.bloomThreshold
+    }
+    // Same magnitude as before (the old fixed 1.0 : 0.6 ratio has length ~1.166),
+    // now steerable — so switching to a directed smear does not also change how
+    // strong the aberration reads.
+    if (caRef.current) {
+      const g = p.glitch * 1.166
+      caRef.current.offset.set(Math.cos(p.caAngle) * g, Math.sin(p.caAngle) * g)
+    }
+    if (vignetteRef.current) vignetteRef.current.darkness = p.vignette
 
     // Atmospheric depth. Tinted toward the palette's background rather than
     // pure black so it reads as air, not as the subject being clipped away.
@@ -59,7 +70,7 @@ export function EffectsDirector() {
     <EffectComposer multisampling={0}>
       <Bloom ref={bloomRef} intensity={0.8} luminanceThreshold={0.18} mipmapBlur radius={0.75} />
       <ChromaticAberration ref={caRef} offset={CA_INITIAL_OFFSET} />
-      <Vignette eskil={false} offset={0.18} darkness={0.85} />
+      <Vignette ref={vignetteRef} eskil={false} offset={0.18} darkness={0.85} />
     </EffectComposer>
   )
 }

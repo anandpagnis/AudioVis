@@ -1,40 +1,88 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
+import type { MoodState } from '../audio/types'
 import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { quality } from './quality'
+import { admitSlots, slotCost, type SlotRequest } from './slotBudget'
 import {
   getCompatibleScenes,
   getPrimaryScenesForMood,
   getScene,
   getScenesForMood,
   pickVariedScene,
+  type SceneDef,
+  type ScenePerformanceCost,
 } from '../scenes'
-import { useStore, type LayerRole } from '../store'
+import { LAYER_ROLES, useStore, type LayerRole } from '../store'
 
 const MANUAL_HOLD_SEC = 45
 const PHRASE_HOLD_BEATS = 16 // fallback recompose cadence when no section fires
 
 /**
- * Resolve both layer slots for one composition decision.
+ * Compose the layer slots for one decision, within the quality budget.
  *
- * Exactly one slot is ever occupied, so the slot we did NOT choose must be
- * cleared every time. Clearing only 'overlay' (the old behaviour) meant a
- * switch from accent-mode to overlay-mode left the previous accent mounted
- * indefinitely — it composited additively over the primary and every
- * subsequent scene change, because nothing else writes that slot.
+ * Accent and overlay are no longer mutually exclusive — that was a policy of
+ * the old two-slot resolver, not a structural limit. What replaces it is the
+ * cost budget: a slot is filled only if its scene fits in what the primary left
+ * behind (see slotBudget.ts). Slots that cannot be funded, or whose pool is
+ * empty, resolve to null and their existing entry fades out — the same
+ * every-slot-written-every-time discipline the old resolver needed, for the
+ * same reason (nothing else writes these).
+ *
+ * `pools` may legitimately be empty for a role. `background` has no registered
+ * scenes at all today, and that is a supported steady state, not a failure —
+ * with an empty pool this returns exactly the accent/overlay behaviour the
+ * two-slot version produced.
  *
  * Exported for the unit test; the component is the only production caller.
  */
-export function resolveLayerSlots(
-  layerRole: LayerRole,
-  pickId: string | null,
-): Record<LayerRole, string | null> {
-  return {
-    accent: layerRole === 'accent' ? pickId : null,
-    overlay: layerRole === 'overlay' ? pickId : null,
+export function composeLayers(opts: {
+  primaryCost: ScenePerformanceCost
+  budget: number
+  /** Candidate list per slot, best fit first. Empty or absent = leave unfilled. */
+  pools: Partial<Record<LayerRole, readonly SceneDef[]>>
+  mood: MoodState
+  recentIds: readonly string[]
+  /** Admission order; lets the busier of accent/overlay get first refusal. */
+  priority?: readonly LayerRole[]
+}): Record<LayerRole, string | null> {
+  const { primaryCost, budget, pools, mood, recentIds, priority } = opts
+  const picks: Partial<Record<LayerRole, SceneDef>> = {}
+  const requests: SlotRequest[] = []
+
+  for (const role of LAYER_ROLES) {
+    const pool = pools[role]
+    if (!pool || pool.length === 0) continue
+    const pick = pickVariedScene(pool, mood, recentIds)
+    if (!pick) continue
+    picks[role] = pick
+    requests.push({
+      slot: role,
+      units: slotCost(pick.metadata.performanceCost, role, pick.metadata.roleScalable),
+    })
   }
+
+  const admitted = new Set(
+    admitSlots(budget, slotCost(primaryCost, 'primary'), requests, priority),
+  )
+  return {
+    background: admitted.has('background') ? (picks.background?.id ?? null) : null,
+    accent: admitted.has('accent') ? (picks.accent?.id ?? null) : null,
+    overlay: admitted.has('overlay') ? (picks.overlay?.id ?? null) : null,
+  }
+}
+
+/**
+ * The primary scenes eligible to follow `currentSceneId` in `mood`.
+ *
+ * Exported for the unit test; the component is the only production caller. It
+ * exists as a named function because the thing it must NOT do is subtle: see
+ * the call site for why `compatibleWith` deliberately plays no part here.
+ */
+export function selectPrimaryCandidates(mood: MoodState, currentSceneId: string): SceneDef[] {
+  return getPrimaryScenesForMood(mood).filter((scene) => scene.id !== currentSceneId)
 }
 
 /**
@@ -77,11 +125,21 @@ export function PerformanceDirector() {
     // reachable as a primary pick since `requestScene` has no role check of
     // its own). Layer pool deliberately stays role-agnostic; that's exactly
     // the scenes an accent/overlay slot wants.
-    const primaryFits = getPrimaryScenesForMood(mood)
-    const primaryPool = primaryFits.filter((scene) => compatibleIds.has(scene.id))
-    const primaryCandidates = (primaryPool.length > 0 ? primaryPool : primaryFits).filter(
-      (scene) => scene.id !== s.sceneId,
-    )
+    //
+    // `compatibleWith` deliberately does NOT filter this pool. It declares
+    // which scenes LAYER well together (see getCompatibleScenes' doc and the
+    // layer pick below) — it says nothing about which subject should follow
+    // which, and using it for succession was a real bug: the four original
+    // scenes list only each other, so {wireframe, plasma, dissolve, chrome}
+    // formed a closed clique. Once the show entered it, it could never leave,
+    // and the six newer primaries (network, pointcloud, inversion, foldpath,
+    // torusfold, juliawings) were unreachable through this director entirely —
+    // measured 0% over 20k simulated picks, versus ~9% each afterwards.
+    // AutoPilot could still stumble into them on a mood change, but this
+    // director fires far more often and pulled the show straight back, most
+    // often onto `wireframe` (the only primary every scene lists as
+    // compatible). That is what "wireframe is always on" actually was.
+    const primaryCandidates = selectPrimaryCandidates(mood, s.sceneId)
 
     const layerFits = getScenesForMood(mood)
     const layerPool = layerFits.filter((scene) => compatibleIds.has(scene.id))
@@ -117,24 +175,43 @@ export function PerformanceDirector() {
       }
     }
 
-    // Composition budget: how many high-cost scenes may render at once, from the
-    // quality governor. If the primary is already heavy and the budget is tight,
-    // run it solo — this both preserves visual breathing room and keeps heavy
-    // scenes from stacking during the crossfade (a major stutter source).
-    const primaryHeavy = getScene(primaryId).metadata.performanceCost === 'high'
-    const allowLayer = quality.knobs.maxHeavyLayers >= 2 || !primaryHeavy
+    // Which of accent/overlay the busier material wants. Both slots can now be
+    // occupied at once, so this decides which gets FIRST refusal rather than
+    // which is the only one allowed.
+    const leadRole: LayerRole = response.energy > 0.58 || response.dropPulse > 0
+      ? 'overlay'
+      : 'accent'
+    const forRole = (role: LayerRole) =>
+      layerCandidates.filter(
+        (scene) => scene.id !== primaryId && scene.metadata.roles.includes(role),
+      )
 
-    const layerRole = response.energy > 0.58 || response.dropPulse > 0 ? 'overlay' : 'accent'
-    const layerRoleCandidates = layerCandidates.filter(
-      (scene) => scene.id !== primaryId && scene.metadata.roles.includes(layerRole),
-    )
-    // Same variety treatment as the primary pick — `.find()`'s first-match
-    // had the identical bias problem (favors whichever eligible scene sits
-    // earliest in SCENES[], i.e. wireframe, every time).
-    const layerPick = allowLayer
-      ? pickVariedScene(layerRoleCandidates, mood, s.recentSceneIds)
-      : undefined
-    const slots = resolveLayerSlots(layerRole, layerPick?.id ?? null)
+    // Background recomposes on SECTION boundaries only, never on the phrase
+    // fallback: it is the ground the rest of the composition sits on, and a
+    // ground that changes every 16 beats is just a second primary. Holding the
+    // previous pick means passing an empty pool, which composeLayers reads as
+    // "leave it alone".
+    const backgroundPool = f.sectionChange ? forRole('background') : []
+
+    const slots = composeLayers({
+      primaryCost: getScene(primaryId).metadata.performanceCost,
+      budget: quality.knobs.layerBudget,
+      pools: {
+        background: backgroundPool,
+        [leadRole]: forRole(leadRole),
+        [leadRole === 'overlay' ? 'accent' : 'overlay']: forRole(
+          leadRole === 'overlay' ? 'accent' : 'overlay',
+        ),
+      },
+      mood,
+      recentIds: s.recentSceneIds,
+      // Background stays most-structural-first; the busier of the two detail
+      // slots takes precedence over the quieter one under a tight budget.
+      priority: ['background', leadRole, leadRole === 'overlay' ? 'accent' : 'overlay'],
+    })
+    // Background is preserved across non-section recomposes; the other two are
+    // always written, since nothing else clears them.
+    if (f.sectionChange) s.setLayer('background', slots.background, { auto: true })
     s.setLayer('accent', slots.accent, { auto: true })
     s.setLayer('overlay', slots.overlay, { auto: true })
     lastSwitchBeat.current = f.beatIndex

@@ -7,7 +7,7 @@ import { animationSignals, type AnimationSignals } from './AnimationDirector'
 import { getEffectiveParams } from './moodParams'
 import { performanceState, type PerformanceState } from './performanceState'
 import { PaletteBlender, getPalette } from './palettes'
-import { SceneFade } from './SceneManager'
+import { SceneFade, type SlotName } from './SceneManager'
 import type { VisualParams } from '../store'
 import { useStore } from '../store'
 
@@ -89,6 +89,34 @@ export interface SceneFrame {
   camera: THREE.Camera
 
   /**
+   * Which composition slot this instance is rendering in.
+   *
+   * A scene that wants to behave differently as a background than as the
+   * subject branches on this — fewer particles, lower iteration counts, simpler
+   * geometry. Declaring `roleScalable: true` in metadata tells the composition
+   * budget that the scene actually does so; see slotBudget.ts.
+   */
+  role: SlotName
+
+  /**
+   * This slot's gain alone (0..1.5), WITHOUT the crossfade folded in.
+   *
+   * `vis` already includes it, so this is not for scaling output — it is how a
+   * scene distinguishes "I am dim because I am mid-transition" from "I am dim
+   * because I am the background". Only the second is a reason to change what it
+   * draws rather than how brightly.
+   */
+  roleGain: number
+
+  /**
+   * 0→1 across an effect's lifetime; always 0 in every other slot.
+   *
+   * An effect scene **must reach visual zero by 1** — SceneManager retires it
+   * there and does not fade it out for you.
+   */
+  slotProgress: number
+
+  /**
    * The live performance state, **read-only** for scenes.
    *
    * A scene may consult it to honour a director decision — `particleDensity`,
@@ -146,6 +174,9 @@ export function useSceneFrame(
     col: blender,
     vis: 0,
     params: { intensity: 1, speed: 1, reactivity: 1 },
+    role: fade.role,
+    roleGain: fade.gain,
+    slotProgress: fade.progress,
     camera,
     state: performanceState,
   })
@@ -163,6 +194,12 @@ export function useSceneFrame(
     c.camera = camera
     c.col = blender
     c.vis = Math.min(visCeiling, fade.value * (visFloor + (1 - visFloor) * params.intensity))
+    // Slot identity is mutated on the same object each frame, so an instance
+    // that changes slot (or an effect advancing through its lifetime) is seen
+    // without re-running the scene's React render.
+    c.role = fade.role
+    c.roleGain = fade.gain
+    c.slotProgress = fade.progress
 
     const b = c.b
     b.sub = f.sub * R
