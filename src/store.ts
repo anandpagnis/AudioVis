@@ -77,6 +77,12 @@ interface AppState {
 
   sceneId: string
   pendingSceneId: string | null
+  /** Most-recently-committed primary scene ids, newest first, capped at 4.
+   *  Transient (not persisted) — feeds `pickVariedScene`'s recency penalty so
+   *  AutoPilot/PerformanceDirector don't show the same handful of scenes on
+   *  repeat. Updated in `commitScene`, not `requestScene` — a scene only
+   *  counts once it's actually on screen, not merely requested. */
+  recentSceneIds: string[]
   accentSceneId: string | null
   overlaySceneId: string | null
   paletteId: string
@@ -164,6 +170,7 @@ export const useStore = create<AppState>()(
 
       sceneId: 'wireframe',
       pendingSceneId: null,
+      recentSceneIds: [],
       accentSceneId: null,
       overlaySceneId: null,
       paletteId: 'aurora',
@@ -412,7 +419,10 @@ export const useStore = create<AppState>()(
 
       commitScene: () => {
         const pending = get().pendingSceneId
-        if (pending) set({ sceneId: pending, pendingSceneId: null })
+        if (pending) {
+          const recent = [pending, ...get().recentSceneIds.filter((id) => id !== pending)].slice(0, 4)
+          set({ sceneId: pending, pendingSceneId: null, recentSceneIds: recent })
+        }
       },
 
       setPalette: (id, opts) =>

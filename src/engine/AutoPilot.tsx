@@ -5,7 +5,7 @@ import type { MoodState } from '../audio/types'
 import { cueState } from './CueTimeline'
 import { keyPaletteTracker } from './keyPalette'
 import { PALETTES } from './palettes'
-import { getScenesForMood } from '../scenes'
+import { getPrimaryScenesForMood, pickVariedScene } from '../scenes'
 import { useStore } from '../store'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
@@ -183,17 +183,24 @@ export function AutoPilot() {
 
     if (!target) return
 
-    // Pick among the top fits, skipping whatever is already showing/pending.
-    // 'primary' is required: layer-only scenes (ribbons) outrank everything on
-    // moodFit in several moods, and an unfiltered pick would install one as the
-    // subject rather than as a layer over it.
-    const options = getScenesForMood(target, 'primary')
-      .map((scene) => scene.id)
-      .filter((id) => id !== s.sceneId && id !== s.pendingSceneId)
-    if (options.length > 0) {
-      const pick = options.length > 1 && Math.random() < 0.3 ? options[1] : options[0]
-      s.requestScene(pick, { auto: true })
-    }
+    // Weighted pick among PRIMARY-capable fits (getScenesForMood is not
+    // role-filtered — using it directly here used to let an accent/overlay-
+    // only scene like `ribbons` get requested as primary), skipping
+    // whatever is already showing/pending and softly avoiding whatever
+    // just played (pickVariedScene) so the same 1-2 scenes don't monopolize
+    // a mood.
+    const candidates = getPrimaryScenesForMood(target).filter(
+      (scene) => scene.id !== s.sceneId && scene.id !== s.pendingSceneId,
+    )
+    // Fold essentia's voice read into the pick: scenes tagged for the
+    // 'vocal' band get a soft boost once the classifier is actually
+    // confident a voice is present. Additive/optional like MoodEstimator's
+    // partyBonus — a no-op until moodsValid, so it degrades gracefully when
+    // the voice worker hasn't produced a read yet.
+    const voiceBoost = (scene: (typeof candidates)[number]) =>
+      f.moodsValid && f.vocalPresence > 0.5 && scene.metadata.bands.includes('vocal') ? 1.6 : 1
+    const pick = pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost)
+    if (pick) s.requestScene(pick.id, { auto: true })
   }, -90) // right after the audio engine tick (-100), before scenes
   return null
 }

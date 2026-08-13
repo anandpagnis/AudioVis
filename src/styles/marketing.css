@@ -1,0 +1,568 @@
+/* ============================================================
+   LANDING — "the gateway": an audio-reactive tunnel visitors
+   scroll through before entering the app at /app. Desktop-only
+   by design (see App.tsx's mobile gate) — no responsive rules
+   here, the layout assumes a real viewport.
+   ============================================================ */
+
+:root {
+  --t-void: #04040b;
+  --t-violet: #7b4dff;
+  --t-cyan: #3fe0ff;
+  --t-ember: #ffb35c;
+  --t-rose: #ff5fa2;
+
+  --t-ink-1: rgba(237, 233, 255, 1);
+  --t-ink-2: rgba(237, 233, 255, 0.78);
+  --t-ink-3: rgba(237, 233, 255, 0.52);
+  --t-ink-4: rgba(237, 233, 255, 0.14);
+  --t-hair: rgba(237, 233, 255, 0.12);
+
+  --t-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --t-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --t-gut: clamp(18px, 3.4vw, 52px);
+  --t-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tunnel-page {
+  position: fixed;
+  inset: 0;
+  background: var(--t-void);
+  color: var(--t-ink-1);
+  font-family: var(--t-display);
+  font-weight: 300;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.tunnel-canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+}
+
+.tctrl,
+.tchapter-cta {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.teyebrow {
+  font-family: var(--t-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--t-ink-3);
+}
+
+/* ---------- atmosphere layers ---------- */
+.tlayer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+#tvignette {
+  z-index: 2;
+  background:
+    radial-gradient(115% 85% at 50% 50%, transparent 32%, rgba(4, 4, 11, 0.55) 78%, rgba(4, 4, 11, 0.92) 100%),
+    linear-gradient(to bottom, rgba(4, 4, 11, 0.5), transparent 22%, transparent 76%, rgba(4, 4, 11, 0.65));
+}
+#taberration {
+  z-index: 3;
+  mix-blend-mode: screen;
+  opacity: 0;
+  background: radial-gradient(120% 90% at 50% 50%, transparent 55%, rgba(63, 224, 255, 0.1) 80%, rgba(255, 95, 162, 0.14) 100%);
+  transition: opacity 0.35s linear;
+}
+#tgrain {
+  z-index: 4;
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: t-grain 900ms steps(3) infinite;
+}
+@keyframes t-grain {
+  0% {
+    transform: translate(0, 0);
+  }
+  33% {
+    transform: translate(-3%, 2%);
+  }
+  66% {
+    transform: translate(2%, -3%);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+#tflash {
+  z-index: 5;
+  opacity: 0;
+  background: radial-gradient(90% 70% at 50% 50%, rgba(255, 179, 92, 0.55), rgba(123, 77, 255, 0.18) 60%, transparent 78%);
+}
+
+/* ---------- chrome ---------- */
+.tchrome {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.6s var(--t-ease) 0.4s;
+}
+.tchrome.live {
+  opacity: 1;
+}
+.tchrome > * {
+  pointer-events: auto;
+}
+
+.tmasthead {
+  position: absolute;
+  top: var(--t-gut);
+  left: var(--t-gut);
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+.tmark {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+}
+.tmark::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--t-cyan);
+  margin-left: -0.3em;
+  vertical-align: middle;
+  box-shadow: 0 0 12px var(--t-cyan);
+  animation: t-pulse 3.4s var(--t-ease) infinite;
+}
+@keyframes t-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
+.tinstrument {
+  position: absolute;
+  right: var(--t-gut);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  height: min(46vh, 380px);
+}
+.tinst-scale {
+  position: relative;
+  width: 1px;
+  background: var(--t-ink-4);
+}
+.tinst-fill {
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 3px;
+  height: 0%;
+  background: linear-gradient(to bottom, var(--t-cyan), var(--t-violet) 55%, var(--t-rose));
+  box-shadow: 0 0 14px rgba(63, 224, 255, 0.55);
+}
+.tinst-head {
+  position: absolute;
+  left: -5px;
+  top: 0;
+  width: 11px;
+  height: 11px;
+  border: 1px solid var(--t-cyan);
+  border-radius: 50%;
+  background: rgba(4, 4, 11, 0.9);
+  transform: translateY(-50%);
+  box-shadow: 0 0 16px rgba(63, 224, 255, 0.5);
+}
+.ttick {
+  position: absolute;
+  right: 0;
+  width: 9px;
+  height: 1px;
+  background: var(--t-ink-4);
+}
+.ttick[data-on='1'] {
+  background: var(--t-cyan);
+  width: 15px;
+}
+.tinst-labels {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  font-family: var(--t-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  color: var(--t-ink-3);
+}
+.tinst-readout {
+  position: absolute;
+  right: 100%;
+  margin-right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--t-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--t-ink-2);
+  white-space: nowrap;
+  text-align: right;
+}
+.tinst-readout b {
+  display: block;
+  font-weight: 500;
+  font-size: 26px;
+  letter-spacing: 0.02em;
+  color: var(--t-ink-1);
+  line-height: 1;
+}
+
+/* ---------- chapters ---------- */
+.tchapters {
+  position: absolute;
+  left: var(--t-gut);
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(46ch, 42vw);
+}
+.tchapter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translateY(-50%);
+  opacity: 0;
+  visibility: hidden;
+  will-change: opacity, transform;
+}
+.tnum {
+  font-family: var(--t-mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--t-cyan);
+  display: block;
+  margin-bottom: 18px;
+}
+.tchapter h2 {
+  font-size: clamp(38px, 7.4vw, 86px);
+  font-weight: 300;
+  line-height: 0.92;
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.tchapter h2 em {
+  font-style: normal;
+  font-weight: 700;
+  background: linear-gradient(100deg, var(--t-cyan), var(--t-violet) 48%, var(--t-rose));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.tchapter p {
+  margin-top: 20px;
+  max-width: 34ch;
+  font-size: clamp(13px, 1.35vw, 16px);
+  line-height: 1.62;
+  color: var(--t-ink-2);
+}
+
+/* The exit — lives inside the last chapter's card rather than a separate
+   full-screen takeover, so the tunnel (wide open by this point in the
+   scroll) stays the visible backdrop instead of getting scrimmed over. */
+.tchapter-cta {
+  margin-top: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 13px;
+  padding: 6px 2px;
+  position: relative;
+  font-family: var(--t-mono);
+  font-size: 13px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--t-ink-1);
+  transition:
+    color 0.3s,
+    gap 0.3s var(--t-ease);
+}
+.tchapter-cta::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -7px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--t-cyan), var(--t-violet), var(--t-rose));
+  transform: scaleX(0.25);
+  transform-origin: left;
+  opacity: 0.5;
+  transition:
+    transform 0.4s var(--t-ease),
+    opacity 0.4s;
+}
+.tchapter-cta svg {
+  color: var(--t-cyan);
+  transition: transform 0.3s var(--t-ease);
+}
+.tchapter-cta:hover {
+  color: #fff;
+  gap: 18px;
+}
+.tchapter-cta:hover::after {
+  transform: scaleX(1);
+  opacity: 1;
+}
+.tchapter-cta:hover svg {
+  transform: translateX(4px);
+}
+
+/* ---------- console ---------- */
+.tconsole {
+  position: absolute;
+  left: var(--t-gut);
+  bottom: var(--t-gut);
+  right: var(--t-gut);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+.tdeck {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 16px 11px 13px;
+  border: 1px solid var(--t-hair);
+  border-radius: 2px;
+  background: rgba(8, 8, 20, 0.5);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.tspectrum {
+  display: block;
+  width: 74px;
+  height: 26px;
+  opacity: 0.9;
+}
+.ttrack {
+  min-width: 0;
+}
+.ttrack .teyebrow {
+  display: block;
+  margin-bottom: 4px;
+}
+.ttrack-name {
+  font-family: var(--t-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--t-ink-1);
+  max-width: 30ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tctrl {
+  font-family: var(--t-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--t-ink-2);
+  padding: 7px 11px;
+  border: 1px solid var(--t-hair);
+  border-radius: 2px;
+  transition:
+    color 0.3s,
+    border-color 0.3s,
+    background 0.3s;
+  white-space: nowrap;
+}
+.tctrl:hover {
+  color: var(--t-ink-1);
+  border-color: var(--t-ink-3);
+  background: rgba(237, 233, 255, 0.05);
+}
+.tctrl[aria-pressed='true'] {
+  color: var(--t-void);
+  background: var(--t-cyan);
+  border-color: var(--t-cyan);
+}
+
+.tnudge {
+  text-align: right;
+}
+.tbar {
+  width: 1px;
+  height: 34px;
+  margin: 10px 0 0 auto;
+  background: linear-gradient(to bottom, var(--t-cyan), transparent);
+  animation: t-fall 2.6s var(--t-ease) infinite;
+  transform-origin: top;
+}
+@keyframes t-fall {
+  0% {
+    transform: scaleY(0);
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    transform: scaleY(1);
+    opacity: 0;
+  }
+}
+.tnudge.gone {
+  opacity: 0;
+  transition: opacity 0.8s;
+}
+
+/* ---------- toast ---------- */
+.ttoast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--t-gut) + 74px);
+  transform: translate(-50%, 10px);
+  font-family: var(--t-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--t-ink-2);
+  border: 1px solid var(--t-hair);
+  border-radius: 2px;
+  padding: 9px 15px;
+  background: rgba(8, 8, 20, 0.72);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+  transition:
+    opacity 0.5s,
+    transform 0.5s var(--t-ease);
+}
+
+/* ---------- gate ---------- */
+.tgate {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--t-gut);
+  background: radial-gradient(90% 70% at 50% 55%, rgba(10, 8, 26, 0.86), rgba(4, 4, 11, 0.97));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition:
+    opacity 1.3s var(--t-ease),
+    transform 1.3s var(--t-ease);
+}
+.tgate[data-ready='true'] {
+  opacity: 0;
+  transform: scale(1.06);
+  pointer-events: none;
+}
+.tgate h1 {
+  font-size: clamp(58px, 15vw, 182px);
+  font-weight: 300;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  margin: 22px 0 0;
+}
+.tgate h1 span {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(0.34em);
+  filter: blur(9px);
+  animation: t-rise 1.15s var(--t-ease) forwards;
+}
+@keyframes t-rise {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+.tgate-sub {
+  margin-top: 26px;
+  max-width: 44ch;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--t-ink-2);
+  opacity: 1;
+}
+
+/* ---------- drop state ---------- */
+.tdropveil {
+  position: fixed;
+  inset: 14px;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s;
+  border: 1px dashed var(--t-cyan);
+  border-radius: 3px;
+  background: rgba(63, 224, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tdropveil.show {
+  opacity: 1;
+}
+.tdropveil span {
+  font-family: var(--t-mono);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--t-cyan);
+}
+
+/* ---------- page transition (Landing -> /app cross-fade) ---------- */
+.page-transition-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.85s var(--t-ease);
+}
+.page-transition-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #tgrain {
+    animation: none;
+  }
+  .tmark::after {
+    animation: none;
+  }
+  .tbar {
+    animation: none;
+    transform: scaleY(1);
+    opacity: 0.5;
+  }
+}
