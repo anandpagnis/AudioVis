@@ -433,18 +433,21 @@ export function getResolvedManifest(id: string): SceneManifestExt {
 
 /**
  * Scenes tagged for a mood, best fit first (`moodFit`, defaulting to 0.5 when a
- * scene declares the mood but gives it no explicit score).
+ * scene declares the mood but gives it no explicit score). This is the pool both
+ * autonomy directors pick from, so ordering here directly shapes the show.
  *
- * NOT role-filtered — this includes accent/overlay-only scenes. Use
- * {@link getPrimaryScenesForMood} when picking what to show as the PRIMARY
- * scene; using this one directly for that was a real bug (an accent-only
- * scene like `ribbons` could get requested as primary, since `requestScene`
- * has no role check of its own).
+ * Pass `role` to restrict the pool to scenes that can actually occupy that
+ * slot. Callers choosing a PRIMARY must pass `'primary'` (or use the
+ * {@link getPrimaryScenesForMood} shorthand): several scenes are layer-only
+ * (`ribbons` is `['accent','overlay']`) yet carry the highest `moodFit` in
+ * their moods, so an unfiltered pick installs a scene as the subject that was
+ * authored to composite over one — that was a real bug, since `requestScene`
+ * has no role check of its own.
  */
-export function getScenesForMood(mood: MoodState): SceneDef[] {
-  return SCENES.filter((s) => s.metadata.moods.includes(mood)).sort(
-    (a, b) => (b.metadata.moodFit?.[mood] ?? 0.5) - (a.metadata.moodFit?.[mood] ?? 0.5),
-  )
+export function getScenesForMood(mood: MoodState, role?: SceneRole): SceneDef[] {
+  return SCENES.filter(
+    (s) => s.metadata.moods.includes(mood) && (!role || s.metadata.roles.includes(role)),
+  ).sort((a, b) => (b.metadata.moodFit?.[mood] ?? 0.5) - (a.metadata.moodFit?.[mood] ?? 0.5))
 }
 
 /** {@link getScenesForMood}, filtered to scenes actually eligible to be primary. */

@@ -22,6 +22,17 @@ const BIN_SIZE = 0.004
 const BIN_COUNT = Math.ceil((MAX_PERIOD - MIN_PERIOD) / BIN_SIZE)
 const WINDOW = 12 // seconds of onset history
 
+/**
+ * Ceiling on how strongly the 120-BPM prior can reweight the histogram. At
+ * this mix the shaping matches the old always-on prior (0.35 + 0.65·gaussian);
+ * the actual mix is scaled by histogram ambiguity, so a decisive peak is
+ * trusted as-is and the prior only tie-breaks genuinely unclear windows.
+ */
+const PRIOR_MAX_MIX = 0.65
+/** A ½×/2× octave sibling must beat the candidate's onset-grid fit by this
+ * factor before we switch — keeps the correction from flapping on ties. */
+const OCTAVE_SWITCH_MARGIN = 1.15
+
 export class BpmEstimator {
   period = 0.5 // seconds per beat (120 BPM)
   phase = 0 // reference beat time on the engine clock
@@ -29,13 +40,22 @@ export class BpmEstimator {
 
   private onsets: Onset[] = []
   private bins = new Float32Array(BIN_COUNT)
+  private scored = new Float32Array(BIN_COUNT)
   private lastEval = 0
   private lastCandidate = 0
   private stableCount = 0
   /** How tightly onsets are landing on the predicted grid, 0..1. Already fed
    * into `confidence`; exposed on its own as a beat-tracking-accuracy signal. */
   hitScore = 0
+  /** Octave correction applied by the last evaluation: 1 = none, 0.5 = the
+   * histogram's pick was halved (double-time error), 2 = doubled (half-time
+   * error). Exposed for the debug panel. */
+  octaveCorrection: 0.5 | 1 | 2 = 1
   private externalUntil = -1
+
+  private modelBpm = 0
+  private modelConf = 0
+  private modelUntil = -1
 
   reset(phase = 0) {
     this.period = 0.5
@@ -47,7 +67,32 @@ export class BpmEstimator {
     this.lastCandidate = 0
     this.stableCount = 0
     this.hitScore = 0
+    this.octaveCorrection = 1
     this.externalUntil = -1
+    this.modelBpm = 0
+    this.modelConf = 0
+    this.modelUntil = -1
+  }
+
+  /**
+   * Tempo read from the Essentia worker (RhythmExtractor2013). A *soft*
+   * source, unlike setExternalTempo: it supplies the candidate period (and,
+   * when the multifeature method ran, Essentia's own 0..1 reliability score)
+   * but flows through the same octave-check / persist-before-jump policy as
+   * the internal histogram, and the PLL keeps owning phase via onsets. While
+   * a read is fresh the internal IOI histogram is skipped; when reads stop
+   * (worker dead, WASM unsupported) the histogram resumes automatically.
+   */
+  setModelTempo(bpm: number, confidence01: number, now: number, freshSec = 8) {
+    if (!Number.isFinite(bpm) || bpm <= 0) return
+    this.modelBpm = bpm
+    this.modelConf = Math.max(0, Math.min(1, confidence01))
+    this.modelUntil = now + freshSec
+  }
+
+  /** True while a fresh worker read is the candidate source (debug panel). */
+  isModelDriven(now: number): boolean {
+    return now < this.modelUntil && this.modelBpm > 0
   }
 
   /**
@@ -103,7 +148,7 @@ export class BpmEstimator {
     }
     if (now - this.lastEval > 0.5) {
       this.lastEval = now
-      this.evaluate()
+      this.evaluate(now)
     }
     // With no recent onsets (silence/ambient), slowly relax confidence but
     // keep the grid free-running at the last known tempo.
@@ -113,62 +158,58 @@ export class BpmEstimator {
     }
   }
 
-  private evaluate() {
+  private evaluate(now: number) {
     const os = this.onsets
-    if (os.length < 8) {
+    const modelFresh = this.isModelDriven(now)
+    if (!modelFresh && os.length < 8) {
       this.confidence *= 0.92
       return
     }
 
-    this.bins.fill(0)
-    let total = 0
-    for (let i = 0; i < os.length; i++) {
-      for (let j = i + 1; j < os.length; j++) {
-        const d = os[j].t - os[i].t
-        if (d > 4) break
-        if (d < 0.2) continue
-        const w0 = os[i].s * os[j].s
-        // An interval of m beats votes for period d/m.
-        for (let m = 1; m <= 8; m++) {
-          const p = d / m
-          if (p < MIN_PERIOD || p > MAX_PERIOD) continue
-          const bpm = 60 / p
-          // Soft prior toward common tempi (center ~120 BPM).
-          const prior = Math.exp(-Math.pow((bpm - 120) / 55, 2))
-          const w = (w0 / m) * (0.35 + 0.65 * prior)
-          const bin = (p - MIN_PERIOD) / BIN_SIZE
-          const b0 = Math.floor(bin)
-          for (let k = -2; k <= 2; k++) {
-            const b = b0 + k
-            if (b < 0 || b >= BIN_COUNT) continue
-            const dist = bin - b
-            const g = Math.exp(-dist * dist * 0.7)
-            this.bins[b] += w * g
-            total += w * g
-          }
+    let candidate: number
+    let clarity: number
+    if (modelFresh) {
+      // Essentia worker read is the candidate source; the histogram is skipped
+      // entirely (its work is redundant while the model is fresh).
+      candidate = Math.min(MAX_PERIOD, Math.max(MIN_PERIOD, 60 / this.modelBpm))
+      clarity = this.modelConf
+    } else {
+      const h = this.histogramCandidate()
+      if (!h) return
+      candidate = h.candidate
+      clarity = h.clarity
+    }
+
+    // --- Octave-error correction: the candidate source (histogram OR model)
+    // can prefer ½× or 2× of the true period (half/double-time). Test the
+    // candidate and its octave siblings against the actual onsets — which
+    // grid do the observed hits land on — and take the best fit, not the
+    // biggest vote pile. Skipped when too few onsets exist to test against.
+    let fitQuality = 0
+    if (os.length >= 8) {
+      const baseFit = this.gridFit(candidate)
+      let bestFit = baseFit
+      let correction: 0.5 | 1 | 2 = 1
+      for (const mult of [0.5, 2] as const) {
+        const p2 = candidate * mult
+        if (p2 < MIN_PERIOD || p2 > MAX_PERIOD) continue
+        const fit = this.gridFit(p2)
+        if (fit > bestFit && fit > baseFit * OCTAVE_SWITCH_MARGIN) {
+          bestFit = fit
+          correction = mult
         }
       }
+      this.octaveCorrection = correction
+      if (correction !== 1) candidate *= correction
+      fitQuality = bestFit
+    } else {
+      this.octaveCorrection = 1
     }
-    if (total <= 0) return
+    // degara reports no confidence — fall back to grid-fit quality as the
+    // reliability read rather than letting confidence collapse to zero.
+    if (modelFresh && clarity <= 0) clarity = fitQuality
 
-    let peakBin = 0
-    let peakVal = 0
-    for (let b = 0; b < BIN_COUNT; b++) {
-      if (this.bins[b] > peakVal) {
-        peakVal = this.bins[b]
-        peakBin = b
-      }
-    }
-    // Refine with a weighted mean around the peak.
-    let wSum = 0
-    let pSum = 0
-    for (let b = Math.max(0, peakBin - 3); b <= Math.min(BIN_COUNT - 1, peakBin + 3); b++) {
-      wSum += this.bins[b]
-      pSum += this.bins[b] * (MIN_PERIOD + (b + 0.5) * BIN_SIZE)
-    }
-    const candidate = pSum / wSum
-    const clarity = Math.min(1, (peakVal * 7) / total)
-    const density = Math.min(1, os.length / 16)
+    const density = modelFresh ? 1 : Math.min(1, os.length / 16)
     const candConf = clarity * density
 
     const rel = Math.abs(candidate - this.period) / this.period
@@ -193,5 +234,115 @@ export class BpmEstimator {
 
     const target = candConf * (0.45 + 0.55 * this.hitScore)
     this.confidence += (target - this.confidence) * 0.3
+  }
+
+  /** IOI-histogram candidate + clarity — the built-in tempo source, used
+   * whenever no fresh Essentia read exists. Returns null on an empty window. */
+  private histogramCandidate(): { candidate: number; clarity: number } | null {
+    const os = this.onsets
+    // --- IOI histogram: raw data votes only; the prior is applied later,
+    // conditionally, so it can't drag a clear peak toward 120. ---
+    this.bins.fill(0)
+    let total = 0
+    for (let i = 0; i < os.length; i++) {
+      for (let j = i + 1; j < os.length; j++) {
+        const d = os[j].t - os[i].t
+        if (d > 4) break
+        if (d < 0.2) continue
+        const w0 = os[i].s * os[j].s
+        // An interval of m beats votes for period d/m.
+        for (let m = 1; m <= 8; m++) {
+          const p = d / m
+          if (p < MIN_PERIOD || p > MAX_PERIOD) continue
+          const w = w0 / m
+          const bin = (p - MIN_PERIOD) / BIN_SIZE
+          const b0 = Math.floor(bin)
+          for (let k = -2; k <= 2; k++) {
+            const b = b0 + k
+            if (b < 0 || b >= BIN_COUNT) continue
+            const dist = bin - b
+            const g = Math.exp(-dist * dist * 0.7)
+            this.bins[b] += w * g
+            total += w * g
+          }
+        }
+      }
+    }
+    if (total <= 0) return null
+
+    // --- Conditional 120-BPM prior: measure how decisive the raw data is
+    // first, and only let the prior reweight in proportion to the ambiguity.
+    // A clean unusual tempo (say 82) keeps its peak; a mushy histogram gets
+    // the same tie-break shaping as before. ---
+    let rawPeak = 0
+    for (let b = 0; b < BIN_COUNT; b++) if (this.bins[b] > rawPeak) rawPeak = this.bins[b]
+    const clarity = Math.min(1, (rawPeak * 7) / total)
+    const priorMix = PRIOR_MAX_MIX * (1 - clarity)
+    for (let b = 0; b < BIN_COUNT; b++) {
+      const bpm = 60 / (MIN_PERIOD + (b + 0.5) * BIN_SIZE)
+      const prior = Math.exp(-Math.pow((bpm - 120) / 55, 2))
+      this.scored[b] = this.bins[b] * (1 - priorMix * (1 - prior))
+    }
+
+    let peakBin = 0
+    let peakVal = 0
+    for (let b = 0; b < BIN_COUNT; b++) {
+      if (this.scored[b] > peakVal) {
+        peakVal = this.scored[b]
+        peakBin = b
+      }
+    }
+    // Refine with a weighted mean around the peak.
+    let wSum = 0
+    let pSum = 0
+    for (let b = Math.max(0, peakBin - 3); b <= Math.min(BIN_COUNT - 1, peakBin + 3); b++) {
+      wSum += this.scored[b]
+      pSum += this.scored[b] * (MIN_PERIOD + (b + 0.5) * BIN_SIZE)
+    }
+    const candidate = pSum / wSum
+    return { candidate, clarity }
+  }
+
+  /**
+   * How well a beat period `p` explains the onsets in the window, 0..1.
+   *
+   * Scored on *adjacent* inter-onset intervals rather than an absolute grid
+   * anchored at one point. An anchored grid extrapolates across the whole 12 s
+   * window, so a candidate that is off by even 1.5% accumulates phase error
+   * until nothing matches — and because its tolerance scales with `p`, the
+   * doubled period always tolerates that drift better and wins. Measuring
+   * interval-by-interval is local, so a slightly-off candidate stays slightly
+   * off instead of drifting away.
+   *
+   * Two terms, and both are needed to pin the metrical level:
+   *  - `fit`: each interval should be close to a whole number of periods.
+   *    A doubled period makes every real interval a half-integer (0.5, 1.5…),
+   *    which scores zero — this is what rejects half-time.
+   *  - `occupancy`: onsets per expected beat. A halved period fits the
+   *    intervals perfectly (they land on 2, 4…) but leaves half its beats
+   *    empty — this is what rejects double-time.
+   */
+  private gridFit(p: number): number {
+    const os = this.onsets
+    if (os.length < 2) return 0
+    let fitW = 0
+    let totalW = 0
+    let expectedBeats = 0
+    let intervals = 0
+    for (let i = 1; i < os.length; i++) {
+      const d = os[i].t - os[i - 1].t
+      if (d <= 0) continue
+      const w = Math.min(os[i].s, os[i - 1].s)
+      const r = d / p
+      const k = Math.max(1, Math.round(r))
+      const err = Math.abs(r - k) // in periods, 0..0.5
+      totalW += w
+      fitW += w * Math.max(0, 1 - err / 0.3)
+      expectedBeats += k
+      intervals++
+    }
+    if (totalW <= 0 || expectedBeats <= 0) return 0
+    const occupancy = Math.min(1, intervals / expectedBeats)
+    return (fitW / totalW) * (0.3 + 0.7 * occupancy)
   }
 }

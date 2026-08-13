@@ -57,7 +57,17 @@ export function PerfMonitor() {
   }, [storeQuality])
 
   useFrame(({ clock }, delta) => {
-    const ms = Math.min(100, delta * 1000)
+    // No ceiling: a frame genuinely costing 150-300ms (two heavy raymarch
+    // scenes stacked mid-crossfade, a synchronous shader compile) is exactly
+    // what this monitor exists to catch, and a `Math.min(100, ...)` here used
+    // to erase it before it ever reached the EMA, `frameTimeWindow`'s p95/max,
+    // or the quality governor — a real stall would silently read as "100ms"
+    // everywhere. The remaining risk is a huge one-off gap from a backgrounded
+    // tab (rAF throttles/stops while hidden) spiking the EMA on resume; that
+    // self-corrects within the governor's own SETTLE_SEC/CLIMB_HOLD_SEC
+    // hysteresis, and RollingWindow prunes the sample after its 10s window —
+    // no separate guard needed for a transient that already ages itself out.
+    const ms = delta * 1000
     ema.current += (ms - ema.current) * 0.05
     perf.ms = ema.current
     perf.fps = 1000 / ema.current

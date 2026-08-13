@@ -1,12 +1,16 @@
 import { useEffect, useRef } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
+import { essentiaBridge } from '../audio/essentia/EssentiaBridge'
+import { voiceBridge } from '../audio/essentia/VoiceBridge'
+import { keyPaletteTracker } from '../engine/keyPalette'
+import { performanceState } from '../engine/performanceState'
 import type { MoodState } from '../audio/types'
 import { analytics } from '../engine/analyticsMetrics'
 import { frameTimeWindow } from '../engine/PerfMonitor'
 import { transitionMetrics } from '../engine/transitionMetrics'
 
 const W = 320
-const H = 320
+const H = 352
 
 const MOOD_ORDER: MoodState[] = [
   'silence',
@@ -165,16 +169,83 @@ export function AnalyticsPanel() {
         }
       }
 
+      // --- Essentia worker: key / danceability (surfaced, not yet wired) ---
+      const ess = essentiaBridge.status
+      ctx.fillStyle = ess.error ? 'rgba(255, 138, 101, 0.9)' : 'rgba(255,255,255,0.6)'
+      if (ess.error) {
+        ctx.fillText(`essentia  ${ess.error.slice(0, 40)}`, 6, 212)
+      } else if (ess.keyRuns === 0 && ess.danceRuns === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.35)'
+        ctx.fillText('essentia  (awaiting first 12s window)', 6, 212)
+      } else {
+        const keyTxt = f.key ? `${f.key} ${f.scale}` : '—'
+        ctx.fillStyle = 'rgba(179, 136, 255, 0.9)'
+        ctx.fillText(
+          `key ${keyTxt.padEnd(9)} str ${f.keyConfidence.toFixed(2)}  dance ${f.danceability.toFixed(2)} (raw)`,
+          6,
+          212,
+        )
+        ctx.fillStyle = 'rgba(255,255,255,0.4)'
+        ctx.fillText(
+          `  ${ess.keyMs.toFixed(0)}ms/${ess.keyRuns}  ${ess.danceMs.toFixed(0)}ms/${ess.danceRuns}  rhythm ${ess.lastMs.toFixed(0)}ms`,
+          6,
+          224,
+        )
+      }
+
+      // --- Voice / mood classifier (surfaced, not wired) ---
+      const vs = voiceBridge.status
+      if (vs.runs > 0) {
+        const m = f.moods
+        ctx.fillStyle = 'rgba(255, 183, 197, 0.9)'
+        ctx.fillText(`voice ${(f.vocalPresence * 100).toFixed(0)}% of recent segments`, 6, 238)
+        // Four mood heads as small bars — they share one embedding, so this
+        // whole row costs ~1.5 ms on top of the voice read.
+        const MOODS: [string, number][] = [
+          ['hap', m.happy],
+          ['agg', m.aggressive],
+          ['par', m.party],
+          ['rel', m.relaxed],
+        ]
+        MOODS.forEach(([label, v], i) => {
+          const x = 6 + i * 76
+          ctx.fillStyle = 'rgba(255,255,255,0.12)'
+          ctx.fillRect(x + 22, 244, 46, 5)
+          ctx.fillStyle = 'rgba(255, 183, 197, 0.9)'
+          ctx.fillRect(x + 22, 244, 46 * Math.max(0, Math.min(1, v)), 5)
+          ctx.fillStyle = 'rgba(255,255,255,0.55)'
+          ctx.fillText(label, x, 249)
+        })
+        ctx.fillStyle = 'rgba(255,255,255,0.4)'
+        // What the signals are actually DOING, not just what they read —
+        // these four are wired now, so the panel shows the downstream effect.
+        ctx.fillText(
+          `focus ${performanceState.voiceFocus.toFixed(2)}  bloom ${performanceState.bloom.toFixed(2)}  ` +
+            `fog ${performanceState.fog.toFixed(2)}  key→${keyPaletteTracker.family || '—'}`,
+          6,
+          262,
+        )
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,0.35)'
+        ctx.fillText(
+          vs.error
+            ? `voice: ${vs.missing ? 'models not fetched (see scripts/)' : vs.error.slice(0, 34)}`
+            : 'voice: (awaiting first classification)',
+          6,
+          238,
+        )
+      }
+
       // --- Recent transitions: target vs. actual duration, frame-time p95 ---
       ctx.fillStyle = 'rgba(255,255,255,0.6)'
-      ctx.fillText('recent transitions', 6, 222)
-      const rows = transitionMetrics.history.slice(-6).reverse()
+      ctx.fillText('recent transitions', 6, 280)
+      const rows = transitionMetrics.history.slice(-4).reverse()
       if (rows.length === 0) {
         ctx.fillStyle = 'rgba(255,255,255,0.35)'
-        ctx.fillText('(switch scenes to populate)', 6, 236)
+        ctx.fillText('(switch scenes to populate)', 6, 294)
       }
       rows.forEach((r, i) => {
-        const y = 236 + i * 14
+        const y = 294 + i * 14
         const off =
           Math.abs(r.actualDurationSec - r.targetDurationSec) / Math.max(0.01, r.targetDurationSec)
         const flagged = off > 0.25 || r.frameMsDuringFade.p95 > 20

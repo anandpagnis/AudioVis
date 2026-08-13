@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
+import { essentiaBridge } from '../audio/essentia/EssentiaBridge'
+import { voiceBridge } from '../audio/essentia/VoiceBridge'
 import { perf } from '../engine/PerfMonitor'
 import { genStatus } from '../engine/textureGenerator'
 
@@ -64,7 +66,17 @@ export function DebugPanel() {
       ctx.fill()
       ctx.fillStyle = 'rgba(255,255,255,0.7)'
       ctx.font = '10px ui-monospace, monospace'
+      const est = audioEngine.bpmEstimator
+      const oct = est.octaveCorrection
+      const ess = essentiaBridge.status
       const flags = [
+        // Tempo source: essentia worker read vs. the built-in IOI histogram.
+        est.isModelDriven(f.time)
+          ? `ess:${ess.lastMethod.slice(0, 4)}`
+          : ess.error
+            ? 'ess:err'
+            : null,
+        oct !== 1 ? `oct×${oct}` : null,
         f.silence ? 'silence' : null,
         f.buildUp ? 'build' : null,
         f.drop ? 'DROP' : null,
@@ -110,6 +122,29 @@ export function DebugPanel() {
         6,
         48,
       )
+      // Key + raw danceability from the essentia worker (read-only for now).
+      if (f.key || f.danceability > 0) {
+        ctx.fillStyle = 'rgba(179, 136, 255, 0.85)'
+        ctx.fillText(
+          `${f.key ? `${f.key} ${f.scale} ${f.keyConfidence.toFixed(2)}` : 'key —'}   dance ${f.danceability.toFixed(2)}`,
+          6,
+          72,
+        )
+      }
+      // Voice + mood heads from the classifier worker (read-only for now).
+      const vs = voiceBridge.status
+      if (vs.runs > 0) {
+        ctx.fillStyle = 'rgba(255, 183, 197, 0.9)'
+        const m = f.moods
+        ctx.fillText(
+          `voc ${(f.vocalPresence * 100).toFixed(0)}%  hap ${m.happy.toFixed(2)} agg ${m.aggressive.toFixed(2)} par ${m.party.toFixed(2)} rel ${m.relaxed.toFixed(2)}`,
+          6,
+          84,
+        )
+      } else if (vs.error) {
+        ctx.fillStyle = 'rgba(255, 138, 101, 0.75)'
+        ctx.fillText(`voice: ${vs.missing ? 'models not fetched' : vs.error.slice(0, 34)}`, 6, 84)
+      }
 
       raf = requestAnimationFrame(draw)
     }

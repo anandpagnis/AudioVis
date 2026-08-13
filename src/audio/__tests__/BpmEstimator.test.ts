@@ -56,6 +56,21 @@ describe('BpmEstimator', () => {
     expect(est.hitScore).toBeLessThan(0.5)
   })
 
+  it('locks to an unusual 82 BPM click track instead of 120 or the 164 octave', () => {
+    const est = new BpmEstimator()
+    simulateClicks(est, 60 / 82, 25)
+    expect(Math.abs(est.bpm - 82)).toBeLessThan(2)
+    expect(est.octaveCorrection).toBe(1)
+  })
+
+  it('octave-corrects a grid seeded at double-time back onto the onset rate', () => {
+    // Force the pathological start: pre-lock at 164, then keep feeding 82.
+    const est = new BpmEstimator()
+    est.period = 60 / 164
+    simulateClicks(est, 60 / 82, 25)
+    expect(Math.abs(est.bpm - 82)).toBeLessThan(2)
+  })
+
   it('does not relock on a short burst at a different tempo, but does after it sustains', () => {
     const est = new BpmEstimator()
     let t = simulateClicks(est, 0.5, 20)
@@ -81,6 +96,49 @@ describe('BpmEstimator', () => {
     // new input — "stays roughly frozen", not bit-identical.
     expect(Math.abs(est.period - periodBefore)).toBeLessThan(0.01)
     expect(est.confidence).toBeLessThan(confBefore)
+  })
+
+  it('adopts a model tempo read and reports it as the source while fresh', () => {
+    const est = new BpmEstimator()
+    // Lock the histogram to 120 first, then hand it a conflicting 82 read.
+    const t = simulateClicks(est, 0.5, 20)
+    expect(est.isModelDriven(t)).toBe(false)
+    for (let i = 0; i < 6; i++) {
+      est.setModelTempo(82, 0.9, t + i, 8)
+      est.update(t + i)
+    }
+    expect(est.isModelDriven(t + 5)).toBe(true)
+    expect(Math.abs(est.bpm - 82)).toBeLessThan(2)
+  })
+
+  it('falls back to onset tracking when model reads go stale', () => {
+    const est = new BpmEstimator()
+    const t = simulateClicks(est, 0.5, 20)
+    est.setModelTempo(82, 0.9, t, 8)
+    expect(est.isModelDriven(t + 7)).toBe(true)
+    expect(est.isModelDriven(t + 9)).toBe(false)
+    // With the read expired, sustained 120 onsets pull the grid back.
+    simulateClicks(est, 0.5, 20, t + 9)
+    expect(Math.abs(est.bpm - 120)).toBeLessThan(3)
+  })
+
+  it('octave-corrects a model read that lands on the wrong metrical level', () => {
+    const est = new BpmEstimator()
+    // Onsets are genuinely 82 BPM; the model insists on the 164 octave.
+    let t = 0
+    const period = 60 / 82
+    let nextClick = 0
+    while (t < 25) {
+      if (t >= nextClick) {
+        est.addOnset(t, 1)
+        nextClick += period
+      }
+      est.setModelTempo(164, 0.9, t, 8)
+      est.update(t)
+      t += 0.05
+    }
+    expect(Math.abs(est.bpm - 82)).toBeLessThan(3)
+    expect(est.octaveCorrection).toBe(2)
   })
 
   it('setExternalTempo overrides the grid and expires ~2s after the last call', () => {

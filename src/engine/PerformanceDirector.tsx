@@ -11,10 +11,31 @@ import {
   getScenesForMood,
   pickVariedScene,
 } from '../scenes'
-import { useStore } from '../store'
+import { useStore, type LayerRole } from '../store'
 
 const MANUAL_HOLD_SEC = 45
 const PHRASE_HOLD_BEATS = 16 // fallback recompose cadence when no section fires
+
+/**
+ * Resolve both layer slots for one composition decision.
+ *
+ * Exactly one slot is ever occupied, so the slot we did NOT choose must be
+ * cleared every time. Clearing only 'overlay' (the old behaviour) meant a
+ * switch from accent-mode to overlay-mode left the previous accent mounted
+ * indefinitely — it composited additively over the primary and every
+ * subsequent scene change, because nothing else writes that slot.
+ *
+ * Exported for the unit test; the component is the only production caller.
+ */
+export function resolveLayerSlots(
+  layerRole: LayerRole,
+  pickId: string | null,
+): Record<LayerRole, string | null> {
+  return {
+    accent: layerRole === 'accent' ? pickId : null,
+    overlay: layerRole === 'overlay' ? pickId : null,
+  }
+}
 
 /**
  * Phrase-level scene composer. A true section change recomposes instantly; when
@@ -113,9 +134,9 @@ export function PerformanceDirector() {
     const layerPick = allowLayer
       ? pickVariedScene(layerRoleCandidates, mood, s.recentSceneIds)
       : undefined
-    if (layerPick) s.setLayer(layerRole, layerPick.id, { auto: true })
-    else s.setLayer(layerRole, null, { auto: true })
-    if (layerRole === 'accent' || !allowLayer) s.setLayer('overlay', null, { auto: true })
+    const slots = resolveLayerSlots(layerRole, layerPick?.id ?? null)
+    s.setLayer('accent', slots.accent, { auto: true })
+    s.setLayer('overlay', slots.overlay, { auto: true })
     lastSwitchBeat.current = f.beatIndex
   }, -85)
 

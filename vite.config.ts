@@ -4,6 +4,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: { port: 5183 },
+  // The essentia worker lazy-imports the WASM core, so it is itself a
+  // code-splitting build — which rules out the default 'iife' worker format.
+  worker: { format: 'es' },
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],

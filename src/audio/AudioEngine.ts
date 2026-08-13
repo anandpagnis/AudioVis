@@ -1,4 +1,6 @@
 import { BpmEstimator } from './BpmEstimator'
+import { essentiaBridge } from './essentia/EssentiaBridge'
+import { voiceBridge } from './essentia/VoiceBridge'
 import { MoodEstimator } from './MoodEstimator'
 import { PercussionDetector } from './PercussionDetector'
 import { PhraseDetector } from './PhraseDetector'
@@ -383,6 +385,11 @@ class AudioEngine {
     filter.connect(analyser)
     this.midFilter = filter
     this.midAnalyser = analyser
+    // Both graph-building paths route through here, so this is also where the
+    // Essentia PCM tap attaches. Fire-and-forget: it resolves after the
+    // worklet module loads, never throws, and a failure just leaves the
+    // built-in estimators in charge.
+    void essentiaBridge.attach(ctx, source)
   }
 
   private connectStream(ctx: AudioContext, stream: MediaStream, maybeMonitor: boolean) {
@@ -492,6 +499,9 @@ class AudioEngine {
     this.phraseDetector.reset()
     this.moodEstimator.reset()
     this.percussionDetector.reset()
+    // Drops the PCM ring and any pending job so a second track can't inherit
+    // the first one's tempo read. The worker (and its loaded WASM) persists.
+    essentiaBridge.detach()
     for (const band of Object.values(this.bands)) {
       band.peak = 0.15
       band.value = 0
@@ -595,6 +605,12 @@ class AudioEngine {
     }
 
     // --- Tempo / beat grid ---
+    // Drain any completed worker read first (async, arrives whenever it's
+    // ready) so this frame's grid already reflects it, then schedule the next
+    // job. Both are cheap; the analysis itself happens off-thread.
+    essentiaBridge.update(f, this.bpmEstimator)
+    // Independent worker, independent cadence — see VoiceBridge's header.
+    voiceBridge.update(f)
     this.bpmEstimator.update(now)
     this.advanceGrid(now, f)
 
@@ -605,6 +621,10 @@ class AudioEngine {
 
     // --- Phrase / section tracking ---
     this.phraseDetector.update(now, f)
+    // Key is stable within a section, so a boundary — not a timer — is the
+    // natural moment to re-read it. Requested here, run on the worker's next
+    // free slot (rhythm has priority).
+    if (f.sectionChange) essentiaBridge.requestKey()
 
     // --- Mood: state, momentum, prediction (reads everything above) ---
     this.moodEstimator.update(f)

@@ -13,6 +13,27 @@ backend/textures/
 backend/__pycache__/
 *.pyc
 
+# Test audio (MTG-Jamendo, CC BY-SA / BY-NC-SA).
+# Deliberately local-only: committing would be redistribution, triggering
+# attribution + share-alike obligations on this repo and dragging the dataset's
+# non-commercial clause along with it. testfolder/tracks.json is committed and
+# is enough to re-fetch the identical set — see testfolder/README.md.
+testfolder/*.mp3
+testfolder/*.wav
+testfolder/*.flac
+
+# Converted TF.js model weights (Essentia, CC BY-NC-SA). Binaries, and
+# reproducible from scripts/convert-essentia-models.md — same reasoning as the
+# test audio above.
+public/models/
+
+# TF.js WASM binaries, copied from node_modules by scripts/setup-tfjs-wasm.mjs
+# so the voice worker never has to reach a CDN.
+public/tfjs/
+
+# Wrangler local cache/logs (Cloudflare deploy tooling)
+.wrangler/
+
 # Editor / OS
 .idea/
 .DS_Store

@@ -74,6 +74,12 @@ export function PerformanceStateBridge() {
         : 0
     p.visualTension = Math.min(1, Math.max(buildTension, predictionTension) + (f.drop ? 0.5 : 0))
 
+    // Slow half of the two-timescale voice pair. Eased rather than stepped:
+    // `vocalPresence` only refreshes every ~12s, so a raw copy would visibly
+    // jump. Neutral at 0 when the classifier has produced nothing, which makes
+    // every downstream voice term vanish instead of misfiring.
+    p.voiceFocus = approach(p.voiceFocus, f.moodsValid ? f.vocalPresence : 0, 0.5, f.delta)
+
     // --- Camera ---
     // Which mode to shoot in is a DECISION, re-taken at section boundaries and
     // whenever the visible scene changes (a new scene may not declare the mode
@@ -92,6 +98,7 @@ export function PerformanceStateBridge() {
         m.state,
         p.visualTension,
         f.beatIndex,
+        p.voiceFocus,
       )
       // A section boundary is the one moment a hard angle jump reads as
       // deliberate rather than as a glitch — this is the VJ cut.
@@ -105,20 +112,40 @@ export function PerformanceStateBridge() {
     // hot even between hits. EffectsDirector just applies the result.
     const pulse = beatPulse(f) * params.reactivity
     const reactive = (f.bass * 0.7 + pulse * 0.7 + (f.drop ? 0.8 : 0)) * params.reactivity
-    p.bloom = (BLOOM_BASE[m.state] + reactive) * params.intensity
+    // The vocal lift: fast tonality-gated voice band for the MOTION, slow
+    // voiceFocus for the PERMISSION. Computed here rather than in
+    // EffectsDirector because that stays a pure executor that reads no audio —
+    // the creative decision belongs on this side of the seam.
+    const fastVoice = Math.max(0, Math.min(1, f.vocal * (1 - Math.min(1, f.spectralFlatness))))
+    const voiceLift = fastVoice * p.voiceFocus * 0.45 * params.reactivity
+    p.bloom = (BLOOM_BASE[m.state] + reactive + voiceLift) * params.intensity
 
     // Glitch is punctuation, so it is gated on tension and drops rather than
     // running continuously. Low quality zeroes it — the pass stays in the chain
     // (removing it would rebuild the composer's shader), it just does nothing.
+    // The `aggressive` head adds a small sustained floor: harshness that the
+    // band envelopes miss (distorted but steady material reads calm to flux).
     p.glitch =
       s.quality === 'low'
         ? 0
-        : 0.0006 + pulse * 0.0035 + p.visualTension * 0.002 + (f.drop ? 0.004 : 0)
+        : 0.0006 +
+          pulse * 0.0035 +
+          p.visualTension * 0.002 +
+          (f.drop ? 0.004 : 0) +
+          (f.moodsValid ? f.moods.aggressive * 0.0015 : 0)
 
     // Fog deepens as the music thins out — an empty mix gets air around the
-    // subject, a dense one stays close and flat.
+    // subject, a dense one stays close and flat. The `relaxed` head adds air
+    // to material that is calm without being quiet: a dense but unhurried mix
+    // has high level (so `sparse` is low) yet still wants space around it.
     const sparse = 1 - Math.min(1, m.level * 1.3)
-    p.fog = approach(p.fog, sparse * 0.6 + (m.state === 'ambient' ? 0.25 : 0), 0.6, f.delta)
+    const relaxedAir = f.moodsValid ? f.moods.relaxed * 0.2 : 0
+    p.fog = approach(
+      p.fog,
+      Math.min(1, sparse * 0.6 + (m.state === 'ambient' ? 0.25 : 0) + relaxedAir),
+      0.6,
+      f.delta,
+    )
   }, -95)
 
   return null
