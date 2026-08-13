@@ -159,7 +159,11 @@ export const SCENES: SceneDef[] = [
     name: 'Wireframe Hero',
     component: WireframeHeroScene,
     metadata: {
-      roles: ['primary', 'accent'],
+      // Subject only. Dropping `accent` stops the engine compositing this over
+      // another subject — with both roles, `primary: chrome` + `accent:
+      // wireframe` was a legal composition and the director produced it, which
+      // is two subjects fighting for the same frame.
+      roles: ['primary'],
       moods: ['ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'medium',
