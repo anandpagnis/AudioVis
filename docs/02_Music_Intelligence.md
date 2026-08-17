@@ -1,14 +1,14 @@
 # Document 2 — Music Intelligence
 
 > **Audience:** audio/DSP engineers, AI director authors.  
-> **Status:** DSP implemented; ML features planned off hot path.  
+> **Status:** DSP implemented on the render thread; Essentia.js + TensorFlow.js now run key/rhythm/voice/mood ML off-thread and feed the same `AudioFeatures` contract.  
 > **Spec:** [specs/music_intelligence_spec.md](specs/music_intelligence_spec.md)
 
 ---
 
 ## Overview
 
-Music Intelligence is the heart of AudioVis. It transforms raw audio into a **structured musical state** that scenes and directors consume every frame. The current implementation is **pure client-side DSP + heuristics** — no ML on the render thread. Future ONNX/Essentia features run off-thread and feed enriched metadata asynchronously.
+Music Intelligence is the heart of AudioVis. It transforms raw audio into a **structured musical state** that scenes and directors consume every frame. The render-thread core is still **pure client-side DSP + heuristics** — tempo, beat grid, structure, and the base mood score never wait on a model. Layered on top, two background Web Workers (`src/audio/essentia/`) run **Essentia.js** (WASM) for rhythm confirmation, key, and danceability, and a **MusiCNN TensorFlow.js model** for voice presence and a 4-head mood read (happy/aggressive/party/relaxed). Both are additive: a dead/unsupported/not-yet-fetched worker just leaves those fields at their neutral default and the DSP estimators keep running unchanged — see "Failure Modes" below.
 
 ---
 
@@ -36,10 +36,12 @@ Music Intelligence is the heart of AudioVis. It transforms raw audio into a **st
 
 ## Non-Goals
 
-- Source-separated vocals (vocal band is frequency-range estimate).
+- Source-separated vocals (`vocal`/`voice` are frequency-range/tonality estimates; the essentia
+  worker's `vocalPresence` is a stronger classifier-based read but still not a stem).
 - Lyrics recognition or song ID (Shazam-style) in current phase.
-- Real-time ONNX on main thread (would miss beats).
-- Essentia.js full port in hot path (evaluate off-thread enrichment).
+- Any ML on the render thread — key/rhythm/voice/mood classifiers run in the two essentia workers
+  precisely so a slow inference can never stall the beat grid or a scene commit.
+- Genre classification (still not implemented — see "Chapter: Genre" below).
 
 ---
 
@@ -54,11 +56,25 @@ MediaStream
   → Adaptive normalization + attack/release shaping
   → Onset flux → BpmEstimator (IOI histogram + PLL)
   → PhraseDetector (spectral novelty on downbeats)
-  → MoodEstimator (7-state scoring + hysteresis)
+  → MoodEstimator (7-state scoring + hysteresis, additively nudged by essentia's `moods.party`)
   → AudioFeatures (single mutable object)
+
+  ── in parallel, off the main thread ──
+  AudioWorklet PCM tap (4096-sample mono mixdown)
+    → essentia.worker.ts   (Essentia.js WASM: rhythm confirm, key, danceability)
+    → voice.worker.ts      (MusiCNN TF.js: voiceFraction, moods{happy,aggressive,party,relaxed})
+  EssentiaBridge / VoiceBridge (main thread) hold the latest async result and let
+  AudioEngine.update() drain it each frame — same fade-in pattern as the AI texture backend.
 ```
 
-**Key files:** `src/audio/AudioEngine.ts`, `spectralFeatures.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`, `MoodEstimator.ts`, `MidiClock.ts`, `types.ts`. The per-bin spectral loop is a pure function in `spectralFeatures.ts` (unit-tested in `src/audio/__tests__/`) — `AudioEngine.ts` only owns the Web Audio graph and normalization/smoothing around it.
+**Key files:** `src/audio/AudioEngine.ts`, `spectralFeatures.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`,
+`MoodEstimator.ts`, `MidiClock.ts`, `types.ts` for the DSP core; `src/audio/essentia/EssentiaBridge.ts`,
+`VoiceBridge.ts`, `essentia.worker.ts`, `voice.worker.ts`, `protocol.ts`, `voiceProtocol.ts` for the
+essentia layer. The per-bin spectral loop is a pure function in `spectralFeatures.ts` (unit-tested in
+`src/audio/__tests__/`) — `AudioEngine.ts` only owns the Web Audio graph and normalization/smoothing
+around it. Converting Essentia's TF.js model weights is a one-time offline step, documented in
+`scripts/convert-essentia-models.md`; the converted weights are gitignored (`public/models/`) and
+fetched at runtime, so the app degrades gracefully — not breaks — when they're absent.
 
 ---
 
@@ -73,10 +89,12 @@ Scenes and directors read `audioEngine.features` — never the Web Audio graph. 
 | Component | Role |
 |-----------|------|
 | AudioEngine | Graph ownership, per-frame update, band extraction, structure heuristics |
-| BpmEstimator | Tempo + phase; free-runs at last tempo through silence |
+| BpmEstimator | Tempo + phase; free-runs at last tempo through silence; can be corrected by essentia's rhythm read |
 | PhraseDetector | 16-beat phrase grid; re-anchors at section changes |
 | MoodEstimator | Committed + predicted mood, viz multipliers |
 | MidiClock | Web MIDI 0xF8 → `setExternalTempo()` |
+| EssentiaBridge | PCM tap + worker scheduling for rhythm/key/danceability (`src/audio/essentia/`) |
+| VoiceBridge | PCM tap + worker scheduling for voice presence and the 4-head mood classifier |
 
 ---
 
@@ -113,17 +131,24 @@ See [14_Data_Models.md](14_Data_Models.md) — `AudioFeatures`, `MoodMomentum`, 
 | External tempo | Override + 2 s expiry | MIDI clock ticks | Per tick | High when clock active |
 | Beat-grid accuracy | `BpmEstimator`'s internal per-onset hit rate against the predicted grid, exposed as `AudioFeatures.beatGridAccuracy` | Onset timestamps | Per onset | Already blended into `confidence`; useful standalone for accuracy analytics (live Analytics panel, `Y`) |
 
-**Future:** Essentia `RhythmExtractor2013` off-thread for difficult genres; beat tracking fusion with onset PLL.
+**Implemented:** `essentia.worker.ts` runs Essentia's rhythm extractor (`multifeature` method, `degara`
+as fallback) on a 12 s PCM window every 2.5 s and reports `bpm`/`confidence01`/`method` back to
+`EssentiaBridge.update(f, bpmEstimator)`, which folds a confident read into the onset-PLL estimator
+rather than replacing it outright — see "State Machines" below for the handoff rule.
 
 ### Chapter: Harmony
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Key detection | **Not implemented** | Planned: chroma + Krumhansl profile off-thread |
+| Key detection | **Implemented** | Essentia's key extractor, triggered by `PhraseDetector`'s section boundary (with a 20 s fallback timer and a 6 s floor between runs so a burst of boundaries can't spam the worker); reports tonic + scale + `strength` (`KeyResult`, `src/audio/essentia/protocol.ts`) |
 | Chord recognition | **Not implemented** | Planned: ONNX chord classifier |
 | Consonance/dissonance | **Not implemented** | Chroma variance heuristic candidate |
 
-**Future improvements:** Map key/mode to palette temperature; minor-key scenes for breakdowns.
+**Implemented:** key/mode now drives palette selection — `keyPaletteTracker` (`src/engine/keyPalette.ts`)
+accumulates key votes into a harmonic "family" that `AutoPilot`'s `pickPalette()` prefers when it
+survives the anti-repeat filter. See [07_Palette_System.md](07_Palette_System.md).
+
+**Future improvements:** Chord recognition; minor-key-specific scene/palette tuning beyond the family mapping above.
 
 ### Chapter: Structure
 
@@ -141,7 +166,7 @@ See [14_Data_Models.md](14_Data_Models.md) — `AudioFeatures`, `MoodMomentum`, 
 
 | Feature | Algorithm | Update rate | Confidence |
 |---------|-----------|-------------|------------|
-| Mood (7 states) | Weighted score of energy, bass, brightness, flux, spectral flatness/rolloff, crest factor, air + hysteresis | 60 Hz | `mood.confidence` |
+| Mood (7 states) | Weighted score of energy, bass, brightness, flux, spectral flatness/rolloff, crest factor, air + hysteresis, additively nudged by essentia's `moods.party` | 60 Hz | `mood.confidence` |
 | Prediction | Trend velocities → projected state + `beatsTillTransition` | 60 Hz | Drops when unstable |
 | Viz multipliers | Smoothed intensity/speed/reactivity per mood | 60 Hz | N/A |
 
@@ -151,7 +176,22 @@ The full per-state score distribution and a derived ambiguity score (`MoodMoment
 `.ambiguity`, 0 = decisive winner, 1 = near-tie) are exposed alongside the committed state —
 previously computed every frame and discarded, now surfaced for accuracy/calibration analytics.
 
-**Future:** ONNX mood classifier trained on labeled DJ sets; ensemble with heuristic (heuristic wins on latency). If an external opinion is ever needed to validate "does it pick up the vibe correctly," the shape that fits this project's DSP-only philosophy is an *offline, manual* calibration script — never in the render hot path (see [HANDOFF.md](HANDOFF.md) §7).
+**Implemented (partial ensemble):** the `voice.worker.ts` MusiCNN model reports a 4-head mood read
+(`happy`/`aggressive`/`party`/`relaxed`, `AudioFeatures.moods`, valid once `moodsValid` is true) over
+~3 s patches, averaged over the analysis window. Rather than replacing the heuristic 7-state score,
+only `party` is folded in — additively, capped low (0.18) — as a `groove` bonus: measured against a
+labelled set it separates club material from ambient far better than the DFA `danceability` head it
+effectively stands in for (house 0.93–0.99 vs. ambient 0.00–0.06; `danceability` inverted that
+ordering). `aggressive` and `relaxed` similarly nudge `PerformanceStateBridge`'s glitch/fog terms
+(see [03_AI_Performance_Director.md](03_AI_Performance_Director.md)) rather than the mood vote itself
+— deliberately additive everywhere, so an unfetched model costs nothing rather than degrading the
+heuristic. `happy` currently has no consumer.
+
+**Future:** genre-level or full-track mood classification beyond the 4 MusiCNN heads above; ensemble
+weighting tuned by ear rather than the current fixed caps. If an external opinion is ever needed to
+validate "does it pick up the vibe correctly" beyond what the classifier already gives, the shape
+that fits this project's DSP-first philosophy is an *offline, manual* calibration script — never in
+the render hot path (see [HANDOFF.md](HANDOFF.md) §7).
 
 ### Chapter: Genre
 
@@ -176,16 +216,23 @@ previously computed every frame and discarded, now surfaced for accuracy/calibra
 | Spectral rolloff | Normalized frequency below which 85% of energy sits — a brightness cue robust to one dominant bin, unlike centroid | 60 Hz |
 | Crest factor | Peak/RMS ratio — low for pushed/brickwalled masters, high for dynamic material | 60 Hz |
 
-**On `voice` vs `vocal`.** The raw `vocal` band is a plain energy sum over 250 Hz–5 kHz, so it
-lights up on hi-hats, snare body, and distortion exactly as readily as on a singer — which is why
-nothing consumed it for a long time. Multiplying it by tonality (`1 - spectralFlatness`) suppresses
-the noisy half of that range and leaves what is actually pitched, so a held note reads high and a
-busy percussive bar reads low. Exposed as `AudioResponse.voice` and `SceneFrame.b.voice`, and it is
-what the fluid scenes (Liquid Form, Flow Ribbons) key their headline behaviour to. It remains an
-estimate, not source separation — a true vocal stem needs a model, which is deliberately out of
-scope (see [HANDOFF.md](HANDOFF.md) §7).
+**On `voice` vs `vocal` vs `vocalPresence`.** The raw `vocal` band is a plain energy sum over 250
+Hz–5 kHz, so it lights up on hi-hats, snare body, and distortion exactly as readily as on a singer —
+which is why nothing consumed it for a long time. Multiplying it by tonality (`1 - spectralFlatness`)
+suppresses the noisy half of that range and leaves what is actually pitched (`voice`), so a held note
+reads high and a busy percussive bar reads low; this is the fast, per-frame, zero-latency signal
+scenes key their headline motion to (Flow Ribbons). `AudioFeatures.vocalPresence` is the slower,
+classifier-based complement: MusiCNN's voice head, resolved as the share of ~3 s patches in a window
+whose `p(voice)` clears a decision threshold (`voiceFraction`, not a mean). `CameraDirector` eases it
+into `voiceFocus` and uses it to prefer intimate camera modes (`locked`/`push`) over a threshold, and
+`AutoPilot`/`PerformanceStateBridge` use it as a soft scene/bloom boost — see
+[06_Camera_Director.md](06_Camera_Director.md) and [03_AI_Performance_Director.md](03_AI_Performance_Director.md).
+Neither is source separation — a true vocal stem needs a model that isolates the voice, which is
+deliberately out of scope (see [HANDOFF.md](HANDOFF.md) §7).
 
-All four are strictly additive: none change the six original bands' Hz cutoffs or normalization, so the five registered scenes' calibrated band-to-job wiring (see [05_Scene_Architecture.md](05_Scene_Architecture.md)) is untouched.
+The four texture cues (air, spectral flatness/rolloff, crest factor) are strictly additive: none
+change the six original bands' Hz cutoffs or normalization, so calibrated band-to-job wiring on
+existing scenes (see [05_Scene_Architecture.md](05_Scene_Architecture.md)) is untouched.
 
 **Future:** MFCC + timbre clustering for scene selection; Essentia `SpectralComplexity`; full ITU-R BS.1770 loudness (crest factor above is a cheap proxy, not true LUFS).
 
@@ -251,8 +298,11 @@ clock stops > 2 s → resume onset tracking
 
 - **Zero allocations** in `AudioEngine.update()` hot path — buffers reused.
 - FFT size: 2048 (fixed).
-- No Worker blocking — if ML added, post results via `postMessage`, consume next frame.
-- Target: audio analysis < 1 ms per frame on M1.
+- ML runs entirely off-thread: `essentia.worker.ts` / `voice.worker.ts` post results via
+  `postMessage`; `EssentiaBridge`/`VoiceBridge` hold the latest one and `AudioEngine.update()` drains
+  it on the next frame. Nothing in the hot path awaits a worker.
+- Target: audio analysis < 1 ms per frame on M1 (unchanged — the essentia layer runs on its own
+  cadence, seconds apart, entirely off the render thread).
 
 ---
 
@@ -265,6 +315,9 @@ clock stops > 2 s → resume onset tracking
 | Double source restart | Full reset of beat/phrase/mood/onset history |
 | macOS tab-only audio | UI guides user to share tab with "Share tab audio" |
 | Untrusted grid | Timeout commit prevents indefinite pending scene |
+| Essentia model weights not fetched (gitignored, dev-only convert step skipped) | Bridges stay in their neutral default (`moodsValid: false`, `vocalPresence: 0`, no key/rhythm correction); DSP estimators are unaffected |
+| Essentia/voice worker dead, unsupported, or a request errors | `VoiceError.missing` stops retries rather than hammering a 404 every section; bridge simply never resolves that job again this session |
+| Essentia read goes stale | `MODEL_FRESH_SEC` bounds how long a worker read stays authoritative before onset/heuristic tracking resumes unaided |
 
 ---
 
@@ -273,9 +326,12 @@ clock stops > 2 s → resume onset tracking
 - `npm run test` (Vitest, `src/audio/__tests__/`) — unit tests for `BpmEstimator` (synthetic click
   tracks: tempo lock, on-grid vs. jittered `hitScore`, tempo-change persistence, free-run decay,
   external-tempo override), `PhraseDetector` (boundary detection, cooldown, silence guard),
-  `MoodEstimator` (state commitment, hysteresis, score distribution, ambiguity), and
-  `spectralFeatures` (band isolation, flatness/rolloff on synthetic spectra). None of these need a
-  browser or `AudioContext` — the estimator classes take plain data.
+  `MoodEstimator` (state commitment, hysteresis, score distribution, ambiguity), `spectralFeatures`
+  (band isolation, flatness/rolloff on synthetic spectra), `essentiaBridge.test.ts` (job scheduling,
+  cadence backoff, fresh-vs-stale handoff to `BpmEstimator`), `voiceBridge.test.ts` (fraction vs. mean
+  handling, `missing`-error retry suppression), and `moodSignals.test.ts` (the `partyBonus`/glitch/fog
+  nudges staying additive and zeroed when `moodsValid` is false). None of these need a browser or
+  `AudioContext`/real worker — everything is plain data in, plain data out.
 - Analytics panel (`Y`): rolling beat-tracking accuracy, mood confidence/ambiguity trends, and the
   live mood-score distribution — the numeric counterpart to the checks below.
 - Debug panel (`D`): live BPM, confidence, mood prediction, bands, section/drop flags
@@ -287,17 +343,18 @@ clock stops > 2 s → resume onset tracking
 
 ## Future Improvements
 
-Priority order for enriched musical features (user-requested list mapped):
+| Feature group | Status | Approach | Thread |
+|---------------|--------|----------|--------|
+| Rhythm confirmation | **Implemented** | Essentia `RhythmExtractor2013` (multifeature/degara), fused with PLL | `essentia.worker.ts` |
+| Key/mode | **Implemented** | Essentia key extractor, section-boundary-triggered | `essentia.worker.ts` |
+| Danceability | **Implemented, unused downstream** | Essentia DFA danceability — superseded by MusiCNN's `party` head for the groove score (see "Chapter: Emotion"); no current consumer | `essentia.worker.ts` |
+| Voice presence / mood (4-head) | **Implemented** | MusiCNN TF.js embedding | `voice.worker.ts` |
+| Advanced rhythm (swing, half-time) | Not implemented | Would need a dedicated feature beyond `RhythmExtractor2013`'s bpm/confidence | Worker |
+| Genre/mood ML (full genre tags) | Not implemented | ONNX Runtime Web or a genre-tagged model | Worker |
+| Loudness (LUFS) | Not implemented | ITU-R BS.1770 approximation (crest factor is a cheap proxy today) | Main or Worker |
+| Onset strength / percussive ratio | Not implemented | Extended flux + HPSS | Worker |
+| Section labels (verse/chorus) | Not implemented | Self-similarity + clustering | Worker |
 
-| Feature group | Approach | Thread |
-|---------------|----------|--------|
-| Advanced rhythm (swing, half-time) | Essentia off-thread + fuse with PLL | Worker |
-| Key/mode | Chroma analysis | Worker |
-| Genre/mood ML | ONNX Runtime Web | Worker |
-| Loudness (LUFS) | ITU-R BS.1770 approximation | Main or Worker |
-| Onset strength / percussive ratio | Extended flux + HPSS | Worker |
-| Section labels (verse/chorus) | Self-similarity + clustering | Worker |
-
-**Rule:** Never block beat grid or scene commits waiting for ML. Directors use last-known ML tags with decaying confidence.
+**Rule:** Never block beat grid or scene commits waiting for ML. Directors use last-known ML tags with decaying confidence (`MODEL_FRESH_SEC` for essentia's rhythm/key reads; `voiceFraction`/`moods` simply hold their last value until the next window resolves).
 
 See [15_Implementation_Roadmap.md](15_Implementation_Roadmap.md) Phase 3.

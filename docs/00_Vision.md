@@ -177,13 +177,13 @@ See [10_TouchDesigner_Integration.md](10_TouchDesigner_Integration.md).
 ### Starting a session
 
 1. Open the app. Pick a source: **system/tab audio**, **microphone/line-in**, or **local audio file**.
-2. Fullscreen. The default scene (`Schematic`) breathes on idle motion even in silence.
+2. Fullscreen. The default scene (`Wireframe Hero`, `SCENES[0]`) breathes on idle motion even in silence.
 3. Music starts. BPM locks within a few bars. The tactical HUD (`J`) shows mood, beat sync, and diagnostics.
 
 ### During a track
 
 - **Quiet intro:** mellow scene, ocean/aurora palette, room to breathe. Negative space dominates.
-- **Groove establishes:** wireframe or schematic look; mids drive hue and stroke weight; presence thickens lines.
+- **Groove establishes:** wireframe hard-line look; mids drive hue and stroke weight; presence thickens lines.
 - **Build:** PerformanceDirector queues an accent layer; energy rises; palette shifts warm (solar/ember).
 - **Drop:** AutoPilot fires on the rising edge; scene cuts on the downbeat; plasma or chrome for peak energy; bass drives mass, transients flash.
 - **Breakdown:** heavy visuals stand down; dissolve or chrome at lower intensity; automation respects the energy drop.
@@ -234,17 +234,25 @@ Every look needs three things the old app lacked: a **subject**, **negative spac
 
 ## Current roster philosophy
 
-Five registered scenes — not seventeen decent ones. Each holds a subject, negative space, and hard edges:
+Eleven registered scenes — not seventeen decent ones. Each holds a subject, negative space, and hard edges:
 
 | Scene | Essence |
 |-------|---------|
-| Schematic | Barycentric wireframe, phosphor green on grid |
-| Wireframe Hero | True edge geometry, LineMaterial thickness |
+| Wireframe Hero | True edge geometry, LineMaterial thickness — `SCENES[0]`, the fallback |
 | Plasma Filament | 70k curl-noise particles, hot core on black |
 | Dissolve Cage | Particles scatter/reform inside wireframe cage |
 | Chrome Form | PMREM IBL on MeshPhysicalMaterial hero |
+| Flow Ribbons | Vertex-shader strips tracing the synth waveform |
+| Network Constellation | Fullscreen-quad jittered node web |
+| PCD LIDAR Scan | 60k-point deterministic procedural cloud |
+| Inversion Machine | Raymarched sphere-inversion fractal |
+| Fold Path | Heightfield flythrough, IFS-fold fractal |
+| Torus Fold | Mandelbox-style fractal ∩ torus |
+| Julia Wings | 2D Julia-set, moth/butterfly-wing symmetry |
 
-Sixteen legacy scenes remain on disk but are **unregistered** — reachable only by re-adding one line to `SCENES[]`.
+`Schematic` and `Liquid Form` were both cut from the roster (`docs/HANDOFF.md` §2 item 17); unlike
+the original 17-scene cull, cut scenes are deleted outright rather than left unregistered on disk —
+see item 13 in the same doc.
 
 ---
 

@@ -24,9 +24,10 @@ Every visual asset in AudioVis is described by **metadata**, not just a filename
 ## Responsibilities
 
 - Define schema for scenes, palettes, cameras, transitions, effects.
-- Maintain the active roster catalog (5 registered scenes).
-- Document unregistered legacy assets for potential revival.
-- Provide lookup helpers (`getScenesForMood`, `getCompatibleScenes`).
+- Maintain the active roster catalog (11 registered scenes).
+- Document culled legacy scenes (deleted, not left unregistered — see below).
+- Provide lookup helpers (`getScenesForMood`, `getPrimaryScenesForMood`, `getCompatibleScenes`,
+  `pickVariedScene`).
 
 ---
 
@@ -172,11 +173,15 @@ Technique: MeshPhysicalMaterial + PMREM IBL
 | mono | Monolith | White/grey | aggressive, ambient |
 | solar | Solar Flare | Yellow/orange | building, peak |
 
-### Unregistered legacy scenes (on disk)
+### Culled legacy scenes
 
-Available via one-line re-registration: `nebula`, `galaxy`, `tunnel`, `fluid`, `monolith`, `noisefield`, `clouds`, `ribbons`, `crystal`, `aurora`, `angelcore`, `cathedral`, `fractaltunnel`, `ocean`, `neural`, `particles`, `fluidsim`.
-
-**Status:** culled from roster per [00_Vision.md](00_Vision.md) — fail subject/negative-space/hard-edges rubric.
+The pre-pivot 17-scene roster (`nebula`, `galaxy`, `tunnel`, `fluid`, `monolith`, `noisefield`,
+`clouds`, `crystal`, `angelcore`, `cathedral`, `fractaltunnel`, `neural`, `particles`, `fluidsim`,
+and others) failed the subject/negative-space/hard-edges rubric from [00_Vision.md](00_Vision.md) and
+were **deleted outright** (in git history if ever wanted — see `docs/HANDOFF.md` §2 item 13), not
+left unregistered on disk. Note `ribbons` and `ocean`/`aurora` are no longer in this list: `ribbons`
+is now the registered "Flow Ribbons" scene (a different implementation from its legacy namesake), and
+`ocean`/`aurora` are palette ids, not scene ids — the overlap in naming predates the cull.
 
 ---
 
@@ -185,9 +190,17 @@ Available via one-line re-registration: `nebula`, `galaxy`, `tunnel`, `fluid`, `
 ### Mood-fit ranking
 
 ```typescript
-getScenesForMood(mood) → filter moods.includes(mood)
+getScenesForMood(mood, role?) → filter moods.includes(mood) && (!role || roles.includes(role))
   → sort by moodFit[mood] ?? 0.5 descending
 ```
+
+`getPrimaryScenesForMood(mood)` is the `role: 'primary'` shorthand — always prefer it (or pass
+`role` directly) over the unfiltered call when picking what to show as the primary scene: several
+scenes are layer-only (`ribbons` is `['accent', 'overlay']`) and can outrank primary-capable scenes
+on `moodFit`, so an unfiltered pick can install one as the subject it was authored to composite over.
+`pickVariedScene(candidates, mood, recentIds, boost?)` is the weighted-random-with-recency-decay
+picker both `AutoPilot` and `PerformanceDirector` call on top of the filtered pool — see
+`docs/03_AI_Performance_Director.md`.
 
 ### Compatibility filter
 
@@ -212,7 +225,7 @@ Metadata read on every director evaluation (~60 Hz reads, zero writes).
 
 ## Performance Constraints
 
-Metadata lookups are O(n) over ≤5 scenes today — trivial. Marketplace scale needs indexed queries (future).
+Metadata lookups are O(n) over 11 scenes today — trivial. Marketplace scale needs indexed queries (future).
 
 ---
 

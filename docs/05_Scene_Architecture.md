@@ -1,7 +1,7 @@
 # Document 5 — Scene Architecture
 
 > **Audience:** scene developers, plugin authors.  
-> **Status:** contract stable; 5 reference implementations.  
+> **Status:** contract stable; 11 reference implementations.  
 > **Spec:** [specs/scene_architecture_spec.md](specs/scene_architecture_spec.md)
 
 ---
@@ -71,17 +71,26 @@ quality.knobs ──► complexity limits
 
 ## Components
 
-Reference implementations:
+Reference implementations — **`wireframe` is `SCENES[0]`**, the load-bearing fallback `getScene()`
+returns for any unregistered id, so keep it cheap and safe:
 
 | Scene | File | Technique |
 |-------|------|-----------|
-| Schematic | `SchematicScene.tsx` | ShaderMaterial + barycentric wireframe |
-| Wireframe Hero | `WireframeHeroScene.tsx` | Line2/LineMaterial |
+| Wireframe Hero | `WireframeHeroScene.tsx` | Line2/LineMaterial — `SCENES[0]`, the fallback |
 | Plasma Filament | `PlasmaFilamentScene.tsx` | Custom particle vertex shader |
 | Dissolve Cage | `DissolveCageScene.tsx` | Particles + wireframe cage |
 | Chrome Form | `ChromeFormScene.tsx` | MeshPhysicalMaterial + PMREM |
-| Liquid Form | `LiquidFormScene.tsx` | Raymarched SDF metaballs, `opSmoothUnion` blend driven by voice |
-| Flow Ribbons | `FlowRibbonScene.tsx` | Vertex-shader triangle strips through a curl field |
+| Flow Ribbons | `FlowRibbonScene.tsx` | Vertex-shader triangle strips through a curl field, tracing `midWaveform` |
+| Network Constellation | `NetworkConstellationScene.tsx` | Fullscreen-quad jittered node web (only non-`wireframe` scene with `background`/`accent`/`overlay` roles too) |
+| PCD LIDAR Scan | `PointCloudScanScene.tsx` | 60k-point deterministic procedural cloud (fixed seed) |
+| Inversion Machine | `InversionMachineScene.tsx` | Raymarched sphere-inversion fractal |
+| Fold Path | `FoldPathScene.tsx` | Fixed-step heightfield flythrough, IFS-fold fractal texture |
+| Torus Fold | `TorusFoldScene.tsx` | Mandelbox-style folded-space fractal ∩ torus |
+| Julia Wings | `JuliaWingsScene.tsx` | 2D Julia-set variant, moth/butterfly-wing symmetry |
+
+`Schematic` and `Liquid Form` were both removed from the roster (see `docs/HANDOFF.md` §2 item 17)
+— if you find either referenced elsewhere in the docs or in old presets/URLs, it's stale; `wireframe`
+took over the `SCENES[0]` fallback role Schematic used to hold.
 
 Shared utilities: `useDispose.ts`, `moodParams.ts`, `audioResponse.ts`, `AnimationDirector.ts`, `glsl.ts`, `shaderLib.ts`.
 
@@ -151,7 +160,7 @@ registerScene({
     moods: ['groove', 'peak'],
     bands: ['mid', 'high', 'energy'],
     intensity: 'medium',
-    compatibleWith: ['schematic', 'wireframe'],
+    compatibleWith: ['wireframe', 'plasma'],
     performanceCost: 'medium',
     moodFit: { groove: 0.8, peak: 0.6 },
     // Hands camera control to CameraDirector. Omit only if the scene
@@ -183,7 +192,7 @@ Each scene must bind **distinct visual parameters** to bands so the audience can
 | `presence` | Line weight, stroke opacity |
 | `high` | Dedicated high-frequency elements |
 | `transient` | Instant flash, particle burst |
-| `voice` | Sustained/melodic lead — merge, width, swell (see below) |
+| `voice` | Sustained/melodic lead — e.g. ribbon width in Flow Ribbons |
 | `kick`/`snare`/`hihat` | Independent per-drum response |
 | `energy` | Overall amplitude multiplier |
 

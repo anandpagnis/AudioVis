@@ -65,9 +65,17 @@ You cannot tune from glow-soup to crystal-cut — it required a different render
 
 ### Scene roster
 
-Eight entries are registered (seven scenes plus one layer) — `schematic`, `wireframe`, `plasma`, `dissolve`, `chrome`, plus the two fluid additions `liquid` (Liquid Form) and `ribbons` (Flow Ribbons) (see [05_Scene_Architecture.md](05_Scene_Architecture.md) for their contract and technique). The 17 legacy scenes that survived the cull as unregistered files have since been **deleted** (they are in git history if ever wanted).
+**Update, post-roster-trim (item 17) + six Shadertoy ports:** `schematic` and `liquid` (Liquid Form)
+were subsequently cut (see `docs/HANDOFF.md` §2 item 17), and six more scenes landed —
+`network`/`pointcloud`/`inversion`/`foldpath`/`torusfold`/`juliawings`. **11 scenes are registered
+today**: `wireframe` (fallback, `SCENES[0]`), `plasma`, `dissolve`, `chrome`, `ribbons` (Flow
+Ribbons), plus the six above (see [05_Scene_Architecture.md](05_Scene_Architecture.md) for contract
+and technique). The rest of this section is the original roster-trim writeup, left as historical
+record of why the roster shrank to five before growing again:
 
-**The "small roster is the art direction" constraint has been lifted** (July 2026). It was the right call while the look was being found — a handful of refined scenes beat seventeen mediocre ones. But the director refactor makes scenes cheap and reusable in a way they were not before: camera, animation, and effects are no longer per-scene code, so a new scene is geometry plus metadata. Breadth is now the goal, and the library is expected to grow well past five.
+Eight entries were registered at the time (seven scenes plus one layer) — `schematic`, `wireframe`, `plasma`, `dissolve`, `chrome`, plus the two fluid additions `liquid` (Liquid Form) and `ribbons` (Flow Ribbons). The 17 legacy scenes that survived the cull as unregistered files have since been **deleted** (they are in git history if ever wanted).
+
+**The "small roster is the art direction" constraint has been lifted** (July 2026). It was the right call while the look was being found — a handful of refined scenes beat seventeen mediocre ones. But the director refactor makes scenes cheap and reusable in a way they were not before: camera, animation, and effects are no longer per-scene code, so a new scene is geometry plus metadata. Breadth was the goal, and by August 2026 the library had grown to 11.
 
 The rubric still applies as a quality bar rather than a headcount cap: does it have a **subject**, can it hold **negative space**, can it carry **hard edges**? Fullscreen haze fails all three regardless of how many scenes exist.
 

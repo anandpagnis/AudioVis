@@ -8,20 +8,25 @@ remaining roadmap, see [HANDOFF.md](HANDOFF.md).
 ## Layer map
 
 ```
-src/audio/    AudioEngine → BpmEstimator, PhraseDetector,
-              MoodEstimator                                   (musical understanding)
+src/App.tsx   Router/gate: mobile+WebGL check → '/' gateway vs '/app' visualizer
+src/audio/    AudioEngine → BpmEstimator, PhraseDetector, MoodEstimator (DSP, hot path)
+              essentia/ → EssentiaBridge, VoiceBridge, two off-thread
+              Essentia.js/TF.js workers (key, rhythm, voice, mood)     (musical understanding)
 src/engine/   SceneManager, AutoPilot, PerformanceDirector, GenerativeLayer,
               CameraDirector, AnimationDirector, EffectsDirector,
-              LightRig, PerfMonitor, performanceState,
+              LightRig, PerfMonitor, performanceState, keyPalette,
               palettes, presets, moodParams, textureGenerator (visual framework)
-src/scenes/   5 registered scenes (+16 unregistered) + registry (content)
-src/ui/       HUD, BpmReadout, DebugPanel                     (chrome)
+src/scenes/   11 registered scenes + registry (content)
+src/ui/       HUD, TacticalHUD, DebugPanel, AnalyticsPanel     (chrome)
 src/store.ts  zustand store (persisted)                       (state)
 backend/      local sd-turbo texture server (FastAPI, :8787)  (optional AI art)
+wrangler.jsonc  Cloudflare Workers deploy config (committed)  (deploy)
 ```
 
 The one-way data flow: **audio in → `AudioFeatures` (one mutable object, updated once per
-frame) → scenes**. Scenes never touch the Web Audio API; the UI never touches Three.js.
+frame) → scenes**. Scenes never touch the Web Audio API; the UI never touches Three.js. Essentia's
+key/rhythm/voice/mood reads run off-thread and land in the same `AudioFeatures` object asynchronously
+— see [02_Music_Intelligence.md](02_Music_Intelligence.md).
 
 ## Mood system
 
@@ -52,10 +57,17 @@ toggleable:
   local sd-turbo server, dedupes in-flight requests, caches by
   `mood_palette_variant`, and prefetches the predicted mood's art. Server down ⇒
   health probe fails ⇒ alpha stays 0, zero errors.
+- **`keyPaletteTracker`** (`src/engine/keyPalette.ts`) — accumulates essentia's key/scale votes
+  into a harmonic "family"; `AutoPilot.pickPalette()` prefers it over the mood's default palette
+  list when it survives the anti-repeat filter, so colour has a harmonic as well as an emotional
+  anchor.
+- **`CameraDirector`** and **`PerformanceStateBridge`** also read essentia's `vocalPresence`/`moods`
+  (eased into `voiceFocus`) to prefer intimate camera modes and nudge bloom/glitch/fog — additive,
+  a no-op until the voice worker has produced a read (`moodsValid`).
 
-Tuning lives in three places: state scores + hold times in `MoodEstimator.score()` /
+Tuning lives in four places: state scores + hold times in `MoodEstimator.score()` /
 `holdFor()`, scene/palette affinities + cooldowns in `AutoPilot.tsx`, prompt tables in
-`textureGenerator.ts`.
+`textureGenerator.ts`, and the essentia job cadences/thresholds in `EssentiaBridge.ts`/`VoiceBridge.ts`.
 
 ## Extension points
 
@@ -75,7 +87,7 @@ registerScene({
     moods: ['groove', 'peak'],
     bands: ['mid', 'high', 'energy'],
     intensity: 'medium',
-    compatibleWith: ['nebula', 'galaxy'],
+    compatibleWith: ['plasma', 'ribbons'],
     performanceCost: 'medium',
     moodFit: { groove: 0.8, peak: 0.6 },
   },
@@ -120,8 +132,9 @@ Manual input suppresses the directors for 45 s but not authored cues.
 merges; see `sanitizePreset`).
 
 ### OBS / wallpaper mode
-URL parameters configure a chromeless instance (see `src/urlParams.ts`):
-`?scene=wireframe&palette=ember&ui=hidden&quality=low&reactivity=1.4`
+URL parameters configure a chromeless instance (see `src/urlParams.ts`); the visualizer route is
+`/app`, not `/`:
+`/app?scene=wireframe&palette=ember&ui=hidden&quality=low&reactivity=1.4`
 
 ### Parameters
 Global visual params live in the store (`intensity`, `speed`, `reactivity`). New params:

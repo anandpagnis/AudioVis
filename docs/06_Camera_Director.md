@@ -94,17 +94,50 @@ Every mode is expressed **relative to the anchor**, which is what makes it work 
 | `topdown` | High angle looking down, slow rotation |
 | `cinematic` | Long lazy arc with an eased dolly — deliberately slower than orbit |
 
+### Mode selection: `pickCameraMode()`
+
+Which mode plays is a **decision**, re-taken at section boundaries and on scene change (never per
+frame — the camera eases toward its target, so the target has to hold still). Ranked in priority
+order:
+
+1. **Tension override.** Above `TENSION_THRESHOLD` (and the mood isn't `peak`/`aggressive` — tension
+   peaks on the drop that *releases* a build, and overriding there shoots the release exactly like
+   the build), `push`/`spiral` are promoted to the front of the preference list.
+2. **Voice override**, only when tension didn't already win. Once essentia's `vocalPresence`, eased
+   into `voiceFocus` (`PerformanceStateBridge`), clears `VOICE_FOCUS_THRESHOLD` (0.5), `locked`/`push`
+   are promoted — a voice is the human element in a track, and closing distance is how film shoots
+   one. Orbiting modes are excluded (circling a singer reads as restless) and `handheld` stays out for
+   the same calm-mood invariant tension uses.
+3. Otherwise, the mood's declared preference order (`MODE_PREFERENCE[mood]`), filtered to the modes
+   the active scene actually declares (`declared[0]` if nothing in the ranked list is available).
+
+**Location:** `src/engine/CameraDirector.tsx`, called from `PerformanceStateBridge`. A test asserts
+every declared mode across every registered scene is reachable, so a mode can't silently regress to
+unused code again (see `docs/HANDOFF.md` §2 item 18).
+
 ### Anchors in use
 
-| Scene | Anchor (target / distance / height) | Default mode |
-|---|---|---|
-| Schematic | `[0, 0.3, 0]` / 9 / 1.1 | `hover` |
-| Wireframe Hero | `[0, 0, 0]` / 9.5 / 1.6 | `orbit` |
-| Plasma Filament | `[0, 0, 0]` / 17 / 2.4 | `orbit` |
-| Dissolve Cage | `[0, 0, 0]` / 11.5 / 1.1 | `hover` |
-| Chrome Form | `[0, 0, 0]` / 8.2 / 1.2 | `orbit` |
+All 11 scenes anchor at the world origin (`target: [0, 0, 0]`); only distance/height and the declared
+mode set vary, so the table below drops the redundant target column. `Schematic` (formerly `[0, 0.3,
+0]` / 9 / 1.1, `hover`) was removed from the roster — see `docs/HANDOFF.md` §2 item 17.
 
-These reproduce the framing each scene was authored with, and that equivalence is pinned by tests (see Testing).
+| Scene | distance / height | Declared modes |
+|---|---|---|
+| Wireframe Hero | 9.5 / 1.6 | `orbit`, `cinematic`, `spiral`, `hover`, `push` |
+| Plasma Filament | 17 / 2.4 | `orbit`, `spiral`, `handheld`, `cinematic` |
+| Dissolve Cage | 11.5 / 1.1 | `hover`, `push`, `cinematic`, `locked` |
+| Chrome Form | 8.2 / 1.2 | `orbit`, `cinematic`, `spiral`, `topdown`, `pull` |
+| Flow Ribbons | 10 / 1.4 | `cinematic`, `spiral`, `orbit`, `handheld`, `pull` |
+| Network Constellation | 14 / 1.5 | `orbit`, `spiral`, `cinematic`, `handheld`, `hover` |
+| PCD LIDAR Scan | 11 / 1.4 | `orbit`, `cinematic`, `spiral`, `handheld`, `push` |
+| Inversion Machine | 1.4 / 0.15 | `orbit`, `push`, `hover`, `handheld`, `cinematic` |
+| Fold Path | 10 / 1.5 | `orbit`, `spiral`, `cinematic`, `handheld`, `hover` |
+| Torus Fold | 3.3 / 0 | `orbit`, `push`, `hover`, `handheld`, `cinematic` |
+| Julia Wings | 10 / 1.5 | `orbit`, `spiral`, `cinematic`, `handheld`, `hover` |
+
+These reproduce the framing each scene was authored with; the original 5 scenes' equivalence to their
+pre-refactor camera code is pinned by tests (see Testing) — the 6 newer scenes were authored directly
+against `cameraAnchor`/`cameraModes` and have no pre-refactor baseline to pin against.
 
 ---
 
@@ -188,8 +221,13 @@ Still visual-only: whether a given mode actually *feels* right on a given scene 
 
 ## Future Improvements
 
-- **Per-scene mode weighting:** `pickCameraMode()` ranks by mood and tension against one shared preference table. A scene cannot yet say "orbit suits me better than it suits the others", only whether a mode is allowed at all.
-- **Mood mapping:** ambient → slow wide `cinematic`; peak → tight reactive `orbit`.
+- **Implemented since the table above was first written:** `pickCameraMode()` now ranks by mood,
+  dramatic tension, *and* essentia's voice signal against a shared preference table (see "Mode
+  selection" above) — kept here as a dated pointer so this section doesn't silently regress into a
+  duplicate of Overview.
+- **Per-scene mode weighting:** a scene still cannot say "orbit suits me better than it suits the
+  others", only whether a mode is allowed at all — the ranking itself is shared across every scene
+  that declares a mode.
 - **Blends between modes** over N beats rather than a position lerp.
 - **Look-at damping** for handheld/spiral at high energy.
 - **Cue-authored camera:** priority order cue > director > scene default.

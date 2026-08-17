@@ -7,9 +7,15 @@ last session; §2 item numbers are a running history, so read this section first
 and treat it as the summary of record.
 
 **What it is.** A browser-based AI VJ engine: it listens to live music,
-interprets structure (tempo, beats, phrases, drops, mood) and performs a
-deliberate visual journey. React 19 + React Three Fiber + Three.js + Zustand.
-Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
+interprets structure (tempo, beats, phrases, drops, mood, key, voice) and
+performs a deliberate visual journey. React 19 + React Router 7 +
+React Three Fiber + Three.js + Zustand for the app; Essentia.js (WASM) +
+TensorFlow.js running in background Web Workers for the music-intelligence
+layer beyond core DSP (see §2 item 19, `docs/02_Music_Intelligence.md`).
+Public-facing gateway landing page at `/`, the visualizer itself at `/app`
+(mobile/WebGL-gated — see `src/App.tsx`). Deployed to Cloudflare Workers
+(`wrangler.jsonc`, committed — do not delete it, see §2 item 19). Also runs
+purely locally: `npm run dev` → <http://localhost:5183/app>.
 
 **The two rules that override everything else**
 
@@ -22,7 +28,7 @@ Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
    dead black. Target exposure is roughly ≤15% of frame lit, mean luma <20, and
    **0% blown to white**. Full rationale in `docs/09_Rendering_Engine.md`.
 
-**Current roster (5, all primary-capable)**
+**Current roster (11, all primary-capable)**
 
 | id | name | technique |
 |---|---|---|
@@ -31,12 +37,22 @@ Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
 | `dissolve` | Dissolve Cage | particle form scattering inside a wireframe cage |
 | `chrome` | Chrome Form | `MeshPhysicalMaterial` + PMREM env map |
 | `ribbons` | Flow Ribbons | vertex-shader strips that **trace the synth waveform** |
+| `network` | Network Constellation | fullscreen-quad jittered node web (also the only non-`wireframe` scene that can run as accent/overlay/background, not just primary) |
+| `pointcloud` | PCD LIDAR Scan | 60k-point deterministic procedural cloud (fixed seed — reproducible recordings) |
+| `inversion` | Inversion Machine | raymarched sphere-inversion fractal ("Kali tiling") |
+| `foldpath` | Fold Path | fixed-step heightfield flythrough, recursive IFS-fold fractal texture |
+| `torusfold` | Torus Fold | Mandelbox-style folded-space fractal intersected with a torus |
+| `juliawings` | Julia Wings | 2D Julia-set variant with moth/butterfly-wing symmetry |
+
+Six of these (`network` through `juliawings`) are ports of Shadertoy pieces, several unattributed by
+the original source — see each scene file's header comment for the credit/license note before reusing
+outside this project.
 
 **Architecture in one line.** Audio → `AudioFeatures` → *decide* band writes
 `performanceState` → *execute* band (Camera/Animation/Effects directors +
 scenes) reads it. The decide/execute boundary is the whole design; see §3.
 
-**Before handing off any change:** `npm run check` (typecheck + lint + 61 tests
+**Before handing off any change:** `npm run check` (typecheck + lint + 222 tests
 + build) and the checklist in §8.
 
 **Biggest open gap:** almost nothing here has been verified against *real
@@ -369,6 +385,74 @@ The long-term product is a modular visual instrument:
     still no committed tool for this (§8 mandates the check but ships nothing to
     run it) — worth adding.
 
+19. **Essentia music intelligence, gateway landing page, and deploy fix — merged from two long-diverged branches**
+
+    Two branches forked from the same commit and were developed independently for
+    a long time before this merge: one added the Essentia.js/TensorFlow.js music
+    intelligence layer, the other added the public gateway page, mobile gating,
+    and a `pickVariedScene`-based role-aware scene picker. Reconciling them
+    surfaced two competing implementations of the same "pick a good scene"
+    problem, described below.
+
+    - **Essentia.js (WASM) + TensorFlow.js music intelligence**, running in two
+      background Web Workers so a slow model inference can never stall the beat
+      grid: `essentia.worker.ts` (rhythm confirmation, key, danceability) and
+      `voice.worker.ts` (a MusiCNN model for voice presence and a 4-head mood
+      read — happy/aggressive/party/relaxed). `EssentiaBridge`/`VoiceBridge`
+      (`src/audio/essentia/`) tap a mono PCM ring buffer via an inline
+      `AudioWorklet`, schedule jobs on a slow cadence, and hold the latest async
+      result for `AudioEngine.update()` to drain each frame — additive and
+      degrade-gracefully: a dead/unsupported worker or unfetched model weights
+      (`public/models/`, gitignored, converted via
+      `scripts/convert-essentia-models.md`) just leaves those fields at their
+      neutral default, and the pre-existing heuristic DSP estimators are
+      unaffected. Full detail in `docs/02_Music_Intelligence.md`.
+    - **Key-aware palette tracking** — `keyPaletteTracker`
+      (`src/engine/keyPalette.ts`) accumulates key votes into a harmonic
+      "family" that `AutoPilot`'s new `pickPalette()` prefers when it survives
+      the anti-repeat filter, and section-boundary-triggered recolouring
+      (`PALETTE_MIN_SEC` floor) runs independently of the scene-switch trigger
+      so colour can mark structure even when the mood doesn't change. See
+      `docs/07_Palette_System.md`.
+    - **Voice-aware camera framing and post** — `CameraDirector` eases
+      `vocalPresence` into `voiceFocus` and prefers intimate modes
+      (`locked`/`push`) above a threshold, ranked below the existing tension
+      override (a sung build still shoots as a build); `PerformanceStateBridge`
+      folds `moods.aggressive`/`moods.relaxed` into glitch/fog as small
+      additive terms. See `docs/06_Camera_Director.md`.
+    - **Public gateway + routing.** `App.tsx` is now a router/gate, not a direct
+      renderer: mobile/WebGL-unsupported devices see `UnsupportedScreen`;
+      everyone else gets an audio-reactive tunnel landing page (`/`,
+      `src/landing/`) that leads into the visualizer at `/app`
+      (`src/routes/Visualizer.tsx`, which still just mounts `Stage` +
+      `TacticalHUD` + `HUD` as before). Uses `react-router` 7.
+    - **Cloudflare Workers deploy fix.** `wrangler.jsonc` is now committed
+      (previously absent, which made every deploy re-run Cloudflare's
+      auto-setup wizard from scratch — slow, non-deterministic, and the reason
+      a prior `_redirects` fix silently failed to take on the next deploy).
+      `wrangler` is pinned as a devDependency instead of being fetched fresh by
+      `npx` on every deploy. **Do not delete `wrangler.jsonc` or let it drift
+      back out of git** — that regresses exactly this bug.
+    - **Role-aware scene picking, consolidated.** `getScenesForMood(mood, role?)`
+      can now filter to a role (`'primary'`, etc.) directly; `pickVariedScene()`
+      (`src/scenes/index.ts`) is the shared weighted-random-with-recency-decay
+      picker both `AutoPilot` and `PerformanceDirector` call — floors every
+      candidate's weight above zero (so nothing is ever fully unreachable),
+      decays the last 4 recently-shown scenes, and accepts an optional `boost`
+      multiplier. `PerformanceDirector` uses `boost` for dominant-audio-band
+      matching; `AutoPilot` uses it for essentia's `vocalPresence` (favoring
+      scenes tagged for the `'vocal'` `SceneBand` once the classifier is
+      confident a voice is present). This replaced two independently-written,
+      non-scaling pickers (each hardcoded to rotate between only the top 2
+      candidates for a mood, regardless of roster size) that had drifted into
+      different algorithms across the two branches before the merge.
+      `resolveLayerSlots()` (`PerformanceDirector.tsx`) and `resolveLayerId()`
+      (`SceneManager.tsx`) are two complementary bug fixes that both survived
+      the merge — the first stops a layer scene from staying mounted after a
+      slot switch (accent → overlay left the old accent running forever); the
+      second stops a layer from duplicating the primary when the primary
+      switches onto the same scene.
+
 ### Recent correctness fixes
 
 - Starting/stopping a source now resets beat, phrase, mood, onset, energy, and normalization
@@ -392,6 +476,13 @@ MediaStream
   → shared lights, camera, post effects, optional generative overlay
 ```
 
+In parallel, off the main thread: an `AudioWorklet` PCM tap feeds
+`essentia.worker.ts` (rhythm/key/danceability) and `voice.worker.ts`
+(voice presence + 4-head mood) on a slow cadence; `EssentiaBridge`/
+`VoiceBridge` hold the latest async result and `AudioEngine.update()` drains
+it into the same `AudioFeatures` object each frame — nothing in the hot path
+above ever waits on a worker. See `docs/02_Music_Intelligence.md`.
+
 Important frame priorities:
 
 - `SceneManager` at `-100`: updates audio first and owns scene transitions.
@@ -408,7 +499,7 @@ parameters, and dispose manually-created GPU resources.
 
 | Control | Behavior |
 | --- | --- |
-| `1`–`9`, `0` | Request a registered scene by position (five registered today; digits past the roster size are no-ops) |
+| `1`–`9`, `0` | Request a registered scene by position — covers the first 10 of the 11 scenes now registered (see §0); `juliawings` (position 11) has no hotkey slot and is only reachable via the presets panel or `?scene=juliawings` |
 | `A` | Toggle automatic mood-driven direction |
 | `C` | Capture a performance cue (current look at the current beat) |
 | `R` | Start/stop recording the canvas + audio to .webm |
@@ -425,10 +516,11 @@ parameters, and dispose manually-created GPU resources.
 | `H` | Hide/show the interface |
 
 To test audio, start with a browser tab or screen that has “Share audio” enabled, or choose a
-microphone/line-in device. For OBS, use a URL such as:
+microphone/line-in device. `/` is the public gateway landing page (mobile/WebGL-gated); the
+visualizer itself lives at `/app`. For OBS, use a URL such as:
 
 ```text
-http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autopilot=1
+http://localhost:5183/app?scene=wireframe&palette=ember&ui=hidden&quality=low&autopilot=1
 ```
 
 ## 5. Custom scene workflow
@@ -444,7 +536,7 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
    before mount.
 7. List compatible scenes and the roles the scene can occupy.
 8. Add disposal for all custom materials, geometries, render targets, and event listeners.
-9. Run `npm run check` (typecheck + lint + build) before handing it off.
+9. Run `npm run check` (typecheck + lint + test + build) before handing it off.
 
 ## 6. Known limitations and risks
 
@@ -458,16 +550,27 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
   `multiply` darkens by design. `add`/`screen` are the workhorse modes.
 - Automatic direction is heuristic. It does not yet understand lyrics, song metadata, exact
   sections, or user-authored musical markers.
-- Vocal energy is an estimated frequency range, not source-separated vocals. A real vocal signal
-  would require a heavier model or an external stem/source input.
+- Vocal energy has two readings now, neither source-separated: `voice` is a fast per-frame
+  tonality-gated frequency estimate, `vocalPresence` is essentia's slower MusiCNN classifier read
+  (see item 19, `docs/02_Music_Intelligence.md`). A true vocal signal would still require an
+  isolating stem model or an external source input.
 - Preset imports accept scene IDs but do not yet provide a user-facing migration/error report for
   scenes that are no longer registered.
 - A Vitest suite unit-tests the pure DSP layer (BPM/phrase/mood estimators, spectral feature math,
-  the rolling-window utility) — see item 13. No automated *browser* test suite exists: visual QA
-  still requires running the app with a real audio source and checking transitions, source
-  stop/restart, fullscreen, mobile layout, and GPU quality changes. The live Analytics panel (`Y`)
-  makes several of those checks numeric rather than purely visual, but doesn't replace them.
+  the rolling-window utility, and — since item 19 — the essentia/voice bridges and key/layer/scene
+  helpers) — 222 tests across 27 files. No automated *browser* test suite exists: visual QA still
+  requires running the app with a real audio source and checking transitions, source stop/restart,
+  fullscreen, mobile layout, and GPU quality changes. The live Analytics panel (`Y`) makes several of
+  those checks numeric rather than purely visual, but doesn't replace them. The merge that landed
+  item 19 was itself only verified by `npm run check` and a static browser smoke test — nobody has
+  yet run a real track through it end to end with AutoPilot/PerformanceDirector live; treat that as
+  outstanding, same as item 1 in §7 below.
+- The 11-scene roster (item 19 fixed the count here after it drifted stale) has only 10 number-key
+  slots (`1`–`9`, `0`); see §4.
 - AI textures require the optional local backend and are intentionally disabled when unavailable.
+- Essentia's TF.js model weights are gitignored and fetched at runtime (converted via
+  `scripts/convert-essentia-models.md`); a machine that has never run the conversion step gets no
+  key/voice/mood signal and no error — everything degrades to the pre-essentia heuristic silently.
 
 ## 7. Remaining roadmap
 
@@ -504,9 +607,10 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
    `useSceneFrame`. Camera, animation primitives, and post are no longer
    per-scene code. Follow `docs/05_Scene_Architecture.md`, keep to the exposure
    targets in §0, and give each new scene a distinct band-to-job routing so it
-   is separable by eye from the others. Lower priority than it looks: five
-   scenes across nine camera modes is already more variety than a sixth scene
-   would add.
+   is separable by eye from the others. Lower priority than it looks: 11
+   scenes across nine camera modes is already a lot of variety — and the
+   11th (`juliawings`) already has no number-key slot (§4/§6), so the next
+   scene should come with a plan for scene selection UI, not just a 12th hotkey.
 
 5. **Mood-scoring calibration.** The texture-based score nudges (item 13) are
    principled but untuned by ear.
@@ -518,15 +622,23 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
   readout added as a layer improves *every* look instead of only helping while
   its own scene is on screen. (An earlier vocal/mid layer was built and then
   removed on preference; the architectural point still stands.)
-- **AI as an offline calibration aid** (recommended, never built): if "does it
-  pick up the vibe correctly" ever needs an outside opinion, the shape that fits
-  this project's DSP-only, no-ML-in-hot-path design is a manual offline script —
-  feed fixture tracks through the estimator classes (plain data, no browser),
-  ask an external model for an independent read, diff the two. The agreed
-  reasoning is in the "fast DSP owns timing, model owns understanding" split:
-  per-hit timing must stay DSP because stem models add 100–500 ms; only
-  slow-changing *understanding* can tolerate that latency. Never in the render
-  loop or CI, which must stay deterministic.
+- **AI as an offline calibration aid** (recommended, never built as such — see
+  note below): if "does it pick up the vibe correctly" ever needs an outside
+  opinion, the shape that fits this project's DSP-first, no-ML-in-hot-path
+  design is a manual offline script — feed fixture tracks through the
+  estimator classes (plain data, no browser), ask an external model for an
+  independent read, diff the two. The agreed reasoning is in the "fast DSP
+  owns timing, model owns understanding" split: per-hit timing must stay DSP
+  because stem models add 100–500 ms; only slow-changing *understanding* can
+  tolerate that latency. Never in the render loop or CI, which must stay
+  deterministic. **Note:** item 19's essentia/MusiCNN integration is the
+  "model owns understanding" half of this split *already built and live* (not
+  offline) — it runs off-thread in the browser, on a slow cadence, and never
+  blocks the beat grid, which satisfies the same latency constraint this idea
+  was reasoning toward. What's still missing is the *offline, no-browser*
+  variant specifically: a script to diff the DSP+essentia read against an
+  independent external model over a fixture set, for calibration rather than
+  runtime enrichment.
 
 ### Lower-value refinements
 
@@ -555,11 +667,15 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
 
 Before shipping a meaningful change:
 
-- `npm run check` — typecheck + lint + **test** (61) + build in one pass (or run them individually
+- `npm run check` — typecheck + lint + **test** (222) + build in one pass (or run them individually
   via `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build`)
 - `npm run format` — Prettier over `src/`
-- If you touched `BpmEstimator`/`PhraseDetector`/`MoodEstimator`/`spectralFeatures`, run
-  `npm run test:watch` while iterating — the suite catches a scoring/tempo regression immediately
+- If you touched `BpmEstimator`/`PhraseDetector`/`MoodEstimator`/`spectralFeatures`/the essentia
+  bridges, run `npm run test:watch` while iterating — the suite catches a scoring/tempo/bridge
+  regression immediately
+- If you touched `wrangler.jsonc` or the deploy setup, run `npx wrangler deploy --dry-run` after
+  `npm run build` and confirm it reads the full `dist/` file count with no config errors — see item
+  19; this is exactly the check that would have caught the prior `_redirects` deploy regression.
 - **If you wrote or changed GLSL, compile it.** Shaders are strings: typecheck,
   lint, tests and the build all pass on a broken shader. Compile *and link* it in
   a throwaway WebGL context and check `getShaderInfoLog`. Scene shader sources
@@ -591,22 +707,37 @@ Before shipping a meaningful change:
 - `src/audio/AudioEngine.ts` — source graph and per-frame analysis.
 - `src/audio/spectralFeatures.ts` — pure, unit-tested band/texture-cue math.
 - `src/audio/PercussionDetector.ts` — independent kick/snare/hi-hat detection.
+- `src/audio/essentia/EssentiaBridge.ts` / `VoiceBridge.ts` — main-thread schedulers for the two
+  music-intelligence workers; hold the latest async result for `AudioEngine.update()` to drain.
+- `src/audio/essentia/essentia.worker.ts` / `voice.worker.ts` — the actual Essentia.js/TF.js
+  inference, off the main thread.
+- `src/engine/keyPalette.ts` — `keyPaletteTracker`, key votes → harmonic palette family.
 - `src/engine/performanceState.ts` — **the seam**; read this first.
 - `src/engine/sceneFrame.ts` — `useSceneFrame()`, the per-frame context every scene uses.
-- `src/engine/CameraDirector.tsx` — all camera motion (9 modes) and `pickCameraMode()`.
+- `src/engine/CameraDirector.tsx` — all camera motion (9 modes), `pickCameraMode()`, and voice-aware
+  framing (`voiceFocus` → `locked`/`push`).
 - `src/engine/AnimationDirector.ts` — the six animation primitives `SceneFrame.b` cannot supply.
-- `src/audio/types.ts` — scene-facing feature contract.
+- `src/audio/types.ts` — scene-facing feature contract, including `vocalPresence`/`moods`/`moodsValid`.
 - `src/engine/audioResponse.ts` — reusable response envelopes.
-- `src/engine/SceneManager.tsx` — primary/layer mounting, fades, and transition telemetry.
-- `src/engine/AutoPilot.tsx` — mood-triggered scene/palette automation.
-- `src/engine/PerformanceDirector.tsx` — phrase-level composition decisions.
+- `src/engine/SceneManager.tsx` — primary/layer mounting, fades, transition telemetry, and
+  `resolveLayerId()` (a layer must never duplicate the primary).
+- `src/engine/AutoPilot.tsx` — mood-triggered scene/palette automation, `pickPalette()`.
+- `src/engine/PerformanceDirector.tsx` — phrase-level composition decisions, `resolveLayerSlots()`
+  (a layer slot switch must clear the slot it left).
+- `src/scenes/index.ts` — registry, metadata, role-aware lookup helpers
+  (`getScenesForMood(mood, role?)`, `getPrimaryScenesForMood`), and `pickVariedScene()` — the shared
+  weighted-random-with-recency-decay scene picker both directors use.
 - `src/engine/RollingWindow.ts` / `analyticsMetrics.ts` / `transitionMetrics.ts` — the
   live-analytics instrumentation layer.
 - `src/ui/AnalyticsPanel.tsx` — the numeric accuracy/smoothness readout (`Y`).
-- `src/scenes/index.ts` — registry, metadata, and extension helpers.
 - `src/store.ts` — persisted application and performance state.
 - `src/engine/presets.ts` — preset schema and import sanitization.
 - `src/ui/HUD.tsx` — controls, presets, layers, and operation chrome.
+- `src/App.tsx` — router/gate: mobile/WebGL check, then `/` (gateway landing, `src/landing/`) vs.
+  `/app` (`src/routes/Visualizer.tsx`, the actual visualizer).
+- `wrangler.jsonc` — committed Cloudflare Workers deploy config; do not delete (see §2 item 19).
+- `scripts/convert-essentia-models.md` / `fetch-test-tracks.mjs` / `setup-tfjs-wasm.mjs` — one-time
+  offline setup for essentia model weights, test audio, and the TF.js WASM backend.
 - `../README.md` — quick start and user-facing feature overview.
 - `ARCHITECTURE.md` — implementation-oriented extension guide.
 

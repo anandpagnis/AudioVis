@@ -1,7 +1,7 @@
 # Document 7 — Palette System
 
 > **Audience:** designers, scene authors, automation engineers.  
-> **Status:** 6 built-in palettes + mood table live.  
+> **Status:** 6 built-in palettes + mood table + key-aware family selection live.  
 > **Spec:** [specs/palette_system_spec.md](specs/palette_system_spec.md)
 
 ---
@@ -57,7 +57,8 @@ PALETTES[] ──► getPalette(store.paletteId)
 
 ## Data Flow
 
-1. User presses `P` or AutoPilot selects mood family palette.
+1. User presses `P`, or AutoPilot's `pickPalette()` fires on a committed mood change or a section
+   boundary (see Algorithms).
 2. Store updates `paletteId`.
 3. Each scene's `PaletteBlender` lerps `.a/.b/.c` THREE.Color toward target.
 4. Shaders/materials read blended colors as uniforms.
@@ -71,6 +72,8 @@ PALETTES[] ──► getPalette(store.paletteId)
 | Palette definitions | `palettes.ts` | Static catalog + `registerPalette()` |
 | PaletteBlender | `palettes.ts` | Temporal color ease |
 | MOOD_PALETTES | `AutoPilot.tsx` | Mood → palette id list |
+| `pickPalette()` | `AutoPilot.tsx` | Pure picker: mood family × key-family preference × anti-repeat — see Algorithms |
+| `keyPaletteTracker` | `src/engine/keyPalette.ts` | Accumulates essentia key/scale votes into a harmonic "family" |
 | PALETTE_WORDS | `textureGenerator.ts` | AI prompt color vocabulary |
 | LightRig | `LightRig.tsx` | Palette-colored lights for mesh scenes |
 
@@ -137,9 +140,39 @@ this.a.lerp(targetA, k)
 
 ~1.5 s perceptual sweep at 60 fps.
 
-### AutoPilot palette nudge
+### AutoPilot palette nudge — `pickPalette()`
 
-If current `paletteId` not in `MOOD_PALETTES[targetMood]`, set to first entry. Does **not** update `lastManualAt`.
+Superseded the earlier "if current palette isn't in the mood's list, jump to the first entry"
+rule — that could silently decline to move at all, since the six mood lists overlap heavily (`aurora`
+alone sits in `ambient`, `mellow`, `groove`, and `building`). `pickPalette(moodPalettes, current,
+keyFamily, lastPick, rotation)` (`src/engine/AutoPilot.tsx`, pure and unit-tested):
+
+1. Filters `moodPalettes` to registered ids, then drops whichever is already showing (`current`) —
+   the actual fix for "colours never change," since excluding only entries *absent* from the new
+   mood's list left `current` itself still pickable.
+2. Also drops `lastPick` when an alternative survives, so three moods with overlapping lists can't
+   ping-pong between the same two colours.
+3. If the harmonic `keyFamily` (see below) survived both filters, prefer it — key is the harmonic
+   anchor, skipped only when it was *just* used.
+4. Otherwise a deterministic rotation (`rotation` counter, not `Math.random`, so a recorded set
+   repeats) walks the remaining pool.
+
+Two independent triggers call it: a committed mood change (once confidence/ambiguity clear their
+thresholds, see `docs/02_Music_Intelligence.md`), and a section boundary
+(`f.sectionChange`) even when the mood didn't move — colour marks structure more often than mood
+changes, so a verse→chorus boundary can recolour even a same-mood passage. Both are floored by
+`PALETTE_MIN_SEC` (10 s) so a burst of boundaries can't strobe the palette. Neither counts as manual
+input (`lastManualAt` untouched).
+
+### Key-aware family: `keyPaletteTracker`
+
+`src/engine/keyPalette.ts`. Essentia's raw key read is too jittery to drive a palette directly
+(measured 43–65% window-to-window agreement on real tracks) — but most of the disagreement is
+musically adjacent (a fifth away, the relative major/minor, the parallel), so `keyFamily()` first
+collapses the 24 possible keys onto the 6 palette ids by their position on the circle of fifths
+(minor keys resolved through their relative major before lookup). `KeyPaletteTracker` then votes over
+a rolling history of those collapsed families and refuses to switch before a minimum dwell has
+elapsed — the same shape as `MoodEstimator`'s dwell lock. `.family` is what `pickPalette()` reads.
 
 ---
 

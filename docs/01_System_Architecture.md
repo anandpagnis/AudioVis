@@ -1,22 +1,32 @@
 # Document 1 — System Architecture
 
 > **Audience:** engineers, coding agents.  
-> **Status:** current as of July 2026 — reflects `src/` layout.  
+> **Status:** current as of August 2026 — reflects `src/` layout, including the essentia music-intelligence merge and Cloudflare Workers deploy.  
 > **Spec:** [specs/system_architecture_spec.md](specs/system_architecture_spec.md)
 
 ---
 
 ## Overview
 
-AudioVis is a browser-based audio-visual performance engine built on **React 19 + React Three Fiber + Three.js**. Data flows one way: **audio in → `AudioFeatures` → directors → store → scenes → post**. Scenes never touch the Web Audio API; the UI never touches Three.js directly.
+AudioVis is a browser-based audio-visual performance engine built on **React 19 + React Router 7 +
+React Three Fiber + Three.js**, deployed to **Cloudflare Workers** (`wrangler.jsonc`). Data flows one
+way: **audio in → `AudioFeatures` → directors → store → scenes → post**. Scenes never touch the Web
+Audio API; the UI never touches Three.js directly. Music intelligence has two tiers: DSP stays in the
+per-frame hot path (zero allocation, never blocked), while Essentia.js/TensorFlow.js run key/rhythm/
+voice/mood inference off-thread in two Web Workers and feed the same `AudioFeatures` contract
+asynchronously — see [02_Music_Intelligence.md](02_Music_Intelligence.md).
 
 ```
-src/audio/     Musical understanding (DSP, no ML in hot path)
-src/engine/    Visual framework (directors, transitions, quality, post)
-src/scenes/    Content (7 registered scenes)
-src/ui/        Chrome (HUD, debug, tactical overlay)
-src/store.ts   Zustand persisted state
-backend/       Optional local sd-turbo texture server (:8787)
+src/App.tsx     Router/gate: mobile+WebGL check, then '/' (gateway) vs '/app' (visualizer)
+src/landing/    The public gateway landing page ('/')
+src/routes/     Landing.tsx / Visualizer.tsx — the two routed pages
+src/audio/      Musical understanding (DSP hot path + essentia/ off-thread ML workers)
+src/engine/     Visual framework (directors, transitions, quality, post)
+src/scenes/     Content (11 registered scenes)
+src/ui/         Chrome (HUD, debug, tactical overlay)
+src/store.ts    Zustand persisted state
+backend/        Optional local sd-turbo texture server (:8787)
+wrangler.jsonc  Cloudflare Workers deploy config (committed — do not delete)
 ```
 
 ---
@@ -40,7 +50,8 @@ Map every subsystem: purpose, inputs, outputs, update frequency, dependencies.
 ## Non-Goals
 
 - Custom WebGL2 renderer (abandoned).
-- ML inference on the audio hot path (planned off-thread only).
+- ML inference on the audio hot path — implemented, but strictly off-thread: Essentia.js/TF.js run in
+  `essentia.worker.ts`/`voice.worker.ts`, never on the frame that ticks `audioEngine.update()`.
 - Multiplayer sync (state is serializable; sync layer not built).
 
 ---
@@ -92,6 +103,17 @@ Map every subsystem: purpose, inputs, outputs, update frequency, dependencies.
 | **Output** | `MoodMomentum` on `features.mood` |
 | **Update frequency** | Every frame |
 | **Dependencies** | AudioEngine band extraction |
+
+#### Essentia Bridge / Voice Bridge
+
+| | |
+|---|---|
+| **Purpose** | Schedule off-thread ML jobs (rhythm/key/danceability; voice presence + 4-head mood) and drain the latest async result into `AudioFeatures` |
+| **Location** | `src/audio/essentia/EssentiaBridge.ts`, `VoiceBridge.ts` |
+| **Input** | Mono PCM ring buffer from an inline `AudioWorklet` tap |
+| **Output** | Corrections to `bpm`/adds `key`/`vocalPresence`/`moods`/`moodsValid` on `AudioFeatures` |
+| **Update frequency** | Own slow cadence (2.5–20 s depending on job); drained once per frame, never blocking it |
+| **Dependencies** | `essentia.worker.ts`/`voice.worker.ts` (separate workers so one slow inference can't stall the other), `BpmEstimator` (rhythm handoff) |
 
 #### Scene Manager
 
@@ -275,10 +297,12 @@ an entirely different renderer — to be added without touching the other side.
 
 | Layer | Key files |
 |-------|-----------|
-| Audio | `AudioEngine.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`, `MoodEstimator.ts`, `MidiClock.ts`, `types.ts` |
-| Engine | `Stage.tsx`, `SceneManager.tsx`, `performanceState.ts`, `PerformanceStateBridge.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`, `CueTimeline.tsx`, `CameraDirector.tsx`, `AnimationDirector.ts`, `EffectsDirector.tsx`, `quality.ts`, `LightRig.tsx`, `palettes.ts`, `presets.ts`, `moodParams.ts`, `audioResponse.ts`, `GenerativeLayer.tsx`, `recorder.ts` |
-| Scenes | 5 registered in `SCENES[]`; 16 legacy on disk |
-| UI | `HUD.tsx`, `TacticalHUD.tsx`, `DebugPanel.tsx`, `BpmReadout.tsx` |
+| Routing | `App.tsx`, `src/routes/Landing.tsx`, `src/routes/Visualizer.tsx`, `src/landing/` |
+| Audio (DSP) | `AudioEngine.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`, `MoodEstimator.ts`, `MidiClock.ts`, `types.ts` |
+| Audio (ML, off-thread) | `src/audio/essentia/EssentiaBridge.ts`, `VoiceBridge.ts`, `essentia.worker.ts`, `voice.worker.ts`, `protocol.ts`, `voiceProtocol.ts` |
+| Engine | `Stage.tsx`, `SceneManager.tsx`, `performanceState.ts`, `PerformanceStateBridge.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`, `CueTimeline.tsx`, `CameraDirector.tsx`, `AnimationDirector.ts`, `EffectsDirector.tsx`, `quality.ts`, `LightRig.tsx`, `palettes.ts`, `keyPalette.ts`, `presets.ts`, `moodParams.ts`, `audioResponse.ts`, `GenerativeLayer.tsx`, `recorder.ts` |
+| Scenes | 11 registered in `SCENES[]` — see the roster table in [HANDOFF.md](HANDOFF.md) §0 |
+| UI | `HUD.tsx`, `TacticalHUD.tsx`, `DebugPanel.tsx`, `AnalyticsPanel.tsx`, `UnsupportedScreen.tsx` |
 
 ---
 
@@ -370,7 +394,9 @@ user manual action
 | Beat grid untrusted (`confidence ≤ 0.25`) | Scene commit after 2.5 s timeout instead of downbeat |
 | WebGL context lost | `preventDefault()` + `glEpoch` remount in Stage |
 | AI backend down | Health probe fails; GenerativeLayer alpha = 0 |
-| Stale scene ID in preset/URL | `getScene()` falls back to `SCENES[0]` (schematic) |
+| Stale scene ID in preset/URL | `getScene()` falls back to `SCENES[0]` (`wireframe`) |
+| Essentia model weights unfetched / worker dead / unsupported browser | Bridges stay at neutral defaults (`moodsValid: false`, no key/rhythm correction); DSP estimators unaffected — see [02_Music_Intelligence.md](02_Music_Intelligence.md) |
+| No committed `wrangler.jsonc` (regression risk, not current state) | Every Cloudflare deploy re-runs the auto-setup wizard from scratch — slow, non-deterministic, and the root cause of a prior silent deploy failure; keep it committed |
 | Source stop/restart | Full analysis reset (beat, mood, phrase, onset history) |
 
 ---
