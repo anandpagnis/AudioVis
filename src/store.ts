@@ -39,6 +39,33 @@ export interface BandMapping {
 
 export const MAX_BAND_MAPPINGS = 6
 
+/**
+ * Beats a subject must hold before automation may replace it.
+ *
+ * **This is the "it switches too much" dial.** Raise it to settle the show
+ * down, lower it to make it restless.
+ *
+ * Nothing else bounded the rate. Three triggers compound:
+ *
+ *  - PhraseDetector allows a `sectionChange` every 8 beats, and
+ *    PerformanceDirector recomposes on one IMMEDIATELY — its
+ *    `PHRASE_HOLD_BEATS` guard is explicitly skipped for section changes.
+ *    That alone permits a switch every 4s at 120 BPM.
+ *  - Its phrase fallback fires every 16 beats otherwise.
+ *  - AutoPilot has no cooldown at all, by design, and fires on every
+ *    committed mood change, predicted transition and drop on top of that.
+ *
+ * And critically, neither director has a "hold" outcome: both build their
+ * candidate pool with `scene.id !== sceneId`, so whenever one runs it is
+ * *guaranteed* to change the subject. There was no path where the show
+ * decided to stay put.
+ *
+ * Measured in beats rather than seconds so the pacing tracks the song, the
+ * same reasoning as PerformanceDirector's own phrase cadence. 32 beats is two
+ * phrases — about 16s at 120 BPM.
+ */
+export const MIN_SUBJECT_DWELL_BEATS = 32
+
 export type LayerBlend = 'add' | 'screen' | 'normal' | 'multiply'
 
 /** Per-composition-layer look controls. */
@@ -84,6 +111,18 @@ const cloneLayerFx = (fx: Partial<Record<LayerRole, LayerFx>>): Record<LayerRole
   const base = defaultLayerFx()
   for (const role of LAYER_ROLES) if (fx[role]) base[role] = { ...fx[role] }
   return base
+}
+
+/**
+ * Has the current subject held long enough for automation to replace it?
+ *
+ * Pure and exported for the test. A new source restarts `beatIndex` at 0, which
+ * would leave the stamp in the future and freeze the show on one scene for the
+ * whole of the next track — so a negative elapsed count reads as "yes".
+ */
+export function canAutoSwitch(lastCommitBeat: number, beatIndex = audioEngine.features.beatIndex) {
+  const elapsed = beatIndex - lastCommitBeat
+  return elapsed < 0 || elapsed >= MIN_SUBJECT_DWELL_BEATS
 }
 
 /** Pre-v1 shape of anything that embedded composition slots. */
@@ -152,6 +191,8 @@ interface AppState {
    *  repeat. Updated in `commitScene`, not `requestScene` — a scene only
    *  counts once it's actually on screen, not merely requested. */
   recentSceneIds: string[]
+  /** Beat index the current subject committed on. Feeds the dwell floor. */
+  lastCommitBeat: number
   /** Persistent, user-controllable composition slots. Effects are NOT here. */
   layerSceneIds: Record<LayerRole, string | null>
   paletteId: string
@@ -241,6 +282,7 @@ export const useStore = create<AppState>()(
       pendingSceneId: null,
       pendingImmediate: false,
       recentSceneIds: [],
+      lastCommitBeat: -Infinity,
       layerSceneIds: emptyLayerScenes(),
       paletteId: 'aurora',
 
@@ -407,6 +449,12 @@ export const useStore = create<AppState>()(
       requestScene: (id, opts) => {
         if (!opts?.auto) set({ lastManualAt: audioEngine.features.time })
         if (id === get().sceneId) return
+        // Minimum dwell, enforced HERE rather than in either director because
+        // both of them request subjects and the floor has to bind on the pair.
+        // Manual picks are exempt (the user asked for it), and so are drops:
+        // `immediate` marks the one event whose whole point is landing on the
+        // instant, and a drop is worth interrupting a dwell for.
+        if (opts?.auto && !opts.immediate && !canAutoSwitch(get().lastCommitBeat)) return
         preloadScene(id) // start fetching the lazy chunk before the downbeat commit
         set({ pendingSceneId: id, pendingImmediate: opts?.immediate === true })
       },
@@ -493,6 +541,7 @@ export const useStore = create<AppState>()(
             pendingSceneId: null,
             pendingImmediate: false,
             recentSceneIds: recent,
+            lastCommitBeat: audioEngine.features.beatIndex,
           })
         }
       },

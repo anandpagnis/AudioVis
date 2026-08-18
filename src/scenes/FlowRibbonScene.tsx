@@ -171,13 +171,18 @@ export const FRAG = /* glsl */ `
     // sawtooth, so its multiplier MUST stay a whole number of turns (5.0 below)
     // — a fractional one steps the phase at every wrap and the glint stutters.
     float glint = pow(max(0.0, sin(vT * 26.0 - uAnimRipple * 6.2831853 * 5.0 + vRand * 6.28)), 18.0);
-    col += uColC * glint * uHihat * 1.4;
+    // Hi-hat sparkle pulled back with the rest — it was the twitchiest term.
+    col += uColC * glint * uHihat * 0.9;
 
     // Exposure discipline: many overlapping additive surfaces, so per-ribbon
     // contribution stays low (docs/09_Rendering_Engine.md). Brightness comes
     // from voice and energy, never from stacking opacity.
+    // Overall level scaled to 0.65x: as a layer this read as too aggressive
+    // against the subject it composites over. The RATIO of the terms is
+    // unchanged, so voice still owns the brightness and energy still lifts the
+    // floor — the whole thing just sits further back in the mix.
     float bright = (0.1 + uEnergy * 0.26 + uVoice * 0.42 + abs(vWave) * 0.8)
-      * (0.5 + vRand * 0.5);
+      * (0.5 + vRand * 0.5) * 0.65;
 
     gl_FragColor = vec4(col * body * bright * uFade, 1.0);
   }

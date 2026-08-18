@@ -24,19 +24,27 @@ describe('getScenesForMood role filtering', () => {
     expect(unfiltered).toContain(layerOnly[0].id)
   })
 
-  it('would have picked a layer-only scene without the filter', () => {
-    // Guards the specific regression: ribbons is accent/overlay-only yet holds
-    // the top moodFit in several moods, so the unfiltered top pick is invalid.
-    const ribbons = SCENES.find((s) => s.id === 'ribbons')
-    expect(ribbons).toBeDefined()
-    expect(ribbons!.metadata.roles).not.toContain('primary')
-    const offending = ribbons!.metadata.moods.filter(
-      (m) => getScenesForMood(m)[0]?.id === 'ribbons',
+  it('never returns a layer-only scene as a primary', () => {
+    // The regression this guards was first found via ribbons, which held the
+    // top moodFit in five moods while being accent/overlay-only — so the
+    // UNFILTERED top pick was an invalid primary.
+    //
+    // Deliberately no longer asserted through ribbons' scores. Those are art
+    // direction and have already moved once (0.92-0.98 -> 0.64-0.72, to stop it
+    // dominating the layer slots); a test that depends on a scene staying
+    // top-ranked breaks on a tuning change and says nothing about the filter.
+    // The invariant is what matters, so it is checked across the whole roster.
+    const layerOnly = SCENES.filter(
+      (s) => !s.metadata.roles.includes('primary') && s.metadata.roles.length > 0,
     )
-    expect(offending.length).toBeGreaterThan(0)
-    // ...and with the filter it is never the top primary for those moods.
-    for (const m of offending) {
-      expect(getScenesForMood(m, 'primary')[0]?.id).not.toBe('ribbons')
+    expect(layerOnly.length, 'roster has no layer-only scene to check').toBeGreaterThan(0)
+    for (const scene of layerOnly) {
+      for (const mood of scene.metadata.moods) {
+        expect(
+          getScenesForMood(mood, 'primary').map((s) => s.id),
+          `${scene.id} @ ${mood}`,
+        ).not.toContain(scene.id)
+      }
     }
   })
 

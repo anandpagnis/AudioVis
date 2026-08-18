@@ -448,6 +448,46 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
 
 ## 6. Known limitations and risks
 
+### ⚠️ Licence blocker — `synthgrid` and `panic` must be removed before any commercial release
+
+**Two scenes are CC BY-NC-SA 3.0 — NonCommercial, personal use only:**
+
+- **`synthgrid`** (Synth Grid) — source carried an explicit CC BY-NC-SA 3.0 header.
+- **`panic`** (Kernel Panic) — source was unlicensed; Shadertoy's default is CC BY-NC-SA 3.0,
+  so it is NC absent an explicit grant. Its displayed text was rewritten from scratch, but
+  the shader mechanism is still the original author's.
+
+Neither may appear in a commercial build, a marketplace or asset-store listing, or any public
+revenue-generating release without separate written permission. The ShareAlike term is the
+second problem: distributing a derivative would require licensing it alike, which would
+encumber the rest of this codebase. **Remove or replace them — do not attempt to relicense.**
+
+Enforcement is mechanical, not a note to remember:
+
+- each scene declares `license: 'noncommercial'` in its `SceneMetadata`;
+- `nonCommercialSceneIds()` / `commerciallyShippableScenes()` in `src/scenes/index.ts` derive
+  the packaging exclusion list from that field — **a release build should be assembled from
+  `commerciallyShippableScenes()`**, which does not exist as a build step yet;
+- `src/scenes/__tests__/sceneLicensing.test.ts` fails if either marking is ever removed, and
+  also asserts a restricted scene can never be `SCENES[0]` (the `getScene()` fallback, which
+  would otherwise be reachable from a stale preset even in a build that excluded it).
+
+**Other ported scenes need their provenance confirmed before they can be called safe.**
+Shadertoy's default licence is CC BY-NC-SA 3.0 unless a shader states otherwise, so a port
+carrying no explicit licence header is *not* commercially clear by default:
+
+| scene | source | status |
+| --- | --- | --- |
+| `heap` | Tor Ringstad, explicit CC BY 4.0 | **safe** with attribution |
+| `tunnel` | Shadertoy `MfVfz3`, no licence stated | **assume NC** until author confirms |
+| `orbs` | unattributed paste, provenance unknown | **unknown** — needs sourcing |
+| `kaleido` | kishimisu tutorial + IQ cosine palette | **verify** — tutorial code, licence unstated |
+| `trail` | multi-pass Shadertoy, no licence stated | **assume NC** until author confirms |
+
+Only `heap` is presently confirmed shippable. The other four are unmarked in metadata (so
+they are *not* currently excluded by `nonCommercialSceneIds()`) because guessing would be as
+wrong as ignoring it — they need someone to actually check, then mark.
+
 - The bundle is code-split (scenes, AI layer, vendor chunks); the remaining >500 kB warning is
   three.js itself, which is expected and long-cacheable. Further shrinking would require a
   custom three build or tree-shaken imports.
