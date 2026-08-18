@@ -288,7 +288,14 @@ export const SCENES: SceneDef[] = [
     component: FlowRibbonScene,
     metadata: {
       roles: ['accent', 'overlay'],
-      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
+      // Peak dropped. Coverage, not fit, was making this the layer that appeared
+      // most: it was the only calm layer tagged for `peak`, so it had a
+      // near-monopoly there, and one extra mood over its peers meant more
+      // opportunities everywhere else. `network` scores HIGHER at every mood
+      // they share (0.90/0.84/0.76/0.70 against 0.72/0.70/0.64/0.68) and was
+      // still picked less often. A flowing ribbon is also the wrong answer at
+      // peak — that is what `plasma` is for.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
       bands: ['mid', 'vocal', 'high', 'energy'],
       intensity: 'medium',
       // A few dozen strips, all motion in the vertex shader.
@@ -301,7 +308,7 @@ export const SCENES: SceneDef[] = [
       // competes rather than dominates. This is a FREQUENCY control only; how
       // strong it looks when it does appear is the brightness scale in
       // FlowRibbonScene's fragment shader.
-      moodFit: { ambient: 0.72, mellow: 0.70, groove: 0.64, building: 0.68, peak: 0.66 },
+      moodFit: { ambient: 0.68, mellow: 0.66, groove: 0.62, building: 0.64 },
       cameraAnchor: { target: [0, 0, 0], distance: 10, height: 1.4 },
       cameraModes: ['cinematic', 'spiral', 'orbit', 'handheld', 'pull'],
     },
@@ -533,43 +540,6 @@ export const SCENES: SceneDef[] = [
     },
   },
   {
-    id: 'tunnel',
-    name: 'Tunnel Drift',
-    component: TunnelDriftScene,
-    metadata: {
-      // Subject only. A fullscreen flythrough owns the whole frame by
-      // construction — there is no ground to sit behind it and nothing sensible
-      // to composite over a moving tunnel.
-      roles: ['primary'],
-      // Hypnotic and DRIVING, not violent — the opposite pole from `heap`.
-      // Constant forward motion needs somewhere to be going, which is why it
-      // starts at `groove` rather than `ambient`, and why it stops short of
-      // `aggressive`: the piece has no chaos in it, so at full aggression it
-      // would read as too composed for the music.
-      moods: ['groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // 99-step march with a nested 4-iteration fractal warp per step, each
-      // iteration doing sin/cos on vec3s plus an axis rotation. Comfortably the
-      // most expensive scene in the roster; `uMaxSteps` is wired to the
-      // governor exactly as TorusFold/Inversion do it.
-      performanceCost: 'high',
-      compatibleWith: [],
-      // Peaks at `building` on purpose: a tunnel flying toward something IS the
-      // build, visually. Held inside the roster's 0.6-0.9 band.
-      moodFit: {
-        groove: 0.86,
-        building: 0.88,
-        peak: 0.86,
-      },
-      // The scene flies its own scripted path and never reads the shared
-      // camera, exactly like FoldPathScene — the flythrough IS the piece.
-      // Declared anyway for CameraDirector.test.ts's variety invariant.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
     id: 'orbs',
     name: 'Orbit Glow',
     component: OrbitGlowScene,
@@ -595,7 +565,7 @@ export const SCENES: SceneDef[] = [
       // no loop — comfortably the cheapest scene in the roster, cheaper even
       // than `network`.
       performanceCost: 'low',
-      compatibleWith: ['wireframe', 'chrome', 'dissolve'],
+      compatibleWith: ['wireframe', 'chrome', 'dissolve', 'pointcloud', 'foldpath', 'juliawings'],
       // Sits just above `ribbons` at the calm end where it belongs and below it
       // by `groove`, so the two layer scenes trade places across the range
       // rather than one always winning. Both are inside the roster's 0.6-0.9
@@ -734,6 +704,61 @@ export const SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
+]
+
+/**
+ * Registered, built, and deliberately WITHHELD from the roster.
+ *
+ * Kept as real entries rather than deleted or commented out: the loaders and
+ * lazy components stay live, so these still typecheck and build, and
+ * re-enabling one is moving its entry back into `SCENES`. Nothing selects from
+ * this array — automation, the HUD scene bar and `getScene()` all read `SCENES`
+ * only, so a disabled id degrades to the `SCENES[0]` fallback exactly like an
+ * unknown one.
+ *
+ * `tunnel` and `panic` are here on request while their look is still being
+ * worked on. Note `panic` is ALSO non-commercial; see KNOWN_NC_SOURCE_IDS,
+ * which deliberately tracks licence independently of whether a scene is
+ * currently in the roster.
+ */
+export const DISABLED_SCENES: SceneDef[] = [
+  {
+    id: 'tunnel',
+    name: 'Tunnel Drift',
+    component: TunnelDriftScene,
+    metadata: {
+      // Subject only. A fullscreen flythrough owns the whole frame by
+      // construction — there is no ground to sit behind it and nothing sensible
+      // to composite over a moving tunnel.
+      roles: ['primary'],
+      // Hypnotic and DRIVING, not violent — the opposite pole from `heap`.
+      // Constant forward motion needs somewhere to be going, which is why it
+      // starts at `groove` rather than `ambient`, and why it stops short of
+      // `aggressive`: the piece has no chaos in it, so at full aggression it
+      // would read as too composed for the music.
+      moods: ['groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // 99-step march with a nested 4-iteration fractal warp per step, each
+      // iteration doing sin/cos on vec3s plus an axis rotation. Comfortably the
+      // most expensive scene in the roster; `uMaxSteps` is wired to the
+      // governor exactly as TorusFold/Inversion do it.
+      performanceCost: 'high',
+      compatibleWith: [],
+      // Peaks at `building` on purpose: a tunnel flying toward something IS the
+      // build, visually. Held inside the roster's 0.6-0.9 band.
+      moodFit: {
+        groove: 0.86,
+        building: 0.88,
+        peak: 0.86,
+      },
+      // The scene flies its own scripted path and never reads the shared
+      // camera, exactly like FoldPathScene — the flythrough IS the piece.
+      // Declared anyway for CameraDirector.test.ts's variety invariant.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
   {
     id: 'panic',
     name: 'Kernel Panic',
@@ -776,6 +801,17 @@ export const SCENES: SceneDef[] = [
     },
   },
 ]
+
+/**
+ * Every scene whose SOURCE is non-commercial, tracked independently of the
+ * roster.
+ *
+ * Licence facts must not disappear when a scene is temporarily disabled — that
+ * is exactly when someone would re-enable it later having forgotten. The
+ * licensing test asserts against this list intersected with what is actually
+ * registered.
+ */
+export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic']
 
 /**
  * Scenes whose source licence forbids, or has not been confirmed to permit,
@@ -929,8 +965,22 @@ export function pickVariedScene(
  */
 export function getCompatibleScenes(id: string): SceneDef[] {
   const scene = getScene(id)
-  return scene.metadata.compatibleWith
-    .map((compatibleId) => SCENES.find((s) => s.id === compatibleId))
+  const declared = new Set(scene.metadata.compatibleWith)
+  // SYMMETRIC. "A layers well with B" is inherently mutual, and treating the
+  // declaration as one-directional produced a lopsided topology: a scene added
+  // later can declare who it suits, but no existing scene will ever list IT
+  // back, so it is almost unreachable through this filter.
+  //
+  // Measured before this: over 40k simulated layer picks the accent slot went
+  // plasma 47% / ribbons 32% / network 16% / orbs 5.3%, purely on inbound edge
+  // count (ribbons is listed by five scenes, orbs by none). Same failure as the
+  // {wireframe, plasma, dissolve, chrome} primary clique, on the layer side.
+  for (const other of SCENES) {
+    if (other.metadata.compatibleWith.includes(id)) declared.add(other.id)
+  }
+  declared.delete(id)
+  return [...declared]
+    .map((cid) => SCENES.find((s) => s.id === cid))
     .filter((s): s is SceneDef => Boolean(s))
 }
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { commerciallyShippableScenes, nonCommercialSceneIds, SCENES } from '../index'
+import {
+  commerciallyShippableScenes,
+  DISABLED_SCENES,
+  KNOWN_NC_SOURCE_IDS,
+  nonCommercialSceneIds,
+  SCENES,
+} from '../index'
 
 /**
  * Guards the one class of mistake that cannot be fixed after the fact.
@@ -10,13 +16,34 @@ import { commerciallyShippableScenes, nonCommercialSceneIds, SCENES } from '../i
  * licence posture a compile-and-test-time fact instead.
  */
 describe('scene licensing', () => {
-  it('keeps every known NC-encumbered scene marked', () => {
-    // CC BY-NC-SA 3.0, both of them. If either flips to `original` or
-    // `attribution` the packaging step would silently start including it.
-    for (const id of ['synthgrid', 'panic']) {
+  it('marks every known NC scene that is currently registered', () => {
+    // Driven off KNOWN_NC_SOURCE_IDS rather than a literal list, so the licence
+    // fact survives a scene being temporarily disabled — which is precisely
+    // when someone would re-enable it later having forgotten.
+    for (const id of KNOWN_NC_SOURCE_IDS) {
       const scene = SCENES.find((s) => s.id === id)
-      expect(scene, `${id} is registered`).toBeDefined()
-      expect(scene!.metadata.license, id).toBe('noncommercial')
+      if (!scene) continue
+      expect(scene.metadata.license, id).toBe('noncommercial')
+    }
+  })
+
+  it('marks known NC scenes even while they sit in DISABLED_SCENES', () => {
+    // A disabled scene is one edit away from being re-enabled, so its licence
+    // marking has to be correct the whole time it is out of the roster.
+    for (const id of KNOWN_NC_SOURCE_IDS) {
+      const scene = DISABLED_SCENES.find((s) => s.id === id)
+      if (!scene) continue
+      expect(scene.metadata.license, id).toBe('noncommercial')
+    }
+  })
+
+  it('accounts for every known NC id in exactly one of the two arrays', () => {
+    // Guards the third failure mode: an NC scene quietly deleted from both,
+    // leaving KNOWN_NC_SOURCE_IDS stale and the next reader misinformed.
+    for (const id of KNOWN_NC_SOURCE_IDS) {
+      const found =
+        SCENES.some((s) => s.id === id) || DISABLED_SCENES.some((s) => s.id === id)
+      expect(found, `${id} is registered or explicitly disabled`).toBe(true)
     }
   })
 
