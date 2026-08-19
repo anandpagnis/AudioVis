@@ -14,6 +14,17 @@ import { useStore } from '../store'
  * Resting bloom per mood — the creative decision the old formula's hardcoded
  * 0.65 was standing in for. Quiet moods sit darker so the music has somewhere
  * to go; hype moods start hot and stay there between hits.
+ *
+ * Scaled to 0.75x of the original table (0.4/0.5/0.55/0.65/0.75/0.95/0.9) to
+ * bring the picture down. This is the FLOOR only: `reactive` and `voiceLift`
+ * are added on top untouched, so hits keep their punch and it is the resting
+ * level that darkens — which is what "too bright" actually meant.
+ *
+ * Deliberately separate from the audio-side sensitivity work in
+ * bandNormalizer.ts. That dims what the scenes DRAW; this dims how hard the
+ * post chain blooms whatever they drew. Bloom feeds nothing upstream, so
+ * changing it needs no threshold re-derivation — it is the cheapest brightness
+ * lever in the app and the right one to reach for first.
  */
 /**
  * Resting bloom threshold — the value the pass was hardcoded to before this was
@@ -24,13 +35,13 @@ const BLOOM_THRESHOLD_BASE = 0.18
 const VIGNETTE_BASE = 0.85
 
 const BLOOM_BASE: Record<MoodState, number> = {
-  silence: 0.4,
-  ambient: 0.5,
-  mellow: 0.55,
-  groove: 0.65,
-  building: 0.75,
-  peak: 0.95,
-  aggressive: 0.9,
+  silence: 0.3,
+  ambient: 0.38,
+  mellow: 0.41,
+  groove: 0.49,
+  building: 0.56,
+  peak: 0.71,
+  aggressive: 0.68,
 }
 
 /**

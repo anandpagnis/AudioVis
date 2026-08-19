@@ -120,9 +120,15 @@ export class MoodEstimator {
     // --- Flags ---
     if (f.drop) this.lastDropAt = now
     m.isBuilding = f.buildUp || (m.energyVel > 0.25 && m.bassVel > 0.15)
-    m.isPeaking = m.level > 0.72 && f.bass > 0.55 && now - this.lastDropAt < 6
+    // Thresholds re-derived against the post-fix normalized ranges - each set
+    // so it fires on the same share of frames as before across the eight
+    // reference tracks (level>0.72 fired 0.11%, bass>0.55 fired 19.84%). They
+    // land close to the originals because `bass` and `level` were never the
+    // badly-broken part; see bandNormalizer.ts.
+    m.isPeaking = m.level > 0.742 && f.bass > 0.446 && now - this.lastDropAt < 6
     m.isDecaying = m.energyVel < -0.2
-    m.isMelting = m.energyVel < -0.12 && m.brightVel > 0.1 && m.level < 0.55
+    // `level < 0.55` fired on 80.09% of frames; 0.465 preserves that share.
+    m.isMelting = m.energyVel < -0.12 && m.brightVel > 0.1 && m.level < 0.465
 
     // --- Score every state, pick the winner ---
     const scores = this.score(f, m, density)

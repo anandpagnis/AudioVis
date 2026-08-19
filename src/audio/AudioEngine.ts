@@ -4,22 +4,33 @@ import { voiceBridge } from './essentia/VoiceBridge'
 import { MoodEstimator } from './MoodEstimator'
 import { PercussionDetector } from './PercussionDetector'
 import { PhraseDetector } from './PhraseDetector'
+import {
+  BandNormalizer,
+  PEAK_GUARD,
+  ProgramLevel,
+  REF_RATE,
+  type SilenceConfig,
+} from './bandNormalizer'
 import { computeSpectralBands } from './spectralFeatures'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 
 export type SourceKind = 'system' | 'mic' | 'file'
 
+/**
+ * Silence gate, as a share of the program's own recent level.
+ *
+ * Derived from the eight MTG-Jamendo reference tracks rather than guessed —
+ * see the derivation in bandNormalizer.test.ts. The gap between the two is
+ * hysteresis: `f.silence` hard-stops every automatic director, so a passage
+ * hovering at the boundary must not chatter it.
+ */
+const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
+
+/** Sum of the `energyTarget` band weights below — keeps energy in 0..1. */
+const ENERGY_WEIGHT_SUM = 0.5 + 0.3 + 0.2 + 0.3
+
 const FFT_SIZE = 2048
 const SPECTRUM_BINS = 512 // we keep the lower half — up to ~11 kHz at 44.1k
-
-interface BandNorm {
-  peak: number
-  value: number
-}
-
-function makeBand(): BandNorm {
-  return { peak: 0.15, value: 0 }
-}
 
 /**
  * Capture requests must never hang. Chrome leaves getUserMedia() *pending
@@ -141,19 +152,22 @@ class AudioEngine {
   private beatHoldUntil = -1
 
   private bands = {
-    rms: makeBand(),
-    bass: makeBand(),
-    mid: makeBand(),
-    sub: makeBand(),
-    presence: makeBand(),
-    high: makeBand(),
-    vocal: makeBand(),
-    air: makeBand(),
-    flux: makeBand(),
+    rms: new BandNormalizer(),
+    bass: new BandNormalizer(),
+    mid: new BandNormalizer(),
+    sub: new BandNormalizer(),
+    presence: new BandNormalizer(),
+    high: new BandNormalizer(),
+    vocal: new BandNormalizer(),
+    air: new BandNormalizer(),
+    flux: new BandNormalizer(),
   }
 
   private energyLog: { t: number; e: number }[] = []
   private silenceSince = 0
+  private programLevel = new ProgramLevel()
+  /** Peak reference for `midWaveform` — see normalizeWave. */
+  private waveRef = 0
   private dropUntil = -1
 
   readonly bpmEstimator = new BpmEstimator()
@@ -502,10 +516,9 @@ class AudioEngine {
     // Drops the PCM ring and any pending job so a second track can't inherit
     // the first one's tempo read. The worker (and its loaded WASM) persists.
     essentiaBridge.detach()
-    for (const band of Object.values(this.bands)) {
-      band.peak = 0.15
-      band.value = 0
-    }
+    for (const band of Object.values(this.bands)) band.reset()
+    this.programLevel.reset()
+    this.waveRef = 0
   }
 
   /** Call once per render frame, before scenes read `features`. */
@@ -532,7 +545,10 @@ class AudioEngine {
     analyser.getFloatTimeDomainData(f.waveform)
     analyser.getFloatFrequencyData(this.freqDb)
     // Band-passed time domain — the lead/synth wave scenes can trace.
-    if (this.midAnalyser) this.midAnalyser.getFloatTimeDomainData(f.midWaveform)
+    if (this.midAnalyser) {
+      this.midAnalyser.getFloatTimeDomainData(f.midWaveform)
+      this.normalizeWave(f.midWaveform, delta)
+    }
 
     // --- Spectrum (dB → linear magnitude, normalized) ---
     const nyquist = ctx.sampleRate / 2
@@ -557,28 +573,41 @@ class AudioEngine {
     // --- Bands + centroid + flux + texture cues (flatness/rolloff/air) ---
     const spectral = computeSpectralBands(this.freqDb, this.prevMag, binHz)
 
+    // --- Silence, judged relative to the program's own level ---------------
+    // Computed BEFORE normalization because the normalizer needs it: it holds
+    // its loudness reference while silent rather than decaying onto the noise
+    // floor. See bandNormalizer.ts.
+    if (this.programLevel.update(rmsRaw, delta, SILENCE_CONFIG)) this.silenceSince = now
+    f.silence = now - this.silenceSince > 0.6
+
     // --- Adaptive normalization + attack/release smoothing ---
-    f.rms = this.norm(this.bands.rms, rmsRaw, delta)
-    f.bass = this.norm(this.bands.bass, spectral.bass, delta)
-    f.mid = this.norm(this.bands.mid, spectral.mid, delta)
-    f.sub = this.norm(this.bands.sub, spectral.sub, delta)
-    f.presence = this.norm(this.bands.presence, spectral.presence, delta)
-    f.high = this.norm(this.bands.high, spectral.high, delta)
-    f.vocal = this.norm(this.bands.vocal, spectral.vocal, delta)
-    f.air = this.norm(this.bands.air, spectral.air, delta)
-    f.flux = this.norm(this.bands.flux, spectral.bassFlux, delta)
+    const norm = (b: BandNormalizer, raw: number) =>
+      b.update(raw, delta, f.silence, this.tuning.attack, this.tuning.release)
+    f.rms = norm(this.bands.rms, rmsRaw)
+    f.bass = norm(this.bands.bass, spectral.bass)
+    f.mid = norm(this.bands.mid, spectral.mid)
+    f.sub = norm(this.bands.sub, spectral.sub)
+    f.presence = norm(this.bands.presence, spectral.presence)
+    f.high = norm(this.bands.high, spectral.high)
+    f.vocal = norm(this.bands.vocal, spectral.vocal)
+    f.air = norm(this.bands.air, spectral.air)
+    f.flux = norm(this.bands.flux, spectral.bassFlux)
     f.transient += (Math.min(1, f.flux * 1.5) - f.transient) * Math.min(1, delta * 20)
     f.centroid += (Math.min(1, spectral.centroidRaw * 3) - f.centroid) * Math.min(1, delta * 8)
     f.spectralFlatness += (spectral.spectralFlatness - f.spectralFlatness) * Math.min(1, delta * 8)
     f.spectralRolloff += (spectral.spectralRolloff - f.spectralRolloff) * Math.min(1, delta * 8)
     // Slower smoothing: crest factor is a "character" cue, not a fast envelope.
     f.crestFactor += (crestRaw - f.crestFactor) * Math.min(1, delta * 4)
-    const energyTarget = Math.min(1, f.bass * 0.5 + f.mid * 0.3 + f.high * 0.2 + f.rms * 0.3)
+    // Weights are divided by their own sum rather than clipped with min(1).
+    // Before the normalizer fix the bands were crushed so the sum rarely
+    // reached 1 and the clip was inert; with the bands using their real range
+    // it clipped constantly (measured p99 = 0.9999), and a saturated `energy`
+    // silently breaks drop detection — `recent > before * 1.55` cannot be met
+    // once both sides are pinned at the ceiling. Same relative weighting, full
+    // 0..1 range, no clipping.
+    const energyTarget =
+      (f.bass * 0.5 + f.mid * 0.3 + f.high * 0.2 + f.rms * 0.3) / ENERGY_WEIGHT_SUM
     f.energy += (energyTarget - f.energy) * Math.min(1, delta * (energyTarget > f.energy ? 14 : 4))
-
-    // --- Silence ---
-    if (rmsRaw > 0.008) this.silenceSince = now
-    f.silence = now - this.silenceSince > 0.6
 
     // --- Independent drum hits (kick / snare / hi-hat) ---
     // Separate from the broadband onset detector below: that one owns beat
@@ -630,12 +659,30 @@ class AudioEngine {
     this.moodEstimator.update(f)
   }
 
-  private norm(band: BandNorm, raw: number, delta: number): number {
-    band.peak = Math.max(raw, band.peak * (1 - delta * 0.04), 0.02)
-    const target = Math.min(1, raw / band.peak)
-    const rate = target > band.value ? 22 * this.tuning.attack : 5 * this.tuning.release
-    band.value += (target - band.value) * Math.min(1, delta * rate)
-    return band.value
+  /**
+   * Scale a time-domain buffer in place against its own slow peak reference.
+   *
+   * `midWaveform` is raw PCM off an AnalyserNode, so its amplitude is the
+   * signal's actual level — the one feature that survived the normalizer fix
+   * still fully volume-dependent. FlowRibbonScene traces it as an
+   * oscilloscope line, so at low volume the trace flattened to nothing and at
+   * high volume it clipped the ribbon.
+   *
+   * Deliberately shares BandNormalizer's reference shape rather than dividing
+   * by this frame's own peak: per-frame normalization would hold the trace at
+   * constant height and destroy the dynamics that make it read as playing.
+   */
+  private normalizeWave(buf: Float32Array, delta: number): void {
+    let peak = 0
+    for (let i = 0; i < buf.length; i++) {
+      const a = Math.abs(buf[i])
+      if (a > peak) peak = a
+    }
+    this.waveRef = Math.max(peak, this.waveRef * (1 - delta * REF_RATE))
+    const ref = Math.max(this.waveRef, PEAK_GUARD)
+    if (ref <= PEAK_GUARD) return
+    const g = 1 / ref
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.max(-1, Math.min(1, buf[i] * g))
   }
 
   private advanceGrid(now: number, f: AudioFeatures) {
@@ -686,14 +733,33 @@ class AudioEngine {
       recent /= recentN
       before /= beforeN
       // Drop: sudden jump well above the recent baseline with heavy bass.
-      if (recent > before * 1.55 && recent > 0.55 && f.bass > 0.6 && now > this.dropUntil + 4) {
+      //
+      // Re-derived after the normalizer fix rather than re-tuned by taste: each
+      // constant is set so the compound firing rate over the eight MTG-Jamendo
+      // reference tracks matches what the ORIGINAL constants produced at unity
+      // gain (0.412% of eligible frames). They end up close to the originals
+      // (1.55/0.55/0.60) because the fix restores `bass` and `energy` to almost
+      // exactly the distribution they always had - what changed drastically was
+      // the bands from `mid` up, which the old absolute floor had crushed.
+      //
+      // The point is not the values, it is that the rate no longer depends on
+      // playback volume. Measured drop rate at 0.25x / 1x / 4x input gain:
+      //   before  0.000% / 0.412% / 0.348%   (no drops at all when quiet)
+      //   after   0.412% / 0.412% / 0.412%
+      if (recent > before * 1.573 && recent > 0.447 && f.bass > 0.507 && now > this.dropUntil + 4) {
         this.dropUntil = now + 0.6
       }
       // Build-up: sustained rise over the window.
       const span = now - oldest
       const first = this.energyLog[0]
       const slope = span > 3 ? (recent - first.e) / span : 0
-      f.buildUp = slope > 0.09 && recent > 0.35 && recent > before
+      // Re-derived the same way. `slope` is the term that moved most (0.09 ->
+      // 0.197) because it is an absolute rate of change in `energy`, so it
+      // scales with the band range the fix restored: left at 0.09 it fired 43x
+      // too often. Build rate at 0.25x / 1x / 4x gain:
+      //   before  0.000% / 0.016% / 0.446%   (28x more builds when loud)
+      //   after   0.018% / 0.018% / 0.018%
+      f.buildUp = slope > 0.197 && recent > 0.295 && recent > before
     }
     f.drop = now < this.dropUntil
   }
