@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { getSharedEnvMap, releaseSharedEnvMap } from '../engine/envMap'
 import { useSceneFrame, useSpin } from '../engine/sceneFrame'
+import { bipolar, drastic } from './contract'
 import { useDispose } from '../engine/useDispose'
 
 /**
@@ -23,6 +24,39 @@ import { useDispose } from '../engine/useDispose'
  * Exposure note: this scene is the one that does NOT blend additively, so it
  * cannot contribute to the whole-frame wash documented in docs/09_Rendering_Engine.md — its
  * bright regions are small, tight highlights on an otherwise black frame.
+ *
+ * ## Scene Contract
+ *
+ *   speed     rotation rate
+ *   fill      subject scale — how much of the frame the knot occupies
+ *   tilt      pitch offset on top of the automatic bob (0.5 = level)
+ *   contrast  surface finish — "polish", frosted metal to near-mirror
+ *
+ * `complexity`, `density` and `shape` are not declared. All three would have to
+ * rebuild the torus knot, and this scene's cost is dominated by an opaque
+ * physically-shaded pass over a near-mirror surface — the one place in the
+ * roster where a dial that silently multiplies geometry is a frame-time risk
+ * rather than a look.
+ *
+ * ## Quality governance
+ *
+ * This scene reads no `quality.knobs` value, and that is correct rather than an
+ * oversight — please do not "fix" it by wiring one up. Its cost is per-fragment
+ * almost entirely: clearcoat puts a second specular lobe and a second env-map
+ * sample on every pixel of the subject, against a fixed ~11k-triangle knot whose
+ * vertex cost is noise by comparison. So the lever that works is the number of
+ * pixels, which the engine already owns through this scene's declared
+ * `pixelBudget` (see engine/renderScale.ts) — it is applied whether the scene
+ * cooperates or not.
+ *
+ * The two knobs that would change per-fragment cost are both unavailable for
+ * concrete reasons: toggling `clearcoat` off crosses a three.js `USE_CLEARCOAT`
+ * boundary and recompiles the program, which is a synchronous stall delivered to
+ * a machine that is by definition already struggling; and the environment map is
+ * a pinned session-wide singleton shared with every other physical material, so
+ * its resolution is not this scene's to move. If they are wanted later they belong on
+ * `useSceneParamSteps`, which rebuilds at bucket boundaries rather than per
+ * frame; see engine/sceneFrame.ts.
  */
 
 export function ChromeFormScene() {
@@ -62,7 +96,7 @@ export function ChromeFormScene() {
   const white = useMemo(() => new THREE.Color('#ffffff'), [])
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, params, anim }) => {
+    ({ f, dt, b, col, vis, params, anim, p }) => {
       heroMat.opacity = vis
 
       // Write depth ONLY while effectively opaque.
@@ -113,14 +147,35 @@ export function ChromeFormScene() {
       // was mathematically present but invisible, which is exactly the complaint.
       // Presence sharpens the clearcoat separately, so hats and snares do visibly
       // different things to the material.
-      heroMat.roughness = 0.05 + b.high * 0.16
-      heroMat.clearcoatRoughness = 0.04 + b.presence * 0.1
+      //
+      // `contrast` sets the FLOOR both start from — the surface finish. Inverted
+      // (high dial = low roughness) because the dial reads as tonal contrast and
+      // a mirror has more of it than frosted metal. The audio's frosting is
+      // added on top either way, so a hat pattern still reads at both ends.
+      // Spans chosen so the DECLARED default (0.85, not 0.5) reproduces the
+      // authored 0.05 / 0.04 exactly. The default sits high because this
+      // surface is authored as near-mirror and the dial's job is to frost it —
+      // a 0.5 default would have shipped a duller scene than the one reviewed.
+      const finish = 1 - p.contrast
+      heroMat.roughness = 0.029 + finish * 0.14 + b.high * 0.16
+      heroMat.clearcoatRoughness = 0.019 + finish * 0.14 + b.presence * 0.1
 
-      const angle = spin(dt, 0.14 + f.energy * 0.3 + b.mid * 0.3, params.speed)
+      const angle = spin(dt, 0.14 + f.energy * 0.3 + b.mid * 0.3, params.speed * drastic(p.speed))
       if (heroRef.current) {
         heroRef.current.rotation.y = angle
-        heroRef.current.rotation.x = Math.sin(f.time * 0.11) * 0.4
-        heroRef.current.scale.setScalar(1 + b.pulse * 0.055 + anim.inflate * 0.05)
+        // `tilt` cranes the subject: bipolar, so 0.5 leaves the automatic bob
+        // exactly as authored and the ends swing it well past level. The span is
+        // 1.1 rather than something rounder so that even at a dial extreme the
+        // +/-0.4 bob on top of it stays inside +/-1.5 rad — short of the pole at
+        // pi/2, where the knot would present its silhouette edge-on and a
+        // near-mirror surface has nothing left to reflect.
+        heroRef.current.rotation.x = Math.sin(f.time * 0.11) * 0.4 + bipolar(p.tilt, 1.1)
+        // `fill` is the subject's size in frame. Bounded well inside the camera
+        // anchor's 8.2-unit distance at the top end: the CameraDirector frames
+        // this scene, and a scale that outgrows its framing reads as a bug
+        // rather than as a bigger subject.
+        const size = 0.55 + p.fill * 0.9
+        heroRef.current.scale.setScalar(size * (1 + b.pulse * 0.055 + anim.inflate * 0.05))
       }
     },
     { visCeiling: 1, visFloor: 0.6 },

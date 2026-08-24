@@ -444,8 +444,7 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       shader, so a scene at 5% opacity costs full price), which is why the honest test
       is the total. Pairs that do not fit hard-cut, which costs nothing.
 
-- [ ] **F42 · Four scenes ignore the quality governor entirely** — *diagnosed, not
-      fixed*
+- [~] **F42 · Four scenes ignore the quality governor entirely** — *partly fixed*
       `network`, `chrome`, `orbs` and `panic` read no quality knob at all, so their
       cost is FIXED at every tier — the governor cannot relieve them and neither can
       the transition discount. The bench shows it plainly: `network` measures
@@ -460,6 +459,19 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       three unverified visual changes are already queued (FoldPath's half-resolution
       buffer, JuliaWings' removed AA, Chrome's depth write). Land those, look at them,
       then do this one.
+
+      **Update (2026-08-25).** `network` now has the `uLayers` early-break described
+      above (4 layers at tier 0 down to 2 at the survival tier, dropped from the back
+      so the most distant already-faded copy goes first). Separately, every scene now
+      declares a `pixelBudget` and the engine solves the internal resolution from it
+      — see `src/engine/renderScale.ts` — which is the governor lever `chrome` and
+      `orbs` were missing: both are purely fill-bound, so resolution is the only
+      honest knob they have and it is now applied whether they cooperate or not.
+      `panic` additionally sizes its four offscreen feedback passes through
+      `bufferScale()`, so the half of that scene which is invisible to canvas DPR is
+      finally inside the budget too (`trail` and `synthgrid` got the same treatment).
+      **Still open:** none of this is verified against real music on real hardware,
+      and `network`'s depth-density change has not been looked at by a human.
 
 - [x] **F39 · The analytics flagged every hard cut as a failure** —
       `src/engine/SceneManager.tsx`, `src/ui/AnalyticsPanel.tsx`
@@ -589,9 +601,277 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
 
 ---
 
+## Image feedback, the post-chain budget, and the fullscreen crash (2026-08-25)
+
+Found while porting lilim's feedback pass and chasing a report of the app
+hanging. Measurements below were taken under **SwiftShader (software GL)** in a
+headless browser unless stated otherwise — treat them as *ratios between
+configurations*, never as anyone's real frame rate.
+
+- [ ] **F46 · `performanceState.fog` is inert on 15 of the 16 scenes** — *verified,
+      not fixed*
+      `src/engine/EffectsDirector.tsx`, every scene file
+      The plumbing is correct end to end: the `FogExp2` instance is attached to the
+      scene for the whole session (`sceneFogAttached: true` when probed live) and
+      `fog.current.density` tracks `performanceState.fog` exactly. What does not
+      happen is any of it reaching a pixel, because **three only applies `scene.fog`
+      to materials that opt in, and no scene opts in.** `ShaderMaterial.fog` defaults
+      to `false` (three's own source, `ShaderMaterial.js:167`), `LineMaterial`
+      extends `ShaderMaterial` and inherits that default despite compiling the fog
+      chunks in, and `grep -rn "fog: true"` across `src/scenes/` returns nothing.
+      The only fog-capable material in the roster is `ChromeFormScene`'s
+      `MeshPhysicalMaterial`, where `Material.fog` defaults to `true`.
+      So a director moving `fog` is steering something that answers on exactly one
+      scene — the honest half of the Scene Contract's own rule that a dial which is
+      visible but dead is worse than no dial.
+      **Fix is a design decision, not a one-liner.** Either (a) set `fog: true` on
+      the materials that can support it and accept that fullscreen-quad scenes still
+      cannot participate, or (b) drop `scene.fog` entirely and make atmosphere a
+      post-chain effect (a depth-driven or purely radial haze), which would reach
+      every scene uniformly and is the only option that makes the dial honest across
+      the roster. Do not "fix" this by wiring fog into each shader by hand — that is
+      sixteen copies of the same term with sixteen chances to drift.
+
+- [ ] **F47 · Vignette is applied but reads as inert on most scenes** — *partly
+      diagnosed*
+      `src/engine/EffectsDirector.tsx`
+      Confirmed by live probe that the value reaches the shader: with the debug
+      override at 0, `performanceState.vignette` is 0 **and** the effect's own
+      `darkness` uniform is 0, so nothing is being dropped between the director and
+      the GPU. The suspicion is that it is working and simply has nothing to act on.
+      postprocessing's DEFAULT vignette technique is
+      `color *= smoothstep(0.8, offset*0.799, d*(darkness+offset))` — a *multiply*.
+      Most of this roster is a small bright subject centred on true black (which is
+      the deliberate exposure discipline in `docs/09_Rendering_Engine.md`), so the
+      periphery the vignette darkens is already black and multiplying it changes
+      nothing visible. On the subject itself `d` is small enough that the term is
+      close to 1.
+      **Not confirmed.** The A/B that would settle it — hold a fullscreen scene
+      (`network`, `kaleido`) and step `vignette` 0 → 1 — was started and not
+      finished. Do that before changing anything. If it is confirmed, the question is
+      whether a vignette is the right instrument at all for a black-field show, or
+      whether the intent ("the frame tightens through a build") wants a different
+      mechanism.
+
+- [ ] **F48 · `EffectsDirector` crashes the whole Canvas if it ever re-renders** —
+      *trigger removed, hazard still latent*
+      `src/engine/EffectsDirector.tsx`
+      `@react-three/postprocessing` memoises each wrapped effect's constructor args
+      on `JSON.stringify(props)`. Under **React 19 `ref` is an ordinary prop**, so
+      those props include `{ current: <effect instance> }` — and once mounted that
+      instance carries R3F's `__r3f` bookkeeping, whose `parent`/`children` form a
+      cycle. The stringify throws `Converting circular structure to JSON`, React
+      unwinds, the Canvas unmounts, and the app is **black permanently** because
+      nothing remounts it. It survives the first render only because the refs are
+      still `null` then.
+      This shipped as a real user-visible bug: a `size` selector was added to the
+      component, so entering fullscreen re-rendered it and blacked out the app. The
+      selector is gone and the constraint is now written into the component's header
+      as a numbered rule, because it is completely invisible from the code.
+      **A comment is not a fix.** The durable options are upgrading
+      `@react-three/postprocessing` past the `JSON.stringify` memo key, or wrapping
+      that subtree in an error boundary that remounts the composer. Until one of
+      those lands, any future `useThree`/`useStore` selector, `useState`, or changing
+      prop in that component is a black screen.
+
+- [ ] **F49 · Intermittent `isReady` crash out of three's `compileAsync`** —
+      *pre-existing, unattributed*
+      `src/engine/streaming/shaderPrewarm.ts`
+      `TypeError: Cannot read properties of undefined (reading 'isReady')` thrown from
+      `checkMaterialsReady` inside three's `compileAsync` polling loop. Observed
+      roughly once in six headless runs, always under heavy load (100 ms+ frames),
+      never on an idle page. Almost certainly a race between the prewarm promise and
+      a material being disposed by a scene switch that lands mid-poll.
+      It reaches `window.onerror` as an unhandled rejection, so it is a pageerror
+      even when the show survives it. Reproduce by driving scene switches under an
+      artificially low frame rate, then either guard the poll or drop `compileAsync`
+      on drivers without `KHR_parallel_shader_compile` — where, per this file's own
+      header, its resolution is a lie anyway.
+
+- [ ] **F50 · The full engine renders behind the start card** — *known, not fixed*
+      `src/routes/Visualizer.tsx`
+      `<Stage/>` is mounted unconditionally, so every director, the scene, and the
+      whole post chain run at full cost while the user is still looking at the audio
+      source picker. Bisected: removing only the post chain took that screen from
+      133 ms to **16.7 ms per frame**, so it is ~87% of the cost of a screen that is
+      showing a dialog.
+      Gating `<Stage/>` (or at least `<EffectsDirector/>`) on `status === 'running'`
+      is the lever. The cheaper half-measure — dropping bloom's `mipmapBlur` while
+      idle — changes the effect list, which per this component's own header rebuilds
+      the merged shader, so gating the mount is the safer shape.
+
+- [ ] **F51 · `POST_CHAIN_PIXEL_BUDGET` is another reasoned estimate** — *extends
+      F44*
+      `src/engine/renderScale.ts`
+      The post chain now declares its own pixel budget and joins the reciprocal sum,
+      which is what stopped a DPR-2 display from pushing 5.2 MP through an
+      eighteen-pass bloom pyramid (measured 512 ms → 167 ms per frame at 2946x1760,
+      a 3.31x reduction in fill work that the arithmetic predicts exactly). But
+      **2.5 MP is chosen, not measured** — the same gap F44 already records for
+      `POST_CHAIN_UNITS` and `GENERATIVE_UNITS`, and `FEEDBACK_UNITS` now joins them.
+      Fold this into F44's bench mode: measure an empty scene with and without the
+      post chain, at two resolutions, and set the budget from the resolution at which
+      the chain actually fits a frame. Until then the number is defensible but
+      unproven, and it is now load-bearing for every high-DPI display.
+
+- [ ] **F52 · `trails` has no director, and its control surface is scaffolding** —
+      *by design, needs following up*
+      `src/engine/performanceState.ts`, `src/ui/HUD.tsx`,
+      `src/engine/PerformanceStateBridge.tsx`
+      The feedback pass is fully wired and defaults to `trails: 0`, where it disables
+      itself entirely (skipped before the composer's buffer swap, so it costs
+      nothing). Nothing decides when it should rise — no mood, no phrase, no tension
+      term. The only thing that moves it is the **Post FX (debug)** menu section,
+      which overrides five director-owned fields wholesale and is explicitly
+      temporary: it is excluded from `partialize` so it never persists, and it should
+      be deleted or demoted once a real director drives `trails`.
+      Deciding *when* a show should reach for trails is the actual work here, and it
+      is the same shape as every other `performanceState` field's history — bloom,
+      vignette and fog all shipped as executors before anything had an opinion about
+      when to move them.
+
+- [ ] **F53 · ~2.4 s from picking a source to the first frame** — *not investigated*
+      Measured repeatedly: the start card takes about 2.4 s to clear after an audio
+      file is selected, and that is *after* the post-chain budget fix took it down
+      from 6.4 s (the earlier figure was mostly the 2 fps render loop starving the
+      main thread). The remainder is audio-pipeline init, and the obvious suspect is
+      the **2.5 MB `essentia-wasm` bundle** plus the 488 kB voice worker, both of
+      which are fetched and instantiated on the start path.
+      Worth confirming with a profile before optimising — it may be instantiation
+      rather than transfer, in which case streaming compilation or deferring the
+      voice model until first use are different fixes.
+
+---
+
+## Optical racks and the palette contract (2026-08-25)
+
+Found while porting lilim's mirror rack, lens rack and five-slot palettes.
+Frame-time figures are **SwiftShader (software GL)** in a headless browser —
+ratios between configurations, never anyone's real frame rate.
+
+- [ ] **F54 · The lens rack pays one fullscreen blit that never switches off** —
+      *by construction, needs a better answer*
+      `src/engine/LensPass.ts`
+      `MirrorPass` and `FeedbackPass` follow the rule the racks were built to:
+      always mounted, defaulted to inert, `enabled` as the only branch, zero cost
+      at rest. `LensPass` cannot, because it is the LAST pass in the composer and
+      `EffectComposer` flags the last-added pass as the one that renders to
+      screen. A disabled final pass means nothing writes to the framebuffer and
+      the canvas **freezes on the last frame it presented** — not black, not an
+      error, just stuck. (Confirmed directly: a cold start with the rack off gave
+      28 kB of black PNG; toggling it on gave 97 kB of content; toggling it back
+      off left the previous frame frozen at 93 kB.)
+      So it stays enabled and degrades to a straight `MeshBasicMaterial` copy
+      when inert — one fullscreen blit per frame that did not exist before.
+      Cheap next to bloom's mip pyramid, but not free, and it is paid in every
+      session including ones that never touch the rack.
+      The alternative considered and rejected: moving the pass ahead of the
+      merged Bloom/CA/Vignette effect, which costs nothing but stops
+      `anamorphic`'s streak gather (threshold `-0.55`) from ever seeing a bloomed
+      frame to gather from. A better fix is a cheap always-on final pass that
+      earns its keep — the grade/exposure pass lilim has as `finishPass` and this
+      chain does not — at which point the lens can go back to a plain `enabled`
+      branch like the other two.
+
+- [ ] **F55 · Both optical racks are invisible to the frame budget** — *open,
+      and it must close before any director drives them*
+      `src/engine/frameLoad.ts`
+      `OPTICAL_RACK_UNITS = 0`, which is honest today and dangerous tomorrow.
+      At rest the mirror rack genuinely costs nothing (skipped before the swap)
+      and the lens costs one blit; switched on, the mirror is a UV remap plus a
+      tap and the lens is three taps, with `anamorphic` adding 24 more for its
+      streak gather. None of that is reserved.
+      It is defensible only while the sole thing that turns a rack on is a human
+      moving a slider — a human can see the frame rate. The moment a director
+      does it, `composeLayers` will admit a layer on top of a rack it does not
+      know is running, which is precisely the class of bug F43 exists to record.
+      Fold into F44's bench task: measure a rack on and off at two resolutions,
+      set real units, and re-check the ladder.
+
+- [ ] **F56 · Neither optical rack has a director** — *by design, same posture as
+      F52*
+      Both default to inert and are moved only by the **Post FX (debug)** panel.
+      Nothing decides when a show should reach for a kaleidoscope or a lens
+      material, which is the actual creative work and is the same shape as
+      `trails` in F52 — and as bloom/vignette/fog before them, which all shipped
+      as executors first.
+      Note the ordering dependency: F55 has to land **before** this one, not
+      after.
+
+- [ ] **F57 · Five of the seven lens materials are unverified by eye** —
+      *shipped on weaker evidence than the other two*
+      All seven compile and run: every material was driven through the debug
+      panel with no shader-compile error and no page error, which rules out the
+      failure that actually breaks a port. But only `glitch` (slice tears, block
+      dropouts, scanline shading all clearly present) and `glass ribs` (visible
+      flute refraction) were confirmed by looking at the result.
+      `glass fan`, `anamorphic`, `melt`, `pixels` and `fly eye` were captured but
+      not inspected — and `melt` is the one to check first, because its
+      kick-spawned plume ring is the only material with state that a
+      compile-clean run would not exercise. Look at all five against real music
+      before treating the rack as done.
+
+- [ ] **F58 · No scene reads the new `shadow` or `bg` slots** — *contract
+      exists, benefit not yet realised*
+      `src/engine/palettes.ts`, every scene file
+      The five-slot palette is in and every palette declares all five, but the
+      roster still reads only the three lit slots through the deprecated
+      `col.a/b/c` aliases. `shadow` and `bg` — the two a scene previously had to
+      invent, and therefore the two that actually collide across authors — are
+      available and unused.
+      So the coherence claim ("a mixed-authorship set stops being a colour
+      collision") is **currently unproven in this codebase**: nothing yet
+      demonstrates it. Migrating the existing roster is per-scene art direction
+      and is deliberately not done, since these scenes are slated for
+      replacement — but the replacements should be authored against
+      `mid`/`accent`/`glow`/`shadow`/`bg` from the start, and the aliases should
+      be removed once nothing reads them.
+
+- [ ] **F59 · Twenty-four of the thirty palettes cannot be reached by
+      automation** — *real gap, introduced by the port*
+      `src/engine/AutoPilot.tsx`, `src/engine/keyPalette.ts`
+      `MOOD_PALETTES` and `FAMILY_BY_MAJOR_TONIC` both name palette ids as
+      strings, and between them they name exactly the six `signature` palettes.
+      The twenty-four ported ones are therefore **manual-selection only**: no
+      mood, no key, and no autopilot rotation can ever choose one.
+      That makes the roster look four times richer than the autonomous show
+      actually is, which is the wrong way round for a product whose pitch is that
+      it performs unattended.
+      The fix is not simply pasting more ids into two tables — the `family` field
+      now exists precisely so those tables can select a *family* and let a varied
+      pick choose within it, the same shape `pickVariedScene` already uses for
+      scenes. Doing it that way also makes the key-driven selection meaningful
+      again, since `keyPalette`'s whole design is about collapsing keys onto
+      families.
+
+- [ ] **F60 · The `Palette` shape change is breaking for third-party callers** —
+      *known, accepted, undocumented*
+      `src/engine/palettes.ts`
+      `Palette.colors` and `Palette.bg` are gone, replaced by `Palette.slots`.
+      `registerPalette` is public API documented in README.md / ARCHITECTURE.md,
+      so any out-of-tree caller breaks at compile time (which is the good
+      failure). The in-repo consumers were all updated.
+      Nothing has been written down for the people this affects: README and
+      ARCHITECTURE still describe the old three-colour shape. Update both, and
+      state the slot contract there rather than only in the source — it is the
+      thing a scene author most needs to read before writing anything.
+
+- [ ] **F61 · `paletteFromImage` not ported** — *available, not taken*
+      lilim extracts a five-slot palette from an image: quantise to a 48x48
+      grid, bucket by 4-bit-per-channel key, take the 40 most common, greedily
+      pick 5 mutually distant colours, sort by luminance into `bg`→`glow`, then
+      force `bg` near-black and lift `glow` toward white.
+      It ports directly onto `PaletteSlots` now that the slot shape matches, and
+      it is the cheapest route to "the show matches the artwork" — but it needs a
+      home in the UI and a decision about whether an extracted palette is
+      session-scoped or persisted alongside the built-ins, so it was not done
+      blind.
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **314 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **537 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

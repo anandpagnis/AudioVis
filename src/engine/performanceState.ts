@@ -1,4 +1,6 @@
 import type { MoodState } from '../audio/types'
+import type { LensRackState, MirrorRackState } from './opticalRack'
+import type { SceneParams } from '../scenes/contract'
 
 /** One live firing of an effect scene. Owned by EffectDirector. */
 export interface ActiveEffect {
@@ -137,6 +139,77 @@ export interface PerformanceState {
   vignette: number
   /** 0..1 — atmospheric depth. */
   fog: number
+  /**
+   * 0..1 — image feedback: history persistence, and with it the zoom/rotate/
+   * swirl/wobble drift of the accumulated trail. 0 is a clean frame with no
+   * loop at all; 1 is a full recursive tunnel. See engine/FeedbackPass.ts and
+   * engine/feedbackParams.ts for what this one number expands into.
+   *
+   * Defaults to 0 (off) because nothing upstream drives it creatively yet —
+   * the pass and the seam exist; deciding when a mood or a phrase should raise
+   * this is future work, same as every other performanceState field's history
+   * (bloom/vignette/fog all shipped as executors before a director opinion
+   * about *when* to move them existed).
+   */
+  trails: number
+
+  /**
+   * The MIRROR rack: kaleidoscopic symmetry, mirror-repeat tiling, radial
+   * twist, shear slicing, and the spin that turns the fold. See
+   * engine/opticalRack.ts and engine/MirrorPass.ts.
+   *
+   * `segments` is a count, not a normalised dial (0 off · 1 mirror-x · 2 quad ·
+   * >=3 n-fold), because 3-fold and 4-fold are different pictures rather than
+   * points on an intensity scale.
+   *
+   * All zero by default: the pass is skipped entirely and the frame is
+   * untouched. Nothing autonomous drives these yet — same posture as `trails`.
+   */
+  mirror: MirrorRackState
+
+  /**
+   * The LENS rack: `amount` 0..1 across one of seven optical materials
+   * (`style` indexes engine/opticalRack.ts's `LENS_STYLES`).
+   *
+   * Zero by default, which skips the pass. Also undriven so far.
+   */
+  lens: LensRackState
+
+  /**
+   * Raw-ish audio the optical racks need, published here rather than read
+   * directly by the executor.
+   *
+   * `EffectsDirector` is a pure executor by contract — it reads
+   * `performanceState` and applies it, and reads no audio. But the lens
+   * materials genuinely need beat information: kicks re-seat a material's
+   * structure (a new flute phase, a re-rolled tear, a fresh heat plume), which
+   * is the whole difference between glass and a filter. So the bridge, which
+   * already reads audio, publishes the four signals the racks consume.
+   *
+   * `onKick` is a rising EDGE (0 on any frame that is not a beat), not a level.
+   * The re-seat mechanisms are events; driving them from a continuous envelope
+   * is what turns a structural re-seat into a flicker.
+   */
+  rackAudio: {
+    kick: number
+    highs: number
+    mids: number
+    onKick: number
+  }
+
+  /**
+   * Scene Contract dial positions the director wants, in the shared vocabulary.
+   *
+   * The director's continuous hand on the picture, as opposed to `scene`, which
+   * is its choice of picture. Sparse on purpose: a key is present only where the
+   * director has an opinion, so `useSceneFrame` can tell "no opinion" from "an
+   * opinion that happens to be 0.5" — and `shape` and `tilt` are never present
+   * at all (see engine/sceneSteer.ts for why those two are declined).
+   *
+   * Reader: `useSceneFrame`, which layers it under the user's own dials. A user
+   * dial always wins, so this steers only what nobody has taken.
+   */
+  sceneParams: SceneParams
 }
 
 /** Camera behaviours the CameraDirector can run. Scenes only supply anchors. */
@@ -178,6 +251,15 @@ export const performanceState: PerformanceState = {
   caAngle: 0,
   vignette: 0.85,
   fog: 0,
+  trails: 0,
+  mirror: { segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 },
+  lens: { amount: 0, style: 0 },
+  rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0 },
+
+  // Empty, not neutral: at boot the director has formed no opinion yet, and
+  // every scene's own authored defaults are the right thing to show until it
+  // does. `advanceSteer` seeds each key on the first frame it runs.
+  sceneParams: {},
 }
 
 /**

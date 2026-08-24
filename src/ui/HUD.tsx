@@ -9,8 +9,14 @@ import {
   type LayerRole,
   type Quality,
 } from '../store'
-import { SCENES, getScene } from '../scenes'
-import { PALETTES } from '../engine/palettes'
+import { SCENES, getScene, getSceneContract } from '../scenes'
+import {
+  liveParamKeys,
+  paramLabel,
+  resolveMode,
+  type SceneParamKey,
+} from '../scenes/contract'
+import { PALETTES, PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { BUILTIN_PRESETS, type Preset } from '../engine/presets'
 import { saveScreenshot } from '../engine/recorder'
 import { buildShareUrl } from '../urlParams'
@@ -19,6 +25,7 @@ import { DebugPanel } from './DebugPanel'
 import { FpsMeter } from './FpsMeter'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
+import { LENS_STYLES } from '../engine/opticalRack'
 
 // macOS Chrome can only capture a browser TAB's audio via getDisplayMedia —
 // whole-screen / system audio isn't available, so the copy has to differ.
@@ -68,6 +75,7 @@ export function HUD() {
   const generative = useStore((s) => s.generative)
   const layerFx = useStore((s) => s.layerFx)
   const responseTuning = useStore((s) => s.responseTuning)
+  const debugPostFx = useStore((s) => s.debugPostFx)
   const bandMappings = useStore((s) => s.bandMappings)
   const cues = useStore((s) => s.cues)
   const cueFollow = useStore((s) => s.cueFollow)
@@ -77,6 +85,8 @@ export function HUD() {
   const favoriteIds = useStore((s) => s.favoriteIds)
   const micDevices = useStore((s) => s.micDevices)
   const micDeviceId = useStore((s) => s.micDeviceId)
+  const sceneParams = useStore((s) => s.sceneParams)
+  const sceneModes = useStore((s) => s.sceneModes)
 
   const [idle, setIdle] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -211,6 +221,82 @@ export function HUD() {
       ))}
     </div>
   )
+
+  /**
+   * The active scene's Scene Contract, as panel rows.
+   *
+   * Built entirely from the contract — mode chips from `modes`, one row per
+   * `liveParamKeys`, each labelled with the scene's own word for that parameter.
+   * Nothing here names a scene or a parameter, which is the test of whether the
+   * vocabulary works: this panel renders controls for a scene it has never heard
+   * of, including one loaded through `registerScene` at runtime.
+   *
+   * A scene with no contract shows a note rather than an empty section. "This
+   * scene has no dials" is information; a blank panel is a bug report.
+   */
+  const sceneContractRows = () => {
+    const contract = getSceneContract(sceneId)
+    if (!contract) {
+      return <p className="menu-note">This scene exposes no dials.</p>
+    }
+    const mode = resolveMode(contract, sceneModes[sceneId])
+    const keys = liveParamKeys(contract, mode)
+    // Resolved, not raw: an untouched dial has no stored value, and showing 0.5
+    // for it would misreport every scene whose default is not neutral.
+    const valueOf = (key: SceneParamKey) =>
+      sceneParams[sceneId]?.[key] ?? contract.params[key] ?? 0.5
+    return (
+      <>
+        {contract.modes && contract.modes.length > 1 && (
+          <div className="param-row">
+            <span>Mode</span>
+            <div className="quality-row">
+              {contract.modes.map((m) => (
+                <button
+                  key={m}
+                  className={`chip ${mode === m ? 'active' : ''}`}
+                  onClick={() => useStore.getState().setSceneMode(sceneId, m)}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {keys.map((key) => (
+          <label key={key} className="param-row">
+            {/* The scene's word, not the canonical name: a human tuning
+                `kaleido` should read "fold", while automation still addresses
+                `density`. Both are true at once, which is the whole point of
+                the label layer. */}
+            <span>{paramLabel(contract, mode, key)}</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={valueOf(key)}
+              onChange={(e) =>
+                useStore.getState().setSceneParam(sceneId, key, Number(e.target.value))
+              }
+            />
+            <em>{valueOf(key).toFixed(2)}</em>
+          </label>
+        ))}
+        <div className="param-row">
+          <span>Defaults</span>
+          <button className="chip" onClick={() => useStore.getState().resetSceneParams(sceneId)}>
+            reset {getScene(sceneId).name}
+          </button>
+        </div>
+        {moodDrive && (
+          <p className="menu-note">
+            The director is steering the dials you have not touched. Moving one takes it.
+          </p>
+        )}
+      </>
+    )
+  }
 
   // One collapsible section of the corner menu. Returns plain JSX (not a
   // component type) so inputs inside keep focus across renders.
@@ -384,20 +470,35 @@ export function HUD() {
                     ))}
                   </div>
                   <div className="menu-sublabel">Palette (P)</div>
-                  <div className="menu-chips">
-                    {PALETTES.map((p) => (
-                      <button
-                        key={p.id}
-                        className={`chip swatch ${p.id === paletteId ? 'active' : ''}`}
-                        title={p.name}
-                        onClick={() => useStore.getState().setPalette(p.id)}
-                      >
-                        {p.colors.map((c) => (
-                          <i key={c} style={{ background: c }} />
-                        ))}
-                      </button>
-                    ))}
-                  </div>
+                  {/* Grouped by family: thirty flat swatches is a wall, and the
+                      family is the only thing that explains why two palettes
+                      that look similar behave differently under a kick. The
+                      swatch shows the three LIT slots (mid / accent / glow) —
+                      bg and shadow are near-black by discipline and would read
+                      as two empty cells on every single chip. */}
+                  {PALETTE_FAMILIES.map((family) => {
+                    const inFamily = getPalettesByFamily(family)
+                    if (inFamily.length === 0) return null
+                    return (
+                      <div key={family} className="palette-family">
+                        <div className="menu-sublabel palette-family-name">{family}</div>
+                        <div className="menu-chips">
+                          {inFamily.map((p) => (
+                            <button
+                              key={p.id}
+                              className={`chip swatch ${p.id === paletteId ? 'active' : ''}`}
+                              title={`${p.name} — ${family}`}
+                              onClick={() => useStore.getState().setPalette(p.id)}
+                            >
+                              <i style={{ background: p.slots.mid }} />
+                              <i style={{ background: p.slots.accent }} />
+                              <i style={{ background: p.slots.glow }} />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
                 </>,
               )}
 
@@ -476,6 +577,94 @@ export function HUD() {
                   </div>
                 </>,
               )}
+
+              {section(
+                'postfx',
+                'Post FX (debug)',
+                <>
+                  {/*
+                    TEMPORARY: overrides the post-fx fields PerformanceStateBridge
+                    otherwise decides every frame (bloom/vignette/glitch/fog/trails),
+                    so a value can be dragged and eyeballed ahead of any director
+                    having an opinion about when to move it. When OFF, every slider
+                    here is inert — see PerformanceStateBridge.tsx's "Debug override"
+                    block, which is what actually applies these.
+                  */}
+                  <div className="param-row">
+                    <span>Override</span>
+                    <div className="quality-row">
+                      <button
+                        className={`chip ${debugPostFx.enabled ? 'active' : ''}`}
+                        onClick={() =>
+                          useStore.getState().setDebugPostFx({ enabled: !debugPostFx.enabled })
+                        }
+                      >
+                        {debugPostFx.enabled ? 'on' : 'off'}
+                      </button>
+                    </div>
+                  </div>
+                  {(
+                    [
+                      ['bloom', 'Bloom', 0, 2, 0.05, 2],
+                      ['bloomThreshold', 'Bloom threshold', 0, 1, 0.01, 2],
+                      // The director's own formula only ever produces ~0-0.012
+                      // (see PerformanceStateBridge.tsx) — the range here runs
+                      // wider so the slider can also show what "too much" looks
+                      // like, not just the directed range.
+                      ['glitch', 'Glitch (CA)', 0, 0.05, 0.001, 3],
+                      ['vignette', 'Vignette', 0, 1, 0.01, 2],
+                      ['fog', 'Fog', 0, 1, 0.01, 2],
+                      ['trails', 'Trails (feedback)', 0, 1, 0.01, 2],
+                      // Mirror rack. `segments` is a COUNT, not an intensity:
+                      // 0 off, 1 mirror-x, 2 quad, 3+ n-fold kaleidoscope — so
+                      // it steps by 1 and shows no decimals.
+                      ['mirrorSegments', 'Mirror segments', 0, 12, 1, 0],
+                      ['mirrorTiles', 'Mirror tiles', 0, 6, 1, 0],
+                      ['mirrorTwist', 'Mirror twist', -3, 3, 0.05, 2],
+                      ['mirrorSlice', 'Mirror slice', 0, 1, 0.01, 2],
+                      ['mirrorSpin', 'Mirror spin', -3, 3, 0.05, 2],
+                      ['lensAmount', 'Lens amount', 0, 1, 0.01, 2],
+                    ] as const
+                  ).map(([key, label, min, max, step, digits]) => (
+                    <label key={key} className="param-row">
+                      <span>{label}</span>
+                      <input
+                        type="range"
+                        min={min}
+                        max={max}
+                        step={step}
+                        disabled={!debugPostFx.enabled}
+                        value={debugPostFx[key]}
+                        onChange={(e) =>
+                          useStore.getState().setDebugPostFx({ [key]: Number(e.target.value) })
+                        }
+                      />
+                      <em>{debugPostFx[key].toFixed(digits)}</em>
+                    </label>
+                  ))}
+                  {/* The lens material is a choice between seven pictures, not a
+                      position on a scale, so it gets buttons rather than a
+                      slider. Inert until `Lens amount` is above zero — the pass
+                      is skipped entirely at 0. */}
+                  <div className="param-row">
+                    <span>Lens material</span>
+                    <div className="quality-row">
+                      {LENS_STYLES.map((name, i) => (
+                        <button
+                          key={name}
+                          className={`chip ${debugPostFx.lensStyle === i ? 'active' : ''}`}
+                          disabled={!debugPostFx.enabled}
+                          onClick={() => useStore.getState().setDebugPostFx({ lensStyle: i })}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>,
+              )}
+
+              {section('dials', `Scene dials · ${getScene(sceneId).name}`, sceneContractRows())}
 
               {section(
                 'response',

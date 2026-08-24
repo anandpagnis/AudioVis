@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { quality } from './quality'
+import { renderScale } from './renderScale'
 import { frameSampler } from './frameSampler'
 import { useStore } from '../store'
 
@@ -8,7 +9,8 @@ import { useStore } from '../store'
 const P95_INTERVAL_SEC = 0.25
 
 /**
- * How long the tier must hold before its render-scale is actually applied.
+ * How long a TIER change must hold before its share of the render scale is
+ * actually applied.
  *
  * A tier bundles two very different kinds of knob. The complexity knobs
  * (raymarch steps, iteration counts, particle fraction) are **free** to change:
@@ -23,6 +25,14 @@ const P95_INTERVAL_SEC = 0.25
  * raymarch-heavy roster is the larger lever anyway — while the resize waits for
  * the tier to prove it is not about to move again. A show oscillating between
  * two tiers now pays nothing for it instead of a resize per step.
+ *
+ * The hold covers the tier ONLY. The other two inputs to the scale — the live
+ * composition's combined pixel budget and the display itself — are applied the
+ * instant they move, because both are already-committed events rather than
+ * guesses about load: a scene switch hides its resize under the crossfade that
+ * is running anyway, and a window dragged to another monitor has already
+ * stalled. Making those wait three seconds would mean the first three seconds
+ * of every scene are rendered at the previous scene's budget.
  *
  * A user-pinned quality change bypasses this entirely: that is an explicit
  * instruction, not a guess, and it should look immediate.
@@ -47,6 +57,12 @@ export const perf = {
   tier: 1,
   /** DPR tier currently applied to the canvas. Lags `tier` by up to the hold. */
   appliedTier: 1,
+  /** Linear internal-resolution scale currently on the canvas (1 = native). */
+  renderScale: 1,
+  /** Combined pixel budget the live composition declared, in megapixels. */
+  pixelBudget: 16,
+  /** Megapixels the canvas is actually rendering — the budget as delivered. */
+  internalMP: 0,
   /** GPU telemetry, copied from renderer.info each frame. */
   drawCalls: 0,
   triangles: 0,
@@ -75,16 +91,30 @@ export function suspendFrameSampling(frames?: number): void {
 }
 
 /**
- * Drives the central {@link quality} governor from the measured frame time and
- * applies its render-scale to the canvas DPR. The governor also exposes
- * complexity knobs (raymarch steps, noise octaves, fluid iterations, particle
- * count) that heavy scenes read directly — so under load the *expensive work*
- * shrinks, not just the resolution. This component only owns the DPR side and
- * the telemetry; the tier logic lives in quality.ts.
+ * Drives the central {@link quality} governor from the measured frame time, and
+ * applies the internal-resolution solve to the canvas DPR.
+ *
+ * Two separate mechanisms meet here, and keeping them separate is the point:
+ *
+ *  - The governor picks a TIER from frame time, exposing complexity knobs
+ *    (raymarch steps, noise octaves, fluid iterations, particle fraction) that
+ *    heavy scenes read directly — so under load the expensive work shrinks, not
+ *    just the resolution.
+ *  - `renderScale` solves the canvas scale from the pixel budget the live
+ *    composition declared and the display that is actually attached, with the
+ *    tier as one multiplier on that budget rather than as the answer.
+ *
+ * This component owns only the DPR side and the telemetry. Tier logic lives in
+ * quality.ts, the solve in renderScale.ts, and the budget is published by
+ * SceneManager.
  */
 export function PerfMonitor() {
   const setDpr = useThree((s) => s.setDpr)
   const gl = useThree((s) => s.gl)
+  // CSS size of the canvas. R3F re-renders this component when it changes, which
+  // is exactly when the display half of the solve needs re-feeding: a resized
+  // window, a window moved to another monitor, a browser zoom.
+  const size = useThree((s) => s.size)
   const storeQuality = useStore((s) => s.quality)
   const ema = useRef(16.7)
   const appliedTier = useRef(-1)
@@ -93,6 +123,8 @@ export function PerfMonitor() {
   /** Tier waiting out {@link RENDER_SCALE_HOLD_SEC} before its DPR is applied. */
   const heldTier = useRef(-1)
   const heldSince = useRef(0)
+  /** (budget, display) pair the applied scale was solved for. See the hold doc. */
+  const appliedPair = useRef('')
 
   /**
    * Push the current tier's render scale to the canvas.
@@ -102,11 +134,19 @@ export function PerfMonitor() {
    * that cost is precisely the feedback loop frameSampler.ts describes.
    */
   const applyRenderScale = () => {
-    const base = Math.min(2, window.devicePixelRatio || 1)
-    const dpr = base * quality.knobs.renderScale
+    const scale = renderScale.solve()
+    const dpr = renderScale.baseDpr * scale
+    // Published before `setDpr` so a scene that sizes its own offscreen targets
+    // from `renderScale.applied` sees the new value on the same frame the canvas
+    // does, rather than one frame behind it.
+    renderScale.applied = scale
     perf.dpr = dpr
+    perf.renderScale = scale
+    perf.pixelBudget = renderScale.budgetMP
+    perf.internalMP = renderScale.internalMP(scale)
     perf.appliedTier = quality.tier
     appliedTier.current = quality.tier
+    appliedPair.current = renderScale.pairKey
     heldTier.current = -1
     frameSampler.suspend()
     setDpr(dpr)
@@ -115,11 +155,16 @@ export function PerfMonitor() {
   // Re-pin the governor whenever the user changes the quality control. An
   // explicit choice applies its render scale immediately — the hold exists to
   // damp the governor's own guessing, not to delay the user.
+  //
+  // `size` is in the deps for the same reason: a display change is a fact, not
+  // a guess, and re-solving against the new full-resolution megapixel count is
+  // the whole point of a budget expressed in megapixels rather than in a scale.
   useEffect(() => {
     quality.setMode(storeQuality)
+    renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
     applyRenderScale()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeQuality])
+  }, [storeQuality, size.width, size.height])
 
   useFrame(({ clock }, delta) => {
     // No ceiling: a frame genuinely costing 150-300ms (two heavy raymarch
@@ -176,10 +221,16 @@ export function PerfMonitor() {
 
     quality.tick(ema.current, clock.elapsedTime, p95.current)
 
-    // Render scale trails the tier (see RENDER_SCALE_HOLD_SEC). Complexity
-    // knobs have already taken effect — scenes read them live — so the frame is
-    // getting cheaper this instant either way; only the resize waits.
-    if (quality.tier !== appliedTier.current) {
+    // The scale has three inputs and two urgencies (see RENDER_SCALE_HOLD_SEC).
+    //
+    // A change to the live composition's budget — SceneManager publishes it at
+    // priority -100, so it is already this frame's truth — applies now. A change
+    // that comes only from the tier trails it: complexity knobs have already
+    // taken effect, since scenes read them live, so the frame is getting cheaper
+    // this instant either way and only the resize waits.
+    if (renderScale.pairKey !== appliedPair.current) {
+      applyRenderScale()
+    } else if (quality.tier !== appliedTier.current) {
       if (quality.tier !== heldTier.current) {
         heldTier.current = quality.tier
         heldSince.current = clock.elapsedTime

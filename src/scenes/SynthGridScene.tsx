@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { quality, qualityUniforms, applyQualityUniforms } from '../engine/quality'
+import { bufferScale } from '../engine/renderScale'
 import { NOISE3D_GLSL } from '../engine/shaderLib'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
@@ -441,6 +442,8 @@ const BASE_SPEED = 20
 export function SynthGridScene() {
   const gl = useThree((s) => s.gl)
   const size = useThree((s) => s.size)
+  /** Buffer scale the target is currently allocated at; see `sizeBuffer`. */
+  const bufScale = useRef(0)
   const clock = useRef(0)
   const dist = useRef(0)
   const carDist = useRef(0)
@@ -512,18 +515,42 @@ export function SynthGridScene() {
 
   useDispose(bufferMaterial, postMaterial, geometry, rt.target)
 
-  useEffect(() => {
-    // 0.6x of CSS pixels, deliberately independent of DPR: the governor moves
-    // DPR as tiers change, and reallocating this target every time would be
-    // pure churn on the most expensive scene in the roster.
-    const w = Math.max(1, Math.floor(size.width * 0.6))
-    const h = Math.max(1, Math.floor(size.height * 0.6))
+  // 0.6x of CSS pixels — the scene's own authored softness, kept — times the
+  // engine's {@link bufferScale}, which is the part that was missing.
+  //
+  // The original comment defended the DPR-independence as avoiding churn on the
+  // most expensive scene in the roster, and it was right about the churn. But
+  // the effect was that the expensive half of the most expensive scene sat
+  // outside the quality governor entirely: the march steps came down with the
+  // tier and the number of pixels they marched never did. `bufferScale` keeps
+  // the anti-churn property by quantising to quarter steps, so this reallocates
+  // a handful of times a session rather than per tier wobble.
+  //
+  // Driven by the render scale's VALUE rather than by `viewport.dpr`. The DPR is
+  // `baseDpr * scale`, so a real scale change can leave it unchanged (2x at 0.5
+  // and 1x at 1.0 are both DPR 1) and an effect keyed on it would silently never
+  // re-run. Checked once per frame; the guard makes that a float compare.
+  const sizeBuffer = () => {
+    const scale = 0.6 * bufferScale()
+    if (scale === bufScale.current) return
+    bufScale.current = scale
+    const w = Math.max(1, Math.floor(size.width * scale))
+    const h = Math.max(1, Math.floor(size.height * scale))
     rt.target.setSize(w, h)
     bufferMaterial.uniforms.uRes.value.set(w, h)
     postMaterial.uniforms.uRes.value.set(w, h)
+  }
+
+  useEffect(() => {
+    bufScale.current = 0
+    sizeBuffer()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rt, bufferMaterial, postMaterial, size])
 
   useSceneFrame(({ f, dt, b, vis, params }) => {
+    // Before the offscreen march: the engine may have re-solved the budget
+    // since the last frame, and that buffer is where this scene spends.
+    sizeBuffer()
     const bu = bufferMaterial.uniforms
     const pu = postMaterial.uniforms
 

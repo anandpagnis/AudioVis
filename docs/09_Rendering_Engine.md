@@ -103,16 +103,17 @@ Also true and worth keeping for the next attempt:
 
 Butter-smooth is about **frame-time variance**, not average — a steady 50 fps feels smoother than a 60 fps that hitches. Mechanisms already in place:
 
-- **`src/engine/quality.ts` — the Quality Governor.** Scales *complexity*, not just resolution: `raymarchSteps`, `noiseOctaves`, `fluidJacobi`, `particleFraction`, `renderScale`, `maxHeavyLayers`, across a 5-tier ladder driven by smoothed frame time. New heavy scenes must read from it — raymarchers by spreading `qualityUniforms()` and calling `applyQualityUniforms(u)`; everything else via `quality.knobs`.
+- **`src/engine/quality.ts` — the Quality Governor.** Scales *complexity*: `raymarchSteps`, `noiseOctaves`, `fluidJacobi`, `particleFraction`, `layerBudget`, plus `pixelBudgetScale`, across a 5-tier ladder driven by smoothed frame time. New heavy scenes must read from it — raymarchers by spreading `qualityUniforms()` and calling `applyQualityUniforms(u)`; everything else via `quality.knobs`.
+- **`src/engine/renderScale.ts` — the internal-resolution governor.** The tier no longer names a resolution. Every scene resolves to a target internal-megapixel budget — `resolvePixelBudget()` DERIVES it from the required `performanceCost` (`BUDGET_BY_COST`: low 4.0 / medium 2.5 / high 1.6 MP) unless the scene overrides with an explicit `metadata.pixelBudget`, or opts out of scaling entirely with `metadata.fillBound: false`. The engine solves `scale = sqrt(budget / fullResMP)` for whatever display is live, capped at 1 and floored at 0.4. Deterministic — one value per (scene, display, tier) — so it settles instead of hunting. Budgets of everything committed to the frame combine by reciprocal sum, because layers share one framebuffer at one resolution. A scene registered from outside the repo (`registerScene`, `trusted: false`) has its claimed budget capped at `UNTRUSTED_MAX_BUDGET` rather than trusted. Scenes owning their own offscreen targets (`trail`, `panic`, `synthgrid`) size them through `bufferScale()`, which is what puts their CSS-pixel buffers inside the budget too.
 - **Shader pre-warm** (`SceneManager`) — the incoming scene mounts when requested, renders `WARM_FRAMES` frames to force its shader to compile, then goes invisible (zero cost) until the downbeat promotes it. Previously the compile stalled *on the beat* — the worst-timed hitch in the app.
 - **Skip-invisible** — the fluid solver bails entirely when its fade is ~0, so a crossfade never runs two sims.
 - **Context-loss recovery** (`Stage.tsx`) — `preventDefault()` on `webglcontextlost` (the difference between recovering and hard-crashing) plus a `glEpoch` remount on restore.
 
 Known remaining levers, in priority order:
 
-1. **Decouple scene resolution from output resolution** — render heavy raymarch at ~half res, keep the graphic/type layer native. Grain hides the softness.
-2. Crossfade in a half-res buffer, or hard-cut instead of dissolving.
-3. Per-scene cost review as new heavy scenes land.
+1. ~~**Decouple scene resolution from output resolution**~~ — done, and generalised: `engine/renderScale.ts` decouples it *per scene and per display* rather than at one fixed ratio, and derives the per-scene number from `performanceCost` rather than asking every scene to author one.
+2. Crossfade in a half-res buffer, or hard-cut instead of dissolving. (The overlap is currently paid for in complexity, not resolution — see `TRANSITION_DISCOUNT_TIERS` — because a resize per crossfade edge costs more than it saves.)
+3. Re-derive `BUDGET_BY_COST` from measured GPU time as the roster changes. `/bench` sweeps each scene at its OWN resolved budget rather than at one roster-wide scale, so its numbers stay comparable across scenes of different cost classes.
 
 ---
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
+import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -66,7 +67,23 @@ export const FRAG = /* glsl */ `
   uniform float uFade;
 
   #define S(a, b, t) smoothstep(a, b, t)
+  // Authored depth. The loop bound stays a constant because GLSL ES 1.00
+  // requires it; uLayers early-breaks it, the same idiom uMaxSteps uses in
+  // RAYMARCH_GLSL.
   const float NUM_LAYERS = 4.0;
+
+  // How many of the four depth layers to actually evaluate, from the quality
+  // governor.
+  //
+  // This is the scene's dominant cost by a wide margin: each layer runs 9 node
+  // positions and 13 line-distance evaluations per pixel, so dropping from 4 to
+  // 2 halves a 6.26 ms scene. Nothing else here is worth a fraction of it.
+  //
+  // Layers are dropped from the BACK (the loop walks front to back through
+  // fract(uSlowTime + i)), so what disappears is the most distant, smallest,
+  // already-faded copy of the web rather than the one in focus. That is why
+  // this is affordable at all: the picture loses depth, not its subject.
+  uniform float uLayers;
 
   float N21(vec2 p) {
     vec3 a = fract(vec3(p.xyx) * vec3(213.897, 653.453, 253.098));
@@ -177,7 +194,10 @@ export const FRAG = /* glsl */ `
     M *= rot * 2.0;
 
     float m = 0.0;
+    float layer = 0.0;
     for (float i = 0.0; i < 1.0; i += 1.0 / NUM_LAYERS) {
+      if (layer >= uLayers) break;
+      layer += 1.0;
       float z = fract(uSlowTime + i);
       float size = mix(15.0, 1.0, z);
       float fade = S(0.0, 0.6, z) * S(1.0, 0.8, z);
@@ -226,6 +246,7 @@ export function NetworkConstellationScene() {
           uHigh: { value: 0 },
           uEnergy: { value: 0 },
           uPulse: { value: 0 },
+          uLayers: { value: 4 },
           uColA: { value: new THREE.Color('#00e5ff') },
           uColB: { value: new THREE.Color('#7c4dff') },
           uFade: { value: 0 },
@@ -254,6 +275,13 @@ export function NetworkConstellationScene() {
     u.uHigh.value = b.high
     u.uEnergy.value = b.energy
     u.uPulse.value = b.pulse
+    // Depth layers, as a PROPORTION of the governor's raymarch budget rather
+    // than a literal step count — the same idiom `foldpath`, `heap` and
+    // `juliawings` use to map a shared knob onto a shader with its own scale.
+    // 4 layers at tier 0 down to 2 at the survival tier; never below 2, because
+    // a single layer stops reading as a receding field and starts reading as a
+    // flat grid, which is a different picture rather than a cheaper one.
+    u.uLayers.value = Math.max(2, Math.round(4 * (quality.knobs.raymarchSteps / 96)))
     u.uColA.value.copy(col.a)
     u.uColB.value.copy(col.c)
     u.uFade.value = vis

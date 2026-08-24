@@ -128,14 +128,14 @@ describe('quality governor — transition discount', () => {
     expect(g.knobs.raymarchSteps).toBe(full)
   })
 
-  it('leaves renderScale alone', () => {
-    // Changing DPR resizes the renderer and reallocates the post chain — far
-    // more expensive than the discount saves, and it would fire at the start of
-    // every single crossfade.
+  it('leaves pixelBudgetScale alone', () => {
+    // Moving the budget re-solves the render scale, which resizes the renderer
+    // and reallocates the post chain — far more expensive than the discount
+    // saves, and it would fire at the start of every single crossfade.
     const g = governorAt(0)
-    const scale = g.knobs.renderScale
+    const scale = g.knobs.pixelBudgetScale
     g.setTransitionDiscount(1)
-    expect(g.knobs.renderScale).toBe(scale)
+    expect(g.knobs.pixelBudgetScale).toBe(scale)
   })
 
   it('leaves the composition budget alone', () => {
@@ -159,7 +159,7 @@ describe('quality governor — transition discount', () => {
     const g = governorAt(4)
     g.setTransitionDiscount(1)
     expect(g.knobs.raymarchSteps).toBeGreaterThan(0)
-    expect(g.knobs.renderScale).toBe(governorAt(4).knobs.renderScale)
+    expect(g.knobs.pixelBudgetScale).toBe(governorAt(4).knobs.pixelBudgetScale)
   })
 
   it('survives a tier change while discounting', () => {

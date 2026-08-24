@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
+import { bufferScale } from '../engine/renderScale'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -218,6 +219,8 @@ const DISPLAY_FRAG = /* glsl */ `
 export function TrailLineScene() {
   const gl = useThree((s) => s.gl)
   const size = useThree((s) => s.size)
+  /** Buffer scale the targets are currently allocated at; see `sizeBuffers`. */
+  const bufScale = useRef(0)
   const clock = useRef(0)
   const walk = useRef(0)
   const rotWalk = useRef(0)
@@ -265,11 +268,25 @@ export function TrailLineScene() {
   const geometry = useMemo(() => new THREE.PlaneGeometry(2, 2), [])
 
   /**
-   * Offscreen pass scaffolding. The buffer is sized in CSS pixels, NOT device
-   * pixels — trails are soft enough that retina resolution is wasted, and more
-   * importantly `PerfMonitor` moves DPR whenever the quality tier steps, so a
-   * DPR-sized target would be reallocated (and the trail wiped) every time the
-   * governor changed its mind.
+   * Offscreen pass scaffolding.
+   *
+   * The buffer is sized in CSS pixels rather than device pixels — trails are
+   * soft enough that retina resolution is wasted on them — and then scaled by
+   * {@link bufferScale}, which is this scene's half of the engine's pixel
+   * budget.
+   *
+   * That second factor is the part that was missing, and it was a real hole
+   * rather than a refinement: this scene's expensive pass is the accumulator,
+   * not the composite, and a CSS-sized target is invisible to the canvas DPR.
+   * So on a machine dropping frames, every governor lever in the engine moved
+   * and this scene's actual cost did not move at all.
+   *
+   * It is deliberately NOT the raw applied scale. Reallocating these targets
+   * discards the trail — the whole subject vanishes and redraws over the next
+   * second — so the size follows the budget in quarter steps, which move a
+   * handful of times across a session instead of on every tier wobble. That is
+   * the same trade the original CSS-pixel sizing was making, kept, but now
+   * bounded by the budget instead of ignoring it.
    */
   const rt = useMemo(() => {
     const opts = { type: THREE.HalfFloatType, depthBuffer: false, stencilBuffer: false }
@@ -283,15 +300,39 @@ export function TrailLineScene() {
 
   useDispose(bufferMaterial, displayMaterial, geometry, rt.a, rt.b)
 
-  useEffect(() => {
-    const w = Math.max(1, Math.floor(size.width))
-    const h = Math.max(1, Math.floor(size.height))
+  /**
+   * Allocate the pair at the current budget, if it has moved.
+   *
+   * Driven by the render scale's VALUE, not by `viewport.dpr` — the DPR is
+   * `baseDpr * scale`, so a real scale change can leave it unchanged (2x at 0.5
+   * and 1x at 1.0 are both DPR 1) and an effect keyed on it would silently
+   * never re-run. `setSize` is a no-op in three when the dimensions match, but
+   * the guard is what makes the CSS-size path cheap to check every frame.
+   */
+  const sizeBuffers = () => {
+    const scale = bufferScale()
+    if (scale === bufScale.current) return
+    bufScale.current = scale
+    const w = Math.max(1, Math.floor(size.width * scale))
+    const h = Math.max(1, Math.floor(size.height * scale))
     rt.a.setSize(w, h)
     rt.b.setSize(w, h)
+    // The shader's idea of resolution is the BUFFER's: it sets the stroke's
+    // pixel width and the aspect the curve is evaluated in, so passing the CSS
+    // size here would draw a differently-shaped stroke than the one written.
     bufferMaterial.uniforms.uRes.value.set(w, h)
+  }
+
+  useEffect(() => {
+    bufScale.current = 0
+    sizeBuffers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rt, bufferMaterial, size])
 
   useSceneFrame(({ f, dt, b, col, vis, params }) => {
+    // Before anything reads uRes: the engine may have re-solved the budget
+    // since the last frame, and the accumulator is this scene's expensive half.
+    sizeBuffers()
     const u = bufferMaterial.uniforms
 
     clock.current += dt * params.speed

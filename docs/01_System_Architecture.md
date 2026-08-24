@@ -144,7 +144,7 @@ Map every subsystem: purpose, inputs, outputs, update frequency, dependencies.
 | **Purpose** | Adaptive complexity tier (5 rungs) |
 | **Location** | `src/engine/quality.ts` |
 | **Input** | Frame-time EMA from PerfMonitor |
-| **Output** | `quality.knobs` (renderScale, raymarchSteps, etc.) |
+| **Output** | `quality.knobs` (pixelBudgetScale, raymarchSteps, etc.) + the render-scale solve in `engine/renderScale.ts` |
 | **Update frequency** | Every frame |
 | **Dependencies** | PerfMonitor |
 

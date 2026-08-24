@@ -165,6 +165,18 @@ body,
   gap: 5px;
 }
 
+/* One family's worth of palette swatches. The family name is dimmer than a
+   normal sublabel because it is a grouping caption inside an already-labelled
+   section, not a control in its own right. */
+.palette-family {
+  margin-top: 4px;
+}
+
+.palette-family-name {
+  color: rgba(255, 255, 255, 0.28);
+  margin-bottom: 3px;
+}
+
 .menu-sublabel {
   color: rgba(255, 255, 255, 0.4);
   font:
@@ -392,6 +404,16 @@ body,
   font-style: normal;
   font-variant-numeric: tabular-nums;
   opacity: 0.6;
+}
+
+/* Explanatory line inside a menu section — used where an empty section would
+   otherwise read as a bug (a scene with no Scene Contract dials), and to say
+   who is currently driving the dials that ARE there. */
+.menu-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.55;
 }
 
 .quality-row {

@@ -5,7 +5,8 @@ import { updateAnimationSignals } from '../engine/AnimationDirector'
 import { LightRig } from '../engine/LightRig'
 import { performanceState } from '../engine/performanceState'
 import { quality } from '../engine/quality'
-import { getScene, isSceneLoaded } from '../scenes'
+import { renderScale } from '../engine/renderScale'
+import { getScene, getScenePixelBudget, isSceneLoaded } from '../scenes'
 import { GpuTimer } from './gpuTimer'
 import type { BenchRunner } from './benchHarness'
 
@@ -40,8 +41,11 @@ export function BenchStage({ runner, version }: { runner: BenchRunner; version: 
 function BenchDriver({ runner, version }: { runner: BenchRunner; version: number }) {
   const gl = useThree((s) => s.gl)
   const setDpr = useThree((s) => s.setDpr)
+  const size = useThree((s) => s.size)
   const timer = useMemo(() => new GpuTimer(), [])
   const appliedTier = useRef(-1)
+  /** Scene the current DPR was solved for — the budget is per scene, not global. */
+  const appliedScene = useRef('')
 
   useEffect(() => {
     timer.init(gl.getContext() as WebGL2RenderingContext)
@@ -66,10 +70,22 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
     if (!cell) return
 
     // Pin the tier and its render scale before drawing anything for this cell.
-    if (appliedTier.current !== cell.tier) {
+    //
+    // The scale is solved from the scene's own declared `pixelBudget` for this
+    // display, exactly as PerfMonitor does it in the app — which is the point of
+    // benchmarking at all. Before the budget existed every scene was measured at
+    // the same tier-wide scale, so the numbers described a resolution no scene
+    // actually renders at; a 1.5 MP raymarcher and a native-resolution wireframe
+    // were being compared at the same pixel count.
+    if (appliedTier.current !== cell.tier || appliedScene.current !== cell.sceneId) {
       appliedTier.current = cell.tier
+      appliedScene.current = cell.sceneId
       quality.pinTier(cell.tier)
-      setDpr(Math.min(2, window.devicePixelRatio || 1) * quality.knobs.renderScale)
+      renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
+      renderScale.setSceneBudget(getScenePixelBudget(cell.sceneId))
+      const scale = renderScale.solve()
+      renderScale.applied = scale
+      setDpr(renderScale.baseDpr * scale)
       // Particle scenes scale through `performanceState.particleDensity`, which
       // is normally written by PerformanceStateBridge — and the bench does not
       // mount it (it is a decide-band director that reads audio and writes a

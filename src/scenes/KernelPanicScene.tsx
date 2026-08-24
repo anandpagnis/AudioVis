@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
+import { bufferScale } from '../engine/renderScale'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 import { KP_BUF_A, KP_BUF_B, KP_BUF_C, KP_BUF_D, KP_IMAGE } from './shaders/kernelPanicGlsl'
@@ -142,6 +143,8 @@ function shadertoyUniforms(): Record<string, THREE.IUniform> {
 export function KernelPanicScene() {
   const gl = useThree((s) => s.gl)
   const size = useThree((s) => s.size)
+  /** Buffer scale the six targets are currently allocated at; see `sizeBuffers`. */
+  const bufScale = useRef(0)
   const clock = useRef(0)
   const frame = useRef(0)
 
@@ -206,22 +209,52 @@ export function KernelPanicScene() {
     rt.d,
   )
 
-  useEffect(() => {
-    // CSS pixels, deliberately independent of DPR: the governor moves DPR as
-    // tiers change, and reallocating these would wipe both feedback buffers
-    // every time it did.
-    const w = Math.max(1, Math.floor(size.width))
-    const h = Math.max(1, Math.floor(size.height))
+  // Four offscreen fullscreen passes across six render targets is this scene's
+  // entire cost, and every one of those targets used to be sized in raw CSS
+  // pixels — deliberately independent of DPR, so that a tier step would not wipe
+  // the two feedback buffers. The reasoning was sound and the consequence was
+  // not: it put the whole scene outside every quality lever the engine has. A
+  // machine at the survival tier ran these five fullscreen passes at exactly the
+  // cost it ran them at on a workstation.
+  //
+  // Now they follow the scene's declared pixel budget through
+  // {@link bufferScale}, which keeps the original protection by quantising to
+  // quarter steps: the buffers move a handful of times across a session rather
+  // than on every wobble. And a wipe costs less here than anywhere else in the
+  // roster — this scene's subject IS corrupted memory, so a buffer restarting
+  // reads as the effect working.
+  //
+  // Driven by the render scale's VALUE rather than by `viewport.dpr`. The DPR is
+  // `baseDpr * scale`, so a real scale change can leave it unchanged (2x at 0.5
+  // and 1x at 1.0 are both DPR 1) and an effect keyed on it would silently never
+  // re-run. Checked once per frame; the guard makes that a float compare.
+  const sizeBuffers = () => {
+    const scale = bufferScale()
+    if (scale === bufScale.current) return
+    bufScale.current = scale
+    const w = Math.max(1, Math.floor(size.width * scale))
+    const h = Math.max(1, Math.floor(size.height * scale))
     for (const t of [rt.a0, rt.a1, rt.b0, rt.b1, rt.c, rt.d]) t.setSize(w, h)
+    // Every pass shares one resolution, the image pass included — this is a
+    // Shadertoy port and its passes address each other in pixels.
     for (const m of [mats.a, mats.b, mats.c, mats.d, mats.image]) {
       m.uniforms.iResolution.value.set(w, h, 1)
       for (const cr of m.uniforms.iChannelResolution.value as THREE.Vector3[]) cr.set(w, h, 1)
     }
     // Buffer A samples the font atlas on channel 0.
     mats.a.uniforms.iChannelResolution.value[0].set(ATLAS * CELL_PX, ATLAS * CELL_PX, 1)
+  }
+
+  useEffect(() => {
+    bufScale.current = 0
+    sizeBuffers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rt, mats, size])
 
   useSceneFrame(({ dt, b, vis, params }) => {
+    // Before the pass chain runs: the engine may have re-solved the budget
+    // since the last frame, and these six targets are the whole scene's cost.
+    sizeBuffers()
     // Four offscreen fullscreen passes across six render targets — by a wide
     // margin the most expensive thing in this file, and `node.visible = false`
     // does not stop any of it, because these are manual `gl.render()` calls

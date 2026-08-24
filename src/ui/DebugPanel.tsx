@@ -106,6 +106,16 @@ export function DebugPanel() {
         6,
         36,
       )
+      // The internal-resolution governor's own readout: what the live
+      // composition asked for, and what it is actually getting. The two differ
+      // when the display cannot deliver the budget even at full scale (the
+      // solve caps at 1) or when it is pinned at the floor — and reading which
+      // of those is happening is otherwise guesswork from the DPR alone.
+      ctx.fillText(
+        `${perf.internalMP.toFixed(2)}/${perf.pixelBudget.toFixed(2)} MP  ×${perf.renderScale.toFixed(2)}`,
+        6,
+        48,
+      )
       ctx.fillStyle = 'rgba(255, 214, 130, 0.8)'
       ctx.fillText(
         `${perf.drawCalls} draws  ${(perf.triangles / 1000).toFixed(0)}k tris  geo ${perf.geometries}  tex ${perf.textures}  prg ${perf.programs}`,
