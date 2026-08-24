@@ -4,6 +4,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import type { MoodState } from '../audio/types'
 import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
+import { frameLoad } from './frameLoad'
 import { quality } from './quality'
 import { admitSlots, slotCost, type SlotRequest } from './slotBudget'
 import {
@@ -19,6 +20,30 @@ import { LAYER_ROLES, useStore, type LayerRole } from '../store'
 
 const MANUAL_HOLD_SEC = 45
 const PHRASE_HOLD_BEATS = 16 // fallback recompose cadence when no section fires
+
+/**
+ * How many layers may sit over the primary at once, by the primary's cost.
+ *
+ * **This is an art-direction rule, not a performance one**, and the two are
+ * deliberately separate. The cost budget in slotBudget.ts asks "can the GPU
+ * carry this?" and it answers correctly; it was never asked "does this many
+ * things in one frame read as composed?" — and the answer to that turned out to
+ * be no. Measured over 40k simulated compositions, 57% filled both accent and
+ * overlay, putting three scenes on screen (four mid-crossfade), every one of
+ * them blending additively. That is the "overlaying more than two scenes looks
+ * tacky" report, and no budget number fixes it: at the boot tier a low-cost
+ * primary reserves 1 unit of 6, so two low-cost layers fit trivially and always
+ * will.
+ *
+ * A heavy primary gets one layer rather than two because it has already filled
+ * the frame — the layer is punctuation on a busy image, and a second one is
+ * just noise over noise.
+ */
+const MAX_LAYERS_BY_PRIMARY_COST: Record<ScenePerformanceCost, number> = {
+  low: 2,
+  medium: 2,
+  high: 1,
+}
 
 /**
  * Compose the layer slots for one decision, within the quality budget.
@@ -64,9 +89,26 @@ export function composeLayers(opts: {
     })
   }
 
-  const admitted = new Set(
-    admitSlots(budget, slotCost(primaryCost, 'primary'), requests, priority),
-  )
+  const affordable = admitSlots(budget, slotCost(primaryCost, 'primary'), requests, priority)
+
+  // Then the editorial cap, applied to what the budget already allowed. Order
+  // matters: `admitSlots` returns slots in the caller's priority order, so
+  // taking a prefix keeps the most structural / most-wanted layers and drops
+  // the tail. Background is exempt — it is the ground the composition sits on,
+  // not one of the detail layers stacking over the subject, and it carries a
+  // 0.40 gain by default precisely so it reads as behind rather than alongside.
+  const cap = MAX_LAYERS_BY_PRIMARY_COST[primaryCost]
+  const admitted = new Set<LayerRole>()
+  let stacked = 0
+  for (const slot of affordable) {
+    if (slot === 'effect') continue
+    if (slot !== 'background') {
+      if (stacked >= cap) continue
+      stacked++
+    }
+    admitted.add(slot)
+  }
+
   return {
     background: admitted.has('background') ? (picks.background?.id ?? null) : null,
     accent: admitted.has('accent') ? (picks.accent?.id ?? null) : null,
@@ -169,18 +211,23 @@ export function PerformanceDirector() {
     let primaryId = s.pendingSceneId ?? s.sceneId
     if (!s.pendingSceneId && primaryCandidates.length > 0) {
       const pick = pickVariedScene(primaryCandidates, mood, s.recentSceneIds, bandBoost)
-      if (pick) {
-        s.requestScene(pick.id, { auto: true })
-        primaryId = pick.id
-      }
+      // Only aim the layers at the new subject if the request was actually
+      // ACCEPTED. `requestScene` refuses silently when the subject dwell floor
+      // (MIN_SUBJECT_DWELL_BEATS) has not elapsed, and this used to assume it
+      // had succeeded — so on every refused request the layers below were
+      // composed against a scene that was never going to appear. That picks
+      // `compatibleWith` partners for the wrong subject, and can select the
+      // scene that IS currently primary, which `resolveLayerIds` then has to
+      // null out at render time. A layer chosen and immediately dropped is
+      // exactly the flicker that looks like a failed transition.
+      if (pick && s.requestScene(pick.id, { auto: true })) primaryId = pick.id
     }
 
     // Which of accent/overlay the busier material wants. Both slots can now be
     // occupied at once, so this decides which gets FIRST refusal rather than
     // which is the only one allowed.
-    const leadRole: LayerRole = response.energy > 0.58 || response.dropPulse > 0
-      ? 'overlay'
-      : 'accent'
+    const leadRole: LayerRole =
+      response.energy > 0.58 || response.dropPulse > 0 ? 'overlay' : 'accent'
     const forRole = (role: LayerRole) =>
       layerCandidates.filter(
         (scene) => scene.id !== primaryId && scene.metadata.roles.includes(role),
@@ -195,7 +242,11 @@ export function PerformanceDirector() {
 
     const slots = composeLayers({
       primaryCost: getScene(primaryId).metadata.performanceCost,
-      budget: quality.knobs.layerBudget,
+      // The tier's budget LESS the costs that are present in every frame and
+      // were previously invisible to it: the post chain, and the generative
+      // overlay when enabled. Composing against the raw tier budget meant the
+      // layers were funded out of money the post chain had already spent.
+      budget: quality.knobs.layerBudget - frameLoad.fixed,
       pools: {
         background: backgroundPool,
         [leadRole]: forRole(leadRole),

@@ -527,6 +527,20 @@ export function SynthGridScene() {
     const bu = bufferMaterial.uniforms
     const pu = postMaterial.uniforms
 
+    // Nothing this instance draws reaches the frame, so skip all of it — the
+    // uniform writes, the world advance, and above all the offscreen march.
+    // `node.visible = false` (set by SceneManager for a hidden entry) stops the
+    // main traversal but not the manual `gl.render()` below, so the roster's
+    // single most expensive scene used to run at full cost while invisible,
+    // for as long as it sat warming as a pending candidate.
+    //
+    // Unlike TrailLine there is no feedback buffer to preserve: the post pass
+    // reads the same frame's own render, so a resumed instance is correct on
+    // its first visible frame. Freezing `dist` also parks the flythrough where
+    // it was rather than teleporting it forward by the whole hidden interval.
+    pu.uFade.value = vis
+    if (vis <= 0.001) return
+
     clock.current += dt * params.speed
 
     // Travel accumulates so a changing rate never jumps the world. Tempo sets

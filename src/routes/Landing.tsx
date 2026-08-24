@@ -5,6 +5,7 @@ import { scroll } from '../landing/scroll'
 import { tunnelAudio } from '../landing/tunnelAudio'
 import { pageTransition } from '../landing/pageTransition'
 import { CHAPTERS } from '../landing/chapters'
+import { preloadVisualizer } from './lazyRoutes'
 
 const REDUCED = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
@@ -30,6 +31,20 @@ export function Landing() {
   const [trackName, setTrackName] = useState('—')
   const [toast, setToast] = useState<string | null>(null)
   const [dropping, setDropping] = useState(false)
+
+  // Warm the visualizer chunk while the visitor is reading. The Enter CTA fades
+  // to black BEFORE navigating, so a cold fetch would happen inside that fade
+  // and the fade-in could reveal an empty route. Deferred to idle so it never
+  // competes with the tunnel's own first frames for bandwidth or main thread.
+  useEffect(() => {
+    const ric = window.requestIdleCallback
+    if (ric) {
+      const handle = ric(() => preloadVisualizer(), { timeout: 4000 })
+      return () => window.cancelIdleCallback?.(handle)
+    }
+    const timer = setTimeout(preloadVisualizer, 2000)
+    return () => clearTimeout(timer)
+  }, [])
 
   const depthRef = useRef<HTMLElement>(null)
   const fillRef = useRef<HTMLDivElement>(null)

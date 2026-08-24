@@ -1,5 +1,7 @@
 import { Suspense, lazy, useRef, useState } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useFrame } from '@react-three/fiber'
+import { captureIfRequested } from './recorder'
+import { frameSampler } from './frameSampler'
 import { AutoPilot } from './AutoPilot'
 import { CameraDirector } from './CameraDirector'
 import { CueTimeline } from './CueTimeline'
@@ -38,12 +40,16 @@ const GenerativeLayer = lazy(() =>
  * apply. Keeping that boundary is what allows a new decision-maker (or a whole
  * new renderer) to be added without touching the other side.
  *
- * Two non-obvious Canvas settings:
+ * One non-obvious Canvas setting:
  *  - `antialias: false` — PostFX resolves its own AA; MSAA on the default
  *    framebuffer would be wasted work behind the composer.
- *  - `preserveDrawingBuffer: true` — required for screenshots/recording. Side
- *    effect worth knowing while debugging: the canvas retains its last drawn
- *    frame, so a stalled render loop shows a stale image instead of going black.
+ *
+ * `preserveDrawingBuffer` is deliberately NOT set. It made the driver retain a
+ * copy of the framebuffer on every frame of the session to serve screenshots,
+ * which happen a handful of times at most; `ScreenshotCapture` below gets the
+ * same result by reading the buffer inside the tick that drew it. Debugging
+ * note: without the retain, a stalled render loop now goes black rather than
+ * showing its last good frame.
  *
  * No `dpr` prop: PerfMonitor owns device pixel ratio, driving it from the
  * quality governor's current tier.
@@ -76,6 +82,11 @@ export function Stage() {
       // remounting so the first post-restore acquire() rebuilds from
       // scratch rather than handing back a texture pointing at nothing.
       resourceCache.invalidateAll()
+      // Nothing measured before the loss describes the context we are about to
+      // rebuild in, and the rebuild itself is one long stall. Drop the history
+      // outright rather than letting the governor read a restore as load.
+      frameSampler.reset()
+      frameSampler.suspend(120)
       console.warn('[AudioVis] WebGL context restored — remounting render tree')
       setGlEpoch((n) => n + 1)
     })
@@ -84,7 +95,7 @@ export function Stage() {
   return (
     <Canvas
       className="stage"
-      gl={{ antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
+      gl={{ antialias: false, powerPreference: 'high-performance' }}
       camera={{ fov: 60, position: [0, 3, 13], near: 0.1, far: 400 }}
       onCreated={handleCreated}
     >
@@ -108,6 +119,22 @@ export function Stage() {
         </Suspense>
       )}
       <EffectsDirector key={`fx-${glEpoch}`} />
+      <ScreenshotCapture />
     </Canvas>
   )
+}
+
+/**
+ * Reads the drawing buffer for a pending screenshot, in the same tick that drew
+ * it.
+ *
+ * Priority 2 is what makes this correct: `EffectComposer` takes over rendering
+ * at priority 1, so anything above that runs after the frame is fully
+ * composited but before the browser hands the buffer back. With
+ * `preserveDrawingBuffer` off (see the Canvas comment) that window is the only
+ * moment `toBlob` returns actual pixels rather than transparency.
+ */
+function ScreenshotCapture() {
+  useFrame(() => captureIfRequested(), 2)
+  return null
 }

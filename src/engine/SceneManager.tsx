@@ -6,8 +6,9 @@ import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store
 import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded } from '../scenes'
 import { performanceState, type ActiveEffect } from './performanceState'
 import { quality } from './quality'
+import { applyFrameLoad, frameLoad, GENERATIVE_UNITS, POST_CHAIN_UNITS } from './frameLoad'
 import { canFundOverlap, slotCost } from './slotBudget'
-import { perf } from './PerfMonitor'
+import { perf, suspendFrameSampling } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
 import { sampleAnalytics } from './analyticsMetrics'
 import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
@@ -119,6 +120,9 @@ interface Entry {
  */
 const WARM_FRAMES = 4
 
+/** How fast the transition complexity discount eases in and out, per second. */
+const DISCOUNT_EASE_RATE = 7
+
 let entryKey = 0
 
 function makeEntry(
@@ -168,19 +172,60 @@ function crossfadeDuration(bpm: number): number {
  * slots in {@link LAYER_ROLES} win, so the more structural layer keeps the scene
  * and the later one yields — a background outranks an accent.
  *
+ * ## It also enforces the budget, every frame
+ *
+ * The frame budget used to be checked only where decisions were MADE —
+ * `composeLayers` at a phrase boundary, `EffectDirector` on a trigger,
+ * `canFundOverlap` at a commit. Nothing checked the total before actually
+ * drawing it, and two things routinely pushed a legal decision over the line
+ * afterwards:
+ *
+ *  - **A crossfade.** `composeLayers` reserves one primary, so mid-fade it
+ *    offers the outgoing scene's share to the layers as if it were free. Two
+ *    heavy primaries plus the fixed costs already fill tier 0 exactly; the
+ *    layers admitted on top took it to ~15 against 11.
+ *  - **A tier drop.** Layers admitted at tier 0 (capacity 11) stay mounted when
+ *    the governor steps to tier 2 (capacity 7). Nothing re-examines them until
+ *    the next phrase boundary, up to 16 beats later.
+ *
+ * This function already runs every frame and already decides what is mounted,
+ * so it is the natural enforcement point: give it the remaining capacity and it
+ * sheds the least structural layers until the frame fits. It is self-correcting
+ * in both directions — when capacity returns, the layer is simply admitted
+ * again on a later frame, with no state to unwind.
+ *
  * Exported for the unit test; SceneManager is the only production caller.
  */
 export function resolveLayerIds(
   desired: Record<LayerRole, string | null>,
   sceneId: string,
   pendingSceneId: string | null,
+  /**
+   * Live budget enforcement. Omit for collision resolution only.
+   *
+   * `remaining` is the capacity left after everything that is NOT a layer —
+   * the subject, any crossfade overlap, live effects, and the fixed per-frame
+   * costs. Layers are then admitted in {@link LAYER_ROLES} order while they fit,
+   * so the tail (overlay, then accent) is what gets dropped and the ground layer
+   * is kept. See the header note on why this belongs here.
+   */
+  budget?: { remaining: number; unitsFor: (id: string, role: LayerRole) => number },
 ): Record<LayerRole, string | null> {
   const taken = new Set<string>([sceneId])
   if (pendingSceneId) taken.add(pendingSceneId)
   const out: Record<LayerRole, string | null> = { background: null, accent: null, overlay: null }
+  let left = budget?.remaining ?? Infinity
   for (const role of LAYER_ROLES) {
     const id = desired[role]
     if (id === null || taken.has(id)) continue
+    if (budget) {
+      const units = budget.unitsFor(id, role)
+      // Skip rather than break: a cheap overlay may still fit where an
+      // expensive accent did not, and refusing it as well would shed more than
+      // the frame needs.
+      if (units > left) continue
+      left -= units
+    }
     taken.add(id)
     out[role] = id
   }
@@ -217,8 +262,30 @@ export function resolveCommit(opts: {
   const immediate =
     pendingImmediate &&
     (incomingWarm === null || incomingWarm || waited > IMMEDIATE_WARM_GRACE_SEC)
+
+  /**
+   * A downbeat commit ALSO waits for the incoming shader.
+   *
+   * This gate used to apply only to drop switches, and the omission was the
+   * biggest single source of transition stalls. The window is easy to hit:
+   * `requestScene` fires whenever AutoPilot sees a mood change, and if the
+   * next downbeat lands a frame or two later there has been no time for the
+   * chunk to arrive, let alone for the program to link. The commit then
+   * promoted a cold entry and the driver compiled it on its first real draw —
+   * a multi-hundred-millisecond freeze, landing exactly on the beat. That is
+   * the one place the whole warm-up mechanism exists to keep clear, and the
+   * normal path walked straight into it.
+   *
+   * It also explains why the stalls looked random rather than per-scene: it
+   * depends only on where in the bar the request happened to land.
+   *
+   * `null` means no warm entry exists to wait for, so there is nothing to gain
+   * by waiting. Skipping a downbeat costs one bar, and `waited > 2.5` remains
+   * the backstop, so a scene that never warms still lands rather than hanging.
+   */
+  const warmEnough = incomingWarm === null || incomingWarm
   return {
-    commit: !gridTrusted || onDownbeat || immediate || waited > 2.5,
+    commit: !gridTrusted || (onDownbeat && warmEnough) || immediate || waited > 2.5,
     immediate,
   }
 }
@@ -418,6 +485,8 @@ export function SceneManager() {
 
   const [, force] = useState(0)
   const pendingSince = useRef(-1)
+  /** Eased 0..1 transition discount — see the call to setTransitionDiscount. */
+  const discount = useRef(0)
 
   useFrame(({ clock }) => {
     // Audio feature pipeline runs once per frame, before any scene reads it.
@@ -503,6 +572,14 @@ export function SceneManager() {
       if (commit) {
         commitScene()
         pendingSince.current = -1
+        // A commit is the most expensive moment in the app: a shader compile
+        // that prewarming did not manage to confirm, plus two primaries
+        // rendering at once for the length of the crossfade. All of that is
+        // real and the fps meter still reports it — but it is a scheduled,
+        // once-per-scene event, not steady-state load, and letting the quality
+        // governor treat it as evidence permanently downgraded the show every
+        // time the music changed section. See frameSampler.ts.
+        suspendFrameSampling(Math.ceil(crossfadeDuration(f.bpm) * 60) + 30)
         // Only replace the primary scene. Composition layers have their own
         // lifetime and must survive a primary crossfade unchanged. (Invariant:
         // at most one primary is fading in at a time.)
@@ -535,27 +612,42 @@ export function SceneManager() {
         // permits one heavy layer and both scenes are heavy, hard-cut on the beat
         // instead — snap the outgoing out and the (shader-warm) incoming in. It's
         // cheaper and, per docs/09_Rendering_Engine.md, the more deliberate "Ikeda" look.
-        const bothHeavy =
-          !!outgoing &&
-          getScene(outgoing.id).metadata.performanceCost === 'high' &&
-          getScene(incoming.id).metadata.performanceCost === 'high'
-        // Can the budget carry both primaries through the overlap? The
-        // `bothHeavy` conjunct is kept deliberately: a pure budget test would
-        // also start hard-cutting medium-cost pairs at the bottom tiers, and
-        // this guard's documented intent is specifically about overlapping two
-        // heavy fullscreen scenes.
+        // Can the frame actually carry the overlap?
+        //
+        // This used to require BOTH scenes to be `high` before it would even
+        // consider cutting, and then asked only `incomingUnits * 2 <= budget`.
+        // Two things were wrong with that. It ignored the composition layers,
+        // which keep rendering right through a primary switch — so `network` +
+        // `heap` (4 + 4 = 8 of 8 at tier 0) counted as affordable while
+        // `ribbons` and an overlay were also live, i.e. 11 units of real load
+        // against a budget of 8. And `bothHeavy` meant a high + medium pair
+        // plus layers was never even tested.
+        //
+        // Now it is a straight sum of everything that will be on screen. The
+        // fade does not make either scene cheaper — it is a multiply at the end
+        // of the fragment shader, so a scene at 5% opacity costs full price —
+        // which is why the honest test is the total, not an average.
+        const liveLayerUnits = entriesRef.current.reduce((sum, e) => {
+          if (e.role === 'primary' || e.role === 'effect' || e.dir === 0) return sum
+          const meta = getScene(e.id).metadata
+          return sum + slotCost(meta.performanceCost, e.role, meta.roleScalable)
+        }, 0)
         const fundsOverlap = canFundOverlap(
           quality.knobs.layerBudget,
+          outgoing ? slotCost(getScene(outgoing.id).metadata.performanceCost, 'primary') : 0,
           slotCost(getScene(incoming.id).metadata.performanceCost, 'primary'),
+          // Layers AND the fixed per-frame costs. `layerBudget` is now total
+          // frame capacity, so the overlap test has to account for everything
+          // the frame carries or it would read the post chain's share as spare.
+          liveLayerUnits + frameLoad.fixed,
         )
         // A drop always cuts, whatever the two scenes cost. Crossfading a drop
         // over ~two beats is the second half of the "drops don't switch"
         // report: even once the timing above lands it on the transient, a
         // 1 s dissolve reads as the picture slowly changing its mind rather
-        // than as an event. The cost-based guard below is a SMOOTHNESS
-        // measure; this one is editorial, so they're deliberately separate
-        // conditions rather than one merged predicate.
-        const hardCut = immediate || (bothHeavy && !fundsOverlap)
+        // than as an event. The cost-based guard is a SMOOTHNESS measure; this
+        // one is editorial, so they stay separate conditions.
+        const hardCut = immediate || !fundsOverlap
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1
@@ -568,7 +660,13 @@ export function SceneManager() {
             onDownbeat,
             hardCut,
             waitedSec: waited,
-            targetDurationSec: crossfadeDuration(f.bpm),
+            // 0 for a hard cut, because that IS its target — it is meant to
+            // be instantaneous. Recording the crossfade duration here made the
+            // analytics panel compare an actual ~0.0 s against a target of
+            // ~0.9 s and flag every single hard cut as a failed transition
+            // (`off = 1.0`), including perfectly healthy ones with a 17 ms p95.
+            // The instrument was reporting a feature as a fault.
+            targetDurationSec: hardCut ? 0 : crossfadeDuration(f.bpm),
           },
           clock.elapsedTime,
         )
@@ -589,10 +687,33 @@ export function SceneManager() {
     // Persistent background/accent/overlay layers are composed independently
     // from the primary scene. A layer change gets a short fade, while the
     // primary scene continues to use beat-locked transitions above.
+    // Capacity left for layers, measured from what is on screen RIGHT NOW —
+    // the subject, any crossfade overlap, live effects, and the fixed costs.
+    // Computed here rather than taken from `frameLoad` because that is
+    // published below, after this pass decides what the layers are.
+    const fixedUnits = POST_CHAIN_UNITS + (state.generative ? GENERATIVE_UNITS : 0)
+    let nonLayerUnits = fixedUnits
+    for (const e of entriesRef.current) {
+      if (e.role === 'background' || e.role === 'accent' || e.role === 'overlay') continue
+      if (e.dir === 0 && isWarmComplete(e)) continue // compiled and hidden; free
+      const meta = getScene(e.id).metadata
+      nonLayerUnits += slotCost(
+        meta.performanceCost,
+        e.role === 'primary' ? 'primary' : e.role,
+        meta.roleScalable,
+      )
+    }
     const wantedLayers = resolveLayerIds(
       state.layerSceneIds,
       state.sceneId,
       state.pendingSceneId,
+      {
+        remaining: Math.max(0, quality.knobs.layerBudget - nonLayerUnits),
+        unitsFor: (id, role) => {
+          const meta = getScene(id).metadata
+          return slotCost(meta.performanceCost, role, meta.roleScalable)
+        },
+      },
     )
     for (const role of LAYER_ROLES) {
       const wanted = wantedLayers[role]
@@ -614,6 +735,63 @@ export function SceneManager() {
     if (syncEffectEntries(entriesRef.current, performanceState.layers.effects)) {
       force((n) => n + 1)
     }
+
+    // Two primaries on screen at once — either a crossfade in progress
+    // (`dir === -1` is the outgoing one) or a candidate warming beside the
+    // current scene (`dir === 0`, kept visible so its shader compiles). Both
+    // mean the frame is carrying twice the scene work it was tiered for, so the
+    // governor drops complexity for the duration. See TRANSITION_DISCOUNT_TIERS.
+    //
+    // Set here, at priority -100, so the scenes that read `quality.knobs` at
+    // priority 0 see it on the SAME frame the overlap begins rather than one
+    // frame late. Effects are excluded by the role check — a pinned idle effect
+    // also sits at `dir === 0` and is not a second subject.
+    // Publish what this frame is actually carrying, so every other claimant on
+    // the budget reserves against the whole picture instead of its own partial
+    // view of it. See frameLoad.ts — this is the only component that knows
+    // every mounted entry, which is why it is the one that reports.
+    applyFrameLoad(
+      entriesRef.current.map((e) => {
+        const meta = getScene(e.id).metadata
+        return {
+          role: e.role,
+          dir: e.dir,
+          // A warm entry that has finished compiling is hidden and costs
+          // nothing; one still warming is genuinely drawing. Same distinction
+          // the transition discount makes below.
+          drawing: e.dir !== 0 || !isWarmComplete(e),
+          units: slotCost(
+            meta.performanceCost,
+            e.role === 'primary' ? 'primary' : e.role,
+            meta.roleScalable,
+          ),
+        }
+      }),
+      // `Stage` keeps GenerativeLayer mounted for the rest of the session once
+      // it has ever been enabled, so this tracks the store flag, not a mount.
+      POST_CHAIN_UNITS + (state.generative ? GENERATIVE_UNITS : 0),
+    )
+
+    // Only while a second primary is ACTUALLY ON SCREEN.
+    //
+    // `dir === 0` alone was wrong: a warming candidate is kept visible only
+    // until `isWarmComplete` (~5 frames), after which it renders nothing — but
+    // a switch can now sit pending for a whole bar waiting for the warm gate
+    // (see resolveCommit). Keying on `dir === 0` therefore held the discount
+    // for seconds at a time with no second scene to justify it, so the show ran
+    // two tiers coarser for much of its life and snapped back and forth. The
+    // frame times looked fine because nothing was slow — it just looked worse.
+    const overlapping = entriesRef.current.some(
+      (e) => e.role === 'primary' && (e.dir === -1 || (e.dir === 0 && !isWarmComplete(e))),
+    )
+    // Eased rather than switched. A 2-tier step applied on one frame is a
+    // visible pop at both ends of every transition — the discount is only
+    // defensible if it is imperceptible, and an instant change to loop counts
+    // is not. ~0.15 s time constant: quick enough to be helping by the time the
+    // crossfade is doing real work, slow enough to read as nothing at all.
+    discount.current +=
+      ((overlapping ? 1 : 0) - discount.current) * Math.min(1, f.delta * DISCOUNT_EASE_RATE)
+    quality.setTransitionDiscount(discount.current)
 
     // Crossfade over ~two beats when the tempo is known, then weight each
     // entry by its slot gain (primary is always full strength).

@@ -65,6 +65,37 @@ export function ChromeFormScene() {
     ({ f, dt, b, col, vis, params, anim }) => {
       heroMat.opacity = vis
 
+      // Write depth ONLY while effectively opaque.
+      //
+      // This is the one scene in the roster that writes depth at all — every
+      // other material sets `depthWrite: false`, and `MeshPhysicalMaterial`
+      // defaults it to true. `transparent: true` does not change that, which is
+      // the trap: at low opacity the knot contributed almost no colour while
+      // still stamping its full silhouette into the depth buffer, punching a
+      // torus-knot-shaped hole through whatever else was on screen. The scene
+      // read as "invisible, but visible in the negative".
+      //
+      // Two situations hit it constantly:
+      //   - **Warm-up.** `EntryGroup` keeps a warming entry VISIBLE (that is how
+      //     its shader compiles) while its fade sits at 0. So every time chrome
+      //     was queued, an opacity-0 knot silently occluded the current scene
+      //     for a few frames — the "blipping in and out".
+      //   - **Crossfades.** Half-faded chrome occluded whatever it was fading
+      //     to or from. Worst against `dissolve`, `plasma`, `pointcloud` and
+      //     `ribbons`, which are the scenes that still depth-test (the
+      //     fullscreen-quad scenes set `depthTest: false` and so ignore it).
+      //
+      // Keeping the write when settled preserves correct SELF-occlusion: the
+      // knot passes behind itself, and without depth that ordering is left to
+      // triangle order. Below the threshold the knot is faint enough that a
+      // little see-through is far cheaper than a black hole in the frame.
+      //
+      // Keyed on `vis` (i.e. final opacity) rather than on the raw crossfade,
+      // because opacity is what actually decides whether the hole is visible —
+      // a user who pulls `intensity` down gets a dimmer, softer, non-occluding
+      // chrome, which is the right reading of that request.
+      heroMat.depthWrite = vis > 0.98
+
       // Metal tints its reflections by base colour. Lerp from white rather than
       // using the palette directly, so it stays chrome that has picked up the
       // room's colour instead of becoming coloured plastic. Mid content deepens the

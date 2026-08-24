@@ -126,6 +126,35 @@ export type SceneLicense =
 
 export type SceneBand = 'bass' | 'mid' | 'high' | 'vocal' | 'energy'
 export type SceneIntensity = 'calm' | 'medium' | 'high'
+/**
+ * How much of a frame a scene costs, in the units slotBudget.ts allocates
+ * (low 1 / medium 2 / high 4).
+ *
+ * **Set these from `/bench`, not by eye.** They were guessed for a long time
+ * and 10 of 16 were wrong — some by a lot, and in both directions. `network`
+ * and `heap` were tagged `low` while measuring 6.3 ms and 5.2 ms of GPU time,
+ * which mattered doubly for `network` because it is a LAYER: the budget thought
+ * a `foldpath` + `network` composition cost 5 units of 6 when it actually cost
+ * ~22 ms of a 16.7 ms frame. Meanwhile `synthgrid`, `torusfold`, `inversion`
+ * and `pointcloud` were all tagged `high` while measuring 2-3 ms, so the budget
+ * was refusing compositions the GPU could easily have carried.
+ *
+ * Thresholds, anchored on the measured roster so the buckets keep roughly the
+ * 1 : 2 : 4 ratio the budget units imply:
+ *
+ *   low     < 2 ms      medium  2 - 4.5 ms      high  > 4.5 ms
+ *
+ * measured at tier 1 (the boot tier), GPU time, scene alone, no post chain.
+ *
+ * Two standing caveats on the numbers:
+ *  - The particle scenes (`plasma`, `dissolve`, `pointcloud`) build geometry on
+ *    a worker; their first benchmark run caught them partly unfilled and their
+ *    tags are still the original guesses. Re-run and re-tag them.
+ *  - The bench frames scenes with the default camera rather than
+ *    CameraDirector, so scenes that read the real camera (`chrome`,
+ *    `inversion`, `torusfold`) may be measured from an unrepresentative
+ *    distance. Treat theirs as a floor.
+ */
 export type ScenePerformanceCost = 'low' | 'medium' | 'high'
 
 export interface SceneMetadata {
@@ -299,7 +328,7 @@ export const SCENES: SceneDef[] = [
       bands: ['mid', 'vocal', 'high', 'energy'],
       intensity: 'medium',
       // A few dozen strips, all motion in the vertex shader.
-      performanceCost: 'low',
+      performanceCost: 'medium', // measured 2.14 ms GPU @ tier 1 (/bench)
       compatibleWith: ['wireframe', 'chrome', 'dissolve'],
       // Was 0.97/0.96/0.92/0.98/0.97 — the highest scores in the whole roster,
       // which made this the top-ranked layer candidate in five of six moods and
@@ -333,7 +362,7 @@ export const SCENES: SceneDef[] = [
       intensity: 'medium',
       // Fullscreen shader, ~36 hash evals/pixel — cheaper than the CPU
       // O(n^2) link scan it replaced.
-      performanceCost: 'low',
+      performanceCost: 'high', // measured 6.26 ms GPU @ tier 1 (/bench)
       compatibleWith: ['wireframe', 'chrome', 'pointcloud'],
       moodFit: {
         ambient: 0.90,
@@ -391,7 +420,7 @@ export const SCENES: SceneDef[] = [
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
       // ~60-step raymarch + 6 calcNormal() calls/pixel, governed by uMaxSteps.
-      performanceCost: 'high',
+      performanceCost: 'medium', // measured 3.06 ms GPU @ tier 1 (/bench)
       compatibleWith: ['wireframe', 'network', 'ribbons'],
       moodFit: {
         groove: 0.68,
@@ -455,7 +484,7 @@ export const SCENES: SceneDef[] = [
       intensity: 'high',
       // 100-step adaptive SDF march, 6-iteration fold per step — cheaper
       // than inversion (no per-step normal calc) but still substantial.
-      performanceCost: 'high',
+      performanceCost: 'medium', // measured 1.99 ms GPU @ tier 1 (/bench)
       compatibleWith: ['wireframe', 'network', 'ribbons'],
       moodFit: {
         mellow: 0.7,
@@ -488,7 +517,7 @@ export const SCENES: SceneDef[] = [
       intensity: 'high',
       // 64 iterations x up to 3 AA taps/pixel, quality-gated on both axes
       // (iteration count and whether the extra taps run at all).
-      performanceCost: 'high',
+      performanceCost: 'high', // measured 4.69 ms GPU @ tier 1 (/bench)
       compatibleWith: ['wireframe', 'network', 'ribbons'],
       moodFit: {
         ambient: 0.8,
@@ -521,7 +550,7 @@ export const SCENES: SceneDef[] = [
       intensity: 'high',
       // Fullscreen, but cheap per pixel: hashes and one value-noise pair, no
       // march and no fbm. Comparable to `network`, nothing like the raymarchers.
-      performanceCost: 'low',
+      performanceCost: 'high', // measured 5.24 ms GPU @ tier 1 (/bench)
       compatibleWith: [],
       // Kept in the roster's 0.6-0.9 band on purpose. Strongest at `aggressive`,
       // where glitch and decay are the point, and weakest at `groove`.
@@ -603,7 +632,7 @@ export const SCENES: SceneDef[] = [
       // No march, no noise field, no hashing — cheaper than `network`'s ~36
       // hash evaluations per pixel, and an order of magnitude under the
       // raymarchers. Iteration count is still governed; see uIters.
-      performanceCost: 'low',
+      performanceCost: 'medium', // measured 3.15 ms GPU @ tier 1 (/bench)
       compatibleWith: [],
       // Inside the roster's 0.6-0.9 band, and deliberately a little under
       // `tunnel` at `building` so the two trade rather than one shadowing the
@@ -688,7 +717,7 @@ export const SCENES: SceneDef[] = [
       // 40-tap bloom plus three 14-tap chroma flares. Mitigated by rendering
       // the buffer at 0.6x and governing every loop, but it is still the
       // heaviest thing here.
-      performanceCost: 'high',
+      performanceCost: 'medium', // measured 2.22 ms GPU @ tier 1 (/bench)
       compatibleWith: [],
       // Sits under `tunnel` and `kaleido` in their shared range: it is the most
       // expensive scene registered, so it should not also be the most likely to

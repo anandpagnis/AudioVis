@@ -419,7 +419,6 @@ parameters, and dispose manually-created GPU resources.
 | `B` | Open presets and composition layers |
 | `T` | Open visual tuning controls |
 | `D` | Open analyzer/debug panel |
-| `J` | Toggle the tactical HUD overlay |
 | `Y` | Open the numeric analytics panel (beat accuracy, mood confidence, transition timing) |
 | `F` | Toggle fullscreen |
 | `H` | Hide/show the interface |

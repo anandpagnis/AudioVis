@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { composeLayers } from '../PerformanceDirector'
 import { admitSlots, canFundOverlap, slotCost, TIER_BUDGET } from '../slotBudget'
+import { GENERATIVE_UNITS, POST_CHAIN_UNITS } from '../frameLoad'
+
+/**
+ * Fixed per-frame cost: the post chain, plus the generative overlay (on by
+ * default). `TIER_BUDGET` is TOTAL frame capacity, so anything reasoning about
+ * what is left for scenes has to subtract this — which is exactly what
+ * PerformanceDirector passes to `composeLayers`.
+ */
+const FIXED = POST_CHAIN_UNITS + GENERATIVE_UNITS
+/** The budget a composition actually gets at `tier`, as production computes it. */
+const sceneBudget = (tier: number) => TIER_BUDGET[tier] - FIXED
 import { getScene, SCENES, type ScenePerformanceCost } from '../../scenes'
 
 const COSTS: ScenePerformanceCost[] = ['low', 'medium', 'high']
@@ -65,19 +76,44 @@ describe('admitSlots', () => {
 })
 
 describe('canFundOverlap', () => {
+  const heavy = slotCost('high', 'primary')
+  const low = slotCost('low', 'primary')
+
   it('funds two heavy primaries only at the top tier', () => {
-    const heavy = slotCost('high', 'primary')
-    expect(canFundOverlap(TIER_BUDGET[0], heavy)).toBe(true)
+    // 4 + 4 + 3 fixed = 11, which is exactly tier 0's total capacity.
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, FIXED)).toBe(true)
     for (const tier of [1, 2, 3, 4]) {
-      expect(canFundOverlap(TIER_BUDGET[tier], heavy), `tier ${tier}`).toBe(false)
+      expect(canFundOverlap(TIER_BUDGET[tier], heavy, heavy, FIXED), `tier ${tier}`).toBe(false)
     }
   })
 
   it('funds two low primaries at every tier', () => {
-    const low = slotCost('low', 'primary')
     for (let tier = 0; tier < TIER_BUDGET.length; tier++) {
-      expect(canFundOverlap(TIER_BUDGET[tier], low), `tier ${tier}`).toBe(true)
+      expect(canFundOverlap(TIER_BUDGET[tier], low, low, FIXED), `tier ${tier}`).toBe(true)
     }
+  })
+
+  it('counts the layers that stay on screen through the fade', () => {
+    // The regression: two heavy primaries exactly fill the tier-0 budget, so
+    // the old two-argument test called the overlap affordable — while `ribbons`
+    // and an overlay were also rendering. 11 units of real load against 8.
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, FIXED)).toBe(true)
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, FIXED + 1)).toBe(false)
+  })
+
+  it('tests pairs the old bothHeavy conjunct never reached', () => {
+    // high + medium + two layers = 4 + 2 + 3 = 9 > 8. Neither scene is `high`
+    // on both sides, so the previous guard did not even evaluate this.
+    const medium = slotCost('medium', 'primary')
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, medium, FIXED + 3)).toBe(false)
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, medium, FIXED + 2)).toBe(true)
+  })
+
+  it('treats a first-ever switch (no outgoing scene) as cheap', () => {
+    // Nothing is fading out on the very first commit, so only the incoming
+    // scene and the layers count.
+    expect(canFundOverlap(TIER_BUDGET[4], 0, heavy, FIXED)).toBe(false)
+    expect(canFundOverlap(TIER_BUDGET[4], 0, low, FIXED + 1)).toBe(true)
   })
 })
 
@@ -102,7 +138,7 @@ describe('no-op acceptance with zero background/effect scenes', () => {
       for (const cost of COSTS) {
         const out = composeLayers({
           primaryCost: cost,
-          budget: TIER_BUDGET[tier],
+          budget: sceneBudget(tier),
           // What PerformanceDirector actually passes today: the background pool
           // is whatever declares the role, which is nothing.
           pools: {
@@ -124,7 +160,7 @@ describe('no-op acceptance with zero background/effect scenes', () => {
     for (const tier of [2, 3, 4]) {
       const out = composeLayers({
         primaryCost: 'high',
-        budget: TIER_BUDGET[tier],
+        budget: sceneBudget(tier),
         pools: {
           accent: SCENES.filter((s) => s.metadata.roles.includes('accent')),
           overlay: SCENES.filter((s) => s.metadata.roles.includes('overlay')),
@@ -153,7 +189,9 @@ describe('no-op acceptance with zero background/effect scenes', () => {
     // cannot reproduce that, and should not: every divergence must shed load,
     // never add it. `foldpath` is high-cost and overlay-incapable, so use a
     // synthetic high-cost accent request directly.
-    const admitted = admitSlots(TIER_BUDGET[3], slotCost('medium', 'primary'), [
+    // sceneBudget, not TIER_BUDGET: the composition is funded out of what is
+    // left after the fixed per-frame costs, which is what production passes.
+    const admitted = admitSlots(sceneBudget(3), slotCost('medium', 'primary'), [
       { slot: 'accent', units: slotCost('high', 'accent') },
     ])
     expect(admitted).toEqual([])

@@ -222,7 +222,51 @@ export const FRAG = /* glsl */ `
   }
 `
 
+/**
+ * Plain blit of the offscreen buffer. `uFade` is already baked in by FRAG, so
+ * this pass only has to get the pixels on screen — additively, exactly as the
+ * scene used to composite when it drew direct.
+ */
+const DISPLAY_FRAG = /* glsl */ `
+  precision highp float;
+  varying vec2 vUv;
+  uniform sampler2D uScene;
+
+  void main() {
+    gl_FragColor = vec4(texture2D(uScene, vUv).rgb, 1.0);
+  }
+`
+
+/**
+ * Fraction of the full device resolution this scene actually marches at.
+ *
+ * **Measured, not guessed.** `/bench` put this scene at 16.0 ms of GPU time per
+ * frame — against a 16.67 ms budget at 60 Hz, alone, before the post chain and
+ * before any layer. It was by a factor of ~2.5 the most expensive thing in the
+ * roster and it could not share a frame with anything.
+ *
+ * The governor had no lever on it either: `uMaxSteps` sweeps 600 → 175 across
+ * the five tiers and moves the cost by only 19% (16.0 → 13.0 ms), because the
+ * march terminates early long before the cap. What it actually pays for is the
+ * per-step work — the 8-iteration fold, the 20-step binary refine, the normal
+ * samples — so capping steps was tuning the wrong knob.
+ *
+ * Resolution is the knob that works, and it is the same mitigation
+ * `SynthGridScene` already uses (that scene renders at 0.6x and measures a
+ * comfortable 2.2 ms despite a far longer shader). Half resolution is a quarter
+ * of the pixels, which should land this near ~4 ms.
+ *
+ * Sized against the DPR-scaled resolution rather than CSS pixels — unlike
+ * SynthGrid, which is deliberately DPR-independent to avoid reallocating on
+ * every tier change. That trade-off has since flipped: the governor now holds a
+ * tier for RENDER_SCALE_HOLD_SEC before touching DPR, so resizes are rare, and
+ * in exchange this scales correctly on a 1x display instead of only helping
+ * retina users.
+ */
+const RENDER_SCALE = 0.5
+
 export function FoldPathScene() {
+  const gl = useThree((s) => s.gl)
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
   const fastClock = useRef(0)
@@ -236,7 +280,10 @@ export function FoldPathScene() {
         transparent: true,
         depthWrite: false,
         depthTest: false,
-        blending: THREE.AdditiveBlending,
+        // NoBlending for the offscreen pass: this is the only thing drawn into
+        // a freshly-cleared target, so there is nothing to blend against. The
+        // additive composite happens in the display pass instead.
+        blending: THREE.NoBlending,
         uniforms: {
           uRes: { value: new THREE.Vector2(1, 1) },
           uTime: { value: 0 },
@@ -255,16 +302,58 @@ export function FoldPathScene() {
     [],
   )
 
+  const displayMaterial = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        vertexShader: FULLSCREEN_VERT,
+        fragmentShader: DISPLAY_FRAG,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: { uScene: { value: null } },
+      }),
+    [],
+  )
+
   const geometry = useMemo(() => new THREE.PlaneGeometry(2, 2), [])
 
-  useDispose(material, geometry)
+  const rt = useMemo(() => {
+    const target = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.HalfFloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+    })
+    // Linear filtering is what makes the upscale read as soft rather than
+    // blocky — the whole premise of rendering below display resolution.
+    target.texture.minFilter = THREE.LinearFilter
+    target.texture.magFilter = THREE.LinearFilter
+    const scene = new THREE.Scene()
+    scene.add(new THREE.Mesh(geometry, material))
+    return { target, scene, camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1) }
+  }, [geometry, material])
+
+  useDispose(material, displayMaterial, geometry, rt.target)
 
   useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+    const w = Math.max(1, Math.floor(size.width * dpr * RENDER_SCALE))
+    const h = Math.max(1, Math.floor(size.height * dpr * RENDER_SCALE))
+    rt.target.setSize(w, h)
+    // The shader's own idea of resolution is the BUFFER's, not the canvas's —
+    // it drives ray setup, so passing the canvas size here would march a
+    // differently-shaped frustum than the one being written into.
+    material.uniforms.uRes.value.set(w, h)
+  }, [rt, material, size, dpr])
 
   useSceneFrame(({ dt, b, col, vis, params }) => {
     const u = material.uniforms
+    displayMaterial.uniforms.uScene.value = rt.target.texture
+
+    // Skip the march entirely while this instance contributes nothing. Same
+    // guard as TrailLine/SynthGrid/KernelPanic: `node.visible = false` does not
+    // stop a manual `gl.render()`, so a warming candidate would otherwise pay
+    // full price for up to the 2.5 s commit timeout while drawing nothing.
+    if (vis <= 0.001) return
 
     fastClock.current += dt * params.speed
     pathClock.current += dt * (0.2 + b.bass * 0.08 + b.energy * 0.06) * params.speed
@@ -285,12 +374,18 @@ export function FoldPathScene() {
     // native budget can't be driven by that value directly.
     const qualityFraction = quality.knobs.raymarchSteps / 96
     u.uMaxSteps.value = Math.max(60, Math.round(600 * qualityFraction))
+
+    // --- offscreen march, at RENDER_SCALE of the display resolution ---------
+    const prevTarget = gl.getRenderTarget()
+    gl.setRenderTarget(rt.target)
+    gl.render(rt.scene, rt.camera)
+    gl.setRenderTarget(prevTarget)
   })
 
   return (
     <mesh frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
-      <primitive object={material} attach="material" />
+      <primitive object={displayMaterial} attach="material" />
     </mesh>
   )
 }

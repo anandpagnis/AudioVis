@@ -73,11 +73,6 @@ export const FRAG = /* glsl */ `
   // so this scales AS a fraction of that knob rather than reusing it as a
   // literal step count.
   uniform int uMaxIter;
-  // Quality-gated AA: the source author's own comment flags this as
-  // unoptimized ("need to optim and do some proper AA") — the 2 extra taps
-  // roughly triple the cost for antialiasing only, so they're skipped
-  // outright at low quality tiers instead of iterating fewer times.
-  uniform float uExtraTaps;
 
   vec3 juliaFractal(vec2 c, vec2 c2, float animparam, float anim2) {
     vec2 z = c;
@@ -128,16 +123,18 @@ export const FRAG = /* glsl */ `
     float juliax = tan(timeVal) * 0.011 + 0.02 / (fragCoord.y * 0.19531 * (1.0 - animFlap));
     float juliay = cos(timeVal * 0.213) * (0.022 + animFlap) + 5.66752 - (juliax * 1.5101);
 
-    // Mid drives the AA tap spread — a distinct, if subtle, softness job.
-    float tapU = (1.0 / uRes.x) * (25.5 + uMid * 15.0);
-    float tapV = (1.0 / uRes.y) * (25.5 + uMid * 15.0);
-
+    // ONE evaluation. The source shipped a 3-tap supersample (its author's own
+    // comment: "need to optim and do some proper AA"), and /bench measured what
+    // that cost: 14.00 ms with the taps versus 4.69 ms without — 2.98x, for
+    // antialiasing alone, on what was already the second most expensive scene
+    // in the roster. 14 ms of a 16.67 ms frame is not a defensible price for
+    // edge quality at any tier, so the taps are gone rather than tier-gated.
+    //
+    // If aliasing on the wing veins proves too harsh, the replacement is
+    // resolution (render this scene to an offscreen buffer and let the governor
+    // scale it, as FoldPathScene now does), NOT a return to supersampling — that
+    // buys the same smoothing on a continuous knob instead of a 3x cliff.
     vec4 col = vec4(juliaFractal(uv, vec2(juliax, juliay), animWings, animFlap), 1.0);
-    if (uExtraTaps > 0.5) {
-      col += vec4(juliaFractal(uv + vec2(tapU, tapV), vec2(juliax, juliay), animWings, animFlap), 1.0);
-      col += vec4(juliaFractal(uv + vec2(-tapU, -tapV), vec2(juliax, juliay), animWings, animFlap), 1.0);
-      col *= 0.3333;
-    }
 
     col.xyz = col.zyx;
     col.xyz = vec3(1.0) - col.xyz;
@@ -174,7 +171,6 @@ export function JuliaWingsScene() {
           uPulse: { value: 0 },
           uFade: { value: 0 },
           uMaxIter: { value: 64 },
-          uExtraTaps: { value: 1 },
         },
       }),
     [],
@@ -203,7 +199,6 @@ export function JuliaWingsScene() {
 
     const qualityFraction = quality.knobs.raymarchSteps / 96
     u.uMaxIter.value = Math.max(24, Math.round(64 * qualityFraction))
-    u.uExtraTaps.value = quality.tier <= 2 ? 1 : 0
   })
 
   return (

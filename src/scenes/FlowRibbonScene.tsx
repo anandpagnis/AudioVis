@@ -329,7 +329,13 @@ export function FlowRibbonScene() {
       u.uColB.value.copy(col.b)
       u.uColC.value.copy(col.c)
     },
-    { visCeiling: 1.2, visFloor: 0.3 },
+    // visCeiling was 1.2, which let this scene overdrive PAST full strength.
+    // That quietly handed back the headroom the fragment shader's own 0.65
+    // scaling had just taken away, and it did so specifically when compositing
+    // over a subject — the one situation the scaling exists for. 1.0 is the
+    // roster default and there is no reason a layer should be the exception.
+    // How bright it reads is now the slot gain's job (see `defaultLayerFx`).
+    { visCeiling: 1, visFloor: 0.3 },
   )
 
   return (

@@ -70,6 +70,21 @@ export const FRAG = /* glsl */ `
   // convention was calibrated for. Unlike FoldPathScene's fixed-step march,
   // no rescaling is needed here.
   uniform int uMaxSteps;
+  // The fold's rotation, precomputed on the CPU.
+  //
+  // This was "p.xz *= rot2(uTime)" INSIDE the fold loop -- and rot2 builds
+  // mat2(cos(a), -sin(a), sin(a), cos(a)) from a value that is a UNIFORM,
+  // i.e. identical for every pixel and every iteration of every loop in the
+  // frame. The fold runs 6 times per de(), and de() runs up to uMaxSteps (100)
+  // times per pixel, so that expression sat 600 levels deep inside the hottest
+  // loop in the scene while its inputs never changed.
+  //
+  // A good driver hoists loop-invariant pure code out after inlining, so this
+  // may already have been free on some GPUs -- but "may, on some" is not a
+  // thing to leave in the inner loop of one of the roster's most expensive
+  // shaders when the alternative is one cos and one sin per frame on the CPU.
+  // Bit-for-bit the same rotation; purely a question of where it is computed.
+  uniform mat2 uFoldRot;
 
   ${SDF_GLSL}
 
@@ -81,7 +96,7 @@ export const FRAG = /* glsl */ `
     float d = 100.0, s = 2.0;
     p *= 0.5;
     for (int i = 0; i < 6; i++) {
-      p.xz *= rot2(uTime);
+      p.xz *= uFoldRot;
       p.xz = abs(p.xz);
       float inv = 1.0 / clamp(dot(p, p), 0.0, 1.0);
       p = p * inv - 1.0;
@@ -163,6 +178,11 @@ export function TorusFoldScene() {
           uColB: { value: new THREE.Color('#ff3d81') },
           uFade: { value: 0 },
           uMaxSteps: { value: quality.knobs.raymarchSteps },
+          // A `mat2` uniform: three has no Matrix2 class, so this is a raw
+          // 4-element column-major Float32Array — [c, -s, s, c], matching
+          // GLSL's `mat2(c, -s, s, c)` (column 0 = (c, -s), column 1 = (s, c)).
+          // Identity until the first frame writes it.
+          uFoldRot: { value: new Float32Array([1, 0, 0, 1]) },
         },
       }),
     [],
@@ -192,6 +212,15 @@ export function TorusFoldScene() {
     u.uUp.value.copy(upVec.current)
 
     u.uTime.value = clock.current
+    // Same rotation the shader used to rebuild 600× per pixel, computed once.
+    // Column-major, matching GLSL's mat2(c, -s, s, c) — see the uniform's decl.
+    const c = Math.cos(clock.current)
+    const s2 = Math.sin(clock.current)
+    const rot = u.uFoldRot.value as Float32Array
+    rot[0] = c
+    rot[1] = -s2
+    rot[2] = s2
+    rot[3] = c
     u.uBass.value = b.bass
     u.uHigh.value = b.high
     u.uEnergy.value = b.energy

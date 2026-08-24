@@ -14,7 +14,7 @@ AudioVis is a browser-based audio-visual performance engine built on **React 19 
 src/audio/     Musical understanding (DSP, no ML in hot path)
 src/engine/    Visual framework (directors, transitions, quality, post)
 src/scenes/    Content (7 registered scenes)
-src/ui/        Chrome (HUD, debug, tactical overlay)
+src/ui/        Chrome (HUD, debug + analytics panels)
 src/store.ts   Zustand persisted state
 backend/       Optional local sd-turbo texture server (:8787)
 ```

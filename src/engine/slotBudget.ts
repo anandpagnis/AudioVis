@@ -43,13 +43,29 @@ export const SLOT_PRIORITY: SecondarySlot[] = ['background', 'accent', 'overlay'
 const COST_UNITS: Record<ScenePerformanceCost, number> = { low: 1, medium: 2, high: 4 }
 
 /**
- * Budget per quality tier, indexed like `quality.tier` (0 richest → 4 survival).
+ * TOTAL frame capacity per quality tier, indexed like `quality.tier`
+ * (0 richest → 4 survival). **The single ladder** — `quality.ts` builds its
+ * `layerBudget` knob from this rather than declaring a second copy.
  *
  * Calibrated against the two behaviours worth preserving from `maxHeavyLayers`:
- * two heavy scenes may overlap at tier 0 (`2 × 4 = 8`), and a heavy primary runs
- * strictly solo from tier 2 down (`4 - 4 = 0` left over).
+ * two heavy scenes may overlap at tier 0, and a heavy primary runs strictly solo
+ * from tier 2 down.
+ *
+ * ## Why these are 3 higher than they used to be
+ *
+ * The ladder was `[8, 6, 4, 3, 2]` back when the post chain and the generative
+ * overlay were reserved at ZERO — so their cost was always implicitly baked
+ * into these numbers. Now that frameLoad.ts reserves them explicitly, keeping
+ * the old figures would charge for them twice: the effective budget for scenes
+ * would have fallen to `[5, 3, 1, 0, 0]`, which strips layers from the show
+ * entirely at tier 2 and below. Correct arithmetic, wrong product.
+ *
+ * Rebased by exactly `POST_CHAIN_UNITS + GENERATIVE_UNITS` so the numbers now
+ * mean what the name says — everything the frame carries, fixed costs included
+ * — and the change is behaviour-neutral for the composition it already
+ * produced, while the previously-blind claimants finally see the truth.
  */
-export const TIER_BUDGET: number[] = [8, 6, 4, 3, 2]
+export const TIER_BUDGET: number[] = [11, 9, 7, 6, 5]
 
 /**
  * Budget units a scene costs in a given slot.
@@ -114,12 +130,31 @@ export function admitSlots(
 }
 
 /**
- * Can the budget fund BOTH primaries through a crossfade?
+ * Can the budget carry everything that is on screen during a crossfade?
  *
- * When it cannot, SceneManager hard-cuts instead — the smoothness guard that
- * used to read `maxHeavyLayers < 2`. Note this is separate from the editorial
- * hard cut on drops, which fires regardless of budget.
+ * A crossfade renders BOTH primaries at full shader cost for its whole
+ * duration — the fade is a multiply at the end of the fragment shader, so a
+ * scene at 5% opacity costs exactly what it costs at 100%. And the composition
+ * layers keep rendering throughout, because they have their own lifetime and
+ * deliberately survive a primary switch unchanged.
+ *
+ * The previous version took only the incoming primary and asked
+ * `primaryUnits * 2 <= budget`, which ignored the layers entirely. At tier 0
+ * that let `network` + `heap` (4 + 4 = 8 of 8) crossfade while `ribbons` and an
+ * overlay were also live — 11 units of real load against a budget of 8, or
+ * ~14 ms of scene work before the post chain. That is where the 33-35 ms
+ * transition frames came from: not a stall, just more scene than the frame
+ * could hold, for about a second.
+ *
+ * Callers that cannot fund the overlap hard-cut instead, which costs nothing
+ * and is a documented part of the visual language.
  */
-export function canFundOverlap(budget: number, primaryUnits: number): boolean {
-  return primaryUnits * 2 <= budget
+export function canFundOverlap(
+  budget: number,
+  outgoingUnits: number,
+  incomingUnits: number,
+  /** Cost of every layer that stays on screen through the fade. */
+  layerUnits = 0,
+): boolean {
+  return outgoingUnits + incomingUnits + layerUnits <= budget
 }

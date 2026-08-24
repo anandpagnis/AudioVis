@@ -191,8 +191,19 @@ export function KernelPanicScene() {
   }, [geometry, mats])
 
   useDispose(
-    mats.a, mats.b, mats.c, mats.d, mats.image, geometry, font,
-    rt.a0, rt.a1, rt.b0, rt.b1, rt.c, rt.d,
+    mats.a,
+    mats.b,
+    mats.c,
+    mats.d,
+    mats.image,
+    geometry,
+    font,
+    rt.a0,
+    rt.a1,
+    rt.b0,
+    rt.b1,
+    rt.c,
+    rt.d,
   )
 
   useEffect(() => {
@@ -211,6 +222,20 @@ export function KernelPanicScene() {
   }, [rt, mats, size])
 
   useSceneFrame(({ dt, b, vis, params }) => {
+    // Four offscreen fullscreen passes across six render targets — by a wide
+    // margin the most expensive thing in this file, and `node.visible = false`
+    // does not stop any of it, because these are manual `gl.render()` calls
+    // rather than scene-graph draws. Skip the whole chain while this instance
+    // contributes nothing.
+    //
+    // The A and B passes are feedback loops reading their own previous frame,
+    // so pausing simply holds their state; the ramp resumes rather than
+    // restarting. Freezing `frame` matters as much as freezing `clock` here —
+    // the source's scripted glitch schedule is driven by `iFrame`, and letting
+    // it run while hidden would skip the scene forward through its own script.
+    mats.image.uniforms.uFade.value = vis
+    if (vis <= 0.001) return
+
     clock.current += dt * params.speed
     frame.current += 1
     const t = clock.current
