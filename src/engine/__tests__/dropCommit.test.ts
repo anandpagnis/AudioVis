@@ -58,3 +58,58 @@ describe('resolveCommit', () => {
     expect(r.immediate).toBe(false)
   })
 })
+
+/**
+ * The incoming scene must be shader-warm before a NORMAL (beat-locked) switch
+ * commits — not just before a drop switch.
+ *
+ * This gate used to apply only to `pendingImmediate`, and the omission was the
+ * largest single source of transition stalls. `requestScene` fires whenever
+ * AutoPilot sees a mood change; if the next downbeat lands a frame or two
+ * later, the chunk has not arrived and the program has not linked. The commit
+ * promoted a cold entry and the driver compiled it on its first real draw — a
+ * multi-hundred-millisecond freeze, landing exactly on the beat.
+ *
+ * The old suite missed it because its `base` fixture already had
+ * `incomingWarm: true`, so no case ever exercised a cold downbeat.
+ */
+describe('resolveCommit — warm gate on normal switches', () => {
+  const cold = { ...base, incomingWarm: false }
+
+  it('does NOT commit on a downbeat while the incoming shader is cold', () => {
+    expect(resolveCommit({ ...cold, onDownbeat: true }).commit).toBe(false)
+  })
+
+  it('commits on the next downbeat once it is warm', () => {
+    expect(resolveCommit({ ...base, onDownbeat: true }).commit).toBe(true)
+  })
+
+  it('commits on a downbeat when there is no warm entry to wait for', () => {
+    // null means nothing is warming — waiting could never be satisfied, so the
+    // gate must not turn into a deadlock.
+    expect(
+      resolveCommit({ ...base, incomingWarm: null, onDownbeat: true }).commit,
+    ).toBe(true)
+  })
+
+  it('still lands via the safety timeout if the scene never warms', () => {
+    // Skipping a downbeat costs one bar; this is the backstop that stops a
+    // scene which never compiles from hanging the show indefinitely.
+    expect(resolveCommit({ ...cold, onDownbeat: true, waited: 3 }).commit).toBe(true)
+  })
+
+  it('still commits at once on an untrusted grid, warm or not', () => {
+    // No usable beat grid means there is no downbeat worth waiting for, and the
+    // pre-existing behaviour is to cut immediately.
+    expect(resolveCommit({ ...cold, gridTrusted: false }).commit).toBe(true)
+  })
+
+  it('leaves the drop path unchanged', () => {
+    // A drop still has its own, shorter grace (IMMEDIATE_WARM_GRACE_SEC) and is
+    // not subject to the downbeat gate at all.
+    const drop = { ...cold, pendingImmediate: true }
+    expect(resolveCommit({ ...drop, waited: 0.05 }).commit).toBe(false)
+    expect(resolveCommit({ ...drop, waited: 0.4 }).commit).toBe(true)
+    expect(resolveCommit({ ...drop, waited: 0.4 }).immediate).toBe(true)
+  })
+})

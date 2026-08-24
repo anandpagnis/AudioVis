@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { FogExp2, Vector2 } from 'three'
 import { EffectComposer, Bloom, ChromaticAberration, Vignette } from '@react-three/postprocessing'
@@ -40,6 +40,32 @@ export function EffectsDirector() {
   // would invalidate every material's shader cache.
   const fog = useRef(new FogExp2(0x000000, 0))
 
+  /**
+   * Fog is attached ONCE and never detached.
+   *
+   * Whether a scene has fog at all is part of Three's shader program cache key,
+   * so assigning `scene.fog = null` and back recompiles every material in the
+   * scene — a multi-hundred-millisecond stall. The old code did exactly that
+   * around a `p.fog > 0.001` threshold, and because `p.fog` eases exponentially
+   * (it never actually reaches zero) it crossed that threshold once in each
+   * direction per ambient transition. Two whole-scene recompiles, landing on
+   * precisely the musical moments that have to stay smooth.
+   *
+   * `FogExp2` at density 0 gives `1 - exp(-0 * depth) = 0` fog factor, so a
+   * permanently-attached zero-density fog is visually identical to no fog while
+   * keeping the program key stable for the whole session.
+   */
+  useEffect(() => {
+    // Captured in a local so the cleanup detaches the fog this effect attached,
+    // not whatever `fog.current` happens to hold when the component unmounts.
+    const instance = fog.current
+    instance.density = 0
+    scene.fog = instance
+    return () => {
+      if (scene.fog === instance) scene.fog = null
+    }
+  }, [scene])
+
   useFrame(() => {
     const p = performanceState
     if (bloomRef.current) {
@@ -57,13 +83,10 @@ export function EffectsDirector() {
 
     // Atmospheric depth. Tinted toward the palette's background rather than
     // pure black so it reads as air, not as the subject being clipped away.
-    if (p.fog > 0.001) {
-      if (scene.fog !== fog.current) scene.fog = fog.current
-      fog.current.density = p.fog * 0.035
-      fog.current.color.set(getPalette(useStore.getState().paletteId).bg)
-    } else if (scene.fog) {
-      scene.fog = null
-    }
+    // Density alone carries the whole range now — see the attach effect above
+    // for why this must never toggle `scene.fog` itself.
+    fog.current.density = p.fog * 0.035
+    if (p.fog > 0.001) fog.current.color.set(getPalette(useStore.getState().paletteId).bg)
   })
 
   return (

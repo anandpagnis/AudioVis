@@ -3,7 +3,10 @@ import { audioEngine } from '../audio/AudioEngine'
 /**
  * Phase 8 export: capture the stage canvas (plus the analyzed audio, when a
  * source is running) into a downloadable .webm, and one-shot PNG screenshots.
- * Requires preserveDrawingBuffer on the renderer for screenshots.
+ *
+ * Video needs nothing special — `captureStream()` taps the compositor directly.
+ * Screenshots read the drawing buffer, which is only valid inside the tick that
+ * drew it now that `preserveDrawingBuffer` is off; see {@link captureIfRequested}.
  */
 
 /** The in-flight recorder, or null when idle. Module-scoped: only one at a time. */
@@ -88,15 +91,41 @@ export function stopRecording() {
 }
 
 /**
- * Download a one-shot PNG of the current frame. Returns false if the canvas isn't
- * mounted yet. Depends on `preserveDrawingBuffer: true` (set in Stage.tsx) —
- * without it the buffer is already cleared by the time toBlob reads it.
+ * Pending one-shot screenshot request, consumed by {@link captureIfRequested}.
+ *
+ * The renderer no longer runs with `preserveDrawingBuffer` (it forced a
+ * framebuffer retain on every single frame to serve a feature used a handful of
+ * times per session), so the drawing buffer is valid only *within* the rAF tick
+ * that drew it. A `toBlob` called from a click handler therefore reads an
+ * already-cleared buffer and returns a transparent PNG.
+ *
+ * Instead the click just raises this flag, and `ScreenshotCapture` — mounted
+ * inside the Canvas at a priority after the post chain — reads the buffer in
+ * the same tick the frame was composited.
+ */
+let screenshotPending = false
+
+/**
+ * Queue a PNG of the next rendered frame. Returns false if the canvas isn't
+ * mounted yet; the download itself happens a frame later, from inside the
+ * render loop.
  */
 export function saveScreenshot(): boolean {
+  if (!stageCanvas()) return false
+  screenshotPending = true
+  return true
+}
+
+/**
+ * Consume a pending screenshot request. **Must be called from inside the render
+ * loop, after the frame has been composited** — see {@link screenshotPending}.
+ */
+export function captureIfRequested(): void {
+  if (!screenshotPending) return
+  screenshotPending = false
   const canvas = stageCanvas()
-  if (!canvas) return false
+  if (!canvas) return
   canvas.toBlob((blob) => {
     if (blob) download(blob, `audiovis-${stamp()}.png`)
   }, 'image/png')
-  return true
 }

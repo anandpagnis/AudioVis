@@ -96,8 +96,16 @@ export function DebugPanel() {
       ctx.fillRect(6, 20, (W - 40) * f.phraseProgress, 3)
       ctx.fillStyle = 'rgba(255,255,255,0.6)'
       ctx.fillText(`ph ${f.phrase}`, W - 30, 26)
-      // Render stats + GPU telemetry.
-      ctx.fillText(`${perf.fps.toFixed(0)} fps @ ${perf.dpr.toFixed(2)}×`, 6, 36)
+      // Render stats + GPU telemetry. p95 and tier are here for the same reason
+      // FpsMeter shows them: fps comes off an EMA and cannot represent a stall,
+      // so a show can read a steady 60 while visibly stuttering. p95 is the
+      // hitch metric, and the tier says how much quality the governor already
+      // gave up to reach that frame time.
+      ctx.fillText(
+        `${perf.fps.toFixed(0)} fps  ${perf.ms.toFixed(1)}ms  p95 ${perf.p95.toFixed(1)}  T${perf.tier} @ ${perf.dpr.toFixed(2)}×`,
+        6,
+        36,
+      )
       ctx.fillStyle = 'rgba(255, 214, 130, 0.8)'
       ctx.fillText(
         `${perf.drawCalls} draws  ${(perf.triangles / 1000).toFixed(0)}k tris  geo ${perf.geometries}  tex ${perf.textures}  prg ${perf.programs}`,

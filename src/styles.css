@@ -25,16 +25,6 @@ body,
   inset: 0;
 }
 
-/* Tactical HUD overlay — above the WebGL scene, below the control chrome. */
-.tactical-hud {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 5;
-}
-
 /* ---------- collapsible corner menu ---------- */
 
 .menu-dock {
@@ -630,6 +620,78 @@ body,
 
 /* ---------- debug ---------- */
 
+/* fps / frame-time / tier readout (J). Sits above the debug panel so both can
+   be open at once — the meter is the summary, the panel is the detail. */
+.fps-meter {
+  position: absolute;
+  top: 84px;
+  right: 16px;
+  padding: 7px 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+}
+
+.fps-value {
+  font-size: 17px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.fps-unit {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.fps-ms {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* p95 is the hitch metric — the colour tracks what the quality governor is
+   about to do, so amber means "will not climb" and red means "shedding load". */
+.fps-p95.good {
+  color: rgba(120, 230, 180, 0.9);
+}
+
+.fps-p95.warn {
+  color: rgba(255, 214, 130, 0.95);
+}
+
+.fps-p95.bad {
+  color: rgba(255, 130, 110, 0.95);
+}
+
+.fps-tier {
+  color: rgba(255, 255, 255, 0.35);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  padding-left: 8px;
+}
+
+/* Frame budget breakdown. Turns red the moment the committed load exceeds the
+   tier's capacity — i.e. the budget knows it is overcommitted. */
+.fps-load {
+  color: rgba(255, 255, 255, 0.35);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  padding-left: 8px;
+  font-size: 10px;
+}
+
+.fps-load.bad {
+  color: rgba(255, 130, 110, 0.95);
+}
+
+/* With the meter open the panel drops below it. */
+.fps-meter ~ .debug-panel {
+  top: 128px;
+}
+
 .debug-panel {
   position: absolute;
   top: 84px;
@@ -875,5 +937,161 @@ body,
   }
   .start-card {
     padding: 28px 22px;
+  }
+}
+
+/* ---------- scene cost benchmark (/bench, dev only) ---------- */
+
+.bench {
+  min-height: 100vh;
+  background: #07090c;
+  color: #e2e7ee;
+  font: 14px/1.6 ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  padding: 32px;
+}
+
+/* The measured canvas. Kept on screen and at a real size because rendering it
+   offscreen or at 1px would measure something no user will ever see — fill rate
+   is most of what this benchmark is trying to compare. */
+.bench-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+.bench-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.bench-panel {
+  position: relative;
+  z-index: 1;
+  max-width: 900px;
+  margin: 0 auto;
+  background: rgba(7, 9, 12, 0.92);
+  border: 1px solid #1e252e;
+  border-radius: 3px;
+  padding: 24px 26px;
+}
+
+.bench-panel h1 {
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin: 0 0 12px;
+}
+
+.bench-note,
+.bench-warn {
+  color: #7e8899;
+  font-size: 12.5px;
+  margin: 0 0 18px;
+}
+
+.bench-warn {
+  color: #d9603a;
+  border-left: 2px solid #d9603a;
+  padding-left: 12px;
+}
+
+.bench-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.bench-controls button {
+  font: inherit;
+  font-size: 12px;
+  background: #151a21;
+  color: #e2e7ee;
+  border: 1px solid #2a333e;
+  border-radius: 2px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.bench-controls button:hover:not(:disabled) {
+  border-color: #4ea8b8;
+}
+
+.bench-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bench-controls button:focus-visible,
+.bench-panel a:focus-visible {
+  outline: 2px solid #4ea8b8;
+  outline-offset: 2px;
+}
+
+.bench-copied {
+  color: #4ea8b8;
+  font-size: 11px;
+}
+
+.bench-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  font-size: 12px;
+  color: #7e8899;
+}
+
+.bench-bar {
+  flex: 1;
+  height: 4px;
+  background: #1c232c;
+  overflow: hidden;
+}
+
+.bench-bar > div {
+  height: 100%;
+  background: #4ea8b8;
+  transition: width 0.25s linear;
+}
+
+.bench-scroll {
+  overflow-x: auto;
+}
+
+.bench-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bench-table th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #7e8899;
+  border-bottom: 1px solid #2a333e;
+  padding: 0 14px 7px 0;
+  white-space: nowrap;
+}
+
+.bench-table td {
+  padding: 5px 14px 5px 0;
+  border-bottom: 1px solid #151a21;
+  color: #b4becb;
+}
+
+.bench-table .num {
+  text-align: right;
+  padding-right: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bench-bar > div {
+    transition: none;
   }
 }

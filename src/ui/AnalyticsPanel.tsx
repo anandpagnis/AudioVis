@@ -7,6 +7,7 @@ import { performanceState } from '../engine/performanceState'
 import type { MoodState } from '../audio/types'
 import { analytics } from '../engine/analyticsMetrics'
 import { frameTimeWindow } from '../engine/PerfMonitor'
+import type { RollingWindow } from '../engine/RollingWindow'
 import { transitionMetrics } from '../engine/transitionMetrics'
 
 const W = 320
@@ -31,9 +32,18 @@ const MOOD_LABEL: Record<MoodState, string> = {
   aggressive: 'agr',
 }
 
+/**
+ * Draw a window's samples as a sparkline.
+ *
+ * Takes the `RollingWindow` itself rather than a materialised array: the window
+ * stores its samples in typed arrays with no `{t, v}` objects behind them, and
+ * building that array here would allocate one object per sample on every frame
+ * the panel is open — reintroducing, in the reader, exactly the garbage the
+ * window was rewritten to stop producing.
+ */
 function sparkline(
   ctx: CanvasRenderingContext2D,
-  values: readonly { t: number; v: number }[],
+  win: RollingWindow,
   x: number,
   y: number,
   w: number,
@@ -41,18 +51,19 @@ function sparkline(
   color: string,
   scale = 1,
 ) {
-  if (values.length < 2) return
-  const t0 = values[0].t
-  const span = Math.max(0.001, values[values.length - 1].t - t0)
+  const n = win.count()
+  if (n < 2) return
+  const t0 = win.timeAt(0)
+  const span = Math.max(0.001, win.timeAt(n - 1) - t0)
   ctx.strokeStyle = color
   ctx.lineWidth = 1.5
   ctx.beginPath()
-  values.forEach((s, i) => {
-    const px = x + ((s.t - t0) / span) * w
-    const py = y + h - Math.max(0, Math.min(1, s.v / scale)) * h
+  for (let i = 0; i < n; i++) {
+    const px = x + ((win.timeAt(i) - t0) / span) * w
+    const py = y + h - Math.max(0, Math.min(1, win.valueAt(i) / scale)) * h
     if (i === 0) ctx.moveTo(px, py)
     else ctx.lineTo(px, py)
-  })
+  }
   ctx.stroke()
 }
 
@@ -98,7 +109,7 @@ export function AnalyticsPanel() {
       // --- Beat-grid accuracy ---
       ctx.fillStyle = 'rgba(255,255,255,0.6)'
       ctx.fillText(`beat accuracy  ${(f.beatGridAccuracy * 100).toFixed(0)}%`, 6, 40)
-      sparkline(ctx, analytics.bpmAccuracy.values(), 6, 44, W - 12, 22, 'rgba(120, 200, 255, 0.9)')
+      sparkline(ctx, analytics.bpmAccuracy, 6, 44, W - 12, 22, 'rgba(120, 200, 255, 0.9)')
 
       // --- Mood confidence / ambiguity ---
       ctx.fillStyle = 'rgba(255,255,255,0.6)'
@@ -109,7 +120,7 @@ export function AnalyticsPanel() {
       )
       sparkline(
         ctx,
-        analytics.moodConfidence.values(),
+        analytics.moodConfidence,
         6,
         88,
         W - 12,
@@ -118,7 +129,7 @@ export function AnalyticsPanel() {
       )
       sparkline(
         ctx,
-        analytics.moodAmbiguity.values(),
+        analytics.moodAmbiguity,
         6,
         88,
         W - 12,
@@ -155,14 +166,15 @@ export function AnalyticsPanel() {
       ctx.moveTo(6, thresholdY)
       ctx.lineTo(W - 6, thresholdY)
       ctx.stroke()
-      const secValues = analytics.sectionStrength.values()
-      if (secValues.length > 0) {
-        const t0 = secValues[0].t
-        const span = Math.max(0.001, secValues[secValues.length - 1].t - t0)
+      const sec = analytics.sectionStrength
+      const secN = sec.count()
+      if (secN > 0) {
+        const t0 = sec.timeAt(0)
+        const span = Math.max(0.001, sec.timeAt(secN - 1) - t0)
         ctx.fillStyle = 'rgba(179, 136, 255, 0.9)'
-        for (const s of secValues) {
-          const px = 6 + ((s.t - t0) / span) * (W - 12)
-          const py = secY + secH - (Math.min(secScale, s.v) / secScale) * secH
+        for (let i = 0; i < secN; i++) {
+          const px = 6 + ((sec.timeAt(i) - t0) / span) * (W - 12)
+          const py = secY + secH - (Math.min(secScale, sec.valueAt(i)) / secScale) * secH
           ctx.beginPath()
           ctx.arc(px, py, 2, 0, Math.PI * 2)
           ctx.fill()
@@ -246,8 +258,12 @@ export function AnalyticsPanel() {
       }
       rows.forEach((r, i) => {
         const y = 294 + i * 14
-        const off =
-          Math.abs(r.actualDurationSec - r.targetDurationSec) / Math.max(0.01, r.targetDurationSec)
+        // A hard cut has a target of 0 and lands in ~0, so the duration check
+        // is meaningless for it — only its frame cost is worth flagging.
+        const off = r.hardCut
+          ? 0
+          : Math.abs(r.actualDurationSec - r.targetDurationSec) /
+            Math.max(0.01, r.targetDurationSec)
         const flagged = off > 0.25 || r.frameMsDuringFade.p95 > 20
         ctx.fillStyle = flagged ? 'rgba(255, 138, 101, 0.9)' : 'rgba(255,255,255,0.65)'
         const label = `${r.fromScene ?? '–'}→${r.toScene}`.slice(0, 20).padEnd(20)

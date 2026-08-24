@@ -39,7 +39,7 @@ const advance = (over: Partial<Parameters<typeof advanceEffects>[0]>) =>
     candidates: [],
     now: 10,
     budget: TIER_BUDGET[0],
-    primaryUnits: slotCost('low', 'primary'),
+    committedUnits: slotCost('low', 'primary'),
     lastFiredAt: new Map(),
     mood: 'groove',
     recentIds: [],
@@ -120,7 +120,7 @@ describe('advanceEffects', () => {
         fired: ['drop'],
         candidates: scenes,
         budget: TIER_BUDGET[4],
-        primaryUnits: slotCost('high', 'primary'),
+        committedUnits: slotCost('high', 'primary'),
       }),
     ).toHaveLength(0)
   })
@@ -200,5 +200,52 @@ describe('syncEffectEntries', () => {
     const entries = [primary]
     syncEffectEntries(entries as never, [])
     expect(entries[0].dir).toBe(1)
+  })
+})
+
+/**
+ * The budget an effect reserves against must be the WHOLE frame.
+ *
+ * This claimant used to take `primaryUnits` — the subject alone — so an effect
+ * could fire on top of a full background + accent + overlay composition, plus
+ * the post chain, plus the generative overlay, while believing the frame held
+ * one scene. Three claimants each reserving against a different partial view of
+ * one budget is how it confidently overcommitted; see frameLoad.ts.
+ */
+describe('advanceEffects — reserves against the whole frame', () => {
+  const scenes = [fx('burst', { performanceCost: 'medium' })]
+
+  it('fires when the frame genuinely has room', () => {
+    expect(
+      advance({ fired: ['drop'], candidates: scenes, budget: TIER_BUDGET[0], committedUnits: 2 }),
+    ).toHaveLength(1)
+  })
+
+  it('refuses once layers and fixed costs have taken the budget', () => {
+    // Same tier, same effect — but the frame is already carrying a primary, two
+    // layers, the post chain and the generative overlay. The old signature
+    // could not express this at all.
+    expect(
+      advance({ fired: ['drop'], candidates: scenes, budget: TIER_BUDGET[0], committedUnits: 10 }),
+    ).toHaveLength(0)
+  })
+
+  it('does not double-count the effects already firing', () => {
+    // `committedUnits` includes live effects, so the caller must not add them
+    // again — doing so would make each successive effect harder to fire the
+    // longer the previous one ran, which is a rate limit disguised as a budget.
+    const active: ActiveEffect[] = [{ id: 'other', startedAt: 9, durationSec: 5, key: 1 }]
+    const out = advance({
+      active,
+      fired: ['drop'],
+      candidates: scenes,
+      budget: TIER_BUDGET[0],
+      committedUnits: 3,
+    })
+    // MAX_ACTIVE is 1, so the existing effect is kept and no new one is added —
+    // the point here is that it is refused by the ACTIVE cap, not by a budget
+    // that counted `other` twice.
+    expect(out).toHaveLength(1)
+    expect(out[0].id).toBe('other')
   })
 })

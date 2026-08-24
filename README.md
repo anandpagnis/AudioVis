@@ -30,6 +30,7 @@ fullscreen.
 | `T` | Tune panel (intensity / speed / reactivity + quality) |
 | `F` | Fullscreen |
 | `D` | Audio-analysis debug panel (spectrum, bands, BPM, confidence, phrase, drop/build flags) |
+| `J` | fps meter — fps, mean frame time, **p95 frame time**, quality tier |
 | `H` | Hide all UI |
 
 Scene, palette, tune params, quality, mood toggles, and saved presets persist in `localStorage`.

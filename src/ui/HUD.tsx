@@ -16,6 +16,7 @@ import { saveScreenshot } from '../engine/recorder'
 import { buildShareUrl } from '../urlParams'
 import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
+import { FpsMeter } from './FpsMeter'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
 
@@ -34,7 +35,7 @@ const SYSTEM_AUDIO_SUPPORTED =
  *
  * Deliberately outside the R3F tree — this is plain DOM over the canvas, so it
  * re-renders on React state rather than per frame. Anything that needs per-frame
- * audio values (BPM readout, debug panel, tactical overlay) lives in its own
+ * audio values (the BPM readout, the debug panels) lives in its own
  * component that reads `audioEngine.features` directly instead of pushing audio
  * through React state.
  *
@@ -59,12 +60,12 @@ export function HUD() {
   const uiHidden = useStore((s) => s.uiHidden)
   const debugOpen = useStore((s) => s.debugOpen)
   const analyticsOpen = useStore((s) => s.analyticsOpen)
+  const fpsMeter = useStore((s) => s.fpsMeter)
   const params = useStore((s) => s.params)
   const quality = useStore((s) => s.quality)
   const autoPilot = useStore((s) => s.autoPilot)
   const moodDrive = useStore((s) => s.moodDrive)
   const generative = useStore((s) => s.generative)
-  const tacticalHud = useStore((s) => s.tacticalHud)
   const layerFx = useStore((s) => s.layerFx)
   const responseTuning = useStore((s) => s.responseTuning)
   const bandMappings = useStore((s) => s.bandMappings)
@@ -149,7 +150,7 @@ export function HUD() {
       } else if (e.key === 's' || e.key === 'S') {
         saveScreenshot()
       } else if (e.key === 'j' || e.key === 'J') {
-        s.toggleTacticalHud()
+        s.toggleFpsMeter()
       } else if (e.key === 'y' || e.key === 'Y') {
         s.toggleAnalytics()
       }
@@ -333,7 +334,7 @@ export function HUD() {
             )}
             <p className="hint keys">
               Runs on autopilot by default — open the ☰ menu to customize. 1–0 scenes · A autopilot
-              · P palette · C cue · R record · S shot · J HUD · Y analytics · F fullscreen · H hide
+              · P palette · C cue · R record · S shot · J fps · Y analytics · F fullscreen · H hide
             </p>
           </div>
         </div>
@@ -352,6 +353,7 @@ export function HUD() {
           <BpmReadout />
         </div>
 
+        {fpsMeter && <FpsMeter />}
         {debugOpen && <DebugPanel />}
         {analyticsOpen && <AnalyticsPanel />}
 
@@ -416,13 +418,6 @@ export function HUD() {
                     onClick={() => useStore.getState().toggleMoodDrive()}
                   >
                     mood drive
-                  </button>
-                  <button
-                    className={`chip ${tacticalHud ? 'active' : ''}`}
-                    title="Tactical HUD overlay (J)"
-                    onClick={() => useStore.getState().toggleTacticalHud()}
-                  >
-                    tactical HUD
                   </button>
                   <button
                     className={`chip ${generative ? 'active' : ''}`}
@@ -818,6 +813,13 @@ export function HUD() {
                     onClick={() => useStore.getState().toggleDebug()}
                   >
                     debug
+                  </button>
+                  <button
+                    className={`chip ${fpsMeter ? 'active' : ''}`}
+                    title="fps / frame-time / quality-tier readout (J)"
+                    onClick={() => useStore.getState().toggleFpsMeter()}
+                  >
+                    fps
                   </button>
                   <button
                     className={`chip ${analyticsOpen ? 'active' : ''}`}

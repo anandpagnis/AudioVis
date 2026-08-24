@@ -321,8 +321,24 @@ export function TrailLineScene() {
     u.uHue.value = hsl.h
     u.uSat.value = 0.55 + hsl.s * 0.4
 
+    displayMaterial.uniforms.uTex.value = rt.read.texture
+    displayMaterial.uniforms.uFade.value = vis
+
     // --- offscreen pass ---------------------------------------------------
     // Runs at useFrame priority 0, before EffectComposer's priority 1.
+    //
+    // Skipped entirely while this instance contributes nothing to the frame.
+    // `SceneManager` hides an invisible entry with `node.visible = false`, which
+    // removes it from the main render traversal but has NO effect on a manual
+    // `gl.render()` — so a scene warming as a pending candidate used to pay two
+    // full-resolution passes every frame for as long as the commit took (up to
+    // the 2.5 s safety timeout), while drawing nothing anyone could see.
+    //
+    // Safe to skip rather than defer: the buffer holds its last accumulated
+    // state, and the trail is a decaying feedback loop, so it simply resumes
+    // from where it left off when the fade lifts.
+    if (vis <= 0.001) return
+
     u.uPrev.value = rt.read.texture
     const prevTarget = gl.getRenderTarget()
     gl.setRenderTarget(rt.write)
@@ -334,7 +350,6 @@ export function TrailLineScene() {
     rt.write = swap
 
     displayMaterial.uniforms.uTex.value = rt.read.texture
-    displayMaterial.uniforms.uFade.value = vis
   })
 
   return (

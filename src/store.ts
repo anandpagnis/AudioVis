@@ -66,6 +66,24 @@ export const MAX_BAND_MAPPINGS = 6
  */
 export const MIN_SUBJECT_DWELL_BEATS = 32
 
+/**
+ * Beats a composition LAYER must hold before automation may replace it.
+ *
+ * Half the subject's floor, deliberately: layers are supposed to turn over
+ * faster than the thing they decorate. But "faster" was previously "unbounded"
+ * — {@link MIN_SUBJECT_DWELL_BEATS} is enforced inside `requestScene`, and
+ * `setLayer` had no equivalent, so while a subject held for 32 beats the layers
+ * over it could be replaced on every section boundary the phrase detector
+ * emitted: as often as every 8 beats, or 4 s at 120 BPM.
+ *
+ * That churn is most of why one layer felt omnipresent. With only four
+ * layer-capable scenes in the roster, re-rolling the slots twice as often does
+ * not produce variety — it produces the same few scenes flickering in and out.
+ * The real fix is a wider pool; this is the floor that stops the pool being
+ * re-sampled faster than the eye can register a change.
+ */
+export const MIN_LAYER_DWELL_BEATS = 16
+
 export type LayerBlend = 'add' | 'screen' | 'normal' | 'multiply'
 
 /** Per-composition-layer look controls. */
@@ -88,16 +106,24 @@ export type LayerRole = 'background' | 'accent' | 'overlay'
 export const LAYER_ROLES: LayerRole[] = ['background', 'accent', 'overlay']
 
 /**
- * Default per-slot look.
+ * Default per-slot look — a stacking discipline, not three independent numbers.
  *
- * Background sits at 0.40 by default — it is the ground, not a second subject,
- * and this is the gain that makes a scene authored at full strength read as
- * behind rather than alongside the primary.
+ * Every slot composites ADDITIVELY over the one below it, so gains do not
+ * average, they sum. Accent and overlay both sat at 1.0 and a layered frame was
+ * therefore arithmetically guaranteed to blow out — against a render doctrine
+ * that asks for ≤15% of the frame lit, mean luma under 20, and 0% blown to
+ * white (docs/09_Rendering_Engine.md). Background was the only slot that ever
+ * got a considered number.
+ *
+ * The ladder now descends with distance from the subject: the primary is the
+ * only thing at full strength, accent supports it, overlay decorates, and
+ * background sits furthest back. Each layer is authored to look right alone at
+ * 1.0, so these are the amounts by which each yields to the subject.
  */
 const defaultLayerFx = (): Record<LayerRole, LayerFx> => ({
   background: { intensity: 0.4, blend: 'add' },
-  accent: { intensity: 1, blend: 'add' },
-  overlay: { intensity: 1, blend: 'add' },
+  accent: { intensity: 0.55, blend: 'add' },
+  overlay: { intensity: 0.4, blend: 'add' },
 })
 
 const emptyLayerScenes = (): Record<LayerRole, string | null> => ({
@@ -114,6 +140,29 @@ const cloneLayerFx = (fx: Partial<Record<LayerRole, LayerFx>>): Record<LayerRole
 }
 
 /**
+ * Bring stored accent/overlay gains onto the v2 stacking ladder.
+ *
+ * A persisted value always beats a changed default, so lowering the numbers in
+ * {@link defaultLayerFx} alone would fix the blown-out layered frame for new
+ * installs only — everyone already running the app has 1.0 written to disk.
+ *
+ * Rewrites ONLY an exact 1.0, which is the old default and therefore a value
+ * nobody chose. Any other number came from the slider, and a migration must not
+ * overwrite a deliberate choice. Shared by the v0 and v1 branches: v0 state
+ * predates both versions, so it needs this pass just as much.
+ */
+const relaxLayerGains = (
+  fx: Partial<Record<LayerRole, LayerFx>> | undefined,
+): Record<LayerRole, LayerFx> => {
+  const out = cloneLayerFx(fx ?? {})
+  const fresh = defaultLayerFx()
+  for (const role of ['accent', 'overlay'] as const) {
+    if (out[role].intensity === 1) out[role].intensity = fresh[role].intensity
+  }
+  return out
+}
+
+/**
  * Has the current subject held long enough for automation to replace it?
  *
  * Pure and exported for the test. A new source restarts `beatIndex` at 0, which
@@ -123,6 +172,21 @@ const cloneLayerFx = (fx: Partial<Record<LayerRole, LayerFx>>): Record<LayerRole
 export function canAutoSwitch(lastCommitBeat: number, beatIndex = audioEngine.features.beatIndex) {
   const elapsed = beatIndex - lastCommitBeat
   return elapsed < 0 || elapsed >= MIN_SUBJECT_DWELL_BEATS
+}
+
+/**
+ * Has this layer slot held long enough for automation to replace it?
+ *
+ * Same shape and same negative-elapsed escape hatch as {@link canAutoSwitch} —
+ * a new source restarts `beatIndex` at 0, which would otherwise leave the stamp
+ * in the future and freeze the slot for the whole of the next track.
+ */
+export function canAutoSwitchLayer(
+  lastLayerBeat: number,
+  beatIndex = audioEngine.features.beatIndex,
+) {
+  const elapsed = beatIndex - lastLayerBeat
+  return elapsed < 0 || elapsed >= MIN_LAYER_DWELL_BEATS
 }
 
 /** Pre-v1 shape of anything that embedded composition slots. */
@@ -195,10 +259,19 @@ interface AppState {
   lastCommitBeat: number
   /** Persistent, user-controllable composition slots. Effects are NOT here. */
   layerSceneIds: Record<LayerRole, string | null>
+  /** Beat index each layer slot last changed on. Feeds the layer dwell floor.
+   *  Transient (not persisted) — a beat index is only meaningful within one
+   *  source's timeline, so carrying it across a reload would gate the first
+   *  16 beats of the next session against a stamp from the last one. */
+  layerCommitBeats: Record<LayerRole, number>
   paletteId: string
 
   uiHidden: boolean
   debugOpen: boolean
+  /** Lightweight fps / frame-time / tier readout. Separate from `debugOpen`
+   *  because that panel is a per-frame canvas heavy enough to distort the
+   *  very measurement you open it to read. */
+  fpsMeter: boolean
   analyticsOpen: boolean
   params: VisualParams
   quality: Quality
@@ -207,8 +280,6 @@ interface AppState {
   autoPilot: boolean
   moodDrive: boolean
   generative: boolean
-  /** Evangelion tactical HUD overlay (part of the show, independent of uiHidden). */
-  tacticalHud: boolean
   /** Last manual scene/palette action (autopilot backs off for a while). */
   lastManualAt: number
 
@@ -242,7 +313,10 @@ interface AppState {
   applyCue: (cue: PerformanceCue) => void
   toggleMidiSync: () => Promise<void>
   toggleRecording: () => void
-  requestScene: (id: string, opts?: { auto?: boolean; immediate?: boolean }) => void
+  /** Returns false when the request was refused (already current, or the
+   *  automatic dwell floor has not elapsed) — callers that act on the
+   *  incoming scene must check, not assume. */
+  requestScene: (id: string, opts?: { auto?: boolean; immediate?: boolean }) => boolean
   setLayer: (role: LayerRole, id: string | null, opts?: { auto?: boolean }) => void
   setLayerFx: (role: LayerRole, patch: Partial<LayerFx>) => void
   setResponseTuning: (patch: Partial<ResponseTuning>) => void
@@ -252,11 +326,11 @@ interface AppState {
   toggleAutoPilot: () => void
   toggleMoodDrive: () => void
   toggleGenerative: () => void
-  toggleTacticalHud: () => void
   commitScene: () => void
   setPalette: (id: string, opts?: { auto?: boolean }) => void
   toggleUi: () => void
   toggleDebug: () => void
+  toggleFpsMeter: () => void
   toggleAnalytics: () => void
   setParam: (key: keyof VisualParams, value: number) => void
   setQuality: (q: Quality) => void
@@ -284,10 +358,12 @@ export const useStore = create<AppState>()(
       recentSceneIds: [],
       lastCommitBeat: -Infinity,
       layerSceneIds: emptyLayerScenes(),
+      layerCommitBeats: { background: -Infinity, accent: -Infinity, overlay: -Infinity },
       paletteId: 'aurora',
 
       uiHidden: false,
       debugOpen: false,
+      fpsMeter: false,
       analyticsOpen: false,
       params: { intensity: 1, speed: 1, reactivity: 1 },
       quality: 'auto',
@@ -295,7 +371,6 @@ export const useStore = create<AppState>()(
       autoPilot: true,
       moodDrive: true,
       generative: true,
-      tacticalHud: true,
       lastManualAt: 0,
 
       responseTuning: { attack: 1, release: 1, subdivision: 1 },
@@ -448,21 +523,36 @@ export const useStore = create<AppState>()(
 
       requestScene: (id, opts) => {
         if (!opts?.auto) set({ lastManualAt: audioEngine.features.time })
-        if (id === get().sceneId) return
+        if (id === get().sceneId) return false
         // Minimum dwell, enforced HERE rather than in either director because
         // both of them request subjects and the floor has to bind on the pair.
         // Manual picks are exempt (the user asked for it), and so are drops:
         // `immediate` marks the one event whose whole point is landing on the
         // instant, and a drop is worth interrupting a dwell for.
-        if (opts?.auto && !opts.immediate && !canAutoSwitch(get().lastCommitBeat)) return
+        if (opts?.auto && !opts.immediate && !canAutoSwitch(get().lastCommitBeat)) return false
         preloadScene(id) // start fetching the lazy chunk before the downbeat commit
         set({ pendingSceneId: id, pendingImmediate: opts?.immediate === true })
+        return true
       },
 
       setLayer: (role, id, opts) => {
         if (id === get().sceneId) id = null
+        const s = get()
+        if (s.layerSceneIds[role] === id) return // no-op; don't restamp the dwell
+        // Minimum dwell for automatic changes, mirroring requestScene's floor
+        // for the subject. Manual picks are exempt — the user asked for it.
+        // Clearing a slot (id === null) is exempt too: a layer whose scene was
+        // just taken by the primary has to be able to yield immediately, and
+        // holding an empty slot open costs nothing to look at.
+        if (opts?.auto && id !== null && !canAutoSwitchLayer(s.layerCommitBeats[role])) return
         if (id) preloadScene(id)
-        const patch = { layerSceneIds: { ...get().layerSceneIds, [role]: id } }
+        const patch = {
+          layerSceneIds: { ...s.layerSceneIds, [role]: id },
+          layerCommitBeats: {
+            ...s.layerCommitBeats,
+            [role]: audioEngine.features.beatIndex,
+          },
+        }
         set(opts?.auto ? patch : { ...patch, lastManualAt: audioEngine.features.time })
       },
 
@@ -530,12 +620,13 @@ export const useStore = create<AppState>()(
       toggleAutoPilot: () => set((s) => ({ autoPilot: !s.autoPilot })),
       toggleMoodDrive: () => set((s) => ({ moodDrive: !s.moodDrive })),
       toggleGenerative: () => set((s) => ({ generative: !s.generative })),
-      toggleTacticalHud: () => set((s) => ({ tacticalHud: !s.tacticalHud })),
-
       commitScene: () => {
         const pending = get().pendingSceneId
         if (pending) {
-          const recent = [pending, ...get().recentSceneIds.filter((id) => id !== pending)].slice(0, 4)
+          const recent = [pending, ...get().recentSceneIds.filter((id) => id !== pending)].slice(
+            0,
+            4,
+          )
           set({
             sceneId: pending,
             pendingSceneId: null,
@@ -554,6 +645,8 @@ export const useStore = create<AppState>()(
         ),
       toggleUi: () => set((s) => ({ uiHidden: !s.uiHidden })),
       toggleDebug: () => set((s) => ({ debugOpen: !s.debugOpen })),
+
+      toggleFpsMeter: () => set((s) => ({ fpsMeter: !s.fpsMeter })),
       toggleAnalytics: () => set((s) => ({ analyticsOpen: !s.analyticsOpen })),
       setParam: (key, value) => set((s) => ({ params: { ...s.params, [key]: value } })),
       setQuality: (q) => set({ quality: q }),
@@ -642,9 +735,21 @@ export const useStore = create<AppState>()(
        * shape. `layerFx` needs no branch: `cloneLayerFx` fills the new
        * background slot from defaults whatever the stored value looks like.
        */
-      version: 1,
+      version: 2,
       migrate: (persisted, version) => {
-        if (version >= 1) return persisted
+        // v2 — accent/overlay gains dropped from 1.0 to the stacking ladder in
+        // `defaultLayerFx`. Anyone who has run this build has 1.0 persisted, and
+        // a stored value always beats a changed default, so without this the fix
+        // would reach new installs only. Rewritten ONLY where the stored number
+        // is exactly the old default: a user who deliberately tuned a slot has
+        // made a choice, and a migration must not overwrite a choice.
+        if (version >= 2) return persisted
+        if (version === 1) {
+          const v1 = (persisted ?? {}) as Record<string, unknown> & {
+            layerFx?: Partial<Record<LayerRole, LayerFx>>
+          }
+          return { ...v1, layerFx: relaxLayerGains(v1.layerFx) }
+        }
         const old = (persisted ?? {}) as Record<string, unknown> & {
           accentSceneId?: string | null
           overlaySceneId?: string | null
@@ -659,7 +764,8 @@ export const useStore = create<AppState>()(
             accent: old.accentSceneId ?? null,
             overlay: old.overlaySceneId ?? null,
           },
-          layerFx: cloneLayerFx(old.layerFx ?? {}),
+          // v0 state predates v1 AND v2, so it takes the gain relax too.
+          layerFx: relaxLayerGains(old.layerFx),
           cues: (old.cues ?? []).map(migrateLegacyLayers),
           userPresets: (old.userPresets ?? []).map(migrateLegacyLayers),
         }
@@ -673,7 +779,6 @@ export const useStore = create<AppState>()(
         autoPilot: s.autoPilot,
         moodDrive: s.moodDrive,
         generative: s.generative,
-        tacticalHud: s.tacticalHud,
         responseTuning: s.responseTuning,
         bandMappings: s.bandMappings,
         layerFx: s.layerFx,

@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
 import { isMobileDevice, supportsWebGL2 } from './audio/capabilities'
 import { PageTransitionOverlay } from './landing/PageTransitionOverlay'
 import { Landing } from './routes/Landing'
-import { Visualizer } from './routes/Visualizer'
+import { Bench, Visualizer } from './routes/lazyRoutes'
 import { UnsupportedScreen } from './ui/UnsupportedScreen'
 
 export default function App() {
@@ -23,12 +23,25 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      {/* Outside Suspense on purpose: the overlay is what covers a route swap,
+          so it must stay mounted while the incoming route is still loading. */}
       <PageTransitionOverlay />
-      <Routes>
-        <Route path="/" element={<Landing />} />
-        <Route path="/app" element={<Visualizer />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      {/* Only /app is code-split; Landing is static because every visitor
+          needs it immediately (see routes/lazyRoutes.ts). The fallback is null
+          rather than a spinner: the CTA fades to black BEFORE navigating, so a
+          loading indicator would be a flash of chrome in the middle of a
+          deliberate blackout. Landing prefetches the chunk while idle, so in
+          practice this boundary is almost never hit. */}
+      <Suspense fallback={null}>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/app" element={<Visualizer />} />
+          {/* Developer tool. `Bench` is null in production builds — the guard
+              is on the export, not here, so the chunk is never emitted. */}
+          {Bench && <Route path="/bench" element={<Bench />} />}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   )
 }

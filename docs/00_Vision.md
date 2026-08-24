@@ -178,7 +178,7 @@ See [10_TouchDesigner_Integration.md](10_TouchDesigner_Integration.md).
 
 1. Open the app. Pick a source: **system/tab audio**, **microphone/line-in**, or **local audio file**.
 2. Fullscreen. The default scene (`Schematic`) breathes on idle motion even in silence.
-3. Music starts. BPM locks within a few bars. The tactical HUD (`J`) shows mood, beat sync, and diagnostics.
+3. Music starts. BPM locks within a few bars. The BPM readout shows tempo, bar position and mood; `D` opens the full analysis panel.
 
 ### During a track
 

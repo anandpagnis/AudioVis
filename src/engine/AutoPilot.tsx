@@ -183,6 +183,23 @@ export function AutoPilot() {
 
     if (!target) return
 
+    // Never replace a switch that is already in flight — unless this is a drop,
+    // which is the one event worth interrupting anything for.
+    //
+    // A pending scene has an entry mounted and warming: its chunk is loading and
+    // its shader is linking, and `sceneStreamer.retainPending` allows only one
+    // such candidate (MAX_PENDING = 1). Requesting a different scene therefore
+    // EVICTS the warming entry and throws away every frame of compile work it
+    // had banked — and the replacement then starts cold, so it is likelier to
+    // still be cold when its own downbeat arrives. Repeatedly re-aiming during
+    // the ~1 bar a switch spends pending could keep the show permanently
+    // committing scenes that never finished warming.
+    //
+    // Cheap to skip: the mood that triggered this is a section-scale fact, so
+    // the request that is already in flight is aimed at essentially the same
+    // musical moment.
+    if (s.pendingSceneId && !dropEdge) return
+
     // Weighted pick among PRIMARY-capable fits (getScenesForMood is not
     // role-filtered — using it directly here used to let an accent/overlay-
     // only scene like `ribbons` get requested as primary), skipping
