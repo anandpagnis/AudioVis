@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
+import { bipolar, drastic, steps } from './contract'
 import { useDispose } from '../engine/useDispose'
 
 /**
@@ -54,6 +55,17 @@ import { useDispose } from '../engine/useDispose'
  * It is not left purely on wall-clock either: the palette phase takes a nudge
  * on every section boundary, so the mandala still recolours WITH the song's
  * structure even though it does not follow the mood palette.
+ *
+ * ## Scene Contract
+ *
+ *   speed       ring travel and palette rotation rate
+ *   complexity  fractal iterations — "layers", the finest ring layer first
+ *   density     domain-repeat scale — "fold", how tightly the plane packs
+ *   contrast    ring falloff exponent — "edge", soft haze to hard filament
+ *
+ * `fill`, `shape` and `tilt` are not declared: the piece is centred, radial and
+ * frame-filling by construction, so all three would be dials that move nothing.
+ * See scenes/contract.ts on why a dead dial is worse than a missing one.
  */
 
 /**
@@ -168,17 +180,22 @@ export function KaleidoPulseScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ f, dt, b, vis, params }) => {
+  useSceneFrame(({ f, dt, b, vis, params, p }) => {
     const u = material.uniforms
+
+    // The scene's own rate dial, on top of the global speed multiplier. Both
+    // apply: `params.speed` is how fast the whole show moves, `p.speed` is how
+    // fast this mandala moves within it.
+    const rate = params.speed * drastic(p.speed)
 
     // Ring travel accumulates so a changing rate stays continuous, and is
     // floored well above zero so a breakdown still drifts.
-    drift.current += dt * (0.35 + b.energy * 0.75) * params.speed
+    drift.current += dt * (0.35 + b.energy * 0.75) * rate
 
     // Palette rotation: a slow crawl, plus a step on each section boundary, so
     // the mandala recolours with the song's structure. Edge-detected because
     // `sectionChange` is a one-frame flag.
-    colorPhase.current += dt * 0.12 * params.speed
+    colorPhase.current += dt * 0.12 * rate
     if (f.sectionChange && !prevSection.current) colorPhase.current += 0.35
     prevSection.current = f.sectionChange
 
@@ -186,14 +203,20 @@ export function KaleidoPulseScene() {
     u.uPulse.value = b.pulse
     u.uColorPhase.value = colorPhase.current
 
-    // Domain-repeat scale. The range is deliberately tiny: this constant sets
-    // how the plane folds, so large swings do not "breathe", they reshuffle the
-    // whole fractal into a different pattern. +/-0.05 reads as the mandala
+    // Domain-repeat scale. The AUDIO range is deliberately tiny: this constant
+    // sets how the plane folds, so large swings do not "breathe", they reshuffle
+    // the whole fractal into a different pattern. +/-0.05 reads as the mandala
     // tightening on a swell without the structure jumping.
-    u.uRepeat.value = 1.5 + b.bass * 0.05
+    //
+    // The DIAL is allowed to be drastic in a way the audio is not — reshuffling
+    // the fractal is a legitimate thing to ask for deliberately, and is exactly
+    // what `density` means here. Bipolar so the centre keeps the source's 1.5.
+    u.uRepeat.value = 1.5 + bipolar(p.density, 0.55) + b.bass * 0.05
 
     // Brief contrast snap on a hit — thinner, harder rings for a moment.
-    u.uSharp.value = 1.2 + b.transient * 0.35
+    // The dial sets where that snap starts from: low is a soft haze, high is
+    // hard filament. Floored above zero, where every ring would vanish.
+    u.uSharp.value = 0.45 + p.contrast * 1.5 + b.transient * 0.35
 
     u.uFade.value = vis
 
@@ -201,7 +224,15 @@ export function KaleidoPulseScene() {
     // accumulation loop, and the governor's octave ladder (4/4/3/3/2) maps onto
     // a 4-iteration fractal exactly. Dropping an iteration removes the finest
     // ring layer, which is the least missed.
-    u.uIters.value = Math.max(2, Math.min(4, quality.knobs.noiseOctaves))
+    //
+    // The dial asks for a ceiling; the governor still owns the floor. `min` of
+    // the two rather than an average, because a user asking for fewer layers
+    // and a governor demanding fewer layers both want the same thing, and
+    // neither may be overruled by the other into MORE work than it allowed.
+    u.uIters.value = Math.min(
+      steps(p.complexity, 1, 4),
+      Math.max(2, Math.min(4, quality.knobs.noiseOctaves)),
+    )
   })
 
   return (

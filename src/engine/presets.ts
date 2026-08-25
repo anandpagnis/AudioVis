@@ -1,4 +1,5 @@
-import { SCENES } from '../scenes'
+import { SCENES, getSceneContract, resolveSceneMode } from '../scenes'
+import { sanitizeParamBlock, type SceneParams } from '../scenes/contract'
 import type { LayerFx, LayerRole, PerformanceCue, VisualParams } from '../store'
 
 export interface Preset {
@@ -21,6 +22,24 @@ export interface Preset {
   cues?: PerformanceCue[]
   paletteId: string
   params: VisualParams
+
+  /**
+   * Scene Contract dial positions, in the shared vocabulary.
+   *
+   * Stored contract-AGNOSTICALLY — the whole seven-name block, not just the
+   * keys the preset's scene happens to honour. That is what lets a preset be
+   * re-pointed at a different scene and still mean something: `retargetPreset`
+   * hands the same block to the new scene, which keeps whatever it declares and
+   * ignores the rest. Sanitizing at save time would have thrown those keys away
+   * before the swap could ever use them.
+   *
+   * Optional: a preset written before v1 (or by hand) simply carries no dials
+   * and the target scene's own defaults stand.
+   */
+  sceneParams?: SceneParams
+  /** Scene mode captured with the preset. Dropped if the target scene has no such mode. */
+  sceneMode?: string
+
   builtIn?: boolean
 }
 
@@ -141,6 +160,35 @@ export const BUILTIN_PRESETS: Preset[] = [
   },
 ]
 
+/**
+ * Point a preset at a different scene, keeping everything the new scene can
+ * honour.
+ *
+ * The concrete reason the Scene Contract's vocabulary is shared. Before it, a
+ * preset's look was a bag of private uniforms that meant nothing outside one
+ * scene, so "same look, different scene" was not a request the system could
+ * even represent — the dials collapsed to defaults and the user re-dialled by
+ * hand. Now `complexity: 0.8` is a sentence both scenes understand, so the
+ * request has an answer.
+ *
+ * Deliberately lossy in one direction only: keys the target scene does not
+ * declare are dropped from what it will USE, but the preset returned keeps the
+ * full block, so retargeting A→B→A is not a one-way trip through B's smaller
+ * vocabulary.
+ */
+export function retargetPreset(preset: Preset, sceneId: string): Preset {
+  return {
+    ...preset,
+    id: crypto.randomUUID(),
+    sceneId,
+    // Full block preserved on purpose (see above); the mode cannot survive,
+    // because a mode name is scene-private in a way a parameter name is not.
+    sceneParams: preset.sceneParams ? { ...preset.sceneParams } : undefined,
+    sceneMode: resolveSceneMode(sceneId, preset.sceneMode),
+    builtIn: false,
+  }
+}
+
 /** Validate an imported preset-ish object; returns a clean Preset or null. */
 export function sanitizePreset(raw: unknown): Preset | null {
   if (typeof raw !== 'object' || raw === null) return null
@@ -167,5 +215,12 @@ export function sanitizePreset(raw: unknown): Preset | null {
       speed: num(p.speed, 1),
       reactivity: num(p.reactivity, 1),
     },
+    // Vocabulary-checked but NOT contract-checked — see Preset.sceneParams.
+    // The mode is contract-checked, because an unknown mode name has no generic
+    // meaning to preserve and resolveSceneMode degrades it to the scene default.
+    sceneParams: sanitizeParamBlock(o.sceneParams),
+    sceneMode: getSceneContract(o.sceneId)
+      ? resolveSceneMode(o.sceneId, o.sceneMode)
+      : undefined,
   }
 }

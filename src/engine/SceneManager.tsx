@@ -3,10 +3,12 @@ import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { audioEngine } from '../audio/AudioEngine'
 import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store'
-import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded } from '../scenes'
-import { performanceState, type ActiveEffect } from './performanceState'
+import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded, scenePixelBudget } from '../scenes'
+import { approach, performanceState, type ActiveEffect } from './performanceState'
+import { resolveTransitionStyle, transitionMix } from './transitions'
 import { quality } from './quality'
-import { applyFrameLoad, frameLoad, GENERATIVE_UNITS, POST_CHAIN_UNITS } from './frameLoad'
+import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
+import { applyFrameLoad, FEEDBACK_UNITS, frameLoad, GENERATIVE_UNITS, POST_CHAIN_UNITS } from './frameLoad'
 import { canFundOverlap, slotCost } from './slotBudget'
 import { perf, suspendFrameSampling } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
@@ -54,6 +56,15 @@ export interface SlotView {
   /** Which slot this instance occupies. */
   role: SlotName
   /**
+   * Which scene is mounted here.
+   *
+   * Carried on the slot view because a scene component does not otherwise know
+   * its own registry id, and `useSceneFrame` needs it to look up the scene's
+   * Scene Contract and its stored dial positions. Fixed for the life of an
+   * entry — a slot showing a different scene is a different entry.
+   */
+  sceneId: string
+  /**
    * The slot's gain alone, without the crossfade.
    *
    * Separate from `value` because a scene otherwise cannot tell "I am dim
@@ -78,6 +89,7 @@ export interface SlotView {
 export const SceneFade = createContext<SlotView>({
   value: 1,
   role: 'primary',
+  sceneId: '',
   gain: 1,
   progress: 0,
 })
@@ -123,6 +135,23 @@ const WARM_FRAMES = 4
 /** How fast the transition complexity discount eases in and out, per second. */
 const DISCOUNT_EASE_RATE = 7
 
+/**
+ * Classic smoothstep: zero slope at both ends, symmetric about 0.5.
+ *
+ * The symmetry is load-bearing, not cosmetic — see the call site. Input is
+ * assumed already clamped to 0..1 by the caller.
+ */
+function smoothstep(t: number): number {
+  return t * t * (3 - 2 * t)
+}
+
+/**
+ * Scratch for the per-frame pixel-budget walk below. Module-level and reused,
+ * matching this file's no-allocation-in-the-loop discipline — a fresh array per
+ * frame at 60fps is exactly the garbage the rest of the render path avoids.
+ */
+const committedBudgets: number[] = []
+
 let entryKey = 0
 
 function makeEntry(
@@ -140,7 +169,7 @@ function makeEntry(
     warmFrames: 0,
     prewarmed: false,
     fade: { value: 0 },
-    out: { value: 0, role, gain: 1, progress: 0 },
+    out: { value: 0, role, sceneId: id, gain: 1, progress: 0 },
   }
 }
 
@@ -648,6 +677,13 @@ export function SceneManager() {
         // than as an event. The cost-based guard is a SMOOTHNESS measure; this
         // one is editorial, so they stay separate conditions.
         const hardCut = immediate || !fundsOverlap
+        // Capture the style for THIS transition now. A hard cut is `cut`
+        // whatever the director asked for — the budget guard and the drop rule
+        // both mean "no overlap", and no amount of curve makes an overlap-free
+        // change gradual.
+        performanceState.transition.style = hardCut
+          ? 'cut'
+          : resolveTransitionStyle(performanceState.transitionStyle)
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1
@@ -691,7 +727,7 @@ export function SceneManager() {
     // the subject, any crossfade overlap, live effects, and the fixed costs.
     // Computed here rather than taken from `frameLoad` because that is
     // published below, after this pass decides what the layers are.
-    const fixedUnits = POST_CHAIN_UNITS + (state.generative ? GENERATIVE_UNITS : 0)
+    const fixedUnits = POST_CHAIN_UNITS + FEEDBACK_UNITS + (state.generative ? GENERATIVE_UNITS : 0)
     let nonLayerUnits = fixedUnits
     for (const e of entriesRef.current) {
       if (e.role === 'background' || e.role === 'accent' || e.role === 'overlay') continue
@@ -750,16 +786,29 @@ export function SceneManager() {
     // the budget reserves against the whole picture instead of its own partial
     // view of it. See frameLoad.ts — this is the only component that knows
     // every mounted entry, which is why it is the one that reports.
+    //
+    // Two budgets come out of the same walk, over deliberately different subsets
+    // of it. `applyFrameLoad` decides what else may be admitted to the frame, so
+    // it counts everything DRAWING — the transient overlap included, since that
+    // is precisely when nothing more should be admitted. `renderScale` decides
+    // the resolution the frame is drawn at, so it counts only what is STAYING;
+    // a change there costs a resize. See the setSceneBudget call below.
+    committedBudgets.length = 0
     applyFrameLoad(
       entriesRef.current.map((e) => {
-        const meta = getScene(e.id).metadata
+        const def = getScene(e.id)
+        const meta = def.metadata
+        // A warm entry that has finished compiling is hidden and costs nothing;
+        // one still warming is genuinely drawing. Same distinction the
+        // transition discount makes below.
+        const drawing = e.dir !== 0 || !isWarmComplete(e)
+        // COMMITTED tenancies only — see the setSceneBudget call below for why
+        // this set is narrower than `drawing`.
+        if (e.dir === 1 && e.role !== 'effect') committedBudgets.push(scenePixelBudget(def))
         return {
           role: e.role,
           dir: e.dir,
-          // A warm entry that has finished compiling is hidden and costs
-          // nothing; one still warming is genuinely drawing. Same distinction
-          // the transition discount makes below.
-          drawing: e.dir !== 0 || !isWarmComplete(e),
+          drawing,
           units: slotCost(
             meta.performanceCost,
             e.role === 'primary' ? 'primary' : e.role,
@@ -769,8 +818,43 @@ export function SceneManager() {
       }),
       // `Stage` keeps GenerativeLayer mounted for the rest of the session once
       // it has ever been enabled, so this tracks the store flag, not a mount.
-      POST_CHAIN_UNITS + (state.generative ? GENERATIVE_UNITS : 0),
+      POST_CHAIN_UNITS + FEEDBACK_UNITS + (state.generative ? GENERATIVE_UNITS : 0),
     )
+    // Everything on screen shares one framebuffer at one internal resolution, so
+    // the budgets combine rather than compete — see combinePixelBudgets. Set at
+    // priority -100, which is what lets PerfMonitor treat a budget change as this
+    // frame's committed truth and resize immediately instead of holding it.
+    //
+    // Two exclusions, both for the same reason: a change here costs a renderer
+    // resize and a reallocation of the post chain's mip pyramid, so the budget
+    // must only follow things that are STAYING.
+    //
+    //  - The outgoing and warming primaries (`dir !== 1`) are left out, even
+    //    though mid-crossfade the frame really is paying for both. Including
+    //    them would resize the canvas twice per transition — once when the
+    //    overlap begins and once when it is pruned — landing a multi-hundred-ms
+    //    stall on each end of a musical transition, which is the exact hitch the
+    //    warm-up machinery exists to prevent. This is the same call the tier
+    //    discount already makes for the same reason (TRANSITION_DISCOUNT_TIERS
+    //    in quality.ts): the overlap is paid for in complexity, which is free to
+    //    change, never in resolution, which is not. The consequence is that one
+    //    resize happens per scene switch rather than two, and it happens as the
+    //    crossfade starts — where it is hidden, exactly as lilim hides it.
+    //
+    //  - Effects are left out because they are a lifecycle, not a tenancy: a
+    //    firing lasts a couple of seconds, and resizing the canvas for it would
+    //    cost more than the whole effect. Their per-frame cost is already gated,
+    //    on the composition budget above, which is the right instrument for a
+    //    transient.
+    // The post chain is in every frame and is the most fill-bound thing in it,
+    // so it claims against the same budget the scenes do — see
+    // POST_CHAIN_PIXEL_BUDGET. Added here rather than inside
+    // `combinePixelBudgets` because that stays a pure function of what it is
+    // handed: `/bench` composes scene budgets with the post chain deliberately
+    // absent, and baking a fixed cost into the primitive would silently change
+    // what the benchmark measures.
+    committedBudgets.push(POST_CHAIN_PIXEL_BUDGET)
+    renderScale.setSceneBudget(combinePixelBudgets(committedBudgets))
 
     // Only while a second primary is ACTUALLY ON SCREEN.
     //
@@ -789,8 +873,11 @@ export function SceneManager() {
     // defensible if it is imperceptible, and an instant change to loop counts
     // is not. ~0.15 s time constant: quick enough to be helping by the time the
     // crossfade is doing real work, slow enough to read as nothing at all.
-    discount.current +=
-      ((overlapping ? 1 : 0) - discount.current) * Math.min(1, f.delta * DISCOUNT_EASE_RATE)
+    // Exponential rather than `min(1, dt * rate)`: at rate 7 the clamped form
+    // snapped for any frame under 7fps, so the ease that exists to keep a
+    // 2-tier complexity drop imperceptible stopped easing precisely when the
+    // frame rate made it most visible. See `approach()` in performanceState.ts.
+    discount.current = approach(discount.current, overlapping ? 1 : 0, DISCOUNT_EASE_RATE, f.delta)
     quality.setTransitionDiscount(discount.current)
 
     // Crossfade over ~two beats when the tempo is known, then weight each
@@ -802,6 +889,24 @@ export function SceneManager() {
       e.fade.value += (f.delta / duration) * e.dir
       if (e.fade.value >= 1) e.fade.value = 1
       if (e.fade.value <= 0 && e.dir === -1) prune = true
+    }
+
+    // Publish the transition BEFORE deriving visibilities from it.
+    //
+    // The incoming primary's raw clock is the one source of truth for how far
+    // through a change we are — the outgoing entry runs its own countdown, and
+    // deriving each side from its own clock is what makes a styled transition
+    // impossible (the two halves would be independent curves that need not sum
+    // to anything). One `t`, one style, both sides derived from it.
+    const incomingPrimary = entriesRef.current.find((e) => e.role === 'primary' && e.dir === 1)
+    const outgoingPrimary = entriesRef.current.find((e) => e.role === 'primary' && e.dir === -1)
+    const tx = performanceState.transition
+    tx.progress = incomingPrimary ? Math.max(0, Math.min(1, incomingPrimary.fade.value)) : 1
+    tx.active = outgoingPrimary !== undefined && tx.progress < 1
+    const mix = transitionMix(tx.style, tx.progress)
+
+    for (const e of entriesRef.current) {
+      if (e.dir === 0) continue
       const gain =
         e.role === 'primary'
           ? 1
@@ -809,7 +914,33 @@ export function SceneManager() {
             ? EFFECT_GAIN
             : state.layerFx[e.role].intensity
       e.out.gain = gain
-      e.out.value = Math.max(0, e.fade.value) * gain
+      // EASED on the way out, linear on the way in.
+      //
+      // `fade.value` stays a plain linear 0..1 clock because the lifecycle reads
+      // it — prune at <= 0, complete at >= 1, and `sampleTransitionFrame`
+      // measures against it. Easing it in place would make "how far through the
+      // fade am I" and "how visible am I" the same number, and they are not.
+      //
+      // What scenes and the compositor see is the eased value. A linear alpha
+      // ramp changes at the same rate at its start, middle and end, which is
+      // what reads as mechanical — smoothstep gives it ease-in and ease-out and
+      // costs two multiplies.
+      //
+      // Safe for the additive majority (17 of 18 scenes) for a specific reason:
+      // smoothstep is symmetric, `S(1-t) === 1 - S(t)`, so an outgoing scene at
+      // `S(1-t)` and an incoming at `S(t)` still sum to exactly 1 at every point
+      // of the fade. The total light is unchanged; only its distribution across
+      // the two pictures is eased. An equal-power curve, which is right for
+      // audio and for opaque blends, would overshoot here.
+      // The two primaries follow the transition's curve pair; everything else
+      // (layers, effects) keeps its own independent eased fade, because a layer
+      // arriving is not part of the scene change and should not inherit its
+      // character — a `dipToBlack` between subjects must not also blink the
+      // background layer that is staying put.
+      e.out.value =
+        e.role === 'primary' && tx.active
+          ? (e.dir === 1 ? mix.in : mix.out) * gain
+          : smoothstep(Math.max(0, e.fade.value)) * gain
       e.out.progress = e.effect
         ? Math.min(1, Math.max(0, (f.time - e.effect.startedAt) / e.effect.durationSec))
         : 0

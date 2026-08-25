@@ -8,6 +8,17 @@ import { getEffectiveParams } from './moodParams'
 import { performanceState, type PerformanceState } from './performanceState'
 import { PaletteBlender, getPalette } from './palettes'
 import { SceneFade, type SlotName } from './SceneManager'
+import { getSceneContract, resolveSceneMode } from '../scenes'
+import {
+  NEUTRAL,
+  SCENE_PARAM_KEYS,
+  isParamLive,
+  resolveMode,
+  resolveSteeredParams,
+  steps,
+  type ResolvedSceneParams,
+  type SceneParamKey,
+} from '../scenes/contract'
 import type { VisualParams } from '../store'
 import { useStore } from '../store'
 
@@ -79,6 +90,31 @@ export interface SceneFrame {
 
   /** User sliders × mood multipliers × band routing. */
   params: VisualParams
+
+  /**
+   * This scene's own Scene Contract dials — all seven, always present, 0..1.
+   *
+   * The scene's authored defaults with the user's (or the director's) stored
+   * positions applied. Expand them with `drastic()` for a magnitude, `bipolar()`
+   * for a signed offset, `steps()` for a discrete count; 0.5 is neutral for all
+   * three, so a parameter the scene never declared reads as "no change".
+   *
+   * Not to be confused with {@link params}: that is the GLOBAL response layer
+   * (multipliers around 1, same for every scene), this is per-scene art
+   * direction (normalised 0..1). Both apply. See scenes/contract.ts.
+   *
+   * Mutated in place each frame — read it, do not retain it.
+   */
+  p: ResolvedSceneParams
+
+  /**
+   * This scene's active mode, or undefined if it declares none.
+   *
+   * A mode is a genuinely different picture inside one scene, and it may change
+   * what the parameters mean — which is why a scene that has modes must branch
+   * on this rather than treating `p` as mode-independent.
+   */
+  mode: string | undefined
 
   /**
    * The shared camera, **read-only** for scenes — CameraDirector owns its
@@ -174,6 +210,8 @@ export function useSceneFrame(
     col: blender,
     vis: 0,
     params: { intensity: 1, speed: 1, reactivity: 1 },
+    p: neutralParams(),
+    mode: undefined,
     role: fade.role,
     roleGain: fade.gain,
     slotProgress: fade.progress,
@@ -201,6 +239,40 @@ export function useSceneFrame(
     c.roleGain = fade.gain
     c.slotProgress = fade.progress
 
+    // Scene Contract dials, resolved per frame against THIS instance's scene.
+    //
+    // Per frame rather than on React render because a dial move — a panel drag,
+    // a MIDI CC, the director's steer — must reach the shader without
+    // remounting the scene, exactly like the slot view above.
+    // `resolveSteeredParams` writes into the existing object, so this allocates
+    // nothing.
+    //
+    // Three layers, lowest first: the scene's authored default, the director's
+    // steer, the user's own dial. The user wins any key they have touched; see
+    // resolveSteeredParams.
+    //
+    // The user layer is read off the store rather than passed down as a prop, so
+    // an instance in the accent slot and the same scene in the primary slot
+    // share one set of dials — which is what makes a preset describe "this
+    // scene's look" rather than "this slot's look".
+    const contract = fade.sceneId ? getSceneContract(fade.sceneId) : undefined
+    if (contract) {
+      const store = useStore.getState()
+      c.mode = resolveSceneMode(fade.sceneId, store.sceneModes[fade.sceneId])
+      resolveSteeredParams(
+        contract,
+        c.mode,
+        performanceState.sceneParams,
+        store.sceneParams[fade.sceneId],
+        c.p,
+      )
+    } else if (c.mode !== undefined) {
+      // A scene with no contract reads neutral for all seven. Only reset when
+      // it is not already neutral — the common case is a no-op.
+      c.mode = undefined
+      for (const k of SCENE_PARAM_KEYS) c.p[k] = NEUTRAL
+    }
+
     const b = c.b
     b.sub = f.sub * R
     b.bass = f.bass * R
@@ -221,6 +293,65 @@ export function useSceneFrame(
 
     callback(c)
   })
+}
+
+/**
+ * One Scene Contract dial, read REACTIVELY — the scene re-renders when it moves.
+ *
+ * `ctx.p` is the right way to read a dial that feeds a uniform: it costs nothing
+ * and updates every frame. It is the wrong way to read one that decides
+ * STRUCTURE — a geometry's subdivision level, a buffer's length, how many
+ * meshes exist — because those are built in `useMemo` during render, which
+ * `ctx.p` never triggers.
+ *
+ * Prefer {@link useSceneParamSteps} for exactly that case: a continuous value
+ * here re-renders on every pixel of a slider drag, and rebuilding a geometry
+ * 60 times a second is how a dial becomes a stutter.
+ */
+export function useSceneParam(key: SceneParamKey): number {
+  const sceneId = useContext(SceneFade).sceneId
+  return useStore((s) => {
+    const contract = sceneId ? getSceneContract(sceneId) : undefined
+    if (!contract) return NEUTRAL
+    const declared = contract.params[key]
+    if (declared === undefined) return NEUTRAL
+    const mode = resolveMode(contract, s.sceneModes[sceneId])
+    if (!isParamLive(contract, mode, key)) return NEUTRAL
+    const o = s.sceneParams[sceneId]?.[key]
+    return typeof o === 'number' && isFinite(o) ? o : declared
+  })
+}
+
+/**
+ * One Scene Contract dial as an integer in `min..max`, read reactively.
+ *
+ * The structural counterpart to {@link useSceneParam}: the value changes only
+ * when the dial crosses a bucket boundary, so a full slider sweep across a
+ * 3-step range rebuilds the geometry twice rather than a few hundred times.
+ * Zustand compares the selector's result, so the intervening renders never
+ * happen at all.
+ */
+export function useSceneParamSteps(key: SceneParamKey, min: number, max: number): number {
+  const raw = useSceneParam(key)
+  return steps(raw, min, max)
+}
+
+/**
+ * This scene's active mode, read reactively.
+ *
+ * Modes almost always decide structure — a different mode is a different
+ * picture, not a different number — so this is the reactive read rather than
+ * `ctx.mode`. Returns undefined for a scene that declares no modes.
+ */
+export function useSceneMode(): string | undefined {
+  const sceneId = useContext(SceneFade).sceneId
+  return useStore((s) => resolveSceneMode(sceneId, s.sceneModes[sceneId]))
+}
+
+function neutralParams(): ResolvedSceneParams {
+  const out = {} as ResolvedSceneParams
+  for (const k of SCENE_PARAM_KEYS) out[k] = NEUTRAL
+  return out
 }
 
 /**

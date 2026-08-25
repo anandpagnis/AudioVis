@@ -51,6 +51,40 @@
 export const POST_CHAIN_UNITS = 2
 
 /**
+ * `FeedbackPass`, mounted permanently in the post chain (see EffectsDirector).
+ *
+ * Two fullscreen draws every frame regardless of the `trails` value — the
+ * blend (a warp + two texture samples) and the copy (one texture sample) — so
+ * unlike `POST_CHAIN_UNITS` this is a REAL reserved cost, not folded into that
+ * estimate, because it is present whether or not `trails` is doing anything
+ * visible. **Still an ESTIMATE**, not a `/bench` measurement — `/bench`
+ * excludes the whole post chain today (see the caveat above), and this pass
+ * did not exist when that decision was made. Treated as `low`: a warp-sample
+ * fullscreen pass is lighter than bloom's nine-tap mip pyramid, and the copy
+ * draw is close to free.
+ */
+export const FEEDBACK_UNITS = 1
+
+/**
+ * The optical racks (`MirrorPass`, `LensPass`) — deliberately **zero**.
+ *
+ * Not an oversight and not an estimate. Both racks default to inert and set
+ * their own `enabled` flag from their settings, and `EffectComposer` skips a
+ * disabled pass before it ever renders, so at rest they cost exactly nothing —
+ * there is no draw to reserve against.
+ *
+ * When one IS switched on it costs roughly a fullscreen pass (the mirror is a
+ * single UV remap plus one tap; the lens is three taps for the prismatic split,
+ * and `anamorphic` adds 24 more for its streak gather). That cost is real and
+ * currently unreserved, which is defensible only while nothing autonomous turns
+ * them on — a human moving a slider is a human who can see the frame rate.
+ * **Before any director drives these, give them a real non-zero reservation**
+ * and fold them into the F44 bench task, or the budget will admit a layer on
+ * top of a rack it did not know was running.
+ */
+export const OPTICAL_RACK_UNITS = 0
+
+/**
  * The AI-texture overlay, when enabled.
  *
  * One fullscreen additive quad with an fbm-based warp — cheaper than a
@@ -81,8 +115,8 @@ export const frameLoad = {
   layers: 0,
   /** Effect scenes currently firing. */
   effects: 0,
-  /** Post chain, plus the generative overlay when it is mounted. */
-  fixed: POST_CHAIN_UNITS,
+  /** Post chain, the feedback pass, plus the generative overlay when mounted. */
+  fixed: POST_CHAIN_UNITS + FEEDBACK_UNITS,
 }
 
 /**

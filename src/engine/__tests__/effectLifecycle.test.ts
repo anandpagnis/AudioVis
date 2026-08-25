@@ -164,7 +164,7 @@ describe('syncEffectEntries', () => {
     warmFrames: 0,
     prewarmed: false,
     fade: { value: 0 },
-    out: { value: 0, role: 'effect' as const, gain: 1, progress: 0 },
+    out: { value: 0, role: 'effect' as const, sceneId: id, gain: 1, progress: 0 },
   })
 
   it('activates a pinned entry when its effect fires', () => {

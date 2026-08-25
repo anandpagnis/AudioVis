@@ -97,7 +97,83 @@ Scene metadata is the contract future composers use to combine scenes:
   `vocal`, `energy`).
 - `intensity`: calm, medium, or high visual density.
 - `compatibleWith`: scenes that should layer or transition well with it.
-- `performanceCost`: rough GPU cost for future quality-aware composition.
+- `performanceCost`: how much of the frame's *composition* budget the scene occupies — what
+  decides whether it can be layered.
+- `fillBound` (optional, default `true`): whether the scene's cost is per-pixel. Leave it
+  alone unless your scene is genuinely resolution-indifferent (a handful of meshes, a flat
+  fill) — declaring `false` on a scene that *is* fill-bound removes it from quality
+  governance entirely, which is how a single scene takes a venue down.
+- `pixelBudget` (optional): overrides the internal-megapixel budget the engine would
+  otherwise DERIVE from `performanceCost` (see `BUDGET_BY_COST` in `engine/renderScale.ts`).
+  Almost every scene should omit this — the derived default already decouples resolution
+  from the live display via `scale = sqrt(budget / fullResMP)`. Reach for an explicit value
+  only when a scene genuinely doesn't behave like its cost class; a scene registered from
+  outside the repo has its claim capped rather than trusted (`UNTRUSTED_MAX_BUDGET`).
+- `contract`: Scene Contract v1 - what the scene can be TOLD. See below.
+
+### Make a scene steerable (Scene Contract v1)
+
+Metadata says what a scene *is*. `metadata.contract` says what it can be *told*, in
+seven names that mean the same thing in every scene: `speed`, `shape`,
+`complexity`, `density`, `fill`, `tilt`, `contrast` - all normalised 0..1, plus
+optional named modes.
+
+```ts
+metadata: {
+  // ...
+  contract: {
+    version: 1,
+    modes: ['wide', 'tight'],          // optional; first entry is the default
+    params: { speed: 0.5, complexity: 0.5, density: 0.5 },
+    paramLabels: {
+      '*': { density: 'fold' },        // your word for it, shown to humans
+      tight: { density: null },        // inert in this mode: hidden, writes dropped
+    },
+  },
+}
+```
+
+Then read them:
+
+```ts
+useSceneFrame(({ p, params }) => {
+  u.uRate.value = drastic(p.speed) * params.speed   // magnitude: 0.25x..4x
+  u.uFold.value = bipolar(p.density, 0.5)           // signed, 0 at 0.5
+})
+
+// Geometry instead of a uniform? Those are built during render, which ctx.p
+// never triggers - and useSceneParamSteps only changes at bucket boundaries,
+// so a slider drag does not rebuild per frame.
+const detail = useSceneParamSteps('complexity', 0, 2)
+const mode = useSceneMode()
+```
+
+Rules worth knowing before you declare anything:
+
+- **Declaring a parameter is a promise you read it.** A visible dial that does
+  nothing is worse than a missing one. Declare the subset you honour; the rest
+  read as neutral and cost nothing.
+- **The seven names are fixed.** A control that does not fit picks the closest and
+  relabels it. There is no eighth name, because every generic caller would have to
+  special-case it.
+- **0.5 must be your authored look.** `drastic`, `bipolar` and `steps` are all the
+  identity at 0.5, so calibrate your spans such that the declared defaults render
+  exactly what you would have shipped without a contract. If your natural default
+  is not neutral, declare it (`chrome` declares `contrast: 0.85`).
+- **A malformed contract is refused.** `registerScene` runs `validateContract` and
+  throws - wrong version, unknown name, default outside 0..1, a label for
+  something undeclared, a parameter inert in every mode.
+
+What you get for it, without writing any of it yourself: the AI Performance
+Director steers your scene against musical structure; the tune panel builds rows
+labelled in your own words; presets capture and restore your dials, and survive
+being pointed at a different scene; and `sceneContracts()` publishes your control
+surface to external consumers (MIDI/OSC maps, Resolume, Max for Live, a
+marketplace listing) the day you register.
+
+Three layers decide a live dial - your default, then the director's steer, then
+the user's own position. The user wins any dial they touch. The director never
+touches `shape` or `tilt`, so those two are always a human's.
 
 ### Add an audio input
 `audioEngine.startWithStream(stream)` accepts **any MediaStream** — virtual audio cables

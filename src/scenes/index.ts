@@ -2,7 +2,15 @@ import { lazy, type ComponentType } from 'react'
 import type { MoodState } from '../audio/types'
 import type { CameraAnchor } from '../engine/CameraDirector'
 import type { CameraMode } from '../engine/performanceState'
+import { MAX_PIXEL_BUDGET, MIN_PIXEL_BUDGET, resolvePixelBudget } from '../engine/renderScale'
 import { resolveManifest, type SceneManifestExt } from '../engine/streaming/sceneManifest'
+import {
+  resolveMode,
+  summarizeContract,
+  validateContract,
+  type SceneContract,
+  type SceneContractSummary,
+} from './contract'
 
 /**
  * Built-in scenes are code-split: each import() below becomes its own chunk,
@@ -164,6 +172,41 @@ export interface SceneMetadata {
   intensity: SceneIntensity
   compatibleWith: string[]
   performanceCost: ScenePerformanceCost
+
+  /**
+   * Is this scene's cost per-pixel? **Defaults to true.**
+   *
+   * The one fact about its own cost that a scene knows and the engine cannot
+   * derive. A fullscreen shader, an additive particle field and a feedback
+   * accumulator all cost roughly one unit of work per physical pixel, so the
+   * engine can make them cheaper by rendering fewer; a few hundred edge quads
+   * or a handful of meshes cost the same at any resolution, and downscaling
+   * those trades crispness for nothing.
+   *
+   * The default is the safe one, which is the point: a scene that declares
+   * nothing — an import, a stranger's upload, a scene whose author never
+   * thought about it — is assumed fill-bound and is scaled. Claiming `false`
+   * is the assertion that buys full resolution, so it is the one that has to be
+   * made out loud, and the one the engine declines to believe from an untrusted
+   * registration (see `UNTRUSTED_MAX_BUDGET`).
+   */
+  fillBound?: boolean
+
+  /**
+   * Target internal megapixels, overriding what the engine would derive from
+   * `performanceCost` and `fillBound`.
+   *
+   * Optional, and normally omitted. The engine solves the canvas scale that
+   * holds this budget on whatever display is live — `sqrt(budget / fullResMP)`
+   * — so a scene never reads the display itself and never names a resolution;
+   * see engine/renderScale.ts.
+   *
+   * Reach for it only when a scene genuinely does not behave like its cost
+   * class: it is a claim the engine cannot verify, which is why an untrusted
+   * scene's is capped rather than honoured. Must sit in
+   * {@link MIN_PIXEL_BUDGET}..{@link MAX_PIXEL_BUDGET} when present.
+   */
+  pixelBudget?: number
   /** Higher is a better fit for that mood; used by automatic directors. */
   moodFit?: Partial<Record<MoodState, number>>
 
@@ -206,6 +249,19 @@ export interface SceneMetadata {
    */
   roleScalable?: boolean
 
+  /**
+   * Scene Contract v1 — the parameters this scene can be TOLD, in the shared
+   * seven-name vocabulary, plus its named modes. See ./contract.ts.
+   *
+   * Optional, and validated when present. A scene without one is not steerable:
+   * `ctx.p` hands it the neutral position for all seven, no panel rows appear
+   * for it, the director cannot perform it, and a preset carries nothing for
+   * it. That is exactly the pre-v1 behaviour, so the roster migrates one scene
+   * at a time rather than in one commit — the same opt-in shape
+   * {@link SceneMetadata.cameraAnchor} uses.
+   */
+  contract?: SceneContract
+
   /** Required when `roles` includes `'effect'`; ignored otherwise. */
   effect?: SceneEffectSpec
 }
@@ -215,6 +271,21 @@ export interface SceneDef {
   name: string
   component: ComponentType
   metadata: SceneMetadata
+
+  /**
+   * Was this scene reviewed alongside the engine, or registered from outside it?
+   *
+   * Absent means trusted — every entry in `SCENES` below is in-repo, and its
+   * cost claims were reviewed with its shader. {@link registerScene} sets this
+   * to `false` for anything arriving from a plugin, a custom build or a future
+   * marketplace, and the engine then declines to take that scene's word for how
+   * expensive it is (see `resolvePixelBudget` / `UNTRUSTED_MAX_BUDGET`).
+   *
+   * Provenance is a weak signal for a strong question, and it is deliberately
+   * the ONLY thing gating on it today. The real answer measures what a scene
+   * costs; this is what holds the line until that exists.
+   */
+  trusted?: boolean
 }
 
 /**
@@ -245,6 +316,10 @@ export const SCENES: SceneDef[] = [
       // Real edge geometry — a few hundred thin quads, cheaper than the
       // barycentric wireframe it supersedes.
       performanceCost: 'low',
+      // Not fill-bound: a few hundred thin edge quads and a flat fill, so
+      // downscaling buys no time and costs the lines the crispness that is the
+      // scene. Everything else in the roster leaves this alone and is scaled.
+      fillBound: false,
       compatibleWith: ['plasma', 'dissolve', 'chrome'],
       moodFit: {
         ambient: 0.6,
@@ -258,6 +333,16 @@ export const SCENES: SceneDef[] = [
       // `push` is what separates this scene's build from its peak — without it
       // every high-energy mood resolves to the same spiral.
       cameraModes: ['orbit', 'cinematic', 'spiral', 'hover', 'push'],
+      // The roster's reference contract: four frame-callback dials plus a mode
+      // and a structural `complexity`. Every default is 0.5 and every 0.5
+      // reproduces the scene exactly as it was authored before the contract —
+      // see the invariant in scenes/contract.ts.
+      contract: {
+        version: 1,
+        modes: ['crystal', 'shard', 'cage'],
+        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: { '*': { complexity: 'facets', contrast: 'ink' } },
+      },
     },
   },
   {
@@ -309,6 +394,16 @@ export const SCENES: SceneDef[] = [
       // Specular hero — orbiting is what makes the reflections travel.
       cameraAnchor: { target: [0, 0, 0], distance: 8.2, height: 1.2 },
       cameraModes: ['orbit', 'cinematic', 'spiral', 'topdown', 'pull'],
+      // `contrast` defaults HIGH, not neutral. The surface is authored as
+      // near-mirror and the dial's job is to frost it, so 0.85 is what
+      // reproduces the reviewed look; a 0.5 default would have quietly shipped
+      // a duller scene. The scene's spans are calibrated against this number,
+      // so the two move together — see ChromeFormScene's `finish`.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.85 },
+        paramLabels: { '*': { contrast: 'polish' } },
+      },
     },
   },
   {
@@ -594,6 +689,10 @@ export const SCENES: SceneDef[] = [
       // no loop — comfortably the cheapest scene in the roster, cheaper even
       // than `network`.
       performanceCost: 'low',
+      // Not fill-bound: three analytic glow blobs, a length and a divide each,
+      // no loop and no geometry. Downscaling saves nothing measurable and bands
+      // the 1/d gradient that is the whole picture.
+      fillBound: false,
       compatibleWith: ['wireframe', 'chrome', 'dissolve', 'pointcloud', 'foldpath', 'juliawings'],
       // Sits just above `ribbons` at the calm end where it belongs and below it
       // by `groove`, so the two layer scenes trade places across the range
@@ -609,6 +708,11 @@ export const SCENES: SceneDef[] = [
       // declared only for CameraDirector.test.ts's variety invariant.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      contract: {
+        version: 1,
+        params: { speed: 0.5, density: 0.5, fill: 0.5, contrast: 0.5 },
+        paramLabels: { '*': { density: 'spread', fill: 'orbit', contrast: 'glow' } },
+      },
     },
   },
   {
@@ -648,6 +752,15 @@ export const SCENES: SceneDef[] = [
       // framing variety.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      // `complexity` defaults to 1 — full iterations — because the dial can only
+      // ever ask for FEWER than the quality governor already allows (the scene
+      // takes the min of the two). A 0.5 default would be a permanent
+      // self-imposed quality cap the governor could not lift.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 1, density: 0.5, contrast: 0.5 },
+        paramLabels: { '*': { complexity: 'layers', density: 'fold', contrast: 'edge' } },
+      },
     },
   },
   {
@@ -786,6 +899,11 @@ export const DISABLED_SCENES: SceneDef[] = [
       // Declared anyway for CameraDirector.test.ts's variety invariant.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      contract: {
+        version: 1,
+        params: { speed: 0.5, shape: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: { '*': { shape: 'bend', tilt: 'roll', contrast: 'rails' } },
+      },
     },
   },
   {
@@ -1026,6 +1144,25 @@ export function validateSceneDef(def: SceneDef): string[] {
   if (def.metadata.moods.length === 0) issues.push(`Scene "${def.id}" needs at least one mood.`)
   if (def.metadata.bands.length === 0)
     issues.push(`Scene "${def.id}" needs at least one audio band.`)
+  // Checked, not required. An absent budget is the normal case — the engine
+  // derives one from `performanceCost` — but a PRESENT one that is malformed or
+  // out of range is a mistake worth refusing, because it would otherwise be
+  // silently discarded and the scene would render at a resolution its author
+  // did not choose and was never told about.
+  const budget = def.metadata.pixelBudget
+  if (budget !== undefined) {
+    if (typeof budget !== 'number' || !isFinite(budget)) {
+      issues.push(`Scene "${def.id}" declares a non-numeric pixelBudget.`)
+    } else if (budget < MIN_PIXEL_BUDGET || budget > MAX_PIXEL_BUDGET) {
+      issues.push(
+        `Scene "${def.id}" declares pixelBudget ${budget}; must be between ` +
+          `${MIN_PIXEL_BUDGET} and ${MAX_PIXEL_BUDGET} megapixels.`,
+      )
+    }
+  }
+  if (def.metadata.fillBound !== undefined && typeof def.metadata.fillBound !== 'boolean') {
+    issues.push(`Scene "${def.id}" declares a non-boolean fillBound.`)
+  }
   // The effect slot has a lifecycle, so its contract is enforced here rather
   // than discovered inside the render loop when a burst never retires.
   if (def.metadata.roles.includes('effect')) {
@@ -1039,7 +1176,78 @@ export function validateSceneDef(def: SceneDef): string[] {
         issues.push(`Effect scene "${def.id}" needs a positive durationSec.`)
     }
   }
+  // Validated here rather than where it is read, so a third-party scene with a
+  // malformed contract is refused by registerScene instead of surfacing as a
+  // panel of dead sliders and a director pushing parameters nothing honours.
+  if (def.metadata.contract) {
+    issues.push(...validateContract(def.id, def.metadata.contract))
+  }
   return issues
+}
+
+/**
+ * The internal-megapixel budget this scene actually gets: its own valid claim if
+ * it made one, the engine's default for its cost class otherwise, capped if it
+ * was registered from outside. See `resolvePixelBudget`.
+ *
+ * Goes through {@link getScene}, so an unknown id resolves to the fallback
+ * scene's budget rather than throwing — the same degradation every other
+ * metadata read gets. That matters more here than elsewhere: this feeds the
+ * render-scale solve every frame, and a stale layer id must not be able to
+ * produce a `NaN` budget and a full-resolution canvas.
+ */
+export function getScenePixelBudget(id: string): number {
+  return scenePixelBudget(getScene(id))
+}
+
+/** {@link getScenePixelBudget} for a caller that already has the def in hand. */
+export function scenePixelBudget(def: SceneDef): number {
+  return resolvePixelBudget(def.metadata, def.trusted !== false)
+}
+
+/**
+ * A scene's Scene Contract, or undefined if it does not declare one.
+ *
+ * Goes through {@link getScene}, so an unknown id resolves to the fallback
+ * scene's contract rather than throwing — the same degradation a stale
+ * persisted sceneId already gets everywhere else.
+ */
+export function getSceneContract(id: string): SceneContract | undefined {
+  return getScene(id).metadata.contract
+}
+
+/** True if this scene can be steered through the shared vocabulary. */
+export function isSteerable(id: string): boolean {
+  return getSceneContract(id) !== undefined
+}
+
+/**
+ * A valid mode for a scene: `raw` if the scene declares it, otherwise the
+ * scene's default mode, or undefined for a scene with no modes (or no
+ * contract). Every stored/imported/received mode string goes through here.
+ */
+export function resolveSceneMode(id: string, raw: unknown): string | undefined {
+  const c = getSceneContract(id)
+  return c ? resolveMode(c, raw) : undefined
+}
+
+/**
+ * Every steerable scene's control surface, for a consumer that cannot read the
+ * source: a marketplace listing, a generated MIDI/OSC map, an external
+ * connector's parameter discovery, an API response.
+ *
+ * Built from {@link commerciallyShippableScenes} rather than SCENES, because
+ * the callers are exactly the ones that must not enumerate material the project
+ * is not allowed to ship. Pass `modes` to describe a specific mode per scene;
+ * omitted, each scene is described in its default mode.
+ */
+export function sceneContracts(modes?: Record<string, string>): SceneContractSummary[] {
+  const out: SceneContractSummary[] = []
+  for (const s of commerciallyShippableScenes()) {
+    const c = s.metadata.contract
+    if (c) out.push(summarizeContract(s.id, s.name, c, modes?.[s.id]))
+  }
+  return out
 }
 
 /**
@@ -1055,5 +1263,10 @@ export function registerScene(def: SceneDef) {
   if (issues.length > 0) {
     throw new Error(`Invalid scene registration:\n${issues.join('\n')}`)
   }
-  if (!SCENES.some((s) => s.id === def.id)) SCENES.push(def)
+  // Marked untrusted unless the caller has already said otherwise, so a scene
+  // arriving through this door cannot claim its way out of the pixel budget.
+  // A custom build that genuinely owns its scenes can pass `trusted: true`; that
+  // is an explicit decision by whoever assembles the bundle, which is the only
+  // party in a position to make it.
+  if (!SCENES.some((s) => s.id === def.id)) SCENES.push({ trusted: false, ...def })
 }

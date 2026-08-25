@@ -7,6 +7,7 @@ import { getScene } from '../scenes'
 import { cutCamera, pickCameraMode } from './CameraDirector'
 import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
+import { advanceSteer, clearSteer } from './sceneSteer'
 import { quality } from './quality'
 import { useStore } from '../store'
 
@@ -64,6 +65,8 @@ const BLOOM_BASE: Record<MoodState, number> = {
 export function PerformanceStateBridge() {
   /** Visible scene the current camera mode was chosen for. */
   const lastCameraScene = useRef('')
+  /** Previous frame's beat state, so `rackAudio.onKick` can be an edge. */
+  const wasOnKick = useRef(false)
 
   useFrame(() => {
     const f = audioEngine.features
@@ -96,6 +99,26 @@ export function PerformanceStateBridge() {
         ? Math.max(0, 1 - m.beatsTillTransition / 16) * 0.5
         : 0
     p.visualTension = Math.min(1, Math.max(buildTension, predictionTension) + (f.drop ? 0.5 : 0))
+
+    // The director's hand on the scene dials. Runs here rather than in
+    // PerformanceDirector because that one only fires on section boundaries —
+    // it composes, it does not perform — and a steer that moved only at
+    // boundaries would be a step change, which is the thing sceneSteer.ts eases
+    // to avoid. Placed after `visualTension` because it reads it.
+    //
+    // Gated on `moodDrive`, the same switch that gates the mood multipliers in
+    // getEffectiveParams: turning off mood-driven automation has to mean the
+    // show stops steering itself, not that it freezes wherever the steer was.
+    if (s.moodDrive) {
+      advanceSteer(p.sceneParams, {
+        mood: m.state,
+        tension: p.visualTension,
+        delta: f.delta,
+        drop: f.drop,
+      })
+    } else if (p.sceneParams.speed !== undefined) {
+      clearSteer(p.sceneParams)
+    }
 
     // Slow half of the two-timescale voice pair. Eased rather than stepped:
     // `vocalPresence` only refreshes every ~12s, so a raw copy would visibly
@@ -190,6 +213,50 @@ export function PerformanceStateBridge() {
       0.6,
       f.delta,
     )
+
+    // Audio the optical racks consume. Published here rather than read by
+    // EffectsDirector, which is a pure executor and reads no audio — see the
+    // `rackAudio` doc on PerformanceState.
+    //
+    // `onKick` is the rising edge: `beatPulse` is a decaying envelope, so
+    // thresholding it near its peak turns it back into the event the lens
+    // materials actually want. Without the edge, a material that "re-seats on
+    // the kick" re-seats on every frame of the decay and reads as a flicker.
+    const ra = p.rackAudio
+    ra.kick = Math.min(1, pulse)
+    ra.highs = f.high
+    ra.mids = f.mid
+    ra.onKick = pulse > 0.6 && !wasOnKick.current ? Math.min(1, pulse) : 0
+    wasOnKick.current = pulse > 0.6
+
+    // --- Debug override ---------------------------------------------------
+    // TEMPORARY: lets a human drag a value in the debug panel and see it,
+    // ahead of any director having an opinion about when to move it. This is
+    // exactly the shape the file header describes as the eventual end state
+    // for THIS WHOLE FUNCTION — "the store becomes just the human-override
+    // surface feeding into performanceState" — just arriving early, and scoped
+    // to post-fx, for one feature at a time. Runs last, in the same decide-band
+    // component, so it always wins over whatever this frame just computed
+    // above rather than racing it.
+    if (s.debugPostFx.enabled) {
+      const dbg = s.debugPostFx
+      p.bloom = dbg.bloom
+      p.bloomThreshold = dbg.bloomThreshold
+      p.glitch = dbg.glitch
+      p.vignette = dbg.vignette
+      p.fog = dbg.fog
+      p.trails = dbg.trails
+      p.mirror.segments = dbg.mirrorSegments
+      p.mirror.tiles = dbg.mirrorTiles
+      p.mirror.twist = dbg.mirrorTwist
+      p.mirror.slice = dbg.mirrorSlice
+      p.mirror.spin = dbg.mirrorSpin
+      p.lens.amount = dbg.lensAmount
+      p.lens.style = dbg.lensStyle
+      // The style for the NEXT change. SceneManager captures it at commit, so
+      // moving this mid-fade cannot alter a transition already in flight.
+      p.transitionStyle = dbg.transitionStyle
+    }
   }, -95)
 
   return null

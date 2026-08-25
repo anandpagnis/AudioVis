@@ -18,8 +18,20 @@ import { TIER_BUDGET } from './slotBudget'
  * store or FPS themselves — they read `quality.knobs`.
  */
 export interface QualityKnobs {
-  /** Multiplier applied to the base device pixel ratio. */
-  renderScale: number
+  /**
+   * Fraction of a scene's DECLARED `pixelBudget` this tier will fund.
+   *
+   * Not a device-pixel-ratio multiplier — that was the old shape, and it made
+   * one number stand for every scene on every display. The engine now solves
+   * the actual canvas scale from the budget the live composition declares (see
+   * engine/renderScale.ts); this is the tier's hand on that solve.
+   *
+   * It scales the BUDGET rather than the resulting scale because budget is in
+   * megapixels and per-pixel cost is linear in megapixels, so 0.49 here means
+   * "this frame may do 49% of the pixel work" — which is what a tier is
+   * actually trying to say. The linear scale that follows is its square root.
+   */
+  pixelBudgetScale: number
   /** Max raymarch iterations (uMaxSteps early-break in RAYMARCH_GLSL). */
   raymarchSteps: number
   /** fbm octaves (uOctaves early-break in NOISE3D_GLSL). */
@@ -44,10 +56,17 @@ export interface QualityKnobs {
  * Tier ladder, richest (0) → survival (4). Chosen so each step roughly halves
  * the marginal cost of the dominant term while staying visually close: step
  * count and octaves fall first (raymarch dominates), then fluid/particles.
+ *
+ * `pixelBudgetScale` is the square of the linear resolution ladder this tier
+ * used to name directly (1.0 / 0.85 / 0.7 / 0.58 / 0.48), because cost is linear
+ * in pixel COUNT and the old numbers were linear in pixel WIDTH. Keeping the
+ * squares means the ladder still steps the frame's pixel work by exactly the
+ * same ratios it always did — the calibration survives the change of units, and
+ * only the way that ratio reaches the canvas is new (engine/renderScale.ts).
  */
 const TIERS: QualityKnobs[] = [
   {
-    renderScale: 1.0,
+    pixelBudgetScale: 1.0,
     raymarchSteps: 96,
     noiseOctaves: 4,
     fluidJacobi: 20,
@@ -55,7 +74,7 @@ const TIERS: QualityKnobs[] = [
     layerBudget: TIER_BUDGET[0],
   },
   {
-    renderScale: 0.85,
+    pixelBudgetScale: 0.72,
     raymarchSteps: 72,
     noiseOctaves: 4,
     fluidJacobi: 16,
@@ -63,7 +82,7 @@ const TIERS: QualityKnobs[] = [
     layerBudget: TIER_BUDGET[1],
   },
   {
-    renderScale: 0.7,
+    pixelBudgetScale: 0.49,
     raymarchSteps: 54,
     noiseOctaves: 3,
     fluidJacobi: 12,
@@ -71,7 +90,7 @@ const TIERS: QualityKnobs[] = [
     layerBudget: TIER_BUDGET[2],
   },
   {
-    renderScale: 0.58,
+    pixelBudgetScale: 0.34,
     raymarchSteps: 40,
     noiseOctaves: 3,
     fluidJacobi: 10,
@@ -79,7 +98,7 @@ const TIERS: QualityKnobs[] = [
     layerBudget: TIER_BUDGET[3],
   },
   {
-    renderScale: 0.48,
+    pixelBudgetScale: 0.23,
     raymarchSteps: 28,
     noiseOctaves: 2,
     fluidJacobi: 8,
@@ -113,9 +132,9 @@ const FIXED_TIER: Record<'low' | 'medium' | 'high', number> = { low: 4, medium: 
  *
  * This is affordable ONLY because a tier's knobs split into two kinds (see
  * RENDER_SCALE_HOLD_SEC in PerfMonitor): complexity is free to change because
- * scenes read `quality.knobs` every frame, while `renderScale` costs a renderer
- * resize. The discount therefore touches complexity only — resizing the canvas
- * at the start of every crossfade would cost far more than it saved.
+ * scenes read `quality.knobs` every frame, while `pixelBudgetScale` costs a
+ * renderer resize. The discount therefore touches complexity only — resizing the
+ * canvas at the start of every crossfade would cost far more than it saved.
  *
  * Nobody can resolve fine raymarch detail through a one-second dissolve, which
  * is what makes this the cheapest quality in the frame to sell.
@@ -293,7 +312,7 @@ export class QualityGovernor {
 
     // Resizing the canvas at the start of every crossfade would cost a renderer
     // reallocation — far more than the discount saves.
-    d.renderScale = base.renderScale
+    d.pixelBudgetScale = base.pixelBudgetScale
     // Composition is decided at phrase boundaries and must not flip because a
     // transition happens to be in flight; that would drop layers mid-fade.
     d.layerBudget = base.layerBudget

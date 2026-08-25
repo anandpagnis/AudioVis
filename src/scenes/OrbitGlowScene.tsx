@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
+import { drastic } from './contract'
 
 /**
  * Orbit Glow — three soft orbs drifting on independent Lissajous paths.
@@ -42,6 +43,22 @@ import { useDispose } from '../engine/useDispose'
  * changing rate makes every orb teleport the instant the rate moves — the same
  * trap TunnelDriftScene's flight distance documents. `cos(phase * k)` stays
  * continuous under a varying rate as long as `phase` only ever increases.
+ *
+ * ## Scene Contract
+ *
+ *   speed     orbit rate
+ *   density   radius SPREAD — "spread", how far the three paths separate
+ *   fill      orbit width — "orbit", how much of the frame they sweep
+ *   contrast  glow amount — "glow", faint haze to hot core
+ *
+ * `density` is the spread rather than a count because the count is three, and
+ * three is the piece: one orb per band is what makes the bands separable by eye
+ * (see the band routing above), and a fourth orb would have no band to give it.
+ * At 0 the three collapse onto one shared radius and read as a single braided
+ * path; at 1 they pull apart into three distinct rings.
+ *
+ * `shape` and `tilt` are not declared — the path frequency constants are the
+ * source's identity, and the piece is centred and flat.
  */
 
 /**
@@ -57,6 +74,20 @@ import { useDispose } from '../engine/useDispose'
  * 0.28 is set for layer use, in the same spirit as the 0.65x trim Flow Ribbons
  * needed once it was actually seen composited. Not measured by rendering —
  * worth a look.
+ */
+/**
+ * ## Quality governance
+ *
+ * No `quality.knobs` read, deliberately. There is no loop in this shader and no
+ * geometry behind it — three analytic blobs, a length and a divide each — so
+ * there is no complexity to scale and nothing a knob could honestly reduce.
+ *
+ * Its governance is `metadata.fillBound: false` (see index.ts) — the assertion
+ * that downscaling this scene would save nothing measurable while banding the
+ * 1/d falloff that is the entire picture, so it renders at `NATIVE_PIXEL_BUDGET`
+ * instead of the `low`-cost default. Not an exemption: the budget still
+ * combines with its neighbours' when this is layered, so `orbs` under a
+ * raymarcher still ends up rendering at the raymarcher's resolution.
  */
 const BRIGHTNESS = 0.28
 
@@ -140,7 +171,7 @@ export function OrbitGlowScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ f, dt, b, col, vis, params }) => {
+  useSceneFrame(({ f, dt, b, col, vis, params, p }) => {
     const u = material.uniforms
 
     // Phase ACCUMULATES — see the header. Tempo sets the baseline (a 140 BPM
@@ -148,24 +179,39 @@ export function OrbitGlowScene() {
     // the orbits speed up as the track builds instead of running independently
     // of it. Floored so a breakdown drifts rather than freezing.
     const tempo = Math.min(1.6, Math.max(0.6, f.bpm / 120))
-    phase.current += dt * (0.35 + b.energy * 0.85) * tempo * params.speed
+    phase.current += dt * (0.35 + b.energy * 0.85) * tempo * params.speed * drastic(p.speed)
     u.uPhase.value = phase.current
 
     // Radius: orbits widen on a swell and tighten when the track thins out.
     // Per-orb spread keeps them from tracing the same ellipse.
+    //
+    // `fill` scales all three together — how much of the frame the orbits
+    // sweep. `density` scales only their DIFFERENCES from the mean, so the
+    // dial separates the paths without changing how wide they run. Applied to
+    // the audio-driven radii rather than to the constants, so a swell still
+    // widens whatever spread is dialled in.
+    const width = 0.55 + p.fill * 0.9
+    const spread = drastic(p.density)
+    const r1 = 0.24 + b.bass * 0.14
+    const r2 = 0.3 + b.mid * 0.1
+    const r3 = 0.36 + b.presence * 0.08
+    const mean = (r1 + r2 + r3) / 3
     u.uRadius.value.set(
-      0.24 + b.bass * 0.14,
-      0.30 + b.mid * 0.10,
-      0.36 + b.presence * 0.08,
+      (mean + (r1 - mean) * spread) * width,
+      (mean + (r2 - mean) * spread) * width,
+      (mean + (r3 - mean) * spread) * width,
     )
 
     // The high-value term: each orb flares on ITS band, with the shared beat
     // pulse underneath so all three still breathe together on the downbeat.
+    // `contrast` scales the whole glow budget; floored above zero so the dial
+    // at 0 dims the orbs rather than deleting them.
     const pulse = b.pulse * 0.012
+    const glow = 0.35 + p.contrast * 1.3
     u.uGlow.value.set(
-      0.016 + b.bass * 0.042 + pulse,
-      0.016 + b.mid * 0.038 + pulse,
-      0.014 + b.presence * 0.034 + pulse,
+      (0.016 + b.bass * 0.042 + pulse) * glow,
+      (0.016 + b.mid * 0.038 + pulse) * glow,
+      (0.014 + b.presence * 0.034 + pulse) * glow,
     )
 
     u.uCol1.value.copy(col.a)

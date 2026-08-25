@@ -1,10 +1,17 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { audioEngine, type ResponseTuning, type SourceKind } from './audio/AudioEngine'
+import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
 import { startRecording, stopRecording } from './engine/recorder'
-import { preloadScene } from './scenes'
+import { getSceneContract, preloadScene, resolveSceneMode } from './scenes'
+import {
+  resolveSceneParams,
+  sanitizeSceneParams,
+  type SceneParamKey,
+  type SceneParams,
+} from './scenes/contract'
 
 export type AudioStatus = 'idle' | 'starting' | 'running' | 'error'
 export type Quality = 'auto' | 'low' | 'medium' | 'high'
@@ -15,6 +22,44 @@ interface MicDevice {
 }
 
 /** Global visual parameters every scene respects (the parameter system). */
+/**
+ * Manual override values for the post-fx fields normally decided by
+ * `PerformanceStateBridge`. See the `debugPostFx` field on `AppState` for why
+ * this exists and why it is temporary.
+ */
+export interface DebugPostFx {
+  enabled: boolean
+  /** 0..2 — bloom strength multiplier. Director default: mood-based, ~0.3-0.95. */
+  bloom: number
+  /** 0..1 — bloom luminance threshold. Lower = more of the frame blooms. */
+  bloomThreshold: number
+  /** 0..1 — chromatic aberration amount. */
+  glitch: number
+  /** 0..1 — vignette darkness. */
+  vignette: number
+  /** 0..1 — atmospheric fog depth. */
+  fog: number
+  /** 0..1 — feedback pass: history persistence and trail drift. See
+   *  engine/feedbackParams.ts for what this one number expands into. */
+  trails: number
+  /** Mirror rack. `segments`: 0 off · 1 mirror-x · 2 quad · >=3 n-fold. */
+  mirrorSegments: number
+  /** >=2 gives an n x n mirror-repeat wallpaper. */
+  mirrorTiles: number
+  /** Radial vortex in radians at the centre; signed. */
+  mirrorTwist: number
+  /** Alternating shear slabs, 0..1. */
+  mirrorSlice: number
+  /** Kaleidoscope rotation rate. Inert unless `mirrorSegments` >= 3. */
+  mirrorSpin: number
+  /** Lens rack strength, 0..1. 0 skips the pass. */
+  lensAmount: number
+  /** Index into engine/opticalRack.ts's `LENS_STYLES`. */
+  lensStyle: number
+  /** Transition style for the next scene change. See engine/transitions.ts. */
+  transitionStyle: TransitionStyle
+}
+
 export interface VisualParams {
   /** Overall brightness multiplier. */
   intensity: number
@@ -276,6 +321,19 @@ interface AppState {
   params: VisualParams
   quality: Quality
 
+  /**
+   * TEMPORARY: manual override for the post-fx fields `PerformanceStateBridge`
+   * otherwise decides every frame (bloom, vignette, glitch, fog, trails). Exists
+   * to let a human drag a value and see it, ahead of any director having an
+   * opinion about when to move it — see the debug panel's "Post FX" section.
+   *
+   * Deliberately excluded from `partialize` below: this is scratch state for
+   * eyeballing a look, not a setting anyone should reload into. When `enabled`
+   * is false every field here is inert and the director's own values reach the
+   * screen unchanged.
+   */
+  debugPostFx: DebugPostFx
+
   /** Mood-driven automation. */
   autoPilot: boolean
   moodDrive: boolean
@@ -287,6 +345,24 @@ interface AppState {
   responseTuning: ResponseTuning
   bandMappings: BandMapping[]
   layerFx: Record<LayerRole, LayerFx>
+
+  /**
+   * Scene Contract v1 dial positions, per scene id — sparse: only parameters
+   * moved off their scene default are stored.
+   *
+   * Per scene rather than global because the defaults ARE art direction. One
+   * shared block would mean picking a scene whose `density` means "arches" and
+   * inheriting the position left behind by a scene where it meant "fold" — the
+   * same number naming two different pictures. Each scene keeping its own
+   * positions is what makes returning to a scene return to the look you left.
+   *
+   * Sparse so a changed scene default still reaches a user who never touched
+   * that dial. A stored value always beats a default, so storing all seven
+   * would freeze every scene at whatever its defaults were on the first visit.
+   */
+  sceneParams: Record<string, SceneParams>
+  /** Active mode per scene id. Absent means the scene's default mode. */
+  sceneModes: Record<string, string>
 
   /** Phase 5: authored performance cues. */
   cues: PerformanceCue[]
@@ -333,7 +409,19 @@ interface AppState {
   toggleFpsMeter: () => void
   toggleAnalytics: () => void
   setParam: (key: keyof VisualParams, value: number) => void
+  /**
+   * Move one Scene Contract dial. A write to a parameter the scene does not
+   * declare — or that is inert in its current mode — is dropped, so a generic
+   * caller (panel row, MIDI CC, automation lane, the director) can address any
+   * of the seven names on any scene without checking first.
+   */
+  setSceneParam: (sceneId: string, key: SceneParamKey, value: number) => void
+  /** Switch a scene's mode. An unknown mode falls back to the scene default. */
+  setSceneMode: (sceneId: string, mode: string) => void
+  /** Return one scene's dials (and mode) to its authored defaults. */
+  resetSceneParams: (sceneId: string) => void
   setQuality: (q: Quality) => void
+  setDebugPostFx: (patch: Partial<DebugPostFx>) => void
 
   applyPreset: (p: Preset) => void
   saveCurrentPreset: (name: string) => void
@@ -367,6 +455,23 @@ export const useStore = create<AppState>()(
       analyticsOpen: false,
       params: { intensity: 1, speed: 1, reactivity: 1 },
       quality: 'auto',
+      debugPostFx: {
+        enabled: false,
+        bloom: 1,
+        bloomThreshold: 0.18,
+        glitch: 0,
+        vignette: 0.85,
+        fog: 0,
+        trails: 0,
+        mirrorSegments: 0,
+        mirrorTiles: 0,
+        mirrorTwist: 0,
+        mirrorSlice: 0,
+        mirrorSpin: 0,
+        lensAmount: 0,
+        lensStyle: 0,
+        transitionStyle: 'dissolve',
+      },
 
       autoPilot: true,
       moodDrive: true,
@@ -376,6 +481,9 @@ export const useStore = create<AppState>()(
       responseTuning: { attack: 1, release: 1, subdivision: 1 },
       bandMappings: [],
       layerFx: defaultLayerFx(),
+
+      sceneParams: {},
+      sceneModes: {},
 
       cues: [],
       cueFollow: true,
@@ -649,10 +757,56 @@ export const useStore = create<AppState>()(
       toggleFpsMeter: () => set((s) => ({ fpsMeter: !s.fpsMeter })),
       toggleAnalytics: () => set((s) => ({ analyticsOpen: !s.analyticsOpen })),
       setParam: (key, value) => set((s) => ({ params: { ...s.params, [key]: value } })),
+      setSceneParam: (sceneId, key, value) => {
+        const contract = getSceneContract(sceneId)
+        if (!contract) return
+        const s = get()
+        const mode = resolveSceneMode(sceneId, s.sceneModes[sceneId])
+        // Round-tripped through the contract's own sanitizer rather than
+        // clamped here: that is the single place that knows which keys this
+        // scene honours in this mode, and an inert write must not be stored —
+        // it would come back to life the moment the user switched modes.
+        const clean = sanitizeSceneParams(contract, mode, { [key]: value })
+        if (!(key in clean)) return
+        set({
+          sceneParams: {
+            ...s.sceneParams,
+            [sceneId]: { ...s.sceneParams[sceneId], ...clean },
+          },
+        })
+      },
+
+      setSceneMode: (sceneId, mode) => {
+        const next = resolveSceneMode(sceneId, mode)
+        if (next === undefined) return
+        const s = get()
+        if (s.sceneModes[sceneId] === next) return
+        // Dropped, not remapped: a mode change can make a parameter inert, and
+        // a stored inert value would silently reappear on the way back. The
+        // scene's defaults for the new mode are the honest starting point.
+        set({ sceneModes: { ...s.sceneModes, [sceneId]: next } })
+      },
+
+      resetSceneParams: (sceneId) =>
+        set((s) => {
+          const params = { ...s.sceneParams }
+          const modes = { ...s.sceneModes }
+          delete params[sceneId]
+          delete modes[sceneId]
+          return { sceneParams: params, sceneModes: modes }
+        }),
+
       setQuality: (q) => set({ quality: q }),
+      setDebugPostFx: (patch) => set((s) => ({ debugPostFx: { ...s.debugPostFx, ...patch } })),
 
       applyPreset: (p) => {
-        set({
+        const contract = getSceneContract(p.sceneId)
+        // The mode is resolved BEFORE the params, because which parameters the
+        // target scene can hear depends on which mode it will be in — applying
+        // them against the outgoing mode would drop exactly the dials the
+        // preset switched modes in order to reach.
+        const mode = contract ? resolveSceneMode(p.sceneId, p.sceneMode) : undefined
+        set((s) => ({
           paletteId: p.paletteId,
           params: { ...p.params },
           layerSceneIds: { ...emptyLayerScenes(), ...p.layerSceneIds },
@@ -660,12 +814,30 @@ export const useStore = create<AppState>()(
           // Presets carrying a performance timeline restore it; plain "look"
           // presets leave the current cue list alone.
           ...(p.cues && p.cues.length > 0 ? { cues: p.cues.map((c) => ({ ...c })) } : {}),
-        })
+          // Only this scene's entry is rewritten. A preset says what one scene
+          // should look like, so it must not silently reset the dials on the
+          // other seventeen — a user who tunes `kaleido`, applies a `wireframe`
+          // preset, and comes back expects to find `kaleido` as they left it.
+          ...(contract
+            ? {
+                sceneParams: {
+                  ...s.sceneParams,
+                  [p.sceneId]: sanitizeSceneParams(contract, mode, p.sceneParams),
+                },
+                sceneModes:
+                  mode === undefined
+                    ? s.sceneModes
+                    : { ...s.sceneModes, [p.sceneId]: mode },
+              }
+            : {}),
+        }))
         get().requestScene(p.sceneId)
       },
 
       saveCurrentPreset: (name) => {
         const s = get()
+        const sceneContract = getSceneContract(s.sceneId)
+        const currentMode = resolveSceneMode(s.sceneId, s.sceneModes[s.sceneId])
         const preset: Preset = {
           id: crypto.randomUUID(),
           name: name.trim().slice(0, 40) || 'Untitled',
@@ -674,6 +846,20 @@ export const useStore = create<AppState>()(
           paletteId: s.paletteId,
           params: { ...s.params },
           layerFx: cloneLayerFx(s.layerFx),
+          // The RESOLVED dials, not the sparse overrides: a preset has to
+          // reproduce a look, and a sparse block reproduces "whatever this
+          // scene's defaults happen to be when you load me", which is a
+          // different picture the next time a default is retuned.
+          ...(sceneContract
+            ? {
+                sceneParams: resolveSceneParams(
+                  sceneContract,
+                  currentMode,
+                  s.sceneParams[s.sceneId],
+                ),
+                ...(currentMode !== undefined ? { sceneMode: currentMode } : {}),
+              }
+            : {}),
           ...(s.cues.length > 0 ? { cues: s.cues.map((c) => ({ ...c })) } : {}),
         }
         set({ userPresets: [...s.userPresets, preset] })
@@ -782,6 +968,8 @@ export const useStore = create<AppState>()(
         responseTuning: s.responseTuning,
         bandMappings: s.bandMappings,
         layerFx: s.layerFx,
+        sceneParams: s.sceneParams,
+        sceneModes: s.sceneModes,
         cues: s.cues,
         cueFollow: s.cueFollow,
         userPresets: s.userPresets,

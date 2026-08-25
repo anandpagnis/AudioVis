@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
+import { bipolar, drastic } from './contract'
 import { useDispose } from '../engine/useDispose'
 
 /**
@@ -64,6 +65,20 @@ import { useDispose } from '../engine/useDispose'
  * requires. `b.pulse` then drives the band's INTENSITY, so the flash lands on
  * the hit. Both halves are needed: the grid for timing, the envelope for
  * dynamics.
+ *
+ * ## Scene Contract
+ *
+ *   speed     flight speed (and the shape clock with it)
+ *   shape     path curvature — "bend", straight corridor to rollercoaster
+ *   tilt      roll baseline — "roll", how much the camera banks at rest
+ *   contrast  rail glow against wall and fog — "rails"
+ *
+ * `complexity` and `density` are deliberately absent even though the march has
+ * an obvious step count: `uMaxSteps` belongs to the quality governor, and this
+ * scene degrades to flat fog rather than to a coarser picture below ~72 steps
+ * (see the floor at the bottom of the frame callback). A dial that could reach
+ * that floor would be a dial that breaks the scene, and the governor already
+ * owns the trade it is making. `fill` is meaningless for a flythrough.
  */
 
 /**
@@ -279,21 +294,32 @@ export function TunnelDriftScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ f, dt, b, anim, col, vis, params }) => {
+  useSceneFrame(({ f, dt, b, anim, col, vis, params, p }) => {
     const u = material.uniforms
 
-    clock.current += dt * params.speed
+    // One rate for both clocks, so the dial cannot desynchronise the tunnel's
+    // shape animation from its flight.
+    const rate = params.speed * drastic(p.speed)
+    clock.current += dt * rate
 
     // Distance ACCUMULATES. Multiplying a running clock by a varying speed
     // would jump the tunnel backwards whenever the speed fell.
-    const speed = BASE_SPEED * (0.5 + b.energy * 0.6 + anim.explode * 0.8) * params.speed
+    const speed = BASE_SPEED * (0.5 + b.energy * 0.6 + anim.explode * 0.8) * rate
     dist.current += dt * speed
 
     // Turn amplitudes ease over seconds rather than tracking the envelope
     // frame-to-frame, so the tunnel banks instead of swimming.
+    //
+    // `shape` is the silhouette of the flight path: at 0 the tunnel runs
+    // straight and the piece reads as a corridor, at 1 it winds hard and reads
+    // as a rollercoaster. It scales the whole amplitude including the
+    // audio-driven part, because a straight tunnel that still swerves on the
+    // bass is not straight — the dial has to win over the band or it is not a
+    // shape control.
+    const bend = drastic(p.shape)
     const k = Math.min(1, dt * 0.6)
-    curveX.current += (3.5 + b.mid * 5.5 - curveX.current) * k
-    curveY.current += (3.5 + b.bass * 5.0 - curveY.current) * k
+    curveX.current += ((3.5 + b.mid * 5.5) * bend - curveX.current) * k
+    curveY.current += ((3.5 + b.bass * 5.0) * bend - curveY.current) * k
 
     u.uTime.value = clock.current
     u.uDist.value = dist.current
@@ -302,7 +328,11 @@ export function TunnelDriftScene() {
     // Baseline raised from 0.18: the source rolled at the raw stepNoise
     // amplitude (about +/- 1 rad) constantly, and at 0.18 the frame was nearly
     // static between hits, which flattened the sense of flight.
-    u.uRoll.value = 0.45 + b.transient * 0.75
+    //
+    // `tilt` moves that baseline. Bipolar so 0.5 keeps the authored 0.45, and
+    // floored at 0.05 rather than 0 — a tunnel with no roll at all loses the
+    // sense of flight this baseline was raised to restore.
+    u.uRoll.value = Math.max(0.05, 0.45 + bipolar(p.tilt, 0.4)) + b.transient * 0.75
     // Monotonic, exactly 1.0 per beat — the phase the glow bands scroll on.
     // Wrapped: the phase is consumed inside fract(), so subtracting whole beats
     // is invisible, while an unbounded beatIndex would lose float precision
@@ -310,7 +340,11 @@ export function TunnelDriftScene() {
     u.uBeatPhase.value = (f.beatIndex % 1024) + f.beatProgress
     // Floor raised from 0.4: the source's constant was a flat 100, so at rest
     // the rails were reading at under half their intended strength.
-    u.uGlow.value = 100 * (0.6 + b.pulse * 1.0)
+    //
+    // `contrast` scales the rails against the wall and fog, which is what the
+    // tonal range of this picture actually is: low is a soft foggy corridor,
+    // high is hot filament rails cutting through it.
+    u.uGlow.value = 100 * (0.6 + b.pulse * 1.0) * (0.4 + p.contrast * 1.2)
     u.uInflate.value = Math.min(1.5, anim.inflate)
     // Palette TINTS these; it must not set their brightness. The source's three
     // constants encode a deliberate value hierarchy — near-black wall, warm
