@@ -142,9 +142,9 @@ describe('quality governor — transition discount', () => {
     // Layers are chosen at phrase boundaries. If the budget moved because a
     // transition happened to be in flight, layers would be dropped mid-fade.
     const g = governorAt(0)
-    const budget = g.knobs.layerBudget
+    const budget = g.knobs.frameBudgetMs
     g.setTransitionDiscount(1)
-    expect(g.knobs.layerBudget).toBe(budget)
+    expect(g.knobs.frameBudgetMs).toBe(budget)
   })
 
   it('is idempotent, so it can be called every frame', () => {

@@ -337,7 +337,6 @@ interface AppState {
   /** Mood-driven automation. */
   autoPilot: boolean
   moodDrive: boolean
-  generative: boolean
   /** Last manual scene/palette action (autopilot backs off for a while). */
   lastManualAt: number
 
@@ -401,7 +400,6 @@ interface AppState {
   removeBandMapping: (id: string) => void
   toggleAutoPilot: () => void
   toggleMoodDrive: () => void
-  toggleGenerative: () => void
   commitScene: () => void
   setPalette: (id: string, opts?: { auto?: boolean }) => void
   toggleUi: () => void
@@ -417,7 +415,10 @@ interface AppState {
    */
   setSceneParam: (sceneId: string, key: SceneParamKey, value: number) => void
   /** Switch a scene's mode. An unknown mode falls back to the scene default. */
-  setSceneMode: (sceneId: string, mode: string) => void
+  /** Switch a scene's mode. `auto` marks a director's choice, which — like
+   *  an automatic palette change — must not count as the user touching the
+   *  controls and so must not trigger AutoPilot's manual backoff. */
+  setSceneMode: (sceneId: string, mode: string, opts?: { auto?: boolean }) => void
   /** Return one scene's dials (and mode) to its authored defaults. */
   resetSceneParams: (sceneId: string) => void
   setQuality: (q: Quality) => void
@@ -475,7 +476,6 @@ export const useStore = create<AppState>()(
 
       autoPilot: true,
       moodDrive: true,
-      generative: true,
       lastManualAt: 0,
 
       responseTuning: { attack: 1, release: 1, subdivision: 1 },
@@ -727,7 +727,6 @@ export const useStore = create<AppState>()(
 
       toggleAutoPilot: () => set((s) => ({ autoPilot: !s.autoPilot })),
       toggleMoodDrive: () => set((s) => ({ moodDrive: !s.moodDrive })),
-      toggleGenerative: () => set((s) => ({ generative: !s.generative })),
       commitScene: () => {
         const pending = get().pendingSceneId
         if (pending) {
@@ -776,11 +775,15 @@ export const useStore = create<AppState>()(
         })
       },
 
-      setSceneMode: (sceneId, mode) => {
+      setSceneMode: (sceneId, mode, opts) => {
         const next = resolveSceneMode(sceneId, mode)
         if (next === undefined) return
         const s = get()
         if (s.sceneModes[sceneId] === next) return
+        // A manual switch backs AutoPilot off, exactly as a manual scene or
+        // palette change does; a director's own pick must not, or the show
+        // would silence its own automation every time it changed a mode.
+        if (!opts?.auto) set({ lastManualAt: performance.now() / 1000 })
         // Dropped, not remapped: a mode change can make a parameter inert, and
         // a stored inert value would silently reappear on the way back. The
         // scene's defaults for the new mode are the honest starting point.
@@ -964,7 +967,6 @@ export const useStore = create<AppState>()(
         quality: s.quality,
         autoPilot: s.autoPilot,
         moodDrive: s.moodDrive,
-        generative: s.generative,
         responseTuning: s.responseTuning,
         bandMappings: s.bandMappings,
         layerFx: s.layerFx,

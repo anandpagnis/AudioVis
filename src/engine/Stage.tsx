@@ -1,4 +1,4 @@
-import { Suspense, lazy, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { captureIfRequested } from './recorder'
 import { frameSampler } from './frameSampler'
@@ -9,18 +9,13 @@ import { EffectDirector } from './EffectDirector'
 import { EffectsDirector } from './EffectsDirector'
 import { SceneManager } from './SceneManager'
 import { LightRig } from './LightRig'
+import { ExposureSampler } from './ExposureSampler'
 import { PerfMonitor } from './PerfMonitor'
 import { PerformanceDirector } from './PerformanceDirector'
 import { PerformanceStateBridge } from './PerformanceStateBridge'
+import { resetExposure } from './exposure'
 import { resourceCache } from './streaming/resourceCache'
 import { useStore } from '../store'
-
-// The AI-texture path ships as its own chunk and only downloads the first
-// time the user enables it. Once loaded it stays mounted so toggling off
-// fades gracefully (the layer's own alpha easing) instead of popping.
-const GenerativeLayer = lazy(() =>
-  import('./GenerativeLayer').then((m) => ({ default: m.GenerativeLayer })),
-)
 
 /**
  * The WebGL stage: owns the R3F Canvas and the fixed order of engine systems
@@ -33,7 +28,12 @@ const GenerativeLayer = lazy(() =>
  *   decide     `PerformanceStateBridge` (-95) → `AutoPilot` (-90) →
  *              `CueTimeline` (-88) → `EffectDirector` (-86) →
  *              `PerformanceDirector` (-85)
- *   execute    `CameraDirector` (-80) → scenes (0) → `EffectsDirector`
+ *   execute    `CameraDirector` (-80) → scenes (0) → `EffectsDirector` (1) →
+ *              `ExposureSampler` / `ScreenshotCapture` (2)
+ *
+ * Everything in the first two bands runs from mount. The post chain and the
+ * exposure servo do not — see `PostChain` below, which gates them on the show
+ * actually starting.
  *
  * The rule the bands encode: everything in "decide" may write
  * `performanceState`, nothing in "execute" may — executors only read it and
@@ -55,10 +55,6 @@ const GenerativeLayer = lazy(() =>
  * quality governor's current tier.
  */
 export function Stage() {
-  const generative = useStore((s) => s.generative)
-  const everEnabled = useRef(generative)
-  if (generative) everEnabled.current = true
-
   // Bumped when the GPU context is lost and restored. Keying the
   // resource-holding subtrees on it forces their render targets / materials to
   // rebuild after a restore, instead of sampling dead GPU handles.
@@ -82,6 +78,10 @@ export function Stage() {
       // remounting so the first post-restore acquire() rebuilds from
       // scratch rather than handing back a texture pointing at nothing.
       resourceCache.invalidateAll()
+      // The servo's gain describes a frame produced by a context that no longer
+      // exists; carrying it across would apply a correction to a picture that
+      // was never measured.
+      resetExposure()
       // Nothing measured before the loss describes the context we are about to
       // rebuild in, and the rebuild itself is one long stall. Drop the history
       // outright rather than letting the governor read a restore as load.
@@ -113,14 +113,72 @@ export function Stage() {
       <CameraDirector />
       <LightRig />
       <SceneManager key={`scenes-${glEpoch}`} />
-      {everEnabled.current && (
-        <Suspense fallback={null}>
-          <GenerativeLayer key={`gen-${glEpoch}`} />
-        </Suspense>
-      )}
-      <EffectsDirector key={`fx-${glEpoch}`} />
+      <PostChain glEpoch={glEpoch} />
       <ScreenshotCapture />
     </Canvas>
+  )
+}
+
+/**
+ * The post chain, plus the exposure servo that reads its output — mounted only
+ * once the user has committed to starting a show.
+ *
+ * ## Why this is gated when nothing else in the tree is
+ *
+ * The start card is a translucent scrim (`.overlay`, 0.25-0.72 black), so the
+ * stage behind it is deliberately visible — an idling preview is the product's
+ * first impression and worth keeping. What is NOT worth keeping is the full
+ * eighteen-pass bloom pyramid running underneath a dialog. Bisected: removing
+ * only the post chain took that screen from **133 ms to 16.7 ms per frame**, so
+ * it was roughly 87% of the cost of a screen showing a picker (F50).
+ *
+ * That cost was not merely wasted, it was actively harmful. `PerfMonitor` feeds
+ * every idle frame to the quality governor, so a 133 ms picker screen walked the
+ * tier down to survival before a single note played — and the show then started
+ * already pinned, which is what made three of the six transition styles
+ * unreachable (F84). Hence the reset below: the governor's view of the idle
+ * screen describes a frame the show will never render.
+ *
+ * ## Why `starting` and not just `running`
+ *
+ * Building the composer means allocating its buffers and compiling the merged
+ * effect shader. Doing that on the transition to `running` would land the stall
+ * on the first bar of the track — the single worst moment available. `starting`
+ * covers device permission, decode and analysis warm-up, which is both long
+ * enough to hide the build and a moment where the user already expects a wait.
+ *
+ * The cheaper half-measure — dropping bloom's `mipmapBlur` while idle — was
+ * rejected: changing the effect list rebuilds the merged shader anyway (see
+ * `EffectsDirector`'s header), so it pays the same cost without shedding the
+ * pass.
+ */
+function PostChain({ glEpoch }: { glEpoch: number }) {
+  const live = useStore((s) => s.status === 'running' || s.status === 'starting')
+  const wasLive = useRef(live)
+
+  useEffect(() => {
+    if (live === wasLive.current) return
+    wasLive.current = live
+    if (!live) return
+    // The servo's gain was measured against frames the composer never touched
+    // (no chain means no GradePass, so no output conversion and no gain), and
+    // the governor's history describes a picker screen. Neither describes what
+    // is about to render. Same reasoning as the context-restore path above, and
+    // the same numbers: 120 frames is ~2 s, enough to cover the composer build
+    // and the first shader compiles.
+    resetExposure()
+    frameSampler.reset()
+    frameSampler.suspend(120)
+  }, [live])
+
+  if (!live) return null
+  return (
+    <>
+      <EffectsDirector key={`fx-${glEpoch}`} />
+      {/* Priority 2: after the composer has drawn, while the buffer is still
+          readable. Keyed on glEpoch so a restored context starts a fresh loop. */}
+      <ExposureSampler key={`exp-${glEpoch}`} />
+    </>
   )
 }
 

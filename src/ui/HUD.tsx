@@ -26,7 +26,7 @@ import { FpsMeter } from './FpsMeter'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
 import { LENS_STYLES } from '../engine/opticalRack'
-import { TRANSITION_STYLES } from '../engine/transitions'
+import { TRANSITION_STYLES, isStyleSelectable } from '../engine/transitions'
 
 // macOS Chrome can only capture a browser TAB's audio via getDisplayMedia —
 // whole-screen / system audio isn't available, so the copy has to differ.
@@ -73,7 +73,6 @@ export function HUD() {
   const quality = useStore((s) => s.quality)
   const autoPilot = useStore((s) => s.autoPilot)
   const moodDrive = useStore((s) => s.moodDrive)
-  const generative = useStore((s) => s.generative)
   const layerFx = useStore((s) => s.layerFx)
   const responseTuning = useStore((s) => s.responseTuning)
   const debugPostFx = useStore((s) => s.debugPostFx)
@@ -152,9 +151,7 @@ export function HUD() {
         s.toggleAutoPilot()
       } else if (e.key === 'm' || e.key === 'M') {
         s.toggleMoodDrive()
-      } else if (e.key === 'g' || e.key === 'G') {
-        s.toggleGenerative()
-      } else if (e.key === 'c' || e.key === 'C') {
+            } else if (e.key === 'c' || e.key === 'C') {
         if (s.status === 'running') s.captureCue()
       } else if (e.key === 'r' || e.key === 'R') {
         if (s.status === 'running' || s.isRecording) s.toggleRecording()
@@ -522,13 +519,6 @@ export function HUD() {
                     mood drive
                   </button>
                   <button
-                    className={`chip ${generative ? 'active' : ''}`}
-                    title="AI mood textures from the local backend (G)"
-                    onClick={() => useStore.getState().toggleGenerative()}
-                  >
-                    AI textures
-                  </button>
-                  <button
                     className={`chip ${midiSync ? 'active' : ''}`}
                     title="Lock the beat grid to an external MIDI clock"
                     onClick={() => void useStore.getState().toggleMidiSync()}
@@ -657,7 +647,18 @@ export function HUD() {
                       {TRANSITION_STYLES.map((name) => (
                         <button
                           key={name}
-                          className={`chip ${debugPostFx.transitionStyle === name ? 'active' : ''}`}
+                          // Shown but disabled rather than removed: a style that
+                          // silently vanishes reads as a bug, and `cut` still
+                          // happens via the budget guard, so seeing it greyed
+                          // here is what explains that.
+                          title={
+                            isStyleSelectable(name)
+                              ? name
+                              : `${name} — disabled (still used automatically when the frame budget cannot fund a crossfade)`
+                          }
+                          className={`chip ${debugPostFx.transitionStyle === name ? 'active' : ''} ${
+                            isStyleSelectable(name) ? '' : 'chip-disabled'
+                          }`}
                           disabled={!debugPostFx.enabled}
                           onClick={() => useStore.getState().setDebugPostFx({ transitionStyle: name })}
                         >

@@ -24,6 +24,12 @@ import type { SceneDef, SceneRole, ScenePerformanceCost } from '../../scenes'
  *
  * `resolveLayerIds` above still uses real ids, correctly — those tests are
  * about identity collisions and never look at cost.
+ *
+ * These synthetic ids are absent from engine/sceneCost.ts, so they price through
+ * `FALLBACK_COST_MS` — low 0.5 ms, medium 3, high 8 at tier 0. That is exactly
+ * the intent: the admission logic is being tested against known costs, and a
+ * synthetic scene falling back to its label is the documented behaviour for any
+ * scene the bench sweep has not reached.
  */
 function fake(id: string, cost: ScenePerformanceCost, roles: SceneRole[]): SceneDef {
   return {
@@ -98,7 +104,10 @@ describe('composeLayers', () => {
   const base = {
     mood: 'groove' as const,
     recentIds: [] as string[],
-    budget: 8,
+    primaryId: 'synthetic-primary',
+    tier: 0,
+    /** Comfortable: 8 ms buys a `high` fallback primary and both low layers. */
+    budget: 9,
   }
 
   it('leaves a slot unfilled when its pool is empty', () => {
@@ -123,10 +132,10 @@ describe('composeLayers', () => {
   })
 
   it('runs a heavy primary solo at a tight budget', () => {
-    // high primary = 4 units, budget 4 → nothing left over.
+    // high fallback primary = 8 ms, budget 8 → nothing left over.
     const out = composeLayers({
       ...base,
-      budget: 4,
+      budget: 8,
       primaryCost: 'high',
       pools: { accent: [lowA], overlay: [lowB] },
     })
@@ -134,15 +143,15 @@ describe('composeLayers', () => {
   })
 
   it('honours the priority override when only one slot fits', () => {
-    // low primary (1) + budget 2 leaves room for exactly one low layer.
+    // low primary (0.5 ms) + budget 1 leaves room for exactly one low layer.
     const pools = { accent: [lowA], overlay: [lowB] }
-    const accentFirst = composeLayers({ ...base, budget: 2, primaryCost: 'low', pools })
+    const accentFirst = composeLayers({ ...base, budget: 1, primaryCost: 'low', pools })
     expect(accentFirst.accent).toBe('lowA')
     expect(accentFirst.overlay).toBeNull()
 
     const overlayFirst = composeLayers({
       ...base,
-      budget: 2,
+      budget: 1,
       primaryCost: 'low',
       pools,
       priority: ['background', 'overlay', 'accent'],
@@ -173,9 +182,11 @@ describe('composeLayers — editorial layer cap', () => {
   const base = {
     mood: 'groove' as const,
     recentIds: [] as string[],
-    // Deliberately the richest budget: the cap must bind on its own, not as a
-    // side effect of running out of units.
-    budget: 8,
+    primaryId: 'synthetic-primary',
+    tier: 0,
+    // Deliberately far more budget than anything here needs: the cap must bind
+    // on its own, not as a side effect of running out of milliseconds.
+    budget: 20,
   }
 
   it('allows two detail layers over a light primary', () => {
@@ -189,7 +200,7 @@ describe('composeLayers — editorial layer cap', () => {
   })
 
   it('allows only one over a heavy primary, even when both are affordable', () => {
-    // 4 (high primary) + 1 + 1 = 6 of 8 units. The budget would admit both;
+    // 8 (high primary) + 0.5 + 0.5 = 9 ms of 20. The budget would admit both;
     // the cap is what refuses the second, because a heavy primary has already
     // filled the frame and a second layer is noise over noise.
     const out = composeLayers({
@@ -236,10 +247,10 @@ describe('composeLayers — editorial layer cap', () => {
 
   it('still lets the budget refuse a layer the cap would have allowed', () => {
     // The two rules compose: whichever is stricter wins. Here the budget is
-    // the binding one (high primary = 4 of 4), and the cap changes nothing.
+    // the binding one (high primary = 8 ms of 8), and the cap changes nothing.
     const out = composeLayers({
       ...base,
-      budget: 4,
+      budget: 8,
       primaryCost: 'high',
       pools: { accent: [lowA] },
     })
@@ -255,22 +266,23 @@ describe('composeLayers — editorial layer cap', () => {
  * line afterwards and nothing noticed. Two routes did it constantly: a
  * crossfade (composeLayers reserves ONE primary, so mid-fade it offers the
  * outgoing scene's share to the layers as though it were free) and a tier drop
- * (layers admitted at capacity 11 stay mounted when the governor steps to 7).
+ * (layers admitted at 11 ms of capacity stay mounted when the governor steps to
+ * 8.5).
  */
 describe('resolveLayerIds — budget enforcement', () => {
   const ids = { background: 'orbs', accent: 'ribbons', overlay: 'network' }
-  /** Every layer costs 2 units, so the arithmetic is easy to read. */
-  const unitsFor = () => 2
+  /** Every layer costs 2 ms, so the arithmetic is easy to read. */
+  const msFor = () => 2
 
   it('admits everything when capacity allows', () => {
-    const out = resolveLayerIds(ids, 'wireframe', null, { remaining: 6, unitsFor })
+    const out = resolveLayerIds(ids, 'wireframe', null, { remaining: 6, msFor })
     expect(out).toEqual(ids)
   })
 
   it('sheds the least structural layer first', () => {
-    // 4 units buys two of the three. LAYER_ROLES order is background, accent,
+    // 4 ms buys two of the three. LAYER_ROLES order is background, accent,
     // overlay — so overlay is the one that goes, and the ground layer stays.
-    const out = resolveLayerIds(ids, 'wireframe', null, { remaining: 4, unitsFor })
+    const out = resolveLayerIds(ids, 'wireframe', null, { remaining: 4, msFor })
     expect(out.background).toBe('orbs')
     expect(out.accent).toBe('ribbons')
     expect(out.overlay).toBeNull()
@@ -278,13 +290,13 @@ describe('resolveLayerIds — budget enforcement', () => {
 
   it('drops everything when the frame is already full', () => {
     // What a heavy crossfade plus fixed costs leaves at tier 0.
-    const out = resolveLayerIds(ids, 'wireframe', null, { remaining: 0, unitsFor })
+    const out = resolveLayerIds(ids, 'wireframe', null, { remaining: 0, msFor })
     expect(out).toEqual({ background: null, accent: null, overlay: null })
   })
 
   it('never exceeds the capacity it was given', () => {
     for (let remaining = 0; remaining <= 6; remaining++) {
-      const out = resolveLayerIds(ids, 'wireframe', null, { remaining, unitsFor })
+      const out = resolveLayerIds(ids, 'wireframe', null, { remaining, msFor })
       const spent = Object.values(out).filter(Boolean).length * 2
       expect(spent, `remaining ${remaining}`).toBeLessThanOrEqual(remaining)
     }
@@ -295,7 +307,7 @@ describe('resolveLayerIds — budget enforcement', () => {
     // than the frame actually needs.
     const out = resolveLayerIds(ids, 'wireframe', null, {
       remaining: 1,
-      unitsFor: (id) => (id === 'network' ? 1 : 4),
+      msFor: (id) => (id === 'network' ? 1 : 4),
     })
     expect(out.background).toBeNull()
     expect(out.accent).toBeNull()
@@ -309,7 +321,7 @@ describe('resolveLayerIds — budget enforcement', () => {
       { background: 'wireframe', accent: 'ribbons', overlay: 'network' },
       'wireframe',
       null,
-      { remaining: 4, unitsFor },
+      { remaining: 4, msFor },
     )
     expect(out.background).toBeNull()
     expect(out.accent).toBe('ribbons')

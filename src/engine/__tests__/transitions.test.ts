@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CONSTRAINED_FADE_SEC,
   TRANSITION_STYLES,
+  fadeDurationFor,
+  pickTransitionStyle,
   mixEnergy,
   resolveTransitionStyle,
   smoothstep,
   transitionMix,
+  isStyleSelectable,
+  selectableStyles,
   transitionRack,
   usesRack,
   type TransitionStyle,
@@ -134,9 +139,141 @@ describe('transitionRack', () => {
   })
 })
 
+describe('pickTransitionStyle — the director', () => {
+  it('marks a section boundary with a dip rather than a blend', () => {
+    // The one moment the two scenes are not continuous material: the music has
+    // drawn a line, and a dip states that where a blend smooths over it.
+    for (const mood of ['ambient', 'groove', 'peak', 'aggressive']) {
+      expect(pickTransitionStyle(mood, true, 0, undefined)).toBe('dipToBlack')
+    }
+  })
+
+  it('gives quiet and loud moods different characters', () => {
+    // The point of having a vocabulary at all: a breakdown and a peak should not
+    // change scene the same way.
+    const quiet = pickTransitionStyle('mellow', false, 0, undefined)
+    const loud = pickTransitionStyle('aggressive', false, 0, undefined)
+    expect(quiet).not.toBe(loud)
+  })
+
+  it('never repeats the previous style when an alternative exists', () => {
+    // Otherwise a mood with two styles still shows one of them, and the rack is
+    // decoration rather than variety.
+    for (const mood of ['ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive']) {
+      for (let r = 0; r < 8; r++) {
+        const last = pickTransitionStyle(mood, false, r, undefined)
+        expect(pickTransitionStyle(mood, false, r, last)).not.toBe(last)
+      }
+    }
+  })
+
+  it('leaves silence on the neutral style', () => {
+    for (let r = 0; r < 6; r++) {
+      expect(pickTransitionStyle('silence', false, r, undefined)).toBe('dissolve')
+    }
+  })
+
+  it('never chooses a disabled style', () => {
+    // Disabling has to reach the autonomy, not just the picker — otherwise the
+    // director keeps selecting something the UI says is unavailable.
+    for (const mood of ['silence', 'ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive']) {
+      for (let r = 0; r < 10; r++) {
+        for (const sc of [true, false]) {
+          expect(isStyleSelectable(pickTransitionStyle(mood, sc, r, undefined))).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('is deterministic, so a recorded set replays identically', () => {
+    expect(pickTransitionStyle('groove', false, 3, 'dissolve')).toBe(
+      pickTransitionStyle('groove', false, 3, 'dissolve'),
+    )
+  })
+
+  it('falls back for an unknown mood rather than returning undefined', () => {
+    // A new MoodState added later must not make the director return nothing.
+    const st = pickTransitionStyle('brand-new-mood', false, 0, undefined)
+    expect(TRANSITION_STYLES).toContain(st)
+    expect(isStyleSelectable(st)).toBe(true)
+  })
+
+  it('reaches every style in a mood list as the rotation advances', () => {
+    const seen = new Set<string>()
+    for (let r = 0; r < 12; r++) seen.add(pickTransitionStyle('groove', false, r, undefined))
+    expect(seen.size).toBeGreaterThan(1)
+  })
+})
+
+describe('fadeDurationFor — the budget degrade', () => {
+  it('leaves an affordable transition at its musical length', () => {
+    expect(fadeDurationFor(0.92, false)).toBe(0.92)
+  })
+
+  it('shortens rather than removes an unaffordable one', () => {
+    // The whole point of F64. This path used to produce a hard cut, which meant
+    // a performance constraint decided the edit — and on a loaded machine that
+    // was EVERY transition, so no crossfade ever ran.
+    const constrained = fadeDurationFor(0.92, true)
+    expect(constrained).toBeGreaterThan(0)
+    expect(constrained).toBeLessThan(0.92)
+    expect(constrained).toBe(CONSTRAINED_FADE_SEC)
+  })
+
+  it('never lengthens a fade that was already shorter', () => {
+    // The constraint is a ceiling on how long two primaries may overlap, not a
+    // target — raising a 0.1 s fade to 0.2 s would spend MORE of the budget it
+    // exists to protect.
+    expect(fadeDurationFor(0.1, true)).toBe(0.1)
+  })
+
+  it('returns something usable for a nonsense musical duration', () => {
+    // The per-frame advance divides by this, so a zero or NaN here would make
+    // the fade jump straight to complete or poison it permanently.
+    expect(fadeDurationFor(0, false)).toBeGreaterThan(0)
+    expect(fadeDurationFor(NaN, false)).toBeGreaterThan(0)
+    expect(fadeDurationFor(-1, true)).toBeGreaterThan(0)
+  })
+
+  it('keeps the constrained window short enough to be worth the trade', () => {
+    // At 60fps this is the number of frames carrying two subjects. The guard's
+    // intent is to bound that, and the trade is only defensible while it stays
+    // a fraction of a musical fade.
+    expect(CONSTRAINED_FADE_SEC * 60).toBeLessThan(15)
+  })
+})
+
+describe('disabled styles', () => {
+  it('keeps cut in the vocabulary but out of the picker', () => {
+    // Not deleted: the value is stored in cues and recorded in transition
+    // telemetry, so removing the name would orphan saved shows and make old
+    // records unreadable.
+    expect(TRANSITION_STYLES).toContain('cut')
+    expect(selectableStyles()).not.toContain('cut')
+    expect(isStyleSelectable('cut')).toBe(false)
+  })
+
+  it('still produces a working curve for cut', () => {
+    // Disabled as a CHOICE, not as a fallback: SceneManager still forces a cut
+    // when the budget cannot fund two primaries, and that path must keep
+    // working. A disabled style that stopped rendering would black the frame.
+    expect(transitionMix('cut', 0.5)).toEqual({ out: 0, in: 1 })
+  })
+
+  it('resolves a stored disabled style to the default', () => {
+    // What makes the disable real for a cue saved while it was still available,
+    // rather than only hiding it from the picker.
+    expect(resolveTransitionStyle('cut')).toBe('dissolve')
+  })
+
+  it('leaves every other style selectable', () => {
+    expect(selectableStyles()).toHaveLength(TRANSITION_STYLES.length - 1)
+  })
+})
+
 describe('resolveTransitionStyle', () => {
-  it('accepts every declared style', () => {
-    for (const style of TRANSITION_STYLES) {
+  it('accepts every selectable style', () => {
+    for (const style of selectableStyles()) {
       expect(resolveTransitionStyle(style)).toBe(style)
     }
   })

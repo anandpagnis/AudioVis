@@ -1,33 +1,62 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   applyFrameLoad,
-  committedUnits,
+  committedMs,
   frameLoad,
-  remainingUnits,
-  GENERATIVE_UNITS,
-  POST_CHAIN_UNITS,
+  remainingMs,
+  FEEDBACK_MS,
+  feedbackMsFor,
+  POST_CHAIN_MS,
   type FrameLoadEntry,
 } from '../frameLoad'
-import { TIER_BUDGET } from '../slotBudget'
+import { TIER_BUDGET_MS } from '../slotBudget'
+import { isFeedbackActive } from '../feedbackParams'
 
 /** The load a quiet frame carries before any scene is counted. */
-const FIXED = POST_CHAIN_UNITS + GENERATIVE_UNITS
+const FIXED = POST_CHAIN_MS + FEEDBACK_MS
+
+describe('feedbackMsFor', () => {
+  it('reserves nothing while the pass is bypassed', () => {
+    // The default, and the overwhelmingly common case. FeedbackPass disables
+    // itself at rest and EffectComposer skips a disabled pass entirely, so
+    // reserving for it held 1 of only 5 units at the survival tier for work that
+    // was not happening — and that was the unit deciding whether any crossfade
+    // overlap was possible at all. See F84/F85.
+    expect(feedbackMsFor(0)).toBe(0)
+  })
+
+  it('reserves a full unit once trails are actually running', () => {
+    expect(feedbackMsFor(0.6)).toBe(FEEDBACK_MS)
+  })
+
+  it('agrees with the pass about where the boundary is', () => {
+    // The two used to disagree, which is the whole bug. One predicate now.
+    for (const t of [0, 0.005, 0.02, 0.05, 0.5, 1]) {
+      expect(feedbackMsFor(t) > 0).toBe(isFeedbackActive(t))
+    }
+  })
+
+  it('reserves nothing for a garbage value rather than over-reserving', () => {
+    expect(feedbackMsFor(NaN)).toBe(0)
+  })
+})
+
 
 beforeEach(() => {
   frameLoad.primary = 0
   frameLoad.incoming = 0
   frameLoad.layers = 0
   frameLoad.effects = 0
-  frameLoad.fixed = POST_CHAIN_UNITS
+  frameLoad.fixed = POST_CHAIN_MS
 })
 
-describe('committedUnits', () => {
+describe('committedMs', () => {
   it('sums every contributor, not just the subject', () => {
     frameLoad.primary = 4
     frameLoad.layers = 3
     frameLoad.effects = 1
     frameLoad.fixed = FIXED
-    expect(committedUnits()).toBe(11)
+    expect(committedMs()).toBe(11)
   })
 
   it('counts the second primary during a crossfade', () => {
@@ -36,21 +65,21 @@ describe('committedUnits', () => {
     // is precisely the moment an extra layer or effect must not be admitted.
     frameLoad.primary = 4
     frameLoad.incoming = 4
-    expect(committedUnits()).toBe(8 + POST_CHAIN_UNITS)
+    expect(committedMs()).toBe(8 + POST_CHAIN_MS)
   })
 
   it('never reports an empty frame as free', () => {
     // The post chain runs whatever else is on screen, and used to be reserved
     // at exactly zero.
-    expect(committedUnits()).toBeGreaterThan(0)
+    expect(committedMs()).toBeGreaterThan(0)
   })
 })
 
-describe('remainingUnits', () => {
+describe('remainingMs', () => {
   it('reports what is genuinely left', () => {
     frameLoad.primary = 2
     frameLoad.fixed = FIXED
-    expect(remainingUnits(TIER_BUDGET[0])).toBe(TIER_BUDGET[0] - 2 - FIXED)
+    expect(remainingMs(TIER_BUDGET_MS[0])).toBe(TIER_BUDGET_MS[0] - 2 - FIXED)
   })
 
   it('floors at zero rather than wrapping into phantom headroom', () => {
@@ -58,8 +87,8 @@ describe('remainingUnits', () => {
     frameLoad.incoming = 4
     frameLoad.layers = 4
     frameLoad.fixed = FIXED
-    expect(committedUnits()).toBeGreaterThan(TIER_BUDGET[0])
-    expect(remainingUnits(TIER_BUDGET[0])).toBe(0)
+    expect(committedMs()).toBeGreaterThan(TIER_BUDGET_MS[0])
+    expect(remainingMs(TIER_BUDGET_MS[0])).toBe(0)
   })
 })
 
@@ -73,7 +102,7 @@ describe('the tier ladder survives honest accounting', () => {
   it('leaves room for a cheap primary plus a layer at the top tier', () => {
     frameLoad.fixed = FIXED
     frameLoad.primary = 1
-    expect(remainingUnits(TIER_BUDGET[0])).toBeGreaterThanOrEqual(1)
+    expect(remainingMs(TIER_BUDGET_MS[0])).toBeGreaterThanOrEqual(1)
   })
 
   it('still runs a heavy primary solo at the bottom tier', () => {
@@ -82,17 +111,16 @@ describe('the tier ladder survives honest accounting', () => {
     // frame has nothing spare, and layers should be refused.
     frameLoad.fixed = FIXED
     frameLoad.primary = 4
-    expect(remainingUnits(TIER_BUDGET[4])).toBe(0)
+    expect(remainingMs(TIER_BUDGET_MS[4])).toBe(0)
   })
 
-  it('treats the generative overlay as a real cost', () => {
-    // `generative` defaults to true and Stage keeps the layer mounted for the
-    // session once ever enabled, so for most users this is always present —
-    // and it was previously invisible to the budget entirely.
-    frameLoad.fixed = POST_CHAIN_UNITS
-    const withoutGen = committedUnits()
+  it('treats a running feedback pass as a real cost', () => {
+    // The post chain is always present; the feedback pass is charged only when
+    // trails are actually running, and then it must genuinely show up.
+    frameLoad.fixed = POST_CHAIN_MS
+    const quiet = committedMs()
     frameLoad.fixed = FIXED
-    expect(committedUnits()).toBe(withoutGen + GENERATIVE_UNITS)
+    expect(committedMs()).toBe(quiet + FEEDBACK_MS)
   })
 })
 
@@ -109,17 +137,17 @@ describe('applyFrameLoad — attribution', () => {
     role: 'primary',
     dir: 1,
     drawing: true,
-    units: 1,
+    ms: 1,
     ...over,
   })
 
   it('counts all three layer slots', () => {
     applyFrameLoad(
       [
-        entry({ role: 'primary', units: 4 }),
-        entry({ role: 'background', units: 1 }),
-        entry({ role: 'accent', units: 2 }),
-        entry({ role: 'overlay', units: 2 }),
+        entry({ role: 'primary', ms: 4 }),
+        entry({ role: 'background', ms: 1 }),
+        entry({ role: 'accent', ms: 2 }),
+        entry({ role: 'overlay', ms: 2 }),
       ],
       0,
     )
@@ -129,7 +157,7 @@ describe('applyFrameLoad — attribution', () => {
 
   it('files the outgoing primary as overlap, not as the subject', () => {
     applyFrameLoad(
-      [entry({ dir: 1, units: 4 }), entry({ dir: -1, units: 2 })],
+      [entry({ dir: 1, ms: 4 }), entry({ dir: -1, ms: 2 })],
       0,
     )
     expect(frameLoad.primary).toBe(4)
@@ -137,7 +165,7 @@ describe('applyFrameLoad — attribution', () => {
   })
 
   it('counts a warming candidate that is still drawing', () => {
-    applyFrameLoad([entry({ dir: 1, units: 4 }), entry({ dir: 0, units: 4 })], 0)
+    applyFrameLoad([entry({ dir: 1, ms: 4 }), entry({ dir: 0, ms: 4 })], 0)
     expect(frameLoad.incoming).toBe(4)
   })
 
@@ -146,23 +174,23 @@ describe('applyFrameLoad — attribution', () => {
     // the budget refuse layers for the whole time a switch sits pending — which
     // can be a full bar under the warm-gate commit rule.
     applyFrameLoad(
-      [entry({ dir: 1, units: 4 }), entry({ dir: 0, units: 4, drawing: false })],
+      [entry({ dir: 1, ms: 4 }), entry({ dir: 0, ms: 4, drawing: false })],
       0,
     )
     expect(frameLoad.incoming).toBe(0)
   })
 
   it('separates effects from layers', () => {
-    applyFrameLoad([entry({ role: 'effect', units: 2 }), entry({ role: 'accent', units: 1 })], 0)
+    applyFrameLoad([entry({ role: 'effect', ms: 2 }), entry({ role: 'accent', ms: 1 })], 0)
     expect(frameLoad.effects).toBe(2)
     expect(frameLoad.layers).toBe(1)
   })
 
   it('clears stale buckets between frames', () => {
-    applyFrameLoad([entry({ role: 'accent', units: 2 })], 0)
+    applyFrameLoad([entry({ role: 'accent', ms: 2 })], 0)
     expect(frameLoad.layers).toBe(2)
     // A frame with no layers must report zero, not last frame's value.
-    applyFrameLoad([entry({ role: 'primary', units: 1 })], 0)
+    applyFrameLoad([entry({ role: 'primary', ms: 1 })], 0)
     expect(frameLoad.layers).toBe(0)
     expect(frameLoad.effects).toBe(0)
     expect(frameLoad.incoming).toBe(0)
@@ -170,18 +198,18 @@ describe('applyFrameLoad — attribution', () => {
 
   it('reports a realistic worst case honestly', () => {
     // A heavy subject crossfading to another heavy one, over two layers, with
-    // post and generative live. This is the composition the old accounting
+    // post and feedback live. This is the composition the old accounting
     // valued at 4 units.
     applyFrameLoad(
       [
-        entry({ role: 'primary', dir: 1, units: 4 }),
-        entry({ role: 'primary', dir: -1, units: 4 }),
-        entry({ role: 'accent', units: 2 }),
-        entry({ role: 'overlay', units: 1 }),
+        entry({ role: 'primary', dir: 1, ms: 4 }),
+        entry({ role: 'primary', dir: -1, ms: 4 }),
+        entry({ role: 'accent', ms: 2 }),
+        entry({ role: 'overlay', ms: 1 }),
       ],
       FIXED,
     )
-    expect(committedUnits()).toBe(14)
-    expect(remainingUnits(TIER_BUDGET[0])).toBe(0)
+    expect(committedMs()).toBe(14)
+    expect(remainingMs(TIER_BUDGET_MS[0])).toBe(0)
   })
 })

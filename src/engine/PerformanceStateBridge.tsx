@@ -8,6 +8,7 @@ import { cutCamera, pickCameraMode } from './CameraDirector'
 import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
 import { advanceSteer, clearSteer } from './sceneSteer'
+import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC } from './transitions'
 import { quality } from './quality'
 import { useStore } from '../store'
 
@@ -67,6 +68,14 @@ export function PerformanceStateBridge() {
   const lastCameraScene = useRef('')
   /** Previous frame's beat state, so `rackAudio.onKick` can be an edge. */
   const wasOnKick = useRef(false)
+  /** Mood the transition style was last chosen for — see the pick below. */
+  const lastStyleMood = useRef('')
+  /** Deterministic cycle position, on its own counter. */
+  const styleRotation = useRef(0)
+  /** When the last section boundary fired, for the dip window. */
+  const lastSectionAt = useRef(-Infinity)
+  /** Previous window state, so the style is re-picked when it closes too. */
+  const wasNearSection = useRef(false)
 
   useFrame(() => {
     const f = audioEngine.features
@@ -228,6 +237,33 @@ export function PerformanceStateBridge() {
     ra.mids = f.mid
     ra.onKick = pulse > 0.6 && !wasOnKick.current ? Math.min(1, pulse) : 0
     wasOnKick.current = pulse > 0.6
+
+    // Style for the NEXT scene change. Chosen here rather than in SceneManager
+    // because it is a creative decision and this is the decide band; SceneManager
+    // is an executor that reads it at commit.
+    //
+    // Re-picked only when the musical situation actually changes — a new mood,
+    // or a section boundary — rather than every frame. Re-rolling continuously
+    // would make the style whatever the rotation happened to land on at the
+    // instant of commit, which is indistinguishable from random and impossible
+    // to reason about when watching a set.
+    if (f.sectionChange) lastSectionAt.current = f.time
+    // A section boundary is an instant; the scene change that should punctuate it
+    // commits on the next downbeat, up to a bar later. So the override is a
+    // WINDOW rather than an edge — and a bounded one, because latching it
+    // indefinitely made five consecutive changes all run `dipToBlack` from a
+    // single boundary long past.
+    const nearSection = f.time - lastSectionAt.current < SECTION_DIP_WINDOW_SEC
+    if (m.state !== lastStyleMood.current || nearSection !== wasNearSection.current) {
+      lastStyleMood.current = m.state
+      wasNearSection.current = nearSection
+      p.transitionStyle = pickTransitionStyle(
+        m.state,
+        nearSection,
+        styleRotation.current++,
+        p.transitionStyle,
+      )
+    }
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human drag a value in the debug panel and see it,

@@ -9,6 +9,7 @@ import type {
   VignetteEffect,
 } from 'postprocessing'
 import { FeedbackPass } from './FeedbackPass'
+import { GradePass } from './GradePass'
 import type { LensRackState, MirrorRackState } from './opticalRack'
 import { LensPass } from './LensPass'
 import { MirrorPass } from './MirrorPass'
@@ -73,6 +74,7 @@ export function EffectsDirector() {
   const feedbackPass = useMemo(() => new FeedbackPass(), [])
   const mirrorPass = useMemo(() => new MirrorPass(), [])
   const lensPass = useMemo(() => new LensPass(), [])
+  const gradePass = useMemo(() => new GradePass(), [])
   const feedbackTint = useRef(new Color(1, 1, 1))
   /** Render scale the composer's buffers were last sized for. */
   const appliedScale = useRef(-1)
@@ -80,7 +82,7 @@ export function EffectsDirector() {
    *  in the loop, matching this file's no-allocation-per-frame discipline. */
   const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
   const txLens = useRef<LensRackState>({ amount: 0, style: 0 })
-  useDispose(feedbackPass, mirrorPass, lensPass)
+  useDispose(feedbackPass, mirrorPass, lensPass, gradePass)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
   // would invalidate every material's shader cache.
   const fog = useRef(new FogExp2(0x000000, 0))
@@ -217,6 +219,14 @@ export function EffectsDirector() {
       <ChromaticAberration ref={caRef} offset={CA_INITIAL_OFFSET} />
       <Vignette ref={vignetteRef} eskil={false} offset={0.18} darkness={0.85} />
       <primitive object={lensPass} />
+      {/*
+        LAST, and always enabled. EffectComposer flags the final pass as the one
+        that renders to screen and skips disabled passes before that happens, so
+        whatever sits here can never switch itself off — see GradePass's header.
+        It applies the exposure servo's gain, which is genuine work rather than
+        the straight copy the lens rack was doing to hold this position.
+      */}
+      <primitive object={gradePass} />
     </EffectComposer>
   )
 }

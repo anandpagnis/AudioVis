@@ -1105,6 +1105,46 @@ export function pickVariedScene(
 }
 
 /**
+ * Pick a mode for a scene, avoiding the one it is already showing.
+ *
+ * ## Why the directors need this at all
+ *
+ * The mode primitive has existed since Scene Contract v1 — declared modes,
+ * `useSceneMode`, per-mode labels, mode-scoped contract summaries — and until
+ * now **nothing but the HUD could reach it**. `setSceneMode` had exactly one
+ * caller, a click handler. So a scene with three authored looks showed one of
+ * them for the entire life of an autonomous show, and the other two existed
+ * only for someone who opened the menu and found them.
+ *
+ * That is the same shape as the palette gap in F59: a capability the roster
+ * declares, that the autonomy cannot use. A mode nothing selects is not variety,
+ * it is dead weight in a file.
+ *
+ * Deterministic from `rotation` for the same reason `pickPalette` is — a
+ * recorded set has to replay identically — and it refuses to return the current
+ * mode so a "change" is always visible. Returns undefined when the scene has no
+ * modes or only one, which is most of the roster today.
+ */
+export function pickVariedMode(
+  sceneId: string,
+  current: string | undefined,
+  rotation: number,
+): string | undefined {
+  // Deliberately NOT via getSceneContract, which falls back to SCENES[0] for an
+  // unknown id. That fallback is right for rendering — a stale persisted id
+  // should still draw something — but wrong for a selector: asked to choose a
+  // mode for a scene that does not exist, the honest answer is "none", not
+  // "here is one belonging to a different scene", which would then be stored
+  // against the bogus id.
+  const scene = SCENES.find((sc) => sc.id === sceneId)
+  const modes = scene?.metadata.contract?.modes
+  if (!modes || modes.length < 2) return undefined
+  const choices = modes.filter((m) => m !== current)
+  if (choices.length === 0) return undefined
+  return choices[Math.abs(rotation) % choices.length]
+}
+
+/**
  * Scenes the given scene is declared to layer well with.
  *
  * Silently drops ids that resolve to nothing, which is what makes unregistering

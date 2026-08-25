@@ -276,6 +276,16 @@ body,
   font-weight: 600;
 }
 
+/* A style that exists but cannot currently be chosen. Shown rather than hidden:
+   a control that silently vanishes reads as a bug, and `cut` still happens
+   automatically via the frame-budget guard, so seeing it greyed is what explains
+   that it is disabled as a CHOICE rather than gone. */
+.chip-disabled {
+  opacity: 0.32;
+  pointer-events: none;
+  text-decoration: line-through;
+}
+
 .chip.pending {
   border-color: rgba(255, 255, 255, 0.7);
   animation: pending-pulse 0.9s ease-in-out infinite;

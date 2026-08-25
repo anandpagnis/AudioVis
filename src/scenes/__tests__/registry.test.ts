@@ -16,7 +16,9 @@ import {
   getResolvedManifest,
   getScene,
   getScenePixelBudget,
+  getSceneContract,
   getScenesForMood,
+  pickVariedMode,
   registerScene,
   scenePixelBudget,
   validateSceneDef,
@@ -251,5 +253,43 @@ describe('scene registry', () => {
         ).toBeLessThanOrEqual(getScenePixelBudget(primary.id))
       }
     }
+  })
+})
+
+describe('pickVariedMode', () => {
+  it('returns undefined for a scene with no modes, or only one', () => {
+    // Most of the roster. The caller must be able to ask unconditionally.
+    expect(pickVariedMode('plasma', undefined, 0)).toBeUndefined()
+    expect(pickVariedMode('does-not-exist', undefined, 0)).toBeUndefined()
+  })
+
+  it('never returns the mode already showing', () => {
+    // A "change" that picks the current mode is a change the viewer cannot see,
+    // and it would burn the scene's variety budget doing nothing.
+    const modes = getSceneContract('wireframe')?.modes ?? []
+    expect(modes.length).toBeGreaterThan(1)
+    for (const current of modes) {
+      for (let r = 0; r < 12; r++) {
+        expect(pickVariedMode('wireframe', current, r)).not.toBe(current)
+      }
+    }
+  })
+
+  it('is deterministic, so a recorded set replays identically', () => {
+    // Same contract as pickPalette's rotation counter.
+    expect(pickVariedMode('wireframe', 'crystal', 5)).toBe(
+      pickVariedMode('wireframe', 'crystal', 5),
+    )
+  })
+
+  it('reaches every other mode as the rotation advances', () => {
+    // Otherwise a scene with three looks would still only ever show two.
+    const modes = getSceneContract('wireframe')?.modes ?? []
+    const seen = new Set<string>()
+    for (let r = 0; r < 12; r++) {
+      const m = pickVariedMode('wireframe', 'crystal', r)
+      if (m) seen.add(m)
+    }
+    expect(seen.size).toBe(modes.length - 1)
   })
 })

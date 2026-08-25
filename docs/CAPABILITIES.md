@@ -141,7 +141,8 @@ Budget at 60 Hz is 16.67 ms for *everything*, including the post chain.
   `network` is the second most expensive scene (6.26 ms, flat across all five
   tiers) and the governor cannot relieve it. (F42)
 - **The post chain has never been measured.** It runs in every frame and its
-  budget reservation (2 units) and the generative overlay's (1 unit) are
+  budget reservation (2 units) and the feedback pass's (1 unit, charged only
+  while trails are running) are
   reasoned estimates, not data. `/bench` deliberately excludes post so scene
   costs compare cleanly — which leaves the one constant cost unmeasured. (F44)
 - **Particle scene costs are unmeasured.** `plasma`, `dissolve`, `pointcloud`
@@ -175,9 +176,6 @@ Budget at 60 Hz is 16.67 ms for *everything*, including the post chain.
   the logs. (F25)
 
 ### 4.4 Product-technical
-- **The "AI textures" tier requires a local Python server** (`backend/server.py`,
-  sd-turbo on `127.0.0.1:8787`). It is on by default and silently fails for
-  anyone not running it. (F02)
 - **No clean output path.** Nothing produces a chrome-free render surface for
   OBS or a projector beyond screen-capturing the whole page. No Syphon/Spout/NDI
   equivalent, no second-window output.

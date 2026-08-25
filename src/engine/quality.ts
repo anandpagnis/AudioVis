@@ -1,5 +1,5 @@
 import type { IUniform } from 'three'
-import { TIER_BUDGET } from './slotBudget'
+import { TIER_BUDGET_MS } from './slotBudget'
 
 /**
  * Central runtime quality governor — the single source of truth for how hard
@@ -41,15 +41,22 @@ export interface QualityKnobs {
   /** Fraction of the full particle budget to draw (setDrawRange). */
   particleFraction: number
   /**
-   * TOTAL frame capacity in scene-cost units (low 1 / medium 2 / high 4),
-   * including the fixed per-frame costs tracked in frameLoad.ts.
+   * TOTAL frame capacity in MILLISECONDS, including the fixed per-frame costs
+   * tracked in frameLoad.ts.
    *
-   * Taken from `TIER_BUDGET`, which is the single definition. This used to
+   * Taken from `TIER_BUDGET_MS`, which is the single definition. This used to
    * declare its own copy of the ladder, so the numbers the code enforced and
    * the numbers the calibration comments described were two separate arrays
    * that only happened to match.
+   *
+   * It was `layerBudget`, in an abstract unit priced from a hand-written
+   * `low`/`medium`/`high` label. Both halves of that were wrong: the name said
+   * "layers" for a figure that has always covered the primary, the crossfade
+   * overlap, effects and the post chain too, and the unit was unrelated to cost
+   * (see engine/sceneCost.ts). Renamed with the currency in it so the next
+   * reader cannot mistake 11 for a count of anything.
    */
-  layerBudget: number
+  frameBudgetMs: number
 }
 
 /**
@@ -71,7 +78,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 4,
     fluidJacobi: 20,
     particleFraction: 1.0,
-    layerBudget: TIER_BUDGET[0],
+    frameBudgetMs: TIER_BUDGET_MS[0],
   },
   {
     pixelBudgetScale: 0.72,
@@ -79,7 +86,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 4,
     fluidJacobi: 16,
     particleFraction: 0.8,
-    layerBudget: TIER_BUDGET[1],
+    frameBudgetMs: TIER_BUDGET_MS[1],
   },
   {
     pixelBudgetScale: 0.49,
@@ -87,7 +94,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 3,
     fluidJacobi: 12,
     particleFraction: 0.6,
-    layerBudget: TIER_BUDGET[2],
+    frameBudgetMs: TIER_BUDGET_MS[2],
   },
   {
     pixelBudgetScale: 0.34,
@@ -95,7 +102,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 3,
     fluidJacobi: 10,
     particleFraction: 0.45,
-    layerBudget: TIER_BUDGET[3],
+    frameBudgetMs: TIER_BUDGET_MS[3],
   },
   {
     pixelBudgetScale: 0.23,
@@ -103,7 +110,7 @@ const TIERS: QualityKnobs[] = [
     noiseOctaves: 2,
     fluidJacobi: 8,
     particleFraction: 0.33,
-    layerBudget: TIER_BUDGET[4],
+    frameBudgetMs: TIER_BUDGET_MS[4],
   },
 ]
 
@@ -315,7 +322,7 @@ export class QualityGovernor {
     d.pixelBudgetScale = base.pixelBudgetScale
     // Composition is decided at phrase boundaries and must not flip because a
     // transition happens to be in flight; that would drop layers mid-fade.
-    d.layerBudget = base.layerBudget
+    d.frameBudgetMs = base.frameBudgetMs
     // NOT discounted, despite being the cheapest win available. It drives
     // `setDrawRange`, so cutting it makes points literally VANISH — at tier 1
     // the discount would remove 44% of `plasma`'s 70k cloud, which reads as a

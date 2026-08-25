@@ -10,14 +10,13 @@ remaining roadmap, see [HANDOFF.md](HANDOFF.md).
 ```
 src/audio/    AudioEngine → BpmEstimator, PhraseDetector,
               MoodEstimator                                   (musical understanding)
-src/engine/   SceneManager, AutoPilot, PerformanceDirector, GenerativeLayer,
+src/engine/   SceneManager, AutoPilot, PerformanceDirector,
               CameraDirector, AnimationDirector, EffectsDirector,
               LightRig, PerfMonitor, performanceState,
-              palettes, presets, moodParams, textureGenerator (visual framework)
+              palettes, presets, moodParams                   (visual framework)
 src/scenes/   5 registered scenes (+16 unregistered) + registry (content)
 src/ui/       HUD, BpmReadout, DebugPanel                     (chrome)
 src/store.ts  zustand store (persisted)                       (state)
-backend/      local sd-turbo texture server (FastAPI, :8787)  (optional AI art)
 ```
 
 The one-way data flow: **audio in → `AudioFeatures` (one mutable object, updated once per
@@ -47,15 +46,8 @@ toggleable:
 - **Composition layers** — `SceneManager` can keep a primary scene plus independent accent and
   overlay entries. Layer choices live in the store and presets, so a custom performance can be
   authored without changing scene code.
-- **`GenerativeLayer`** — fullscreen additive overlay (renderOrder 10, in-shader
-  crossfade between successive textures) fed by `textureGenerator`, which talks to the
-  local sd-turbo server, dedupes in-flight requests, caches by
-  `mood_palette_variant`, and prefetches the predicted mood's art. Server down ⇒
-  health probe fails ⇒ alpha stays 0, zero errors.
-
-Tuning lives in three places: state scores + hold times in `MoodEstimator.score()` /
-`holdFor()`, scene/palette affinities + cooldowns in `AutoPilot.tsx`, prompt tables in
-`textureGenerator.ts`.
+Tuning lives in two places: state scores + hold times in `MoodEstimator.score()` /
+`holdFor()`, and scene/palette affinities + cooldowns in `AutoPilot.tsx`.
 
 ## Extension points
 

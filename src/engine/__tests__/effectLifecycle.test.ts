@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { advanceEffects, TriggerEdges } from '../EffectDirector'
 import { syncEffectEntries } from '../SceneManager'
-import { TIER_BUDGET, slotCost } from '../slotBudget'
+import { TIER_BUDGET_MS, slotCostMs } from '../slotBudget'
 import { getEffectScenes, validateSceneDef, type SceneDef } from '../../scenes'
 import type { ActiveEffect } from '../performanceState'
 import type { AudioFeatures } from '../../audio/types'
@@ -38,8 +38,11 @@ const advance = (over: Partial<Parameters<typeof advanceEffects>[0]>) =>
     fired: [],
     candidates: [],
     now: 10,
-    budget: TIER_BUDGET[0],
-    committedUnits: slotCost('low', 'primary'),
+    budget: TIER_BUDGET_MS[0],
+    tier: 0,
+    // A cheap subject already on screen. Synthetic ids price through
+    // FALLBACK_COST_MS, so this is the documented 0.5 ms `low` fallback.
+    committedMs: slotCostMs('synthetic-primary', 0, 'primary', false, 'low'),
     lastFiredAt: new Map(),
     mood: 'groove',
     recentIds: [],
@@ -119,8 +122,11 @@ describe('advanceEffects', () => {
       advance({
         fired: ['drop'],
         candidates: scenes,
-        budget: TIER_BUDGET[4],
-        committedUnits: slotCost('high', 'primary'),
+        budget: TIER_BUDGET_MS[4],
+        tier: 4,
+        // A genuinely expensive subject at the survival tier: 8.77 ms measured,
+        // against a 6.5 ms total frame budget. Nothing else may be admitted.
+        committedMs: slotCostMs('juliawings', 4, 'primary'),
       }),
     ).toHaveLength(0)
   })
@@ -208,7 +214,7 @@ describe('syncEffectEntries', () => {
  *
  * This claimant used to take `primaryUnits` — the subject alone — so an effect
  * could fire on top of a full background + accent + overlay composition, plus
- * the post chain, plus the generative overlay, while believing the frame held
+ * plus the post chain, while believing the frame held
  * one scene. Three claimants each reserving against a different partial view of
  * one budget is how it confidently overcommitted; see frameLoad.ts.
  */
@@ -217,21 +223,21 @@ describe('advanceEffects — reserves against the whole frame', () => {
 
   it('fires when the frame genuinely has room', () => {
     expect(
-      advance({ fired: ['drop'], candidates: scenes, budget: TIER_BUDGET[0], committedUnits: 2 }),
+      advance({ fired: ['drop'], candidates: scenes, budget: TIER_BUDGET_MS[0], committedMs: 2 }),
     ).toHaveLength(1)
   })
 
   it('refuses once layers and fixed costs have taken the budget', () => {
     // Same tier, same effect — but the frame is already carrying a primary, two
-    // layers, the post chain and the generative overlay. The old signature
+    // layers and the post chain. The old signature
     // could not express this at all.
     expect(
-      advance({ fired: ['drop'], candidates: scenes, budget: TIER_BUDGET[0], committedUnits: 10 }),
+      advance({ fired: ['drop'], candidates: scenes, budget: TIER_BUDGET_MS[0], committedMs: 10 }),
     ).toHaveLength(0)
   })
 
   it('does not double-count the effects already firing', () => {
-    // `committedUnits` includes live effects, so the caller must not add them
+    // `committedMs` includes live effects, so the caller must not add them
     // again — doing so would make each successive effect harder to fire the
     // longer the previous one ran, which is a rate limit disguised as a budget.
     const active: ActiveEffect[] = [{ id: 'other', startedAt: 9, durationSec: 5, key: 1 }]
@@ -239,8 +245,8 @@ describe('advanceEffects — reserves against the whole frame', () => {
       active,
       fired: ['drop'],
       candidates: scenes,
-      budget: TIER_BUDGET[0],
-      committedUnits: 3,
+      budget: TIER_BUDGET_MS[0],
+      committedMs: 3,
     })
     // MAX_ACTIVE is 1, so the existing effect is kept and no new one is added —
     // the point here is that it is refused by the ACTIVE cap, not by a budget

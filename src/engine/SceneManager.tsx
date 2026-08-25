@@ -5,11 +5,17 @@ import { audioEngine } from '../audio/AudioEngine'
 import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store'
 import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded, scenePixelBudget } from '../scenes'
 import { approach, performanceState, type ActiveEffect } from './performanceState'
-import { resolveTransitionStyle, transitionMix } from './transitions'
+import {
+  fadeDurationFor,
+  resolveTransitionStyle,
+  transitionMix,
+  usesRack,
+  type TransitionStyle,
+} from './transitions'
 import { quality } from './quality'
 import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
-import { applyFrameLoad, FEEDBACK_UNITS, frameLoad, GENERATIVE_UNITS, POST_CHAIN_UNITS } from './frameLoad'
-import { canFundOverlap, slotCost } from './slotBudget'
+import { applyFrameLoad, feedbackMsFor, frameLoad, POST_CHAIN_MS } from './frameLoad'
+import { canFundOverlap, slotCostMs } from './slotBudget'
 import { perf, suspendFrameSampling } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
 import { sampleAnalytics } from './analyticsMetrics'
@@ -232,13 +238,13 @@ export function resolveLayerIds(
   /**
    * Live budget enforcement. Omit for collision resolution only.
    *
-   * `remaining` is the capacity left after everything that is NOT a layer —
-   * the subject, any crossfade overlap, live effects, and the fixed per-frame
-   * costs. Layers are then admitted in {@link LAYER_ROLES} order while they fit,
-   * so the tail (overlay, then accent) is what gets dropped and the ground layer
-   * is kept. See the header note on why this belongs here.
+   * `remaining` is the capacity in MILLISECONDS left after everything that is
+   * NOT a layer — the subject, any crossfade overlap, live effects, and the
+   * fixed per-frame costs. Layers are then admitted in {@link LAYER_ROLES} order
+   * while they fit, so the tail (overlay, then accent) is what gets dropped and
+   * the ground layer is kept. See the header note on why this belongs here.
    */
-  budget?: { remaining: number; unitsFor: (id: string, role: LayerRole) => number },
+  budget?: { remaining: number; msFor: (id: string, role: LayerRole) => number },
 ): Record<LayerRole, string | null> {
   const taken = new Set<string>([sceneId])
   if (pendingSceneId) taken.add(pendingSceneId)
@@ -248,12 +254,14 @@ export function resolveLayerIds(
     const id = desired[role]
     if (id === null || taken.has(id)) continue
     if (budget) {
-      const units = budget.unitsFor(id, role)
+      const ms = budget.msFor(id, role)
       // Skip rather than break: a cheap overlay may still fit where an
       // expensive accent did not, and refusing it as well would shed more than
-      // the frame needs.
-      if (units > left) continue
-      left -= units
+      // the frame needs. With measured costs that is now the common case rather
+      // than a corner: most of the roster is under 0.2 ms and a handful of
+      // scenes are over 10, so the cheap tail almost always still fits.
+      if (ms > left) continue
+      left -= ms
     }
     taken.add(id)
     out[role] = id
@@ -656,34 +664,53 @@ export function SceneManager() {
         // fade does not make either scene cheaper — it is a multiply at the end
         // of the fragment shader, so a scene at 5% opacity costs full price —
         // which is why the honest test is the total, not an average.
-        const liveLayerUnits = entriesRef.current.reduce((sum, e) => {
+        const tier = quality.tier
+        const liveLayerMs = entriesRef.current.reduce((sum, e) => {
           if (e.role === 'primary' || e.role === 'effect' || e.dir === 0) return sum
           const meta = getScene(e.id).metadata
-          return sum + slotCost(meta.performanceCost, e.role, meta.roleScalable)
+          return sum + slotCostMs(e.id, tier, e.role, meta.roleScalable, meta.performanceCost)
         }, 0)
         const fundsOverlap = canFundOverlap(
-          quality.knobs.layerBudget,
-          outgoing ? slotCost(getScene(outgoing.id).metadata.performanceCost, 'primary') : 0,
-          slotCost(getScene(incoming.id).metadata.performanceCost, 'primary'),
-          // Layers AND the fixed per-frame costs. `layerBudget` is now total
-          // frame capacity, so the overlap test has to account for everything
-          // the frame carries or it would read the post chain's share as spare.
-          liveLayerUnits + frameLoad.fixed,
+          quality.knobs.frameBudgetMs,
+          outgoing ? slotCostMs(outgoing.id, tier, 'primary') : 0,
+          slotCostMs(incoming.id, tier, 'primary'),
+          // Layers AND the fixed per-frame costs. `frameBudgetMs` is total frame
+          // capacity, so the overlap test has to account for everything the
+          // frame carries or it would read the post chain's share as spare.
+          liveLayerMs + frameLoad.fixed,
         )
         // A drop always cuts, whatever the two scenes cost. Crossfading a drop
         // over ~two beats is the second half of the "drops don't switch"
         // report: even once the timing above lands it on the transient, a
         // 1 s dissolve reads as the picture slowly changing its mind rather
-        // than as an event. The cost-based guard is a SMOOTHNESS measure; this
-        // one is editorial, so they stay separate conditions.
-        const hardCut = immediate || !fundsOverlap
-        // Capture the style for THIS transition now. A hard cut is `cut`
-        // whatever the director asked for — the budget guard and the drop rule
-        // both mean "no overlap", and no amount of curve makes an overlap-free
-        // change gradual.
-        performanceState.transition.style = hardCut
-          ? 'cut'
-          : resolveTransitionStyle(performanceState.transitionStyle)
+        // than as an event.
+        //
+        // The BUDGET is no longer part of this condition, and separating the two
+        // is the whole of the fix. They were `immediate || !fundsOverlap`, which
+        // let a performance constraint produce an editorial result: on a loaded
+        // machine every single change became a hard cut, so the crossfade never
+        // ran at all. A drop cutting is a decision; an unaffordable overlap is a
+        // cost problem, and the answer to a cost problem is to spend less, not
+        // to change the edit. It now shortens the fade instead — see
+        // `fadeDurationFor`.
+        const hardCut = immediate
+        let style = hardCut ? 'cut' : resolveTransitionStyle(performanceState.transitionStyle)
+        // A rack style switches on an extra fullscreen pass for the length of the
+        // fade. When the budget could not fund the overlap in the first place,
+        // that is the worst possible moment to add one — and the fade has been
+        // shortened to 0.2 s anyway, which is too brief for a smear or a melt to
+        // read as anything but a flicker. Fall back to the mix-only dissolve:
+        // the transition still happens, it just stops asking for something the
+        // machine already said it could not afford.
+        if (!hardCut && !fundsOverlap && usesRack(style as TransitionStyle)) {
+          style = 'dissolve'
+        }
+        performanceState.transition.style = style as TransitionStyle
+        // Committed once, here, so a fade cannot change speed while it runs.
+        const fadeSec = hardCut
+          ? 0
+          : fadeDurationFor(crossfadeDuration(f.bpm), !fundsOverlap)
+        performanceState.transition.durationSec = Math.max(1e-3, fadeSec)
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1
@@ -695,6 +722,9 @@ export function SceneManager() {
             toScene: pendingSceneId,
             onDownbeat,
             hardCut,
+            // Already resolved just above, so the record cannot disagree with
+            // what the fade actually did.
+            style: performanceState.transition.style,
             waitedSec: waited,
             // 0 for a hard cut, because that IS its target — it is meant to
             // be instantaneous. Recording the crossfade duration here made the
@@ -702,7 +732,12 @@ export function SceneManager() {
             // ~0.9 s and flag every single hard cut as a failed transition
             // (`off = 1.0`), including perfectly healthy ones with a 17 ms p95.
             // The instrument was reporting a feature as a fault.
-            targetDurationSec: hardCut ? 0 : crossfadeDuration(f.bpm),
+            // The duration actually committed to, not the musical ideal — a
+            // budget-shortened fade is doing its job, and the analytics panel
+            // flags a transition whose actual length misses its target, so
+            // recording the ideal here would flag every constrained fade as a
+            // failure. Same class of mistake as F39.
+            targetDurationSec: fadeSec,
           },
           clock.elapsedTime,
         )
@@ -727,16 +762,23 @@ export function SceneManager() {
     // the subject, any crossfade overlap, live effects, and the fixed costs.
     // Computed here rather than taken from `frameLoad` because that is
     // published below, after this pass decides what the layers are.
-    const fixedUnits = POST_CHAIN_UNITS + FEEDBACK_UNITS + (state.generative ? GENERATIVE_UNITS : 0)
-    let nonLayerUnits = fixedUnits
+    // `trails` is written by the bridge at priority -95 and this runs at -100,
+    // so the value read is one frame old. Acceptable for a reservation — the
+    // pass cannot switch on and cost a full unit within a single frame of the
+    // director deciding to use it — but worth knowing it is not instantaneous.
+    const fixedMs = POST_CHAIN_MS + feedbackMsFor(performanceState.trails)
+    const budgetTier = quality.tier
+    let nonLayerMs = fixedMs
     for (const e of entriesRef.current) {
       if (e.role === 'background' || e.role === 'accent' || e.role === 'overlay') continue
       if (e.dir === 0 && isWarmComplete(e)) continue // compiled and hidden; free
       const meta = getScene(e.id).metadata
-      nonLayerUnits += slotCost(
-        meta.performanceCost,
+      nonLayerMs += slotCostMs(
+        e.id,
+        budgetTier,
         e.role === 'primary' ? 'primary' : e.role,
         meta.roleScalable,
+        meta.performanceCost,
       )
     }
     const wantedLayers = resolveLayerIds(
@@ -744,10 +786,10 @@ export function SceneManager() {
       state.sceneId,
       state.pendingSceneId,
       {
-        remaining: Math.max(0, quality.knobs.layerBudget - nonLayerUnits),
-        unitsFor: (id, role) => {
+        remaining: Math.max(0, quality.knobs.frameBudgetMs - nonLayerMs),
+        msFor: (id, role) => {
           const meta = getScene(id).metadata
-          return slotCost(meta.performanceCost, role, meta.roleScalable)
+          return slotCostMs(id, budgetTier, role, meta.roleScalable, meta.performanceCost)
         },
       },
     )
@@ -809,16 +851,16 @@ export function SceneManager() {
           role: e.role,
           dir: e.dir,
           drawing,
-          units: slotCost(
-            meta.performanceCost,
+          ms: slotCostMs(
+            e.id,
+            budgetTier,
             e.role === 'primary' ? 'primary' : e.role,
             meta.roleScalable,
+            meta.performanceCost,
           ),
         }
       }),
-      // `Stage` keeps GenerativeLayer mounted for the rest of the session once
-      // it has ever been enabled, so this tracks the store flag, not a mount.
-      POST_CHAIN_UNITS + FEEDBACK_UNITS + (state.generative ? GENERATIVE_UNITS : 0),
+      POST_CHAIN_MS + feedbackMsFor(performanceState.trails),
     )
     // Everything on screen shares one framebuffer at one internal resolution, so
     // the budgets combine rather than compete — see combinePixelBudgets. Set at
@@ -880,12 +922,16 @@ export function SceneManager() {
     discount.current = approach(discount.current, overlapping ? 1 : 0, DISCOUNT_EASE_RATE, f.delta)
     quality.setTransitionDiscount(discount.current)
 
-    // Crossfade over ~two beats when the tempo is known, then weight each
-    // entry by its slot gain (primary is always full strength).
-    const duration = crossfadeDuration(f.bpm)
+    // Two clocks, deliberately. The PRIMARY pair runs at the duration committed
+    // for this transition, which the frame budget may have shortened; layers and
+    // effects keep the musical ~two beats, because a constrained subject swap is
+    // no reason for a background to arrive faster than the music.
+    const layerDuration = crossfadeDuration(f.bpm)
+    const primaryDuration = Math.max(1e-3, performanceState.transition.durationSec)
     let prune = false
     for (const e of entriesRef.current) {
       if (e.dir === 0) continue // warming (or an idle pinned effect): stays at zero
+      const duration = e.role === 'primary' ? primaryDuration : layerDuration
       e.fade.value += (f.delta / duration) * e.dir
       if (e.fade.value >= 1) e.fade.value = 1
       if (e.fade.value <= 0 && e.dir === -1) prune = true

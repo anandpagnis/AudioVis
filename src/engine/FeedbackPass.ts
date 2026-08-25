@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
 import { FULLSCREEN_VERT } from './glsl'
-import { resolveFeedbackKnobs } from './feedbackParams'
+import { isFeedbackActive, resolveFeedbackKnobs } from './feedbackParams'
 
 /**
  * Image feedback: a ping-ponged history buffer resampled through zoom,
@@ -203,7 +203,7 @@ export class FeedbackPass extends Pass {
    */
   setTrails(trails: number): void {
     this.trails = trails
-    const active = resolveFeedbackKnobs(trails).persist > 0
+    const active = isFeedbackActive(trails)
     // Whatever is in `history` predates the switch-off and would otherwise
     // reappear as a frozen ghost on the first frame back. Flagged rather than
     // cleared here because this runs outside the render loop, with no renderer

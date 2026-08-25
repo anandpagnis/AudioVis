@@ -268,7 +268,7 @@ export function AnalyticsPanel() {
         ctx.fillStyle = flagged ? 'rgba(255, 138, 101, 0.9)' : 'rgba(255,255,255,0.65)'
         const label = `${r.fromScene ?? '–'}→${r.toScene}`.slice(0, 20).padEnd(20)
         ctx.fillText(
-          `${label} ${r.hardCut ? 'cut ' : 'fade'} ${r.targetDurationSec.toFixed(1)}/${r.actualDurationSec.toFixed(1)}s p95:${r.frameMsDuringFade.p95.toFixed(0)}ms`,
+          `${label} ${r.hardCut ? 'cut' : r.style} ${r.targetDurationSec.toFixed(1)}/${r.actualDurationSec.toFixed(1)}s p95:${r.frameMsDuringFade.p95.toFixed(0)}ms`,
           6,
           y,
         )

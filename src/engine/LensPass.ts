@@ -37,31 +37,26 @@ import {
  * In this chain that means it sits after the merged Bloom/CA/Vignette
  * `EffectPass` rather than before it — so it is the last thing in the composer.
  *
- * ## Never mounted, never unmounted — and never SKIPPED
+ * ## Never mounted, never unmounted
  *
- * A raw `Pass`, constructed once and left in the chain for the session. But
- * unlike `MirrorPass` and `FeedbackPass`, this one is **always `enabled`**, and
- * that is not an oversight — it is forced by where it sits.
+ * A raw `Pass`, constructed once and left in the chain for the session; the
+ * pass-level `enabled` flag is the only branch, so an inert rack costs nothing
+ * at all. See opticalRack.ts for why the list's shape has to stay fixed.
  *
+ * This pass used to be unable to do that. It was last in the chain, and
  * `EffectComposer` flags the LAST pass added as the one that renders to screen
- * (`autoRenderToScreen`), and its render loop skips a disabled pass before that
- * ever happens. So a final pass that switches itself off leaves nothing writing
- * to the framebuffer, and the canvas simply **freezes on the last frame it
- * presented** — not black, not an error, just stuck, which is far harder to
- * recognise. Verified directly: enabling the rack brought the picture back and
- * disabling it again left the previous frame frozen on screen.
+ * while skipping disabled passes before that happens — so switching itself off
+ * left nothing writing to the framebuffer and the canvas froze on its last
+ * presented frame. It carried the duty by staying enabled and degrading to a
+ * straight copy, at the cost of one unconditional fullscreen blit.
  *
- * So the branch here is internal rather than at the pass level: when the rack is
- * inert this pass degrades to a straight copy (an unlit `MeshBasicMaterial`
- * sampling the input, no lens maths at all) instead of skipping. The price is
- * one fullscreen blit per frame that did not exist before the rack — cheap next
- * to bloom's mip pyramid, but honestly non-zero, and the reason it is worth
- * paying is that the alternative is putting this pass before the merged
- * Bloom/CA/Vignette effect, which would stop `anamorphic`'s streak gather from
- * ever seeing a bloomed frame to gather from.
+ * `GradePass` now sits after it and is genuinely always-on (it applies the
+ * exposure servo's gain), so the duty belongs to something that earns it and
+ * this rack is free again. Net frame cost is unchanged — the blit moved rather
+ * than being added.
  *
- * **If you ever add a pass after this one, that pass inherits this duty.** The
- * last child of `<EffectComposer>` must never be conditionally skipped.
+ * **Whatever is last in the chain inherits that duty.** The final child of
+ * `<EffectComposer>` must never be conditionally skipped.
  */
 
 const LENS_FRAG = /* glsl */ `
@@ -246,17 +241,7 @@ export class LensPass extends Pass {
   /** Ring cursor into the plume slots. */
   private ripSlot = 0
   private readonly rip: THREE.Vector4[]
-  /**
-   * Is the rack doing anything this frame?
-   *
-   * Stands in for the `enabled` flag the other two passes use — see the header
-   * for why this pass cannot switch itself off. False means `render` does a
-   * straight copy rather than the lens.
-   */
-  private active = false
-  /** Straight-through copy used while the rack is inert. */
-  private readonly copyMaterial: THREE.MeshBasicMaterial
-  private readonly copyScene: THREE.Scene
+
 
   constructor() {
     super('LensPass')
@@ -286,10 +271,6 @@ export class LensPass extends Pass {
     })
     this.fsScene = new THREE.Scene()
     this.fsScene.add(new THREE.Mesh(this.quadGeometry, this.material))
-
-    this.copyMaterial = new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false })
-    this.copyScene = new THREE.Scene()
-    this.copyScene.add(new THREE.Mesh(this.quadGeometry, this.copyMaterial))
   }
 
   /**
@@ -308,10 +289,9 @@ export class LensPass extends Pass {
     dt: number,
     audio: { kick: number; highs: number; mids: number; onKick: number },
   ): void {
-    // NOT `this.enabled` — see the header. This pass presents the frame, so it
-    // always runs; `active` only chooses between the lens and a straight copy.
-    this.active = isLensActive(l)
-    if (!this.active) return
+    const active = isLensActive(l)
+    this.enabled = active
+    if (!active) return
 
     const step = isFinite(dt) ? dt : 0
     this.time += step
@@ -362,17 +342,9 @@ export class LensPass extends Pass {
     outputBuffer: THREE.WebGLRenderTarget | null,
   ): void {
     if (!inputBuffer) return
+    this.material.uniforms.tDiffuse.value = inputBuffer.texture
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
-    if (this.active) {
-      this.material.uniforms.tDiffuse.value = inputBuffer.texture
-      renderer.render(this.fsScene, this.orthoCamera)
-    } else {
-      // Inert: hand the frame through untouched. This still has to DRAW —
-      // returning early would leave the screen showing whatever it presented
-      // last. See the header.
-      this.copyMaterial.map = inputBuffer.texture
-      renderer.render(this.copyScene, this.orthoCamera)
-    }
+    renderer.render(this.fsScene, this.orthoCamera)
   }
 
   setSize(width: number, height: number): void {
@@ -381,7 +353,6 @@ export class LensPass extends Pass {
 
   dispose(): void {
     this.material.dispose()
-    this.copyMaterial.dispose()
     this.quadGeometry.dispose()
     super.dispose()
   }

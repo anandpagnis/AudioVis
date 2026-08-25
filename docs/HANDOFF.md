@@ -389,7 +389,7 @@ MediaStream
   → Zustand scene/layer state
   → SceneManager beat-locked commits and fades
   → React Three Fiber scenes
-  → shared lights, camera, post effects, optional generative overlay
+  → shared lights, camera, post effects
 ```
 
 Important frame priorities:
@@ -506,7 +506,6 @@ wrong as ignoring it — they need someone to actually check, then mark.
   still requires running the app with a real audio source and checking transitions, source
   stop/restart, fullscreen, mobile layout, and GPU quality changes. The live Analytics panel (`Y`)
   makes several of those checks numeric rather than purely visual, but doesn't replace them.
-- AI textures require the optional local backend and are intentionally disabled when unavailable.
 
 ## 7. Remaining roadmap
 
