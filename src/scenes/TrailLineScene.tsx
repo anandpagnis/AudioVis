@@ -19,11 +19,10 @@ import { useDispose } from '../engine/useDispose'
  * Buffer A samples its own previous frame to accumulate the trail, so this
  * needs a ping-pong pair of render targets — read A, write B, swap. Nothing in
  * the project had that: `envMap.ts` uses PMREM (one-shot prefilter at startup),
- * `GenerativeLayer` crossfades textures fetched from a backend, and
- * `resourceCache` is a refcounted store for SHARED singletons. Deliberately not
- * routed through that cache — the buffers are per-instance state, and sharing
- * one pair between two mounted instances would have them corrupting each
- * other's trails.
+ * and `resourceCache` is a refcounted store for SHARED singletons. Deliberately
+ * not routed through that cache — the buffers are per-instance state, and
+ * sharing one pair between two mounted instances would have them corrupting
+ * each other's trails.
  *
  * Ordering works out without new plumbing: `useSceneFrame` runs at `useFrame`
  * priority 0 and `EffectComposer` renders at priority 1, so the offscreen pass

@@ -80,8 +80,8 @@ export function advanceEffects(opts: {
   budget: number
   /**
    * Everything the frame has ALREADY committed — the primary, any second
-   * primary mid-crossfade, every mounted layer, the live effects, the post
-   * chain and the generative overlay.
+   * primary mid-crossfade, every mounted layer, the live effects, and the post
+   * chain.
    *
    * Was `primaryUnits`, which is what made this claimant dangerous: it reserved
    * only the subject, so an effect could fire on top of a full three-slot

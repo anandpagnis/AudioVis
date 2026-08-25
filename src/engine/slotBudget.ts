@@ -53,17 +53,22 @@ const COST_UNITS: Record<ScenePerformanceCost, number> = { low: 1, medium: 2, hi
  *
  * ## Why these are 3 higher than they used to be
  *
- * The ladder was `[8, 6, 4, 3, 2]` back when the post chain and the generative
- * overlay were reserved at ZERO — so their cost was always implicitly baked
- * into these numbers. Now that frameLoad.ts reserves them explicitly, keeping
- * the old figures would charge for them twice: the effective budget for scenes
- * would have fallen to `[5, 3, 1, 0, 0]`, which strips layers from the show
- * entirely at tier 2 and below. Correct arithmetic, wrong product.
+ * The ladder was `[8, 6, 4, 3, 2]` back when the post chain (and, at the time,
+ * a since-removed AI-texture overlay) were reserved at ZERO — so their cost
+ * was always implicitly baked into these numbers. Once frameLoad.ts started
+ * reserving them explicitly, keeping the old figures would have charged for
+ * them twice: the effective budget for scenes would have fallen to
+ * `[5, 3, 1, 0, 0]`, which strips layers from the show entirely at tier 2 and
+ * below. Correct arithmetic, wrong product.
  *
- * Rebased by exactly `POST_CHAIN_UNITS + GENERATIVE_UNITS` so the numbers now
- * mean what the name says — everything the frame carries, fixed costs included
- * — and the change is behaviour-neutral for the composition it already
- * produced, while the previously-blind claimants finally see the truth.
+ * Rebased by exactly the two fixed costs that existed at the time, so the
+ * numbers meant what the name says — everything the frame carries, fixed costs
+ * included — and the change was behaviour-neutral for the composition it
+ * already produced. The AI-texture overlay was later deleted outright rather
+ * than merely disabled, so `frameLoad.fixed` is back down to just
+ * `POST_CHAIN_UNITS`; the ladder was left at its rebased values rather than
+ * re-shrunk, which simply leaves scenes with one extra unit of real headroom
+ * per tier — a harmless side effect, not a bug to chase.
  */
 export const TIER_BUDGET: number[] = [11, 9, 7, 6, 5]
 

@@ -394,6 +394,14 @@ body,
   opacity: 0.6;
 }
 
+/* Explanatory line in the scene panel, for a scene with no parameters. */
+.param-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.55;
+}
+
 .quality-row {
   display: flex;
   gap: 6px;

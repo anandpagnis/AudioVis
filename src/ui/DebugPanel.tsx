@@ -3,7 +3,6 @@ import { audioEngine } from '../audio/AudioEngine'
 import { essentiaBridge } from '../audio/essentia/EssentiaBridge'
 import { voiceBridge } from '../audio/essentia/VoiceBridge'
 import { perf } from '../engine/PerfMonitor'
-import { genStatus } from '../engine/textureGenerator'
 
 const W = 280
 const H = 154
@@ -113,20 +112,15 @@ export function DebugPanel() {
         60,
       )
       ctx.fillStyle = 'rgba(255,255,255,0.7)'
-      // Mood readout: state → prediction, velocities, generative backend.
+      // Mood readout: state → prediction, velocities.
       const m = f.mood
       const pred =
         m.predictedState !== m.state && m.beatsTillTransition >= 0
           ? ` → ${m.predictedState} in ~${m.beatsTillTransition.toFixed(0)}b`
           : ''
-      const gen = !genStatus.available
-        ? 'gen:off'
-        : genStatus.pending > 0
-          ? `gen:${genStatus.pending}…`
-          : 'gen:ok'
       ctx.fillStyle = 'rgba(130, 255, 190, 0.85)'
       ctx.fillText(
-        `${m.state}${pred}  ${(m.confidence * 100).toFixed(0)}%  vE ${m.energyVel >= 0 ? '+' : ''}${m.energyVel.toFixed(2)}  ${gen}`,
+        `${m.state}${pred}  ${(m.confidence * 100).toFixed(0)}%  vE ${m.energyVel >= 0 ? '+' : ''}${m.energyVel.toFixed(2)}`,
         6,
         48,
       )

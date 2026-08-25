@@ -13,13 +13,25 @@ import tseslint from 'typescript-eslint'
  * actively wrong for this codebase.
  */
 export default tseslint.config(
-  { ignores: ['dist', 'node_modules', 'backend'] },
+  // `.claude/worktrees` holds checkouts of other branches, each with its own
+  // tsconfig and its own copy of src/. Linting them is never wanted, and their
+  // presence is what made the parser ambiguous — see tsconfigRootDir below.
+  { ignores: ['dist', 'node_modules', 'backend', '.claude'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['src/**/*.{ts,tsx}'],
     languageOptions: {
       ecmaVersion: 2022,
       globals: globals.browser,
+      parserOptions: {
+        // Pinned explicitly. Without it the parser searches upward for a
+        // tsconfig, finds this repo's AND the one inside any live git worktree
+        // under .claude/worktrees, cannot choose, and fails to parse EVERY file —
+        // 270 identical "multiple candidate TSConfigRootDirs" errors that have
+        // nothing to do with the code. Pinning makes lint independent of whatever
+        // worktrees happen to exist.
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     plugins: {
       'react-hooks': reactHooks,

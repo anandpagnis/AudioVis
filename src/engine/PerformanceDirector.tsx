@@ -242,10 +242,10 @@ export function PerformanceDirector() {
 
     const slots = composeLayers({
       primaryCost: getScene(primaryId).metadata.performanceCost,
-      // The tier's budget LESS the costs that are present in every frame and
-      // were previously invisible to it: the post chain, and the generative
-      // overlay when enabled. Composing against the raw tier budget meant the
-      // layers were funded out of money the post chain had already spent.
+      // The tier's budget LESS the cost that is present in every frame and was
+      // previously invisible to it: the post chain. Composing against the raw
+      // tier budget meant the layers were funded out of money the post chain
+      // had already spent.
       budget: quality.knobs.layerBudget - frameLoad.fixed,
       pools: {
         background: backgroundPool,

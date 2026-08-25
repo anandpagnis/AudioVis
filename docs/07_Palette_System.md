@@ -1,14 +1,44 @@
 # Document 7 — Palette System
 
 > **Audience:** designers, scene authors, automation engineers.  
-> **Status:** 6 built-in palettes + mood table live.  
+> **Status:** 28 built-in palettes; five-slot ramp live alongside the original three-colour contract.  
 > **Spec:** [specs/palette_system_spec.md](specs/palette_system_spec.md)
 
 ---
 
 ## Overview
 
-Palettes define the **color identity** of a performance. AudioVis uses a three-color system (primary, secondary, accent) plus a background reference, with smooth temporal blending and mood-driven automatic selection.
+Palettes define the **color identity** of a performance, with smooth temporal
+morphing and mood-driven automatic selection.
+
+There are **two views of the same palette**, and both are live:
+
+- **The three-colour contract** — `primary`, `secondary`, `accent` plus a
+  background reference, read as `ctx.col.a/b/c`. This is what the 14 scenes
+  written before the ramp existed use, and it is not deprecated.
+- **The five-slot ramp** — `bg`, `shadow`, `mid`, `accent`, `glow`, darkest to
+  lightest, read as `ctx.col.bg/shadow/mid/accent/glow`.
+
+The ramp exists because three colours plus a background cannot say what a
+full-frame scene needs to say. With five semantic slots a scene takes its
+*shadow* and its *highlight* **from the palette** instead of inventing them,
+which is what makes a scene's colour globally art-directable rather than
+hardcoded per shader. A scene whose whole image is a walk up the ramp — see
+`InkFieldScene` — is impossible to build without it.
+
+A palette may declare its ramp explicitly (`ramp: [bg, shadow, mid, accent, glow]`),
+which is always preferable. When it declares only three colours, `resolveRamp()`
+derives the ramp: `mid` and `accent` keep their authored roles, `shadow` is the
+background carried 40% toward the primary, and `glow` is **the brightest of the
+three** lifted 45% toward white. That last rule is not arbitrary — deriving
+`glow` from the secondary inverted the ramp for `mono` (`#ffffff` / `#8fa3ad` /
+`#3a4a55`), whose `mid` came out pure white and whose `glow` came out mid grey,
+so a scene walking bg→glow got *darker* at the top. `resolveRamp` is memoized
+per palette id, because every mounted scene reads it every frame.
+
+A palette declaring a ramp derives its `colors` triple from the three **lit**
+slots (`mid`/`accent`/`glow`), never from `bg` — handing a scene a near-black as
+its "primary" reads as the scene being broken.
 
 ---
 
@@ -49,8 +79,6 @@ PALETTES[] ──► getPalette(store.paletteId)
         ┌───────────┼───────────┐
         ▼           ▼           ▼
      scenes    LightRig   TacticalHUD
-                    │
-              GenerativeLayer (prompt words)
 ```
 
 ---
@@ -71,7 +99,6 @@ PALETTES[] ──► getPalette(store.paletteId)
 | Palette definitions | `palettes.ts` | Static catalog + `registerPalette()` |
 | PaletteBlender | `palettes.ts` | Temporal color ease |
 | MOOD_PALETTES | `AutoPilot.tsx` | Mood → palette id list |
-| PALETTE_WORDS | `textureGenerator.ts` | AI prompt color vocabulary |
 | LightRig | `LightRig.tsx` | Palette-colored lights for mesh scenes |
 
 ---
@@ -79,23 +106,44 @@ PALETTES[] ──► getPalette(store.paletteId)
 ## Interfaces
 
 ```typescript
+type PaletteRamp = [bg: string, shadow: string, mid: string, accent: string, glow: string]
+type PaletteGroup = 'classic' | 'bold' | 'earth' | 'rainbow'
+
 interface Palette {
   id: string
   name: string
   colors: [string, string, string]  // primary, secondary, accent
   bg: string
+  ramp?: PaletteRamp                // authored five slots; derived when absent
+  group?: PaletteGroup              // display-only, for the picker
 }
 
-function getPalette(id: string): Palette
+function getPalette(id: string): Palette          // falls back to PALETTES[0]
 function registerPalette(palette: Palette): void
+function resolveRamp(palette: Palette): PaletteRamp   // memoized per id
+function paletteFromImage(img: CanvasImageSource): PaletteRamp | null
+
+const MORPH_SECONDS = 1.8
 
 class PaletteBlender {
-  a: THREE.Color
-  b: THREE.Color
-  c: THREE.Color
+  // the three-colour contract
+  a: THREE.Color; b: THREE.Color; c: THREE.Color
+  // the five-slot ramp
+  bg: THREE.Color; shadow: THREE.Color; mid: THREE.Color
+  accent: THREE.Color; glow: THREE.Color
   update(palette: Palette, delta: number, speed?: number): void
 }
 ```
+
+Every colour is mutated **in place** and its object identity is stable for the
+life of the scene instance, so a scene can bind one straight into a uniform at
+material-creation time (`uGlow: { value: col.glow }`) and be recoloured for free
+from then on — including part-way through a morph. Never retain a *snapshot*
+across frames; `.copy()` it if you need one.
+
+**`PALETTES` is append-only.** A persisted `paletteId`, a shared `#look=` URL, a
+preset and a cue can all name a palette by id, so removing or reordering an id
+silently degrades someone's saved show.
 
 ---
 
@@ -128,14 +176,30 @@ class PaletteBlender {
 
 ## Algorithms
 
-### Temporal blend
+### Temporal morph
+
+Snapshot-and-smoothstep over a fixed `MORPH_SECONDS = 1.8`:
 
 ```typescript
-const k = Math.min(1, delta * speed)  // default speed 2.5
-this.a.lerp(targetA, k)
+if (palette.id !== this.id) this.aim(palette)   // snapshot LIVE colours as `from`
+this.progress = Math.min(1, this.progress + delta / MORPH_SECONDS)
+const t = this.progress
+const e = t * t * (3 - 2 * t)                   // smoothstep
+slot.lerpColors(from[i], to[i], e)
 ```
 
-~1.5 s perceptual sweep at 60 fps.
+This replaced an exponential lerp re-aimed at the live target every frame
+(`lerp(target, min(1, delta * 2.5))`), which had two defects:
+
+- **It never arrived.** It asymptotes, so the last few percent of a colour change
+  took forever and a screenshot mid-set was never the authored colour.
+- **Its rate depended on frame time**, so the same change took visibly longer on
+  a slow machine.
+
+Interrupting a morph re-snapshots `from` off wherever the colours *actually are*,
+so a rapid palette cycle eases continuously instead of jumping back to a start
+colour. Once `progress` reaches 1 the loop is skipped entirely, so a settled
+palette costs nothing.
 
 ### AutoPilot palette nudge
 
@@ -188,5 +252,3 @@ N/A — palette is stateless definition + store id + blender positions.
 - **Brightness limits:** clamp max luminance for post-chain headroom.
 - **Scene overrides:** accent color slot per scene while keeping global palette.
 - **Accessibility presets:** high-contrast mono variants.
-
-See [11_Generative_AI.md](11_Generative_AI.md) for AI palette prompts.

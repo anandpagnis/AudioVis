@@ -3,6 +3,7 @@ import type { MoodState } from '../audio/types'
 import type { CameraAnchor } from '../engine/CameraDirector'
 import type { CameraMode } from '../engine/performanceState'
 import { resolveManifest, type SceneManifestExt } from '../engine/streaming/sceneManifest'
+import type { SceneParamKey, SceneParams } from '../engine/sceneParams'
 
 /**
  * Built-in scenes are code-split: each import() below becomes its own chunk,
@@ -29,6 +30,10 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   trail: () => import('./TrailLineScene').then((m) => ({ default: m.TrailLineScene })),
   synthgrid: () => import('./SynthGridScene').then((m) => ({ default: m.SynthGridScene })),
   panic: () => import('./KernelPanicScene').then((m) => ({ default: m.KernelPanicScene })),
+  ink: () => import('./InkFieldScene').then((m) => ({ default: m.InkFieldScene })),
+  matrix: () => import('./MatrixRainScene').then((m) => ({ default: m.MatrixRainScene })),
+  kifs: () => import('./KifsRoseScene').then((m) => ({ default: m.KifsRoseScene })),
+  maze: () => import('./MazeFlightScene').then((m) => ({ default: m.MazeFlightScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -78,6 +83,10 @@ const KaleidoPulseScene = lazyScene('kaleido')
 const TrailLineScene = lazyScene('trail')
 const SynthGridScene = lazyScene('synthgrid')
 const KernelPanicScene = lazyScene('panic')
+const InkFieldScene = lazyScene('ink')
+const MatrixRainScene = lazyScene('matrix')
+const KifsRoseScene = lazyScene('kifs')
+const MazeFlightScene = lazyScene('maze')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -205,6 +214,41 @@ export interface SceneMetadata {
    * full cost everywhere", which is always safe.
    */
   roleScalable?: boolean
+
+  /**
+   * The scene's own parameters, from the canonical seven-key vocabulary in
+   * `src/engine/sceneParams.ts`, with the values the scene was authored at.
+   *
+   * **A key's presence is the declaration that the scene reads it.** The panel
+   * shows exactly the declared sliders, and `resolveSceneParams()` fills the
+   * rest with a neutral 0.5 that nothing looks at. Declare only what the scene
+   * actually wires to something.
+   *
+   * Absent means the scene has no parameters — correct for the scenes written
+   * before this existed, which are driven entirely by band routing.
+   */
+  params?: SceneParams
+
+  /**
+   * Named looks this scene can render, in the order its shader's `uMode` branch
+   * expects. **Append-only per scene**: the index reaches a uniform and is
+   * persisted in presets and cues, so reordering changes what a saved look
+   * renders.
+   *
+   * Modes are the cheap unit of visual variety — a new look costs a branch in a
+   * shader rather than a whole scene file, and one scene with five modes fills
+   * a mood's pool the way five scenes would. They are also the escape hatch for
+   * a knob that does not fit the seven-key vocabulary: express it as a mode
+   * rather than adding an eighth key.
+   */
+  modes?: string[]
+
+  /**
+   * Per-mode slider relabelling, keyed by mode name (or `'*'` for every mode).
+   * A `null` label hides that slider — for a parameter that genuinely does
+   * nothing in one mode. Cosmetic only; never changes what a scene reads.
+   */
+  paramLabels?: Record<string, Partial<Record<SceneParamKey, string | null>>>
 
   /** Required when `roles` includes `'effect'`; ignored otherwise. */
   effect?: SceneEffectSpec
@@ -733,6 +777,252 @@ export const SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
+  {
+    id: 'ink',
+    name: 'Ink Field',
+    component: InkFieldScene,
+    metadata: {
+      // Provenance not yet traced. The shader is a domain-warped fBm built on
+      // Quilez's warping technique with Ashima's MIT simplex noise underneath;
+      // the composition and band routing are this project's. That is very
+      // probably shippable, but "probably" is exactly what F01 in docs/ISSUES.md
+      // is about — `unverified` is the honest marking until someone checks, and
+      // it keeps the scene out of `commerciallyShippableScenes()` meanwhile.
+      license: 'unverified',
+      // **The roster's first background scene.** The slot has been fully wired
+      // with zero content (F18) — no scene declared the role, so the most
+      // structural composition slot was permanently empty. Deliberately
+      // background-ONLY: this was authored as ground, and a scene that can also
+      // be the subject inevitably gets picked as one.
+      roles: ['background'],
+      // Broad, because ground should be available almost everywhere. Stops
+      // short of `aggressive`: the field convulses on a kick but it has no
+      // hard edge in it, and under an aggressive subject it would read as
+      // haze rather than as ground.
+      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
+      // `SceneBand` has no `sub` — the metadata vocabulary starts at `bass`,
+      // even though the scene itself routes `s.sub` to its warp depth.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      // Ground, not subject — it is composited at the background slot's 0.4
+      // gain and is 100% coverage with no focal point by construction.
+      intensity: 'calm',
+      // NOT MEASURED. Three fBm calls at up to four octaves is twelve simplex
+      // samples per pixel, which is the heaviest per-pixel shader in the roster,
+      // against a 1.5 MP internal budget that claws most of it back. `medium` is
+      // a placeholder standing in for a `/bench` run, and the file header of
+      // every other scene here records how badly hand-guessed costs went (10 of
+      // 16 wrong). **Run /bench and re-tag before trusting the composition
+      // budget with this.**
+      performanceCost: 'medium',
+      // Ground sits under anything. Listed against the scenes most likely to
+      // want it — `getCompatibleScenes` is symmetric, so this reads both ways
+      // and nothing else has to list `ink` back.
+      compatibleWith: ['wireframe', 'chrome', 'inversion', 'torusfold', 'juliawings', 'kaleido'],
+      // Held inside the roster's 0.6-0.9 band. Strongest at the calm end, where
+      // a slow ink field has time to be read, and weakest at `peak`, where it is
+      // barely visible behind whatever is happening in front of it.
+      moodFit: {
+        ambient: 0.86,
+        mellow: 0.84,
+        groove: 0.72,
+        building: 0.68,
+        peak: 0.62,
+      },
+      // Flat 2D screen-space noise; no ray, no camera concept at all — inert to
+      // this scene's own rendering, exactly like `heap` and `juliawings`.
+      // Declared because CameraDirector.test.ts requires every registered scene
+      // to offer real framing variety, whether or not it samples the camera.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      // The canonical vocabulary, at the values the scene was authored at.
+      // Four keys, not seven: `shape`, `density` and `tilt` have nothing to bind
+      // to in a warped noise field, and declaring them would put three dead
+      // sliders in the panel.
+      params: { speed: 0.5, complexity: 0.5, fill: 0.5, contrast: 0.5 },
+      paramLabels: {
+        // The field does not get denser or faster so much as more folded and
+        // more zoomed — worth saying so on the control rather than in a comment
+        // nobody performing will read.
+        '*': { complexity: 'warp', fill: 'zoom' },
+      },
+    },
+  },
+  {
+    id: 'matrix',
+    name: 'Matrix Rain',
+    component: MatrixRainScene,
+    metadata: {
+      // Adapted from an ISF generator credited "ChatGPT, direction fix by
+      // Claude" — original code, not a Shadertoy derivative. No licence
+      // encumbrance; absent would already mean this, but stated explicitly
+      // given the provenance is worth being able to point at.
+      license: 'original',
+      // OVERLAY only, as requested. It reads as an assertive, saturated accent
+      // over a calmer primary — the same slot `ribbons`/`orbs` occupy — not as
+      // a subject or a ground: full-frame falling text has no depth of its own
+      // to carry a frame, and it would fight a background scene's job of being
+      // the least-noticed layer.
+      roles: ['overlay'],
+      // Bright, flickering, saturated text reads as energetic regardless of
+      // density/speed settings — never the material for a quiet moment.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      // `bass` stands in for the kick-onset routing (`s.onKick`), the same
+      // convention `ink` uses — the SceneBand vocabulary has no onset-specific
+      // entry, only level bands.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT MEASURED. Two hash() calls and a sin() per pixel, no loop, no
+      // march — this estimate follows the roster's `orbs` (also two-ish cheap
+      // calls, tagged low) rather than a hand guess in isolation, but per the
+      // roster's own history (10 of 16 hand-tagged costs were wrong) this
+      // should be confirmed with /bench before it funds a real composition.
+      performanceCost: 'low',
+      // Geometric/formal primaries a hacker-rain overlay complements without
+      // fighting for the same visual territory.
+      compatibleWith: ['wireframe', 'chrome', 'kaleido', 'torusfold'],
+      // Mid-pack across its range, not maxed — `ribbons`'s history is the
+      // warning here: one outlier mood weight gave it a near-monopoly on a
+      // slot, and this keeps the same shape other overlay scenes use.
+      moodFit: { groove: 0.6, building: 0.72, peak: 0.8, aggressive: 0.76 },
+      // Flat 2D screen-space shader, no camera concept — inert here, declared
+      // only for CameraDirector.test.ts's variety invariant, same as `ink`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      // No `shape`/`fill`/`tilt` — there is no silhouette or camera-relative
+      // axis in a full-frame column grid for those to bind to.
+      params: { speed: 0.5, density: 0.5, complexity: 0.5, contrast: 0.5 },
+      paramLabels: {
+        // `complexity` controls trail persistence; `contrast` controls
+        // bloom/edge hardness. Neither name says that on its own.
+        '*': { complexity: 'trail', contrast: 'glow' },
+      },
+    },
+  },
+  {
+    id: 'kifs',
+    name: 'Fractal Rose Window',
+    component: KifsRoseScene,
+    metadata: {
+      // CC0-1.0, sourced from glslop (shader fkdh866z), which records
+      // `provenance_type: "witnessed_generation"` and `parents: []` — the
+      // platform's own generation log, not a claimed upload, no fork lineage
+      // to audit. Stronger provenance than a bare in-source credit comment.
+      license: 'original',
+      // Subject only — same reasoning as `kaleido`, its closest sibling: a
+      // centred mandala owns the middle of the frame by construction.
+      // Composited over another subject the two symmetries fight; behind one
+      // it is entirely hidden by its own dark centre.
+      roles: ['primary'],
+      // `kaleido`'s range (groove/building/peak) plus `aggressive`: the
+      // orbit-trap laser lines read harder-edged and more neon than
+      // `kaleido`'s softer fractal, which is the reason to carry both rather
+      // than have one shadow the other.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT MEASURED. Up to 20 loop iterations of abs/dot/divide/matrix-multiply
+      // plus three orbit-trap distance evaluations per pixel — meaningfully
+      // heavier than `kaleido`'s measured 3.15 ms (four iterations of
+      // fract/length/sin/pow, no matrix multiply). Tagged `high` rather than
+      // guessed at `medium` on that comparison; confirm with `/bench`.
+      performanceCost: 'high',
+      // Matches `kaleido`: a centred mandala primary doesn't want to sit as a
+      // background or accent under something else.
+      compatibleWith: [],
+      // Same 0.6-0.9 band as `kaleido`, calibrated close but not copied — equal
+      // weights would make the director's tie-break between the two mandala
+      // scenes arbitrary.
+      moodFit: { groove: 0.8, building: 0.84, peak: 0.88, aggressive: 0.82 },
+      // Flat 2D fractal math, no camera concept — inert here, declared only
+      // for CameraDirector.test.ts's variety invariant, same as `kaleido`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      // No `density` — nothing in an iterated fold has a discrete element
+      // count for it to bind to.
+      params: { speed: 0.5, shape: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+      paramLabels: {
+        // The source's own input names — none of the canonical keys say this
+        // on their own.
+        '*': {
+          shape: 'symmetry',
+          complexity: 'iterations',
+          fill: 'zoom',
+          tilt: 'morph',
+          contrast: 'glow',
+        },
+      },
+    },
+  },
+  {
+    id: 'maze',
+    name: 'Maze Flight',
+    component: MazeFlightScene,
+    metadata: {
+      // CC0-1.0 from glslop (shader gstbkfmm), `provenance_type:
+      // "witnessed_generation"`, `parents: []` — platform generation log, not
+      // a claimed upload, no fork lineage to audit.
+      license: 'original',
+      // Subject only, and not negotiable: this is a first-person flythrough
+      // that owns the entire frame and its own camera. There is no version of
+      // it that reads as ground or as an accent over something else.
+      roles: ['primary'],
+      // Forward motion with a hard beat is the whole premise, so it starts at
+      // `groove`. Overlaps `tunnel`'s territory deliberately — both fly
+      // forward — but the moodFit peaks are pulled apart below so they trade
+      // rather than substitute.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // Measured 5.4 ms at tier 0 on an M1 (offscreen, scene alone) — see the
+      // file header for the method and the full ablation. That is just over the
+      // >4.5 ms `high` threshold and in line with the roster's existing
+      // heavyweights (`network` 6.3 ms). Worth re-confirming with /bench in
+      // situ, since this was timed standalone rather than in a live frame.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a first-person corridor.
+      compatibleWith: [],
+      // Peaks at `aggressive`, where `tunnel` peaks at `building` and `kifs` at
+      // `peak` — three high-energy scenes that would otherwise shadow each
+      // other across the same range.
+      moodFit: { groove: 0.66, building: 0.74, peak: 0.82, aggressive: 0.88 },
+      // The shader drives its own camera down the corridor; the engine's
+      // camera is inert here. Declared only for CameraDirector.test.ts's
+      // variety invariant, same as `ink`/`kifs`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      // Defaults sit at the source's authored values rather than a uniform
+      // 0.5, so the slider centre is not a different look from the one the
+      // shader was tuned at: shape 0.82 -> turns 1.63, fill 0.62 -> fov 1.39,
+      // density 1.0 -> 1.5.
+      //
+      // `complexity` is the exception, and deliberately: the source's 0.97
+      // enables a third nesting level that measured a THIRD of the frame on its
+      // own, most of it sub-pixel at this scene's render scale. 0.7 ships two
+      // levels; maxing the slider still buys the third at ~9.5 ms.
+      params: {
+        speed: 0.5,
+        shape: 0.82,
+        complexity: 0.7,
+        density: 1.0,
+        fill: 0.62,
+        tilt: 0.6,
+        contrast: 0.5,
+      },
+      paramLabels: {
+        // The source's own knob names — none of the canonical keys say this on
+        // their own. `complexity` is additionally capped by the quality
+        // governor, so at low tiers the slider's top end is unreachable.
+        '*': {
+          shape: 'turns',
+          complexity: 'detail',
+          density: 'openness',
+          fill: 'fov',
+          tilt: 'corner ease',
+          contrast: 'glow',
+        },
+      },
+    },
+  },
 ]
 
 /**
@@ -1026,6 +1316,32 @@ export function validateSceneDef(def: SceneDef): string[] {
   if (def.metadata.moods.length === 0) issues.push(`Scene "${def.id}" needs at least one mood.`)
   if (def.metadata.bands.length === 0)
     issues.push(`Scene "${def.id}" needs at least one audio band.`)
+  // Mode wiring fails silently and expensively: an unknown mode name resolves
+  // to index 0, so the scene renders a DIFFERENT look than the one named rather
+  // than erroring, and a paramLabels key that matches no mode simply never
+  // applies. Both are caught here instead of by eye.
+  const { modes, params, paramLabels } = def.metadata
+  if (modes) {
+    if (modes.length === 0) {
+      issues.push(`Scene "${def.id}" declares an empty \`modes\` array — omit it instead.`)
+    }
+    if (new Set(modes).size !== modes.length) {
+      issues.push(`Scene "${def.id}" has duplicate mode names.`)
+    }
+    if (params?.mode !== undefined && !modes.includes(params.mode)) {
+      issues.push(
+        `Scene "${def.id}" defaults to mode "${params.mode}", which is not in its \`modes\` list.`,
+      )
+    }
+  } else if (params?.mode !== undefined) {
+    issues.push(`Scene "${def.id}" sets a default \`mode\` but declares no \`modes\`.`)
+  }
+  for (const key of Object.keys(paramLabels ?? {})) {
+    if (key !== '*' && !modes?.includes(key)) {
+      issues.push(`Scene "${def.id}" labels mode "${key}", which is not in its \`modes\` list.`)
+    }
+  }
+
   // The effect slot has a lifecycle, so its contract is enforced here rather
   // than discovered inside the render loop when a burst never retires.
   if (def.metadata.roles.includes('effect')) {

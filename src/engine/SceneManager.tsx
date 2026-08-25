@@ -6,7 +6,7 @@ import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store
 import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded } from '../scenes'
 import { performanceState, type ActiveEffect } from './performanceState'
 import { quality } from './quality'
-import { applyFrameLoad, frameLoad, GENERATIVE_UNITS, POST_CHAIN_UNITS } from './frameLoad'
+import { applyFrameLoad, frameLoad, POST_CHAIN_UNITS } from './frameLoad'
 import { canFundOverlap, slotCost } from './slotBudget'
 import { perf, suspendFrameSampling } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
@@ -691,7 +691,7 @@ export function SceneManager() {
     // the subject, any crossfade overlap, live effects, and the fixed costs.
     // Computed here rather than taken from `frameLoad` because that is
     // published below, after this pass decides what the layers are.
-    const fixedUnits = POST_CHAIN_UNITS + (state.generative ? GENERATIVE_UNITS : 0)
+    const fixedUnits = POST_CHAIN_UNITS
     let nonLayerUnits = fixedUnits
     for (const e of entriesRef.current) {
       if (e.role === 'background' || e.role === 'accent' || e.role === 'overlay') continue
@@ -767,9 +767,7 @@ export function SceneManager() {
           ),
         }
       }),
-      // `Stage` keeps GenerativeLayer mounted for the rest of the session once
-      // it has ever been enabled, so this tracks the store flag, not a mount.
-      POST_CHAIN_UNITS + (state.generative ? GENERATIVE_UNITS : 0),
+      POST_CHAIN_UNITS,
     )
 
     // Only while a second primary is ACTUALLY ON SCREEN.

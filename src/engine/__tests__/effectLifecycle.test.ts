@@ -207,10 +207,10 @@ describe('syncEffectEntries', () => {
  * The budget an effect reserves against must be the WHOLE frame.
  *
  * This claimant used to take `primaryUnits` — the subject alone — so an effect
- * could fire on top of a full background + accent + overlay composition, plus
- * the post chain, plus the generative overlay, while believing the frame held
- * one scene. Three claimants each reserving against a different partial view of
- * one budget is how it confidently overcommitted; see frameLoad.ts.
+ * could fire on top of a full background + accent + overlay composition plus
+ * the post chain, while believing the frame held one scene. Three claimants
+ * each reserving against a different partial view of one budget is how it
+ * confidently overcommitted; see frameLoad.ts.
  */
 describe('advanceEffects — reserves against the whole frame', () => {
   const scenes = [fx('burst', { performanceCost: 'medium' })]
@@ -223,8 +223,8 @@ describe('advanceEffects — reserves against the whole frame', () => {
 
   it('refuses once layers and fixed costs have taken the budget', () => {
     // Same tier, same effect — but the frame is already carrying a primary, two
-    // layers, the post chain and the generative overlay. The old signature
-    // could not express this at all.
+    // layers and the post chain. The old signature could not express this at
+    // all.
     expect(
       advance({ fired: ['drop'], candidates: scenes, budget: TIER_BUDGET[0], committedUnits: 10 }),
     ).toHaveLength(0)

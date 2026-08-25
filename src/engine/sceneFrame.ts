@@ -65,8 +65,18 @@ export interface SceneFrame {
     hihat: number
   }
 
-  /** Smoothly blended palette. Mutated in place — never retain across frames. */
-  col: { a: THREE.Color; b: THREE.Color; c: THREE.Color }
+  /**
+   * Smoothly morphing palette — the three-colour trio (`a`/`b`/`c`) and the
+   * five semantic slots (`bg`/`shadow`/`mid`/`accent`/`glow`) side by side.
+   *
+   * Every colour is mutated **in place**, which is what lets a scene bind one
+   * straight into a uniform at material-creation time (`uGlow: { value: col.glow }`)
+   * and be recoloured for free from then on, including part-way through a morph.
+   * The object identity is stable for the life of the scene instance.
+   *
+   * Never retain a *snapshot* across frames — `.copy()` it if you need one.
+   */
+  col: PaletteBlender
 
   /**
    * Crossfade weight × mood intensity, floored and clamped.

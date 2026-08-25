@@ -81,11 +81,10 @@ export function applyUrlParams() {
 
   if (q.get('ui') === 'hidden') patch.uiHidden = true
 
-  // Mood automation toggles: ?autopilot=0|1&mooddrive=0|1&gen=0|1
+  // Mood automation toggles: ?autopilot=0|1&mooddrive=0|1
   for (const [param, key] of [
     ['autopilot', 'autoPilot'],
     ['mooddrive', 'moodDrive'],
-    ['gen', 'generative'],
   ] as const) {
     const raw = q.get(param)
     if (raw === '1' || raw === 'true') patch[key] = true

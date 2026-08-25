@@ -7,16 +7,14 @@
  * different partial view of the same frame:
  *
  *   - `composeLayers` reserved the primary and admitted layers — blind to
- *     effects, the post chain and the generative overlay.
+ *     effects and the post chain.
  *   - `EffectDirector` reserved the primary and any live effects — blind to the
  *     **layers**, so an effect could fire on top of a full three-slot
  *     composition while believing the frame held one scene.
  *   - `canFundOverlap` reserved the two primaries — blind to effects.
  *
- * And nothing at all accounted for the two costs that are present in *every*
- * frame: the post chain (a bloom mip pyramid plus chromatic aberration and
- * vignette) and `GenerativeLayer`, which `Stage` keeps mounted for the session
- * once it has ever been enabled — and `generative` defaults to true.
+ * And nothing at all accounted for the one cost present in *every* frame: the
+ * post chain (a bloom mip pyramid plus chromatic aberration and vignette).
  *
  * Three partial views of one resource is how a budget confidently overcommits:
  * each claimant is individually correct and the sum is not. This module is the
@@ -26,13 +24,12 @@
  * ## Units, and their honesty
  *
  * Same scale as slotBudget.ts — low 1 / medium 2 / high 4, calibrated per
- * `ScenePerformanceCost`. Scene costs are now measured (see `/bench`); the two
- * fixed costs below are NOT, and are flagged as estimates. They are reasoned
- * rather than invented — a bloom mip chain is roughly a fullscreen pass and a
- * half, the generative overlay is one fullscreen fbm quad — but reserving a
- * reasoned estimate is strictly better than the previous reservation of zero,
- * which is what let a full composition plus post plus generative present itself
- * to the budget as a single scene.
+ * `ScenePerformanceCost`. Scene costs are now measured (see `/bench`); the fixed
+ * cost below is NOT, and is flagged as an estimate. It is reasoned rather than
+ * invented — a bloom mip chain is roughly a fullscreen pass and a half — but
+ * reserving a reasoned estimate is strictly better than the previous
+ * reservation of zero, which is what let a full composition plus post present
+ * itself to the budget as a single scene.
  */
 
 /**
@@ -51,20 +48,6 @@
 export const POST_CHAIN_UNITS = 2
 
 /**
- * The AI-texture overlay, when enabled.
- *
- * One fullscreen additive quad with an fbm-based warp — cheaper than a
- * raymarcher, comparable to a simple procedural scene. **ESTIMATE**, same
- * caveat as above. Treated as `low`.
- *
- * Worth knowing: `Stage` mounts this permanently once `generative` has ever
- * been true in a session (so toggling off fades gracefully), and the store
- * defaults it to true — so for most users this cost is always present, and it
- * was never in the budget at all.
- */
-export const GENERATIVE_UNITS = 1
-
-/**
  * Live breakdown of the frame's committed cost. Mutated in place once per frame
  * by `SceneManager`, which is the only component that knows every mounted
  * entry; read by everything that wants to spend budget.
@@ -81,7 +64,7 @@ export const frameLoad = {
   layers: 0,
   /** Effect scenes currently firing. */
   effects: 0,
-  /** Post chain, plus the generative overlay when it is mounted. */
+  /** The post chain. */
   fixed: POST_CHAIN_UNITS,
 }
 

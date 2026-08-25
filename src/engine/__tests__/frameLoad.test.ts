@@ -4,14 +4,21 @@ import {
   committedUnits,
   frameLoad,
   remainingUnits,
-  GENERATIVE_UNITS,
   POST_CHAIN_UNITS,
   type FrameLoadEntry,
 } from '../frameLoad'
 import { TIER_BUDGET } from '../slotBudget'
 
-/** The load a quiet frame carries before any scene is counted. */
-const FIXED = POST_CHAIN_UNITS + GENERATIVE_UNITS
+/**
+ * The load a quiet frame carries before any scene is counted.
+ *
+ * Equal to `POST_CHAIN_UNITS` today — the only fixed cost left. Kept as its own
+ * named constant (rather than inlining `POST_CHAIN_UNITS` everywhere below)
+ * because the tests below are about "some fixed cost exists and must be
+ * honoured", not about the post chain specifically; a second fixed cost
+ * showing up later should only require changing this one line.
+ */
+const FIXED = POST_CHAIN_UNITS
 
 beforeEach(() => {
   frameLoad.primary = 0
@@ -27,7 +34,7 @@ describe('committedUnits', () => {
     frameLoad.layers = 3
     frameLoad.effects = 1
     frameLoad.fixed = FIXED
-    expect(committedUnits()).toBe(11)
+    expect(committedUnits()).toBe(10)
   })
 
   it('counts the second primary during a crossfade', () => {
@@ -77,22 +84,12 @@ describe('the tier ladder survives honest accounting', () => {
   })
 
   it('still runs a heavy primary solo at the bottom tier', () => {
-    // Tier 4's budget is 2 and the fixed cost alone is 3, so a heavy subject is
-    // already over — which is the correct reading: at survival quality the
-    // frame has nothing spare, and layers should be refused.
+    // Tier 4's budget is 5; a heavy primary (4) plus the fixed cost (2) already
+    // exceeds it — which is the correct reading: at survival quality the frame
+    // has nothing spare, and layers should be refused.
     frameLoad.fixed = FIXED
     frameLoad.primary = 4
     expect(remainingUnits(TIER_BUDGET[4])).toBe(0)
-  })
-
-  it('treats the generative overlay as a real cost', () => {
-    // `generative` defaults to true and Stage keeps the layer mounted for the
-    // session once ever enabled, so for most users this is always present —
-    // and it was previously invisible to the budget entirely.
-    frameLoad.fixed = POST_CHAIN_UNITS
-    const withoutGen = committedUnits()
-    frameLoad.fixed = FIXED
-    expect(committedUnits()).toBe(withoutGen + GENERATIVE_UNITS)
   })
 })
 
@@ -170,8 +167,8 @@ describe('applyFrameLoad — attribution', () => {
 
   it('reports a realistic worst case honestly', () => {
     // A heavy subject crossfading to another heavy one, over two layers, with
-    // post and generative live. This is the composition the old accounting
-    // valued at 4 units.
+    // the post chain live. This is the composition the old accounting valued
+    // at 4 units.
     applyFrameLoad(
       [
         entry({ role: 'primary', dir: 1, units: 4 }),
@@ -181,7 +178,7 @@ describe('applyFrameLoad — attribution', () => {
       ],
       FIXED,
     )
-    expect(committedUnits()).toBe(14)
+    expect(committedUnits()).toBe(13)
     expect(remainingUnits(TIER_BUDGET[0])).toBe(0)
   })
 })

@@ -18,6 +18,7 @@ import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
 import { FpsMeter } from './FpsMeter'
 import { AnalyticsPanel } from './AnalyticsPanel'
+import { SceneParamsPanel } from './SceneParamsPanel'
 import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
 
 // macOS Chrome can only capture a browser TAB's audio via getDisplayMedia —
@@ -65,7 +66,6 @@ export function HUD() {
   const quality = useStore((s) => s.quality)
   const autoPilot = useStore((s) => s.autoPilot)
   const moodDrive = useStore((s) => s.moodDrive)
-  const generative = useStore((s) => s.generative)
   const layerFx = useStore((s) => s.layerFx)
   const responseTuning = useStore((s) => s.responseTuning)
   const bandMappings = useStore((s) => s.bandMappings)
@@ -141,8 +141,6 @@ export function HUD() {
         s.toggleAutoPilot()
       } else if (e.key === 'm' || e.key === 'M') {
         s.toggleMoodDrive()
-      } else if (e.key === 'g' || e.key === 'G') {
-        s.toggleGenerative()
       } else if (e.key === 'c' || e.key === 'C') {
         if (s.status === 'running') s.captureCue()
       } else if (e.key === 'r' || e.key === 'R') {
@@ -420,13 +418,6 @@ export function HUD() {
                     mood drive
                   </button>
                   <button
-                    className={`chip ${generative ? 'active' : ''}`}
-                    title="AI mood textures from the local backend (G)"
-                    onClick={() => useStore.getState().toggleGenerative()}
-                  >
-                    AI textures
-                  </button>
-                  <button
                     className={`chip ${midiSync ? 'active' : ''}`}
                     title="Lock the beat grid to an external MIDI clock"
                     onClick={() => void useStore.getState().toggleMidiSync()}
@@ -435,6 +426,8 @@ export function HUD() {
                   </button>
                 </div>,
               )}
+
+              {section('scene', 'Scene', <SceneParamsPanel />)}
 
               {section(
                 'look',

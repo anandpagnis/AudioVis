@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { composeLayers } from '../PerformanceDirector'
 import { admitSlots, canFundOverlap, slotCost, TIER_BUDGET } from '../slotBudget'
-import { GENERATIVE_UNITS, POST_CHAIN_UNITS } from '../frameLoad'
+import { POST_CHAIN_UNITS } from '../frameLoad'
 
 /**
- * Fixed per-frame cost: the post chain, plus the generative overlay (on by
- * default). `TIER_BUDGET` is TOTAL frame capacity, so anything reasoning about
- * what is left for scenes has to subtract this — which is exactly what
+ * Fixed per-frame cost: the post chain, the one cost present in every frame.
+ * `TIER_BUDGET` is TOTAL frame capacity, so anything reasoning about what is
+ * left for scenes has to subtract this — which is exactly what
  * PerformanceDirector passes to `composeLayers`.
  */
-const FIXED = POST_CHAIN_UNITS + GENERATIVE_UNITS
+const FIXED = POST_CHAIN_UNITS
 /** The budget a composition actually gets at `tier`, as production computes it. */
 const sceneBudget = (tier: number) => TIER_BUDGET[tier] - FIXED
 import { getScene, SCENES, type ScenePerformanceCost } from '../../scenes'
@@ -78,86 +78,150 @@ describe('admitSlots', () => {
 describe('canFundOverlap', () => {
   const heavy = slotCost('high', 'primary')
   const low = slotCost('low', 'primary')
+  /**
+   * Some layers staying on screen through the fade, on top of the two
+   * primaries. Deliberately its OWN constant rather than reusing `FIXED` from
+   * above: this block is exercising `canFundOverlap`'s generic `layerUnits`
+   * argument, a concept unrelated to frameLoad's fixed per-frame cost — the two
+   * only ever shared a numeric value by coincidence. Derived, not hardcoded, so
+   * `heavy + heavy + LAYER_UNITS` lands exactly on tier 0's capacity by
+   * construction rather than by a magic number staying in sync with it.
+   */
+  const LAYER_UNITS = TIER_BUDGET[0] - heavy - heavy
 
   it('funds two heavy primaries only at the top tier', () => {
-    // 4 + 4 + 3 fixed = 11, which is exactly tier 0's total capacity.
-    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, FIXED)).toBe(true)
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, LAYER_UNITS)).toBe(true)
     for (const tier of [1, 2, 3, 4]) {
-      expect(canFundOverlap(TIER_BUDGET[tier], heavy, heavy, FIXED), `tier ${tier}`).toBe(false)
+      expect(canFundOverlap(TIER_BUDGET[tier], heavy, heavy, LAYER_UNITS), `tier ${tier}`).toBe(
+        false,
+      )
     }
   })
 
   it('funds two low primaries at every tier', () => {
     for (let tier = 0; tier < TIER_BUDGET.length; tier++) {
-      expect(canFundOverlap(TIER_BUDGET[tier], low, low, FIXED), `tier ${tier}`).toBe(true)
+      expect(canFundOverlap(TIER_BUDGET[tier], low, low, LAYER_UNITS), `tier ${tier}`).toBe(true)
     }
   })
 
   it('counts the layers that stay on screen through the fade', () => {
     // The regression: two heavy primaries exactly fill the tier-0 budget, so
     // the old two-argument test called the overlap affordable — while `ribbons`
-    // and an overlay were also rendering. 11 units of real load against 8.
-    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, FIXED)).toBe(true)
-    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, FIXED + 1)).toBe(false)
+    // and an overlay were also rendering.
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, LAYER_UNITS)).toBe(true)
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, heavy, LAYER_UNITS + 1)).toBe(false)
   })
 
   it('tests pairs the old bothHeavy conjunct never reached', () => {
-    // high + medium + two layers = 4 + 2 + 3 = 9 > 8. Neither scene is `high`
-    // on both sides, so the previous guard did not even evaluate this.
+    // Neither scene is `high` on both sides, so the previous guard did not
+    // even evaluate this pair.
     const medium = slotCost('medium', 'primary')
-    expect(canFundOverlap(TIER_BUDGET[0], heavy, medium, FIXED + 3)).toBe(false)
-    expect(canFundOverlap(TIER_BUDGET[0], heavy, medium, FIXED + 2)).toBe(true)
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, medium, LAYER_UNITS + 3)).toBe(false)
+    expect(canFundOverlap(TIER_BUDGET[0], heavy, medium, LAYER_UNITS + 2)).toBe(true)
   })
 
   it('treats a first-ever switch (no outgoing scene) as cheap', () => {
     // Nothing is fading out on the very first commit, so only the incoming
     // scene and the layers count.
-    expect(canFundOverlap(TIER_BUDGET[4], 0, heavy, FIXED)).toBe(false)
-    expect(canFundOverlap(TIER_BUDGET[4], 0, low, FIXED + 1)).toBe(true)
+    expect(canFundOverlap(TIER_BUDGET[4], 0, heavy, LAYER_UNITS)).toBe(false)
+    expect(canFundOverlap(TIER_BUDGET[4], 0, low, LAYER_UNITS + 1)).toBe(true)
   })
 })
 
 /**
- * Phase-3 acceptance: with no background or effect scenes registered, the
- * composition machinery must behave exactly as the old two-slot model did —
- * merging it is a visual no-op.
+ * Background-slot acceptance.
  *
- * This is the state the code actually ships in, so it is the primary path, not
- * an edge case.
+ * This block used to assert the opposite — that the slot was NEVER filled —
+ * because the four-slot composition model shipped with no scene declaring the
+ * role, so merging it had to be a provable visual no-op (F18). `ink` is the
+ * first background scene, so the interesting property flipped: the slot must now
+ * actually fill, must stay exempt from the editorial layer cap, and must still
+ * be shed when the frame cannot fund it.
+ *
+ * The effect slot is still genuinely empty, and that assertion stays.
  */
-describe('no-op acceptance with zero background/effect scenes', () => {
-  it('registers no background or effect scenes', () => {
+const backgroundPool = () => SCENES.filter((s) => s.metadata.roles.includes('background'))
+
+describe('background slot composition', () => {
+  it('registers at least one background scene and no effect scenes', () => {
+    expect(backgroundPool().length).toBeGreaterThan(0)
     for (const s of SCENES) {
-      expect(s.metadata.roles, s.id).not.toContain('background')
       expect(s.metadata.roles, s.id).not.toContain('effect')
     }
   })
 
-  it('never fills the background slot, at any quality tier', () => {
-    for (let tier = 0; tier < TIER_BUDGET.length; tier++) {
-      for (const cost of COSTS) {
-        const out = composeLayers({
-          primaryCost: cost,
-          budget: sceneBudget(tier),
-          // What PerformanceDirector actually passes today: the background pool
-          // is whatever declares the role, which is nothing.
-          pools: {
-            background: SCENES.filter((s) => s.metadata.roles.includes('background')),
-            accent: SCENES.filter((s) => s.metadata.roles.includes('accent')),
-            overlay: SCENES.filter((s) => s.metadata.roles.includes('overlay')),
-          },
-          mood: 'groove',
-          recentIds: [],
-        })
-        expect(out.background, `tier ${tier} / ${cost} primary`).toBeNull()
-      }
+  it('fills the background slot from the pool when the budget allows', () => {
+    const out = composeLayers({
+      primaryCost: 'low',
+      budget: sceneBudget(0),
+      pools: { background: backgroundPool() },
+      mood: 'groove',
+      recentIds: [],
+    })
+    expect(out.background).not.toBeNull()
+    expect(backgroundPool().map((s) => s.id)).toContain(out.background)
+  })
+
+  it('leaves the slot alone when the pool is empty', () => {
+    // PerformanceDirector passes an empty background pool on every non-section
+    // frame, and reads "empty pool" as "hold the current ground" rather than
+    // "clear it". A background that recomposed every phrase would just be a
+    // second primary.
+    const out = composeLayers({
+      primaryCost: 'low',
+      budget: sceneBudget(0),
+      pools: { background: [] },
+      mood: 'groove',
+      recentIds: [],
+    })
+    expect(out.background).toBeNull()
+  })
+
+  it('exempts the background from the editorial layer cap', () => {
+    // MAX_LAYERS_BY_PRIMARY_COST allows exactly one layer over a `high`
+    // primary. Ground is not a stack layer, so it must still land alongside
+    // that one — otherwise a heavy subject can never have a floor under it.
+    const accents = SCENES.filter((s) => s.metadata.roles.includes('accent'))
+    const out = composeLayers({
+      primaryCost: 'high',
+      budget: TIER_BUDGET[0],
+      pools: { background: backgroundPool(), accent: accents },
+      mood: 'groove',
+      recentIds: [],
+    })
+    expect(out.background).not.toBeNull()
+  })
+
+  it('sheds the background when the frame cannot fund it', () => {
+    // The cost budget stays the GPU guard even though the art-direction cap
+    // does not apply: a budget that funds nothing must fill nothing.
+    const out = composeLayers({
+      primaryCost: 'high',
+      budget: 0,
+      pools: { background: backgroundPool() },
+      mood: 'groove',
+      recentIds: [],
+    })
+    expect(out.background).toBeNull()
+  })
+
+  it('offers ground in every mood its scenes declare', () => {
+    // A background pool that is empty at some moods reproduces the layer-pool
+    // problem one slot over: the ground would blink out at exactly the moods
+    // nobody tested.
+    for (const mood of ['ambient', 'mellow', 'groove', 'building', 'peak'] as const) {
+      const pool = backgroundPool().filter((s) => s.metadata.moods.includes(mood))
+      expect(pool.length, `no background scene for ${mood}`).toBeGreaterThan(0)
     }
   })
 
-  it('runs a heavy primary solo from tier 2 down, matching maxHeavyLayers', () => {
+  it('runs a heavy primary solo from tier 3 down, matching maxHeavyLayers', () => {
     // The old rule: allowLayer = maxHeavyLayers >= 2 || !primaryHeavy, with
-    // maxHeavyLayers being 2 at tiers 0-1 and 1 at tiers 2-4.
-    for (const tier of [2, 3, 4]) {
+    // maxHeavyLayers being 2 at tiers 0-1 and 1 at tiers 2-4. This block used to
+    // cover tier 2 as well, back when the AI-texture overlay's now-deleted
+    // GENERATIVE_UNITS reservation ate the one spare unit tier 2 has — see the
+    // next test for what tier 2 actually does today.
+    for (const tier of [3, 4]) {
       const out = composeLayers({
         primaryCost: 'high',
         budget: sceneBudget(tier),
@@ -170,6 +234,28 @@ describe('no-op acceptance with zero background/effect scenes', () => {
       })
       expect(out, `tier ${tier}`).toEqual({ background: null, accent: null, overlay: null })
     }
+  })
+
+  it('admits one cheap layer alongside a heavy primary at tier 2', () => {
+    // Tier 2's budget (7) less a heavy primary (4) less the fixed cost (2)
+    // leaves exactly 1 spare unit — enough for `orbs` (`low`, 1 unit) and
+    // nothing costlier. This unit only exists because the AI-texture overlay's
+    // GENERATIVE_UNITS reservation was removed outright rather than merely
+    // disabled; real GPU headroom is honestly reflected here, not clawed back
+    // to preserve a boundary that a phantom cost used to enforce.
+    //
+    // Pool pinned to exactly `orbs` rather than the whole roster: with more
+    // than one candidate, `pickVariedScene` rolls `Math.random()` and could
+    // land on a costlier accent scene the 1 spare unit can't fund, making the
+    // assertion flaky through no fault of the budget logic under test.
+    const out = composeLayers({
+      primaryCost: 'high',
+      budget: sceneBudget(2),
+      pools: { accent: [getScene('orbs')] },
+      mood: 'groove',
+      recentIds: [],
+    })
+    expect(out).toEqual({ background: null, accent: 'orbs', overlay: null })
   })
 
   it('still composes a layer alongside a heavy primary at the top tier', () => {

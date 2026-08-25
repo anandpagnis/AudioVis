@@ -1,4 +1,4 @@
-import { Suspense, lazy, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { captureIfRequested } from './recorder'
 import { frameSampler } from './frameSampler'
@@ -13,14 +13,6 @@ import { PerfMonitor } from './PerfMonitor'
 import { PerformanceDirector } from './PerformanceDirector'
 import { PerformanceStateBridge } from './PerformanceStateBridge'
 import { resourceCache } from './streaming/resourceCache'
-import { useStore } from '../store'
-
-// The AI-texture path ships as its own chunk and only downloads the first
-// time the user enables it. Once loaded it stays mounted so toggling off
-// fades gracefully (the layer's own alpha easing) instead of popping.
-const GenerativeLayer = lazy(() =>
-  import('./GenerativeLayer').then((m) => ({ default: m.GenerativeLayer })),
-)
 
 /**
  * The WebGL stage: owns the R3F Canvas and the fixed order of engine systems
@@ -55,10 +47,6 @@ const GenerativeLayer = lazy(() =>
  * quality governor's current tier.
  */
 export function Stage() {
-  const generative = useStore((s) => s.generative)
-  const everEnabled = useRef(generative)
-  if (generative) everEnabled.current = true
-
   // Bumped when the GPU context is lost and restored. Keying the
   // resource-holding subtrees on it forces their render targets / materials to
   // rebuild after a restore, instead of sampling dead GPU handles.
@@ -113,11 +101,6 @@ export function Stage() {
       <CameraDirector />
       <LightRig />
       <SceneManager key={`scenes-${glEpoch}`} />
-      {everEnabled.current && (
-        <Suspense fallback={null}>
-          <GenerativeLayer key={`gen-${glEpoch}`} />
-        </Suspense>
-      )}
       <EffectsDirector key={`fx-${glEpoch}`} />
       <ScreenshotCapture />
     </Canvas>

@@ -114,13 +114,16 @@ Shared utilities: `useDispose.ts`, `moodParams.ts`, `audioResponse.ts`, `Animati
 interface SceneFrame {
   f: AudioFeatures            // raw, for anything not covered below
   dt: number
-  anim: AnimationSignals      // pulse, breathe, inflate, twist, ripple,
-                              // explode, dissolve, oscillate, flash, kick/snare/hihat
-  b: { sub, bass, mid, presence, high, vocal, air, energy,
+  anim: AnimationSignals      // inflate, twist, ripple, explode, dissolve, oscillate
+  b: { sub, bass, mid, presence, high, vocal, voice, air, energy,
        transient, pulse, kick, snare, hihat }   // reactivity-scaled
-  col: { a, b, c }            // blended palette
-  vis: number                 // crossfade × mood intensity, floored + clamped
-  params: VisualParams
+  col: PaletteBlender         // a/b/c AND bg/shadow/mid/accent/glow — see doc 07
+  vis: number                 // crossfade × slot gain × mood intensity, floored + clamped
+  params: VisualParams        // GLOBAL sliders; per-scene params are separate, below
+  camera: THREE.Camera        // read-only — CameraDirector owns the transform
+  role: SlotName              // 'primary'|'background'|'accent'|'overlay'|'effect'
+  roleGain: number            // this slot's gain WITHOUT the crossfade folded in
+  slotProgress: number        // 0→1 across an effect's life; 0 elsewhere
   state: Readonly<PerformanceState>   // director decisions; NEVER write
 }
 
@@ -131,6 +134,87 @@ useSceneFrame(cb, { visCeiling: 1.6, visFloor: 0.5 })
 `useSpin()` covers the accumulate-an-angle pattern that rotating scenes share.
 
 **What the context deliberately does *not* do** is decide which band drives which visual property. That routing is the art direction (see Algorithms below) and stays per-scene — the context prepares values, the scene decides what they mean.
+
+### Per-scene parameters
+
+`ctx.params` is **global** (`intensity`, `speed`, `reactivity`). A scene's own
+knobs come from the canonical vocabulary in `src/engine/sceneParams.ts`:
+
+```typescript
+const SCENE_PARAM_KEYS = ['speed','shape','complexity','density','fill','tilt','contrast']
+const drastic = (p: number) => Math.pow(4, (p - 0.5) * 2)   // 0.25x / 1x / 4x
+
+const P = useSceneParams('ink')   // fully populated; stable object, no re-renders
+```
+
+Seven names, the same seven in every scene — and the fixedness *is* the feature.
+It is why one generic panel drives every scene, why a preset survives a scene
+swap, and why anything wanting to reach inside a scene (a cue, a MIDI map, a
+director wanting a scene *denser* rather than merely different) can address it
+without knowing what the scene is.
+
+Rules:
+
+- A scene **declares only the keys it reads**, in `metadata.params`, at the values
+  it was authored at. Presence is the declaration; the panel shows exactly those.
+- `drastic()` is applied to **`speed` only**. Every other key is consumed raw as a
+  0..1 factor by the scene. `speed` is the only key whose meaning is multiplicative.
+- **Do not add an eighth key** to serve one scene. Express it as a mode instead.
+- Overrides are stored sparsely per scene id (`store.sceneParams`), so changing a
+  scene's authored default later still reaches every user who never touched that
+  slider.
+
+### Scene modes
+
+`metadata.modes: string[]` declares named looks, dispatched through a `uMode` int
+uniform. A new look costs a branch in a shader rather than a whole scene file, so
+one scene with five modes fills a mood's pool the way five scenes would.
+
+**Append-only per scene** — the index reaches a uniform and is persisted in
+presets and cues, so reordering changes what a saved look renders. An unknown
+stored mode name falls back to index 0 rather than leaving the shader on its
+`else` branch. `metadata.paramLabels` relabels sliders per mode, and a `null`
+label hides one. `validateSceneDef()` rejects inconsistent mode wiring, because
+every failure in this area is silent at runtime.
+
+### The fullscreen-shader scene factory
+
+Most shader scenes are a fragment shader plus a uniform mapping, and
+`createShaderScene()` (`src/engine/createShaderScene.tsx`) is the declaration
+form for exactly that — no React, no resource lifecycle, no resize plumbing, no
+fade arithmetic:
+
+```typescript
+export const InkFieldScene = createShaderScene<InkState>({
+  id: 'ink',                               // MUST match the registry id
+  frag: FRAG,                              // SHADER_SCENE_PRELUDE is prepended
+  include: SIMPLEX3D_GLSL,
+  uniforms: () => ({ uPhase: { value: 0 } }),
+  state: () => ({ phase: 0, shock: 0 }),   // per-INSTANCE, never module scope
+  pixelBudget: 1.5,                        // target internal megapixels
+  update({ u, s, P, st, dt }) { /* ... */ },
+})
+```
+
+Three things worth knowing:
+
+- **`SHADER_SCENE_PRELUDE` already declares** `uRes`, `uAspect`, `uFade`, `uTime`,
+  `uMode` and the five palette colours. Redeclaring any of them is a GLSL compile
+  error — deleting those lines is the one edit every ported shader needs.
+- **`state` is per mounted instance.** The same scene can be mounted twice at once
+  (two slots, or both halves of a crossfade), so a module-level `let phase` would
+  have both instances advancing one accumulator at double rate.
+- **`pixelBudget` is engine-owned governance.** The scene declares a target and the
+  engine solves `scale = sqrt(budget / fullMP)`; the scene never holds the dial and
+  so cannot ignore it, unlike `quality.knobs` (which four scenes do ignore). Omit
+  it for a scene cheap enough to run at full resolution — the offscreen path costs
+  a fullscreen blit, and the factory renders the first few frames regardless of
+  `vis` so the expensive program still compiles inside the warm window.
+
+`s` is the audio state in the lilim vocabulary (`s.mids`, `s.onKick`, `s.specHi`),
+built by `src/engine/lilimState.ts`. It exists so shader bodies tuned against
+those exact names, ranges and ballistics port across without being silently
+relandscaped at every use site.
 
 ### Registration
 

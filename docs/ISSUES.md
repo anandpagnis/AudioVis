@@ -24,12 +24,14 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       its source, and add a build-time gate.
       **Today only 3 scenes are provably safe to sell.**
 
-- [ ] **F02 · The "AI" tier depends on the customer's own localhost** —
-      `src/engine/textureGenerator.ts`
-      `generative: true` is the default and the layer polls `http://127.0.0.1:8787`
-      for the sd-turbo server in `backend/server.py`. No paying customer will run
-      that. Either host inference behind an authenticated endpoint, or default the
-      toggle off and label it a developer feature.
+- [x] **F02 · The "AI" tier depends on the customer's own localhost** —
+      `src/engine/textureGenerator.ts` *(deleted)*
+      `generative: true` was the default and the layer polled `http://127.0.0.1:8787`
+      for the sd-turbo server in `backend/server.py`. No paying customer would run
+      that, and it had never been used even in development. Resolved by deleting
+      the feature outright — `backend/`, `GenerativeLayer.tsx`, `textureGenerator.ts`,
+      the `generative` store field, and every touchpoint (frame-budget accounting,
+      the `G` shortcut, the debug readout) — rather than gating it behind auth.
 
 - [ ] **F03 · No account, entitlement or billing surface exists** — `wrangler.jsonc`
       Cloudflare static assets with SPA fallback: no Worker routes, no auth, no
@@ -395,6 +397,11 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       the show entirely at tier 2 and below. Verified arithmetically neutral: the
       composition budget is unchanged at every tier, while the previously-blind
       claimants now see the whole frame.
+      *(Update, F02: `GenerativeLayer` and its `GENERATIVE_UNITS` reservation were
+      later deleted outright — the feature had never been used. `frameLoad.fixed`
+      is back down to just `POST_CHAIN_UNITS`; the ladder was left at its rebased
+      values rather than re-shrunk, which leaves scenes with one extra unit of real
+      headroom per tier.)*
 
 - [x] **F45 · The budget was checked at decision time, never before drawing** —
       `src/engine/SceneManager.tsx`
@@ -419,15 +426,17 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       Skips rather than breaks, so a cheap overlay still fits where an expensive
       accent did not — shedding more than the frame needs is its own failure.
 
-- [ ] **F44 · The two fixed costs are estimates, not measurements** — *open*
-      `POST_CHAIN_UNITS = 2` and `GENERATIVE_UNITS = 1` are reasoned (a bloom mip
-      chain is roughly a fullscreen pass and a half; the generative overlay is one
-      fullscreen fbm quad) but **not measured**. `/bench` deliberately excludes the
-      post chain so scene costs compare cleanly, which means the one cost present in
-      every single frame is the one number never measured.
-      Add a bench mode that measures an empty scene with and without the post chain
-      (and with and without the generative overlay); the difference is the fixed
-      cost. Then set these two constants from data and re-check the ladder rebase.
+- [ ] **F44 · The fixed cost is an estimate, not a measurement** — *open*
+      `POST_CHAIN_UNITS = 2` is reasoned (a bloom mip chain is roughly a
+      fullscreen pass and a half) but **not measured**. `/bench` deliberately
+      excludes the post chain so scene costs compare cleanly, which means the
+      one cost present in every single frame is the one number never measured.
+      (`GENERATIVE_UNITS`, the other fixed cost this issue originally covered,
+      no longer exists — the AI-texture overlay it accounted for was deleted
+      outright; see F02.)
+      Add a bench mode that measures an empty scene with and without the post
+      chain; the difference is the fixed cost. Then set this constant from data
+      and re-check the ladder rebase.
 
 - [x] **F41 · The overlap budget ignored the layers** — `src/engine/slotBudget.ts`,
       `src/engine/SceneManager.tsx`

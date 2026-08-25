@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { audioEngine, type ResponseTuning, type SourceKind } from './audio/AudioEngine'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
+import type { SceneParamKey, SceneParams } from './engine/sceneParams'
 import { startRecording, stopRecording } from './engine/recorder'
 import { preloadScene } from './scenes'
 
@@ -279,7 +280,6 @@ interface AppState {
   /** Mood-driven automation. */
   autoPilot: boolean
   moodDrive: boolean
-  generative: boolean
   /** Last manual scene/palette action (autopilot backs off for a while). */
   lastManualAt: number
 
@@ -287,6 +287,18 @@ interface AppState {
   responseTuning: ResponseTuning
   bandMappings: BandMapping[]
   layerFx: Record<LayerRole, LayerFx>
+
+  /**
+   * Per-scene parameter overrides, keyed by scene id — the canonical seven-key
+   * vocabulary in `src/engine/sceneParams.ts`.
+   *
+   * **Sparse on purpose.** An absent scene id, or an absent key within one,
+   * means "use what the scene declared". Storing only real overrides is what
+   * lets a scene's authored default be *changed* later and have every user who
+   * never touched that slider pick up the new value, instead of being frozen on
+   * a copy of the old default that a full snapshot would have persisted.
+   */
+  sceneParams: Record<string, SceneParams>
 
   /** Phase 5: authored performance cues. */
   cues: PerformanceCue[]
@@ -319,13 +331,15 @@ interface AppState {
   requestScene: (id: string, opts?: { auto?: boolean; immediate?: boolean }) => boolean
   setLayer: (role: LayerRole, id: string | null, opts?: { auto?: boolean }) => void
   setLayerFx: (role: LayerRole, patch: Partial<LayerFx>) => void
+  /** Patch one scene's parameters. Passing `null` clears every override for
+   *  that scene, returning it to its authored defaults. */
+  setSceneParams: (sceneId: string, patch: Partial<SceneParams> | null) => void
   setResponseTuning: (patch: Partial<ResponseTuning>) => void
   addBandMapping: () => void
   updateBandMapping: (id: string, patch: Partial<Omit<BandMapping, 'id'>>) => void
   removeBandMapping: (id: string) => void
   toggleAutoPilot: () => void
   toggleMoodDrive: () => void
-  toggleGenerative: () => void
   commitScene: () => void
   setPalette: (id: string, opts?: { auto?: boolean }) => void
   toggleUi: () => void
@@ -370,12 +384,12 @@ export const useStore = create<AppState>()(
 
       autoPilot: true,
       moodDrive: true,
-      generative: true,
       lastManualAt: 0,
 
       responseTuning: { attack: 1, release: 1, subdivision: 1 },
       bandMappings: [],
       layerFx: defaultLayerFx(),
+      sceneParams: {},
 
       cues: [],
       cueFollow: true,
@@ -570,6 +584,29 @@ export const useStore = create<AppState>()(
           },
         })),
 
+      setSceneParams: (sceneId, patch) =>
+        set((s) => {
+          if (patch === null) {
+            if (!s.sceneParams[sceneId]) return {}
+            const next = { ...s.sceneParams }
+            delete next[sceneId]
+            return { sceneParams: next }
+          }
+          const merged: SceneParams = { ...s.sceneParams[sceneId] }
+          for (const [key, value] of Object.entries(patch)) {
+            if (key === 'mode') {
+              if (typeof value === 'string') merged.mode = value
+              continue
+            }
+            if (typeof value !== 'number' || !Number.isFinite(value)) continue
+            merged[key as SceneParamKey] = Math.min(1, Math.max(0, value))
+          }
+          // A NEW object per scene id, because `useSceneParams` subscribes on
+          // reference identity (`state.sceneParams[id] !== prev.sceneParams[id]`)
+          // to avoid re-resolving every scene on every store write.
+          return { sceneParams: { ...s.sceneParams, [sceneId]: merged } }
+        }),
+
       setResponseTuning: (patch) => {
         const clamp = (v: number) => Math.min(3, Math.max(0.25, v))
         const next: ResponseTuning = {
@@ -619,7 +656,6 @@ export const useStore = create<AppState>()(
 
       toggleAutoPilot: () => set((s) => ({ autoPilot: !s.autoPilot })),
       toggleMoodDrive: () => set((s) => ({ moodDrive: !s.moodDrive })),
-      toggleGenerative: () => set((s) => ({ generative: !s.generative })),
       commitScene: () => {
         const pending = get().pendingSceneId
         if (pending) {
@@ -778,10 +814,10 @@ export const useStore = create<AppState>()(
         quality: s.quality,
         autoPilot: s.autoPilot,
         moodDrive: s.moodDrive,
-        generative: s.generative,
         responseTuning: s.responseTuning,
         bandMappings: s.bandMappings,
         layerFx: s.layerFx,
+        sceneParams: s.sceneParams,
         cues: s.cues,
         cueFollow: s.cueFollow,
         userPresets: s.userPresets,

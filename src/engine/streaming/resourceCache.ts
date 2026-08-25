@@ -2,11 +2,11 @@
  * General-purpose, reference-counted cache for GPU resources and session-
  * lifetime loader singletons, shared across scenes.
  *
- * Modeled directly on `textureGenerator.ts`'s `Map<string, Texture>` +
- * `inUse`-set shape — that class is a genuine, working precedent for keyed
- * caching with safe eviction in this codebase — generalized here from one
- * resource type/one consumer to arbitrary types/N consumers, with real
- * reference counting instead of a manually-synced `inUse` set.
+ * Modeled on a `Map<string, Texture>` + `inUse`-set shape that was a genuine,
+ * working precedent for keyed caching with safe eviction in this codebase —
+ * generalized here from one resource type/one consumer to arbitrary
+ * types/N consumers, with real reference counting instead of a
+ * manually-synced `inUse` set.
  *
  * Before this, the only shared-resource precedent (`getSharedEnvMap()`) was a
  * bare module-level singleton: not reference-counted, "deliberately never
