@@ -1,5 +1,6 @@
 import type { MoodState } from '../audio/types'
 import type { LensRackState, MirrorRackState } from './opticalRack'
+import type { TransitionStyle } from './transitions'
 import type { SceneParams } from '../scenes/contract'
 
 /** One live firing of an effect scene. Owned by EffectDirector. */
@@ -198,6 +199,32 @@ export interface PerformanceState {
   }
 
   /**
+   * How the NEXT primary scene change should be performed. See
+   * engine/transitions.ts.
+   *
+   * Read by SceneManager at commit time and captured into `transition` below,
+   * so changing it mid-fade retunes the next change rather than mutating the one
+   * already running — a transition that changed character halfway through would
+   * read as a glitch, not as a choice.
+   */
+  transitionStyle: TransitionStyle
+
+  /**
+   * The transition actually in flight, published by SceneManager for the
+   * executors that have to follow it.
+   *
+   * `progress` is the RAW linear clock, not an eased value: every curve in
+   * transitions.ts does its own easing, so handing them a pre-eased number would
+   * apply the curve twice. `active` is false between transitions, when
+   * `progress` is meaningless rather than zero.
+   */
+  transition: {
+    style: TransitionStyle
+    progress: number
+    active: boolean
+  }
+
+  /**
    * Scene Contract dial positions the director wants, in the shared vocabulary.
    *
    * The director's continuous hand on the picture, as opposed to `scene`, which
@@ -255,6 +282,8 @@ export const performanceState: PerformanceState = {
   mirror: { segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 },
   lens: { amount: 0, style: 0 },
   rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0 },
+  transitionStyle: 'dissolve',
+  transition: { style: 'dissolve', progress: 1, active: false },
 
   // Empty, not neutral: at boot the director has formed no opinion yet, and
   // every scene's own authored defaults are the right thing to show until it
@@ -268,7 +297,36 @@ export const performanceState: PerformanceState = {
  * Downstream systems use this so a director can hard-set a value and still get
  * a smooth visual result — the "directors decide, executors interpolate" half
  * of the contract. `rate` is roughly "how much of the gap to close per second".
+ *
+ * ## Why the exponential, and not `delta * rate`
+ *
+ * This used to be `current + (target - current) * Math.min(1, delta * rate)` —
+ * the first-order approximation — while its doc comment already claimed to be
+ * frame-rate independent. It was not, in two ways that both showed up as
+ * transitions feeling jerky:
+ *
+ *  - **It snapped.** Once `delta * rate >= 1` the `min` clamps and the value
+ *    jumps straight to the target. With `rate` 7 (the transition discount) that
+ *    is any frame under 7fps; with 2.5 (palette blending) under 2.5fps; with 3
+ *    (camera distance) under 3fps. So on a struggling machine the easing that
+ *    exists to hide a change stopped easing at exactly the moment it was most
+ *    needed, and the camera teleported.
+ *  - **It changed shape with frame rate.** The same `rate` closes a different
+ *    fraction of the gap per second at 30fps than at 144fps, so a move tuned on
+ *    one machine is a different move on another.
+ *
+ * `1 - exp(-delta * rate)` is the exact solution to the decay this was
+ * approximating: identical for small `delta * rate` (so every existing rate
+ * stays tuned), asymptotic rather than clamped (so it can never snap), and
+ * genuinely independent of how the elapsed time is chopped into frames.
+ *
+ * This is the same correction TrailLineScene's header already describes for its
+ * own decay — that lesson simply never reached the shared helper, which is used
+ * in seventeen places including the whole camera system.
  */
 export function approach(current: number, target: number, rate: number, delta: number): number {
-  return current + (target - current) * Math.min(1, delta * rate)
+  // A non-finite delta (a resumed background tab, a context restore) must not
+  // poison the value; holding still for one frame is the safe answer.
+  if (!isFinite(delta) || delta <= 0) return current
+  return current + (target - current) * (1 - Math.exp(-delta * rate))
 }

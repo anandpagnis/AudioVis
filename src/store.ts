@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { audioEngine, type ResponseTuning, type SourceKind } from './audio/AudioEngine'
+import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
 import { startRecording, stopRecording } from './engine/recorder'
@@ -55,6 +56,8 @@ export interface DebugPostFx {
   lensAmount: number
   /** Index into engine/opticalRack.ts's `LENS_STYLES`. */
   lensStyle: number
+  /** Transition style for the next scene change. See engine/transitions.ts. */
+  transitionStyle: TransitionStyle
 }
 
 export interface VisualParams {
@@ -467,6 +470,7 @@ export const useStore = create<AppState>()(
         mirrorSpin: 0,
         lensAmount: 0,
         lensStyle: 0,
+        transitionStyle: 'dissolve',
       },
 
       autoPilot: true,

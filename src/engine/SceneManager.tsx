@@ -4,7 +4,8 @@ import * as THREE from 'three'
 import { audioEngine } from '../audio/AudioEngine'
 import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store'
 import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded, scenePixelBudget } from '../scenes'
-import { performanceState, type ActiveEffect } from './performanceState'
+import { approach, performanceState, type ActiveEffect } from './performanceState'
+import { resolveTransitionStyle, transitionMix } from './transitions'
 import { quality } from './quality'
 import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
 import { applyFrameLoad, FEEDBACK_UNITS, frameLoad, GENERATIVE_UNITS, POST_CHAIN_UNITS } from './frameLoad'
@@ -133,6 +134,16 @@ const WARM_FRAMES = 4
 
 /** How fast the transition complexity discount eases in and out, per second. */
 const DISCOUNT_EASE_RATE = 7
+
+/**
+ * Classic smoothstep: zero slope at both ends, symmetric about 0.5.
+ *
+ * The symmetry is load-bearing, not cosmetic — see the call site. Input is
+ * assumed already clamped to 0..1 by the caller.
+ */
+function smoothstep(t: number): number {
+  return t * t * (3 - 2 * t)
+}
 
 /**
  * Scratch for the per-frame pixel-budget walk below. Module-level and reused,
@@ -666,6 +677,13 @@ export function SceneManager() {
         // than as an event. The cost-based guard is a SMOOTHNESS measure; this
         // one is editorial, so they stay separate conditions.
         const hardCut = immediate || !fundsOverlap
+        // Capture the style for THIS transition now. A hard cut is `cut`
+        // whatever the director asked for — the budget guard and the drop rule
+        // both mean "no overlap", and no amount of curve makes an overlap-free
+        // change gradual.
+        performanceState.transition.style = hardCut
+          ? 'cut'
+          : resolveTransitionStyle(performanceState.transitionStyle)
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1
@@ -855,8 +873,11 @@ export function SceneManager() {
     // defensible if it is imperceptible, and an instant change to loop counts
     // is not. ~0.15 s time constant: quick enough to be helping by the time the
     // crossfade is doing real work, slow enough to read as nothing at all.
-    discount.current +=
-      ((overlapping ? 1 : 0) - discount.current) * Math.min(1, f.delta * DISCOUNT_EASE_RATE)
+    // Exponential rather than `min(1, dt * rate)`: at rate 7 the clamped form
+    // snapped for any frame under 7fps, so the ease that exists to keep a
+    // 2-tier complexity drop imperceptible stopped easing precisely when the
+    // frame rate made it most visible. See `approach()` in performanceState.ts.
+    discount.current = approach(discount.current, overlapping ? 1 : 0, DISCOUNT_EASE_RATE, f.delta)
     quality.setTransitionDiscount(discount.current)
 
     // Crossfade over ~two beats when the tempo is known, then weight each
@@ -868,6 +889,24 @@ export function SceneManager() {
       e.fade.value += (f.delta / duration) * e.dir
       if (e.fade.value >= 1) e.fade.value = 1
       if (e.fade.value <= 0 && e.dir === -1) prune = true
+    }
+
+    // Publish the transition BEFORE deriving visibilities from it.
+    //
+    // The incoming primary's raw clock is the one source of truth for how far
+    // through a change we are — the outgoing entry runs its own countdown, and
+    // deriving each side from its own clock is what makes a styled transition
+    // impossible (the two halves would be independent curves that need not sum
+    // to anything). One `t`, one style, both sides derived from it.
+    const incomingPrimary = entriesRef.current.find((e) => e.role === 'primary' && e.dir === 1)
+    const outgoingPrimary = entriesRef.current.find((e) => e.role === 'primary' && e.dir === -1)
+    const tx = performanceState.transition
+    tx.progress = incomingPrimary ? Math.max(0, Math.min(1, incomingPrimary.fade.value)) : 1
+    tx.active = outgoingPrimary !== undefined && tx.progress < 1
+    const mix = transitionMix(tx.style, tx.progress)
+
+    for (const e of entriesRef.current) {
+      if (e.dir === 0) continue
       const gain =
         e.role === 'primary'
           ? 1
@@ -875,7 +914,33 @@ export function SceneManager() {
             ? EFFECT_GAIN
             : state.layerFx[e.role].intensity
       e.out.gain = gain
-      e.out.value = Math.max(0, e.fade.value) * gain
+      // EASED on the way out, linear on the way in.
+      //
+      // `fade.value` stays a plain linear 0..1 clock because the lifecycle reads
+      // it — prune at <= 0, complete at >= 1, and `sampleTransitionFrame`
+      // measures against it. Easing it in place would make "how far through the
+      // fade am I" and "how visible am I" the same number, and they are not.
+      //
+      // What scenes and the compositor see is the eased value. A linear alpha
+      // ramp changes at the same rate at its start, middle and end, which is
+      // what reads as mechanical — smoothstep gives it ease-in and ease-out and
+      // costs two multiplies.
+      //
+      // Safe for the additive majority (17 of 18 scenes) for a specific reason:
+      // smoothstep is symmetric, `S(1-t) === 1 - S(t)`, so an outgoing scene at
+      // `S(1-t)` and an incoming at `S(t)` still sum to exactly 1 at every point
+      // of the fade. The total light is unchanged; only its distribution across
+      // the two pictures is eased. An equal-power curve, which is right for
+      // audio and for opaque blends, would overshoot here.
+      // The two primaries follow the transition's curve pair; everything else
+      // (layers, effects) keeps its own independent eased fade, because a layer
+      // arriving is not part of the scene change and should not inherit its
+      // character — a `dipToBlack` between subjects must not also blink the
+      // background layer that is staying put.
+      e.out.value =
+        e.role === 'primary' && tx.active
+          ? (e.dir === 1 ? mix.in : mix.out) * gain
+          : smoothstep(Math.max(0, e.fade.value)) * gain
       e.out.progress = e.effect
         ? Math.min(1, Math.max(0, (f.time - e.effect.startedAt) / e.effect.durationSec))
         : 0

@@ -9,11 +9,13 @@ import type {
   VignetteEffect,
 } from 'postprocessing'
 import { FeedbackPass } from './FeedbackPass'
+import type { LensRackState, MirrorRackState } from './opticalRack'
 import { LensPass } from './LensPass'
 import { MirrorPass } from './MirrorPass'
 import { getPalette } from './palettes'
 import { performanceState } from './performanceState'
 import { renderScale } from './renderScale'
+import { transitionRack, usesRack } from './transitions'
 import { useDispose } from './useDispose'
 import { useStore } from '../store'
 
@@ -74,6 +76,10 @@ export function EffectsDirector() {
   const feedbackTint = useRef(new Color(1, 1, 1))
   /** Render scale the composer's buffers were last sized for. */
   const appliedScale = useRef(-1)
+  /** Scratch rack states for a transition in flight — reused, never allocated
+   *  in the loop, matching this file's no-allocation-per-frame discipline. */
+  const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
+  const txLens = useRef<LensRackState>({ amount: 0, style: 0 })
   useDispose(feedbackPass, mirrorPass, lensPass)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
   // would invalidate every material's shader cache.
@@ -138,9 +144,29 @@ export function EffectsDirector() {
     // ONLY branch either of them has — see engine/opticalRack.ts. At rest both
     // are skipped by the composer entirely, so the chain keeps its shape without
     // charging for two fullscreen passes that would change nothing.
-    mirrorPass.advance(p.mirror, delta, p.rackAudio.mids)
-    lensPass.advance(p.lens, delta, p.rackAudio)
-    feedbackPass.setTrails(p.trails)
+    // A transition may borrow the racks for its duration — `smear` is the
+    // feedback pass, `melt` is a lens material, `collapse` is the mirror rack.
+    // Layered OVER whatever the director already set rather than replacing it,
+    // so a show running a standing lens look does not lose it for two beats
+    // every time the scene changes.
+    //
+    // Additive for the continuous amounts and last-writer for the discrete
+    // choices (material, tile count), because those are selections rather than
+    // magnitudes — averaging two lens materials is not a lens material.
+    const tx = p.transition
+    const rack = tx.active && usesRack(tx.style) ? transitionRack(tx.style, tx.progress) : null
+    if (rack) {
+      txMirror.current.segments = p.mirror.segments
+      txMirror.current.tiles = rack.mirrorTiles > 1.5 ? rack.mirrorTiles : p.mirror.tiles
+      txMirror.current.twist = p.mirror.twist + rack.mirrorTwist
+      txMirror.current.slice = p.mirror.slice
+      txMirror.current.spin = p.mirror.spin
+      txLens.current.amount = Math.min(1, p.lens.amount + rack.lensAmount)
+      txLens.current.style = rack.lensAmount > 0 ? rack.lensStyle : p.lens.style
+    }
+    mirrorPass.advance(rack ? txMirror.current : p.mirror, delta, p.rackAudio.mids)
+    lensPass.advance(rack ? txLens.current : p.lens, delta, p.rackAudio)
+    feedbackPass.setTrails(Math.min(1, p.trails + (rack?.trails ?? 0)))
     // `mid` is the body colour, which is what a trail should be tinted toward
     // — glow would make every trail read as a highlight, and shadow would make
     // them vanish into the ground.

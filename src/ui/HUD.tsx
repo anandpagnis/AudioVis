@@ -26,6 +26,7 @@ import { FpsMeter } from './FpsMeter'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
 import { LENS_STYLES } from '../engine/opticalRack'
+import { TRANSITION_STYLES } from '../engine/transitions'
 
 // macOS Chrome can only capture a browser TAB's audio via getDisplayMedia —
 // whole-screen / system audio isn't available, so the copy has to differ.
@@ -646,6 +647,25 @@ export function HUD() {
                       position on a scale, so it gets buttons rather than a
                       slider. Inert until `Lens amount` is above zero — the pass
                       is skipped entirely at 0. */}
+                  {/* A transition is a choice between named behaviours, not a
+                      magnitude — buttons, not a slider. Applies to the NEXT
+                      scene change; SceneManager captures it at commit so this
+                      cannot alter a fade already running. */}
+                  <div className="param-row">
+                    <span>Transition</span>
+                    <div className="quality-row">
+                      {TRANSITION_STYLES.map((name) => (
+                        <button
+                          key={name}
+                          className={`chip ${debugPostFx.transitionStyle === name ? 'active' : ''}`}
+                          disabled={!debugPostFx.enabled}
+                          onClick={() => useStore.getState().setDebugPostFx({ transitionStyle: name })}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="param-row">
                     <span>Lens material</span>
                     <div className="quality-row">

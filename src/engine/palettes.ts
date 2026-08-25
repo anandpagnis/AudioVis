@@ -222,8 +222,18 @@ export class PaletteBlender {
     this.glow.set(palette.slots.glow)
   }
 
+  /**
+   * Ease every slot toward `palette`.
+   *
+   * `1 - exp(-delta * speed)` rather than `min(1, delta * speed)`, for the
+   * reason spelled out on `approach()` in performanceState.ts: the clamped form
+   * snaps to the target outright once `delta * speed >= 1`, which at the default
+   * speed is any frame slower than 2.5fps — so a palette change stopped sweeping
+   * and started cutting exactly on the machines least able to hide it.
+   */
   update(palette: Palette, delta: number, speed = 2.5) {
-    const k = Math.min(1, delta * speed)
+    if (!isFinite(delta) || delta <= 0) return
+    const k = 1 - Math.exp(-delta * speed)
     const s = palette.slots
     this.bg.lerp(this.target.set(s.bg), k)
     this.shadow.lerp(this.target.set(s.shadow), k)

@@ -253,6 +253,9 @@ export function PerformanceStateBridge() {
       p.mirror.spin = dbg.mirrorSpin
       p.lens.amount = dbg.lensAmount
       p.lens.style = dbg.lensStyle
+      // The style for the NEXT change. SceneManager captures it at commit, so
+      // moving this mid-fade cannot alter a transition already in flight.
+      p.transitionStyle = dbg.transitionStyle
     }
   }, -95)
 

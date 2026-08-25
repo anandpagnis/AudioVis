@@ -869,9 +869,100 @@ ratios between configurations, never anyone's real frame rate.
 
 ---
 
+## Transitions (2026-08-25)
+
+Opened by a report that transitions feel jerky and sudden. Five distinct
+causes; two fixed here, one is the likely dominant one and is still open.
+
+- [x] **F62 · The crossfade curve was linear, with no ease at either end** —
+      `src/engine/SceneManager.tsx`
+      `fade.value += delta / duration` went straight to `out.value` and to a
+      scene's `vis`. A linear alpha ramp changes at the same rate at its start,
+      middle and end, which is what reads as mechanical — and it is frame-rate
+      independent, so it looked abrupt at any fps.
+      The raw `fade.value` is still a linear clock, because the lifecycle reads
+      it (prune at <= 0, complete at >= 1, `sampleTransitionFrame` measures
+      against it); only the value scenes and the compositor see is eased.
+      Safe for the additive majority for a specific reason: smoothstep is
+      symmetric, `S(1-t) === 1 - S(t)`, so out and in still sum to exactly 1 at
+      every point of the fade. Total light is unchanged; only its distribution
+      across the two pictures is eased. An equal-power curve — correct for audio
+      and for opaque blends — would have overshot here. 17 of 18 scenes are
+      additive; `chrome` is the lone exception.
+
+- [x] **F63 · `approach()` snapped outright at low frame rates** —
+      `src/engine/performanceState.ts`, `src/engine/palettes.ts`,
+      `src/engine/SceneManager.tsx`
+      It was `current + (target - current) * Math.min(1, delta * rate)` while its
+      own doc comment claimed to be frame-rate independent. Once
+      `delta * rate >= 1` the clamp fires and the value jumps to the target: at
+      rate 7 (the transition discount) any frame under 7fps, at 2.5 (palette
+      blending) under 2.5fps, at 3 (camera distance) under 3fps. So the easing
+      that exists to hide a change stopped easing exactly when the frame rate
+      made it most visible, and the camera teleported. It was also frame-rate
+      *dependent* above the clamp, so a move tuned on one machine was a
+      different move on another.
+      Now `1 - exp(-delta * rate)`: identical for small `delta * rate` so every
+      existing rate stays tuned, asymptotic so it can never snap. Applied to the
+      shared helper (17 call sites, including the whole camera system), to
+      `PaletteBlender.update`, and to the transition discount ease.
+      This is the same correction `TrailLineScene`'s header already spelled out
+      for its own decay — the lesson had never reached the shared helper.
+
+- [ ] **F64 · Every transition becomes a hard cut once the tier drops** —
+      *the likely dominant cause of the original report; open*
+      `src/engine/SceneManager.tsx`
+      `hardCut = immediate || !fundsOverlap`. When the frame budget cannot fund
+      two primaries the crossfade is replaced by an instantaneous cut — so
+      transitions turn sudden exactly when the machine is already struggling. A
+      performance mechanism is producing an editorial result.
+      **Observed, not theorised.** Instrumenting the live transition state under
+      a software renderer (~6fps, governor pinned near the survival tier) showed
+      a real scene change (`wireframe` -> `ribbons`) completing with the primary
+      count never exceeding 1 and `transition.active` never once true: the fade
+      was skipped entirely, every time. At `TIER_BUDGET[4] = 5` against fixed
+      costs of 4 (post chain 2 + feedback 1 + generative 1), there is
+      essentially never room for a second primary, so `fundsOverlap` fails
+      always.
+      Consequence for the work above: F62 and F63 are correct and unit-tested,
+      but their on-screen effect **cannot be observed on a machine in this state**,
+      because no crossfade ever runs. Anyone verifying transition feel must
+      first confirm the tier is not pinned low.
+      The fix is to degrade instead of teleport — shorten the fade, or dip
+      through black over a few frames — so the budget guarantee is kept without
+      the visual cliff. Ordering: this should land before any further transition
+      styling work, since it currently masks all of it.
+
+- [ ] **F65 · Transition styles are debug-only and undriven** — *same posture as
+      F52 / F56*
+      `src/engine/transitions.ts`
+      Six styles exist (`cut`, `dissolve`, `dipToBlack`, `smear`, `melt`,
+      `collapse`) and three of them drive the racks rather than the mix, so they
+      cost nothing beyond passes that already run. Nothing chooses between them:
+      `performanceState.transitionStyle` is set only by the Post FX debug panel
+      and defaults to `dissolve`.
+      Choosing a transition per musical moment — a cut on a drop, a dip at a
+      section boundary, a smear through a breakdown — is the actual creative
+      work, and it is what stops a long set feeling flat. Blocked behind F64 for
+      the reason given there.
+
+- [ ] **F66 · Nothing verifies transition feel at a real frame rate** —
+      *tooling gap*
+      Everything in this section was reasoned from the maths and confirmed by
+      unit test; the one attempt to watch a real transition end to end failed
+      because of F64. The headless renderer used for verification runs at
+      5-10fps, which independently makes any transition look stepped regardless
+      of curve — a 0.9 s fade at 8fps is roughly seven discrete steps.
+      Until there is a way to capture a transition at a real frame rate — a
+      GPU-backed capture, or a deterministic offline render of the fade — "does
+      it feel smooth" cannot be answered in this repo, only "is the curve
+      correct".
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **537 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **553 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and
