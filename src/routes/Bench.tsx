@@ -26,7 +26,18 @@ import { BenchStage } from '../bench/BenchStage'
  * frame — a scene that builds its geometry once and loops ~1,300 times.
  */
 
-const TIERS = [0, 1, 2, 3, 4]
+/**
+ * Tiers swept, and the one-tier escape hatch.
+ *
+ * `?profile` sweeps tier 0 only. The role profile is about what a scene LOOKS
+ * like, and five tiers of that is four fifths waste — the cost table is what
+ * needs the whole ladder. It also makes the sweep short enough to drive from a
+ * test harness on software GL, which is what validating the profiler against
+ * the roster's hand-made role calls requires.
+ */
+const PROFILE_ONLY =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
+const TIERS = PROFILE_ONLY ? [0] : [0, 1, 2, 3, 4]
 
 /** Roughly how long a full sweep takes, for the pre-run warning. */
 const SECONDS_PER_CELL = 3.3

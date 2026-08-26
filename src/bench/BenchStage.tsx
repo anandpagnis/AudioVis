@@ -10,6 +10,7 @@ import { DEFAULT_ANCHOR } from '../engine/CameraDirector'
 import { sceneCpu, takeSceneCpu } from '../engine/sceneFrame'
 import { getScene, getScenePixelBudget, isSceneLoaded } from '../scenes'
 import { GpuTimer } from './gpuTimer'
+import { PROFILE_H, PROFILE_W } from './sceneProfile'
 import type { BenchRunner } from './benchHarness'
 
 /**
@@ -51,6 +52,15 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
   const setDpr = useThree((s) => s.setDpr)
   const size = useThree((s) => s.size)
   const timer = useMemo(() => new GpuTimer(), [])
+  /** Scratch for the role profile — allocated once, never in the loop. */
+  const luma = useMemo(() => new Float32Array(PROFILE_W * PROFILE_H), [])
+  const profileCtx = useMemo(() => {
+    if (typeof document === 'undefined') return null
+    const c = document.createElement('canvas')
+    c.width = PROFILE_W
+    c.height = PROFILE_H
+    return c.getContext('2d', { willReadFrequently: true })
+  }, [])
   const appliedTier = useRef(-1)
   /** Scene the current DPR was solved for — the budget is per scene, not global. */
   const appliedScene = useRef('')
@@ -132,6 +142,29 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
     timer.begin()
     gl.render(scene, camera)
     timer.end()
+
+    // Read the frame back for the role profile, in the same tick that drew it.
+    //
+    // Priority is not the issue here (this useFrame owns the render), but the
+    // drawing buffer is: without `preserveDrawingBuffer` a canvas only holds
+    // pixels between the draw and the browser reclaiming it, which is why this
+    // sits immediately after `gl.render` rather than in a separate hook. Same
+    // constraint ExposureSampler documents.
+    if (profileCtx) {
+      try {
+        profileCtx.drawImage(gl.domElement, 0, 0, PROFILE_W, PROFILE_H)
+        const d = profileCtx.getImageData(0, 0, PROFILE_W, PROFILE_H).data
+        for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+          // Rec.709 luma on the OUTPUT-space bytes. The profile reasons about
+          // what a viewer sees, not about linear radiometry.
+          luma[j] = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255
+        }
+        runner.profileFrame(luma, delta)
+      } catch {
+        // A tainted or zero-sized canvas: skip this frame's profile rather than
+        // taking the whole sweep down.
+      }
+    }
 
     // Do not feed the runner until the scene's lazy chunk has actually landed.
     // Scenes render inside Suspense, so for the first frames after a cell change

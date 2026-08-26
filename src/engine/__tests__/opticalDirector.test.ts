@@ -120,8 +120,10 @@ describe('the lens rack', () => {
   it('draws harder materials for harder moods', () => {
     const soft = Array.from({ length: 12 }, (_, i) => lensForSection('ambient', i)).filter((i) => i >= 0)
     expect(soft.every((i) => i <= 1)).toBe(true)
+    // `aggressive` draws glitch (4) and melt (3); it used to include the LED
+    // wall (5), which is now excluded from every pool — see below.
     const hard = Array.from({ length: 12 }, (_, i) => lensForSection('aggressive', i)).filter((i) => i >= 0)
-    expect(hard.every((i) => i >= 4)).toBe(true)
+    expect(hard.every((i) => i === 3 || i === 4)).toBe(true)
   })
 
   it('is silent in silence, and absent when the section did not take one', () => {
@@ -145,5 +147,30 @@ describe('the lens rack', () => {
   it('clamps a tension outside 0..1 instead of running away', () => {
     expect(lensAmountTarget('peak', 4, true)).toBeLessThanOrEqual(0.62)
     expect(lensAmountTarget('peak', -2, true)).toBe(0.3)
+  })
+})
+
+/**
+ * `pixels` is excluded from automatic selection, and the reason is a property
+ * of that material rather than a preference.
+ *
+ * Its amount means cell COARSENESS, inverted — 140 fine cells at low amount,
+ * 30 coarse ones at high — so the floor an engaged lens gets, which is correct
+ * for every material where amount is a magnitude, lands it at ~118 cells. That
+ * does not read as a deliberate LED wall. It reads as a broken renderer, and
+ * was reported as exactly that.
+ */
+describe('the LED pixel wall is not selected automatically', () => {
+  const PIXELS = 5
+  it('never appears in any mood pool', () => {
+    for (const mood of MOODS) {
+      for (let seed = 0; seed < 60; seed++) {
+        expect(lensForSection(mood, seed), `${mood} ${seed}`).not.toBe(PIXELS)
+      }
+    }
+  })
+
+  it('is still a real material, so the debug panel can reach it', () => {
+    expect(LENS_STYLES[PIXELS]).toBe('pixels')
   })
 })

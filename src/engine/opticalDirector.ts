@@ -102,11 +102,27 @@ export function lensForSection(mood: MoodState, seed: number): number {
     silence: [],
     ambient: [0, 1], // reeded glass, radial flutes — soft, refractive
     mellow: [0, 1, 6], // + hex fly-eye
-    groove: [2, 5], // anamorphic streaks, LED pixel wall
+    groove: [2, 6], // anamorphic streaks, hex fly-eye
     building: [2, 3], // + melt, which plumes on kicks
     peak: [3, 4], // melt, glitch tears
-    aggressive: [4, 5], // glitch, pixels
+    aggressive: [4, 3], // glitch, melt
   }
+  // `pixels` (index 5) is deliberately absent from every pool.
+  //
+  // Its amount does not mean intensity, it means cell COARSENESS, inverted:
+  // `mix(140.0, 30.0, uAmt)` gives 140 fine cells at low amount and 30 coarse
+  // ones at high. So the floor this director applies to an engaged lens — right
+  // for every material where amount is a magnitude — puts the LED wall at about
+  // 118 cells, which does not read as a deliberate wall. It reads as a broken
+  // renderer, and was reported as exactly that.
+  //
+  // The material is effectively binary and needs a floor of its own (~0.55,
+  // where cells are coarse enough to be obviously a choice and the gutter is at
+  // full strength) before it can be selected automatically. Still fully
+  // available from the Post FX panel.
+  //
+  // `fly eye` has the same inverted mapping but not the same failure: at low
+  // amount it is a 22-bead lattice, which is coarse enough to read as a lens.
   const options = pool[mood] ?? []
   if (options.length === 0) return -1
   // Two sections in three. More often than the kaleidoscope, which is a whole

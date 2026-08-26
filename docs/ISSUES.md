@@ -2350,6 +2350,57 @@ thing gets built later against a replaced roster with no ground truth.
 Declaration is intent; measurement is a safety check. Same posture
 `trusted: false` already takes on cost claims.
 
+### Step 3 result — validated against the sixteen (2026-08-27)
+
+Steps 1 and 2 are done: `docs/10_Scene_Roles.md` is the contract,
+`src/bench/sceneProfile.ts` is the implementation, and `/bench?profile` sweeps
+tier 0 only so the whole roster can be profiled in one run.
+
+Profiled all sixteen and compared the verdicts to the hand-made role calls.
+**13/16 agree.** The profile is a veto, so the disagreements that count are
+declared roles it REFUSES — three of them:
+
+  scene        fill   centre   conflict   declared -> refused because
+  plasma      0.019     0.89       1.65   accent/overlay/primary -> conflict, and fill
+  ribbons     0.000     0.79       1.40   accent/overlay         -> conflict
+  trail       0.018     0.39       0.91   primary                -> fill 0.018 < 0.02
+
+It also independently reached several of the calls it was being checked
+against: `kaleido` conflicts (0.53) far more than `orbs` (0.42) or `network`
+(0.37); `synthgrid` and `juliawings` are refused as layers on fill alone (0.65
+and 0.76); `orbs` clears every background threshold, which is the call the
+roster's own comment had reasoned to in prose.
+
+**Two real defects, found by running it rather than by thinking about it.**
+
+1. **The profile is measured with no post chain, and it needs one.** `BenchStage`
+   deliberately excludes the post chain so scene COSTS compare cleanly — a
+   constant added to every scene shrinks the ratios that are the point. But a
+   profile is about what a viewer sees, and bloom plus the exposure servo change
+   fill and conflict enormously. `ribbons` profiling at `fill 0.000` is not a
+   scene with nothing on screen; it is a scene whose output sits below the lit
+   threshold until bloom and gain reach it. Cost wants no post chain, profile
+   wants one, and the profiler was built on the cost harness. They have to be
+   separate passes.
+
+2. **`fill` is thresholded and `conflict` is energy-weighted, so they disagree
+   about a dim scene.** `ribbons` reads `fill 0.000` (nothing above threshold)
+   and `conflict 1.40` (strongly centred) in the same breath. Both are
+   internally correct and together they are incoherent. Either fill becomes an
+   energy share, or conflict gains a presence gate, or the field is normalised
+   before either is taken.
+
+**Step 4 is deliberately NOT started.** Wiring `registerScene` to a profile that
+cannot see the post chain would refuse legitimate scenes for being dim, and the
+first thing it would refuse is `ribbons` — a scene that has been a working layer
+for the entire life of the project. The thresholds are also not worth tuning yet:
+tuning them to reach 16/16 against sixteen points is overfitting, and the two
+defects above would still be there underneath.
+
+This is what step 3 was for. The idea holds in shape — the statistics do
+separate subjects from layers, and they reached several calls independently —
+and it is not yet trustworthy enough to give a veto over anyone's submission.
+
 ### Two things genuinely uncertain
 
 - Whether the occlusion test generalises across palettes — a dark palette

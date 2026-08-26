@@ -1,3 +1,4 @@
+import { ProfileAccumulator, type SceneProfile } from './sceneProfile'
 /**
  * Scene cost benchmark: the measurement state machine.
  *
@@ -70,6 +71,14 @@ export interface BenchResult extends BenchCell {
   js: BenchStats
   /** Null when the timer extension is unavailable or every query was disjoint. */
   gpu: BenchStats | null
+  /**
+   * What the scene LOOKS like, for role eligibility.
+   *
+   * See bench/sceneProfile.ts and docs/10_Scene_Roles.md. Accumulated over the
+   * same measured window as the timings, so a profile and a cost always
+   * describe the same frames.
+   */
+  profile: SceneProfile
 }
 
 export type BenchPhase = 'warmup' | 'measure' | 'drain' | 'done'
@@ -133,6 +142,7 @@ export class BenchRunner {
   private index = 0
   private phase: BenchPhase
   private frames = 0
+  private readonly profile = new ProfileAccumulator()
   private cpuSamples: number[] = []
   private jsSamples: number[] = []
   private gpuSamples: number[] = []
@@ -213,6 +223,19 @@ export class BenchRunner {
     }
   }
 
+  /**
+   * One frame's luminance field, for the role profile.
+   *
+   * Gated on the measure phase for the same reason the timings are: warmup
+   * frames include a cold shader compile and, for the particle scenes, a
+   * geometry buffer that has not landed yet — a scene that is not drawing what
+   * it will draw would profile as something it is not.
+   */
+  profileFrame(luma: Float32Array, dt: number): void {
+    if (this.phase !== 'measure') return
+    this.profile.push(luma, dt)
+  }
+
   /** Abandon the run, keeping completed cells. */
   stop(): void {
     this.phase = 'done'
@@ -229,12 +252,14 @@ export class BenchRunner {
       ...cell,
       cpu: stats(this.cpuSamples),
       js: stats(this.jsSamples),
+      profile: this.profile.result(),
       // A supported extension that returned nothing usable (every query
       // disjoint) is reported as null, same as no extension — in both cases
       // there is no GPU number, and inventing one from an empty set would be
       // worse than admitting it.
       gpu: this.gpuWasSupported && this.gpuSamples.length > 0 ? stats(this.gpuSamples) : null,
     })
+    this.profile.reset()
     this.cpuSamples = []
     this.jsSamples = []
     this.gpuSamples = []
