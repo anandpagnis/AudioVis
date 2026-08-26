@@ -33,9 +33,19 @@
 
 .console-top {
   display: grid;
-  grid-template-columns: minmax(240px, 22vw) 1fr minmax(260px, 24vw);
+  grid-template-columns: minmax(240px, 22vw) minmax(0, 1fr) minmax(260px, 24vw);
   gap: 14px;
-  align-items: stretch;
+  /* `start`, not `stretch`. Opening a diagnostic panel makes this row 370px
+     tall, and a stretched mirror grew with it until it filled half the screen.
+     Each cell should be its own natural height. */
+  align-items: start;
+}
+
+/* `minmax(0, 1fr)` above plus this: a grid item defaults to `min-width: auto`,
+   which refuses to shrink below its content, so a wide dock pushed the whole
+   console past the right edge of the window and cut off the Post FX column. */
+.readouts {
+  min-width: 0;
 }
 
 /* ---------- mirror ---------- */
@@ -43,6 +53,7 @@
 .mirror {
   position: relative;
   aspect-ratio: 16 / 9;
+  width: 100%;
   border-radius: 10px;
   overflow: hidden;
   background: #000;
@@ -87,6 +98,14 @@
   display: flex;
   align-items: baseline;
   gap: 10px;
+  min-width: 0;
+}
+
+/* The dock is a tall block inside a baseline-aligned row, so it opts out —
+   baseline-aligning a 352px panel against a 64px numeral pushes the numeral
+   to the bottom of the header. */
+.readout-main > .diag-dock {
+  align-self: flex-start;
 }
 
 .big-number {
@@ -735,20 +754,12 @@
 
 /* ---------- diagnostics ---------- */
 
-/* Bottom-left, out of the way of the columns and clear of the mirror. These
-   are read while something is wrong, not during a set. */
-.tool-row {
-  position: fixed;
-  left: 14px;
-  bottom: 14px;
-  display: flex;
-  gap: 8px;
-  z-index: 40;
-}
-
+/* In the header dock beside the panels they open, so the button and its panel
+   are one thing rather than two. Stacked, to keep the dock's width for the
+   panels themselves. */
 .tool-btn {
-  min-height: 44px;
-  padding: 6px 14px;
+  min-height: 34px;
+  padding: 5px 12px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(12, 16, 22, 0.92);
@@ -762,10 +773,9 @@
   backdrop-filter: blur(6px);
 }
 
+/* No sub-labels in the docked form: the panel it opens is right next to it. */
 .tool-btn small {
-  font-weight: 400;
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.4);
+  display: none;
 }
 
 .tool-btn.on {
@@ -774,41 +784,51 @@
   color: #fff;
 }
 
-/* The panels were authored for the old full-screen HUD, where the only thing
-   under them was the canvas. On the console they landed on top of each other —
-   the fps meter over the debug panel, both over the transport — because all
-   three anchor to `top: 84px` on the same two corners.
-   Re-anchored to the bottom edge and given a corner each. They are still
-   overlays and still cover the columns while open, which is what an overlay is
-   for; what they must not do is cover one another. */
+/* DOCKED, not floating. All three panels were authored for the full-screen HUD
+   and anchor to `top: 84px` on the same two corners, so on the console they
+   landed on top of each other and on top of the transport. Overlaying the
+   columns was not much better: a diagnostic that hides the control you are
+   about to reach for is its own problem.
+   They now sit inline in the header gap between the BPM readout and the mood
+   pill — the one piece of horizontal space nothing else wants — and the header
+   grows to fit rather than anything being covered. */
+.diag-dock {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-left: 18px;
+  min-width: 0;
+}
+
+/* Stacked, not side by side. Laid out in a row the three panels want ~850px,
+   which is more than the header gap has, so the third was clipped horizontally
+   while still reserving its 352px of height — an empty band under the two that
+   fit. A narrow scrolling column shows whichever is wanted and reserves nothing
+   for the ones that are not. */
+.diag-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Capped so opening a panel cannot push the control columns off the bottom. */
+  max-height: 38vh;
+  padding-right: 4px;
+}
+
 .app-control .analytics-panel,
 .app-control .debug-panel,
 .app-control .fps-meter {
-  position: fixed;
-  top: auto;
-  z-index: 45;
+  position: static;
+  inset: auto;
+  flex: 0 0 auto;
+  margin: 0;
 }
 
-.app-control .analytics-panel {
-  left: 14px;
-  right: auto;
-  bottom: 72px;
-}
-
-.app-control .debug-panel {
-  left: auto;
-  right: 14px;
-  bottom: 66px;
-}
-
-.app-control .fps-meter {
-  left: auto;
-  right: 14px;
-  bottom: 14px;
-}
-
-/* The tool row owns the bottom-left strip, so nothing in the columns may sit
-   under it — a control hidden behind a button is a control that gets missed. */
-.console {
-  padding-bottom: 68px;
+.tool-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 0 0 auto;
 }

@@ -61,8 +61,6 @@ export function Console() {
           <PostFx />
         </Section>
       </div>
-
-      <Diagnostics />
     </div>
   )
 }
@@ -112,6 +110,10 @@ function Readouts({ tele, outputOpen }: { tele: Telemetry | null; outputOpen: bo
       <div className="readout-main">
         <span className="big-number">{bpm || '--'}</span>
         <span className="unit">BPM</span>
+        {/* The diagnostics sit here rather than floating over the columns: this
+            is the one piece of horizontal space in the header that nothing else
+            wants. */}
+        <Diagnostics />
         <span className={`mood mood-${tele?.mood ?? 'silence'}`}>{tele?.mood ?? 'idle'}</span>
       </div>
 
@@ -128,6 +130,7 @@ function Readouts({ tele, outputOpen }: { tele: Telemetry | null; outputOpen: bo
         <span className={`pill ${outputOpen && tele ? 'good' : 'bad'}`}>
           {outputOpen && tele ? 'output live' : 'output down'}
         </span>
+        <AudioHealth tele={tele} />
         {tele && (
           <>
             <span className="pill">tier {tele.tier}</span>
@@ -694,8 +697,8 @@ function Diagnostics() {
   }, [wanted])
 
   return (
-    <>
-      <div className="tool-row">
+    <div className="diag-dock">
+      <div className="tool-col">
         <button
           className={`tool-btn ${debugOpen ? 'on' : ''}`}
           onClick={() => useStore.getState().toggleDebug()}
@@ -719,9 +722,42 @@ function Diagnostics() {
         </button>
       </div>
 
-      {debugOpen && <DebugPanel />}
-      {fpsMeter && <FpsMeter />}
-      {analyticsOpen && <AnalyticsPanel />}
-    </>
+      {wanted && (
+        <div className="diag-panels">
+          {debugOpen && <DebugPanel />}
+          {fpsMeter && <FpsMeter />}
+          {analyticsOpen && <AnalyticsPanel />}
+        </div>
+      )}
+    </div>
   )
+}
+
+/* ------------------------------------------------------------ audio health */
+
+/**
+ * Why the output window is silent, when it is.
+ *
+ * There are two very different silences and they used to look identical from
+ * here. **No graph** means the source never arrived — the hand-off failed, or
+ * nothing was ever started. **A suspended context** means the source arrived
+ * and the browser has not let it start: the output window is opened
+ * programmatically, so it can easily have never received a user gesture, and a
+ * suspended AudioContext reads as perfect silence with no error anywhere.
+ *
+ * They need different things from the operator (start a source vs. click the
+ * output window once), so the console has to distinguish them rather than
+ * showing a flat BPM of 120 and leaving them to guess.
+ */
+function AudioHealth({ tele }: { tele: Telemetry | null }) {
+  if (!tele) return null
+  if (tele.audioState === 'suspended') {
+    return <span className="pill bad">click the output window to start audio</span>
+  }
+  if (!tele.hasSource && tele.status === 'running') {
+    return <span className="pill warn">output has no audio source</span>
+  }
+  if (tele.status === 'starting') return <span className="pill warn">output starting…</span>
+  if (tele.status === 'error') return <span className="pill bad">output error</span>
+  return null
 }

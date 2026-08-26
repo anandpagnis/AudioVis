@@ -182,6 +182,33 @@ class AudioEngine {
   }
 
   /**
+   * The AudioContext's own state, or `'none'` when there is no graph.
+   *
+   * `running` only says a graph was built. A context can be built and
+   * `suspended`, which reads as perfect silence with no error anywhere — and in
+   * the two-window split that is the likely failure, because the output window
+   * is opened programmatically and may never have received a user gesture. The
+   * console needs to be able to tell "no source" from "source, but the browser
+   * has not let it start yet", because those need different things from the
+   * operator.
+   */
+  get contextState(): string {
+    return this.ctx ? this.ctx.state : 'none'
+  }
+
+  /**
+   * Resume a suspended context. Safe to call on every gesture.
+   *
+   * `connectStream` installs its own listener when it finds a suspended
+   * context, but that only exists once a graph has been built. This covers the
+   * window before that, and is called from the output window's own click
+   * handler.
+   */
+  resumeContext(): void {
+    if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume().catch(() => {})
+  }
+
+  /**
    * Abandon any in-flight start attempt (see {@link startToken}). Safe to call
    * when nothing is starting. Callers that also want the graph torn down should
    * follow with {@link stop}.

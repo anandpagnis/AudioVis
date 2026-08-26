@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Stage } from '../engine/Stage'
 import { Console } from '../ui/Console'
+import { audioEngine } from '../audio/AudioEngine'
 import { claimSource, isOutput } from '../engine/outputLink'
 import { useStore } from '../store'
 
@@ -97,6 +98,12 @@ function useCleanSurface() {
       }, CURSOR_HIDE_MS)
     }
     const goFullscreen = () => {
+      // Every gesture, before anything else. This window is opened
+      // programmatically and so may never have had user activation, which
+      // leaves its AudioContext suspended — perfect silence, no error
+      // anywhere. `connectStream` installs its own resume listener, but only
+      // once a graph exists; this covers the window before that.
+      audioEngine.resumeContext()
       if (document.fullscreenElement) return
       // Rejected when the gesture is untrusted or already declined. Neither is
       // worth surfacing: the window is a perfectly good capture target at any

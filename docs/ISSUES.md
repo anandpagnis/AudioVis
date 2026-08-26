@@ -1850,19 +1850,86 @@ It did not refine the cost model; it retired it.
       (gain/blend). `HUD.tsx` still exists and still works — it is simply not
       mounted, so nothing is lost and the port can continue against a reference.
 
-- [ ] **F101 · The diagnostic panels overlay the console columns** — *cosmetic,
-      by construction*
-      `src/styles/console.css`
+- [x] **F101 · The diagnostic panels overlaid the console columns** — *fixed
+      2026-08-27 by docking them*
+      `src/styles/console.css`, `src/ui/Console.tsx`
       All three panels were authored for the full-screen HUD, where the only
       thing under them was the canvas, and all three anchor to `top: 84px` on
-      the same two corners. On the console they landed on top of each other —
-      the fps meter over the debug panel, both over the transport.
-      Re-anchored to the bottom edge with a corner each, which fixes the panels
-      colliding with one another. They still cover the columns while open, which
-      is what an overlay does, but the debug panel in particular sits over the
-      lower half of the Post FX column. A docked layout (a collapsing bottom
-      drawer rather than three floating cards) would be better and is a bigger
-      change than this warranted today.
+      the same two corners. On the console they landed on top of each other and
+      on top of the transport.
+      They are now docked inline in the header, in the gap between the BPM
+      readout and the mood pill — the one piece of horizontal space nothing else
+      wants. Three things had to be got right for that to work:
+        - `.console-top` is `align-items: start`, not `stretch`. A 370px-tall
+          dock stretched the mirror cell to match until it filled half the
+          screen.
+        - The middle column is `minmax(0, 1fr)` and `.readouts` gets
+          `min-width: 0`. A grid item defaults to `min-width: auto`, which
+          refuses to shrink below its content, so a wide dock pushed the Post FX
+          column off the right edge of the window.
+        - The panels stack in a scrolling COLUMN, not a row. Side by side they
+          want ~850px, more than the gap has, so the third was clipped
+          horizontally while still reserving its 352px of height — an empty band
+          under the two that fit.
+
+- [x] **F102 · "output down" while displaying that output's own telemetry** —
+      *found from a user screenshot, reproduced, fixed 2026-08-27*
+      `src/engine/outputLink.ts`
+      The console reported `output down` in the same breath as it displayed the
+      output window's tier, frame time and current scene, offered "Open output
+      window" for a window that was already open, and — the damaging part —
+      refused to hand over an acquired audio source, stopping the stream with
+      "No output window".
+
+      `outputIsOpen()` read `!!outputWindow && !outputWindow.closed`, and
+      `outputWindow` is module state. **Any reload of the control window loses
+      it** — every HMR update in dev, any refresh in production — while the
+      output window carries on rendering and publishing perfectly happily.
+      `handSource()` used the same dead handle.
+
+      Fixed in two parts. Presence now comes from telemetry: a packet inside
+      `TELEMETRY_STALE_MS` is proof the window is alive, and the handle is only
+      a secondary signal for the moment before its first frame. And the handle
+      is recovered rather than mourned — `window.open('', 'audiovis-output')`
+      returns an existing named window without navigating it, guarded on
+      telemetry because with no such window that same call would create a blank
+      popup.
+
+      Reproduced exactly (open output, reload the console, hand over a file):
+      before, `output down` and a dead hand-off; after, `output live`, no
+      spurious open button, and the output window running the track
+      (`contextState: running`, energy 0.62).
+
+- [~] **F103 · A silent output window could not say why** — *diagnosed and made
+      legible; the underlying report is unconfirmed*
+      `src/audio/AudioEngine.ts`, `src/engine/outputLink.ts`,
+      `src/routes/Visualizer.tsx`, `src/ui/Console.tsx`
+      Reported as "I share screen and audio, it says output down, and after I
+      fullscreen it still is not displaying — debug and analytics show it is not
+      picking up audio."
+
+      F102 covers the `output down` half and the failed hand-off it caused. The
+      silence half has a second candidate that the two-window split introduced
+      and nothing was reporting: **the output window is opened
+      programmatically, so it may never have received a user gesture, and an
+      AudioContext created there starts `suspended`.** That reads as perfect
+      silence with no error anywhere — a flat 120 BPM and empty meters, which is
+      exactly what the screenshot showed.
+      `connectStream` already installs a resume-on-gesture listener, but only
+      once a graph exists; there was nothing covering the window before that.
+
+      Now: `audioEngine.resumeContext()` fires on every pointer-down in the
+      output window (the same handler that requests fullscreen), and telemetry
+      carries `audioState` and `hasSource` so the console can tell the two
+      silences apart — "click the output window to start audio" versus "output
+      has no audio source". They need different things from the operator, and
+      showing neither was the actual defect.
+
+      **Not confirmed**: a real screen-share cannot be driven from the test
+      harness, so the system-audio path specifically has not been reproduced
+      end to end. What is verified is the file path through the same hand-off,
+      and that the console now names the failure instead of showing a plausible
+      idle state.
 
 - [x] **F100 · Two control windows fought, and the transport acted on the wrong
       engine** — *both fixed and verified 2026-08-26*

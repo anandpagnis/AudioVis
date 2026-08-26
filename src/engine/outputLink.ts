@@ -99,6 +99,10 @@ export interface Telemetry {
   status: string
   sourceType: string | null
   recording: boolean
+  /** AudioContext state in the output window: none / suspended / running. */
+  audioState: string
+  /** True once a graph has been built, whether or not it is running. */
+  hasSource: boolean
   bpm: number
   confidence: number
   energy: number
@@ -114,6 +118,8 @@ export interface Telemetry {
 }
 
 const CHANNEL = 'audiovis-link'
+/** Window name, so a lost handle can be re-acquired rather than re-opened. */
+const OUTPUT_WINDOW_NAME = 'audiovis-output'
 /** Telemetry cadence. Fast enough for a beat dot, far below the frame rate. */
 export const TELEMETRY_INTERVAL_MS = 100
 /** The control surface calls the output dead after this long without a packet. */
@@ -325,13 +331,50 @@ export function openOutput(): Window | null {
     outputWindow.focus()
     return outputWindow
   }
+  // A window already open under this name is REUSED by `window.open`, so a
+  // control window that lost its handle recovers it here rather than opening a
+  // second output.
   const url = `${window.location.pathname}?output`
-  outputWindow = window.open(url, 'audiovis-output', 'popup=yes,width=1280,height=720')
+  outputWindow = window.open(url, OUTPUT_WINDOW_NAME, 'popup=yes,width=1280,height=720')
   return outputWindow
 }
 
+/**
+ * Is an output window alive?
+ *
+ * **Telemetry, not the handle.** The handle is module state, so it is null
+ * after any reload of the control window (every HMR update in dev, and any
+ * refresh in production) while the output window carries on rendering and
+ * publishing perfectly happily. Reading presence off the handle made the
+ * console say "output down" in the same breath as it displayed that window's
+ * tier, frame time and current scene — which is where this was found.
+ *
+ * A packet inside {@link TELEMETRY_STALE_MS} is proof; the handle is a
+ * secondary signal for the case where the window has opened but not yet drawn
+ * its first frame.
+ */
 export function outputIsOpen(): boolean {
+  if (readTelemetry()) return true
   return !!outputWindow && !outputWindow.closed
+}
+
+/**
+ * Recover a lost handle to an already-open output window.
+ *
+ * `window.open` with a NAME and an empty URL returns the existing window
+ * without navigating it — the standard way to re-acquire a handle. Guarded on
+ * telemetry because with no such window that same call would CREATE a blank
+ * popup, which is worse than the problem.
+ */
+function reacquireOutput(): Window | null {
+  if (outputWindow && !outputWindow.closed) return outputWindow
+  if (!readTelemetry()) return null
+  try {
+    outputWindow = window.open('', OUTPUT_WINDOW_NAME)
+  } catch {
+    outputWindow = null
+  }
+  return outputWindow
 }
 
 /**
@@ -344,7 +387,10 @@ export function outputIsOpen(): boolean {
  * that might not exist yet.
  */
 export function handSource(src: HandedSource): boolean {
-  const w = outputWindow
+  // Recover first. Losing the handle used to mean the acquired stream was
+  // stopped and the operator got "No output window" while an output window sat
+  // there rendering.
+  const w = reacquireOutput() ?? outputWindow
   if (!w || w.closed) return false
   try {
     ;(w as Window & LinkGlobals).__avSource = src
@@ -478,6 +524,8 @@ export function publishTelemetry(nowMs = performance.now()): void {
       status: useStore.getState().status,
       sourceType: useStore.getState().sourceType,
       recording: useStore.getState().isRecording,
+      audioState: audioEngine.contextState,
+      hasSource: audioEngine.running,
     },
   } satisfies Msg)
 }
