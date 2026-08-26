@@ -287,7 +287,17 @@ export function FlowRibbonScene() {
       const keep = Math.max(4, Math.floor(RIBBONS * state.particleDensity))
       geometry.setDrawRange(0, keep * (SEGMENTS - 1) * 6)
 
+      u.uFade.value = vis
       // ---- Upload the synth waveform ------------------------------------
+      //
+      // Skipped entirely while this instance is invisible. The decimation and
+      // its texture upload used to run whatever `vis` was, and this scene is
+      // layer-capable — so a faded-out instance was paying for a trace nobody
+      // could see, once per mounted copy (F14). The smoothing state is left
+      // alone rather than reset: it is a 26/s exponential follower, so it
+      // re-converges within a frame or two of coming back and the alternative
+      // is a visible snap on fade-in.
+      if (vis <= 0.001) return
       // Decimate the band-passed time-domain buffer down to the texture width,
       // taking the extreme in each bucket rather than the mean: averaging a
       // waveform toward zero is exactly how an oscilloscope trace turns into a
@@ -324,7 +334,6 @@ export function FlowRibbonScene() {
       // Opts this material into the director's primitives by name — only the
       // uniforms declared above are written.
       applyToUniforms(u)
-      u.uFade.value = vis
       u.uColA.value.copy(col.a)
       u.uColB.value.copy(col.b)
       u.uColC.value.copy(col.c)

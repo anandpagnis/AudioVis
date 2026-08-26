@@ -13,9 +13,17 @@ import { BenchStage } from '../bench/BenchStage'
  * each other, so slotBudget.ts has been allocating against a number assigned by
  * eye.
  *
- * Read the GPU column. The CPU column is vsync-locked, so every scene that
- * holds the refresh rate reads ~16.7ms whatever it actually cost — useful only
- * as "did it keep up".
+ * Three columns, and the pairing is the point:
+ *
+ *   GPU  what the draw actually cost on the card.
+ *   JS   time inside the scene's own per-frame callback.
+ *   CPU  whole-frame wall clock. Vsync-locked, so a scene that keeps up reads
+ *        ~16.7 ms whatever it cost — useful only as "did it keep up".
+ *
+ * A high CPU with a LOW JS is a scene waiting on the GPU. A high CPU with a
+ * HIGH JS is a scene doing too much on the main thread. Reading CPU alone as
+ * the second is how F87 concluded `ribbons` burned 68 ms of JavaScript per
+ * frame — a scene that builds its geometry once and loops ~1,300 times.
  */
 
 const TIERS = [0, 1, 2, 3, 4]
@@ -153,6 +161,8 @@ export function Bench() {
                   <th className="num">GPU mean</th>
                   <th className="num">GPU p95</th>
                   <th className="num">GPU max</th>
+                  <th className="num">JS mean</th>
+                  <th className="num">JS p95</th>
                   <th className="num">CPU mean</th>
                   <th className="num">CPU p95</th>
                 </tr>
@@ -165,6 +175,8 @@ export function Bench() {
                     <td className="num">{r.gpu ? r.gpu.meanMs.toFixed(2) : '—'}</td>
                     <td className="num">{r.gpu ? r.gpu.p95Ms.toFixed(2) : '—'}</td>
                     <td className="num">{r.gpu ? r.gpu.maxMs.toFixed(2) : '—'}</td>
+                    <td className="num">{r.js.meanMs.toFixed(2)}</td>
+                    <td className="num">{r.js.p95Ms.toFixed(2)}</td>
                     <td className="num">{r.cpu.meanMs.toFixed(2)}</td>
                     <td className="num">{r.cpu.p95Ms.toFixed(2)}</td>
                   </tr>

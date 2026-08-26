@@ -53,7 +53,21 @@ export interface BenchStats {
 }
 
 export interface BenchResult extends BenchCell {
+  /**
+   * Whole-frame wall clock (`delta`), which is vsync-locked when the scene keeps
+   * up. Says "did it keep up", nothing more — it includes the vsync wait and any
+   * back-pressure from a GPU still finishing the previous frame.
+   */
   cpu: BenchStats
+  /**
+   * Time inside the scene's own per-frame callback.
+   *
+   * The column that makes `cpu` interpretable. A high `cpu` with a low `js` is a
+   * scene waiting on the GPU; a high `cpu` with a high `js` is a scene doing too
+   * much work on the main thread. Reading `cpu` alone as the second produced a
+   * confidently wrong diagnosis (F87), which is why this exists.
+   */
+  js: BenchStats
   /** Null when the timer extension is unavailable or every query was disjoint. */
   gpu: BenchStats | null
 }
@@ -120,6 +134,7 @@ export class BenchRunner {
   private phase: BenchPhase
   private frames = 0
   private cpuSamples: number[] = []
+  private jsSamples: number[] = []
   private gpuSamples: number[] = []
   private gpuWasSupported = false
 
@@ -161,7 +176,7 @@ export class BenchRunner {
    * held as state so a run started before the extension was probed still
    * records the truth.
    */
-  frame(cpuMs: number, gpuMs: readonly number[], gpuSupported: boolean): void {
+  frame(cpuMs: number, jsMs: number, gpuMs: readonly number[], gpuSupported: boolean): void {
     if (this.phase === 'done') return
     if (gpuSupported) this.gpuWasSupported = true
     this.frames++
@@ -175,6 +190,7 @@ export class BenchRunner {
 
       case 'measure':
         this.cpuSamples.push(cpuMs)
+        this.jsSamples.push(jsMs)
         for (const g of gpuMs) this.gpuSamples.push(g)
         if (this.frames >= this.opts.measureFrames) {
           // Nothing to wait for without the extension — skip the drain rather
@@ -212,6 +228,7 @@ export class BenchRunner {
     this.results.push({
       ...cell,
       cpu: stats(this.cpuSamples),
+      js: stats(this.jsSamples),
       // A supported extension that returned nothing usable (every query
       // disjoint) is reported as null, same as no extension — in both cases
       // there is no GPU number, and inventing one from an empty set would be
@@ -219,6 +236,7 @@ export class BenchRunner {
       gpu: this.gpuWasSupported && this.gpuSamples.length > 0 ? stats(this.gpuSamples) : null,
     })
     this.cpuSamples = []
+    this.jsSamples = []
     this.gpuSamples = []
     this.index++
     this.enter(this.index >= this.plan.length ? 'done' : 'warmup')
@@ -228,14 +246,17 @@ export class BenchRunner {
 /** Results as a markdown table, for pasting into an issue or the handoff doc. */
 export function formatResults(results: readonly BenchResult[]): string {
   const head =
-    '| scene | tier | GPU mean | GPU p95 | GPU max | CPU mean | CPU p95 | frames |\n' +
-    '|---|---|---|---|---|---|---|---|'
+    '| scene | tier | GPU mean | GPU p95 | GPU max | JS mean | JS p95 | CPU mean | CPU p95 | frames |\n' +
+    '|---|---|---|---|---|---|---|---|---|---|'
   const rows = results.map((r) => {
     const g = r.gpu
     const gpu = g
       ? `${g.meanMs.toFixed(2)} | ${g.p95Ms.toFixed(2)} | ${g.maxMs.toFixed(2)}`
       : 'n/a | n/a | n/a'
-    return `| ${r.sceneId} | ${r.tier} | ${gpu} | ${r.cpu.meanMs.toFixed(2)} | ${r.cpu.p95Ms.toFixed(2)} | ${r.cpu.count} |`
+    return (
+      `| ${r.sceneId} | ${r.tier} | ${gpu} | ${r.js.meanMs.toFixed(2)} | ${r.js.p95Ms.toFixed(2)}` +
+      ` | ${r.cpu.meanMs.toFixed(2)} | ${r.cpu.p95Ms.toFixed(2)} | ${r.cpu.count} |`
+    )
   })
   return [head, ...rows].join('\n')
 }

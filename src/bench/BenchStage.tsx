@@ -6,6 +6,8 @@ import { LightRig } from '../engine/LightRig'
 import { performanceState } from '../engine/performanceState'
 import { quality } from '../engine/quality'
 import { renderScale } from '../engine/renderScale'
+import { DEFAULT_ANCHOR } from '../engine/CameraDirector'
+import { sceneCpu, takeSceneCpu } from '../engine/sceneFrame'
 import { getScene, getScenePixelBudget, isSceneLoaded } from '../scenes'
 import { GpuTimer } from './gpuTimer'
 import type { BenchRunner } from './benchHarness'
@@ -23,6 +25,12 @@ import type { BenchRunner } from './benchHarness'
  * There is also no `PerfMonitor`. The tier is pinned per cell and its DPR is
  * applied directly here, because the governor reacting mid-measurement is
  * precisely what a benchmark must not allow.
+ *
+ * The camera is placed on the scene's own declared `cameraAnchor` and held
+ * still. Not `CameraDirector`, for the same reason: its modes orbit and drift,
+ * so the framing would differ between the warmup frames and the measured ones,
+ * and between two runs of the same cell. A benchmark wants the representative
+ * distance, not the movement.
  */
 export function BenchStage({ runner, version }: { runner: BenchRunner; version: number }) {
   return (
@@ -49,7 +57,13 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
 
   useEffect(() => {
     timer.init(gl.getContext() as WebGL2RenderingContext)
-    return () => timer.dispose()
+    // The whole point of a benchmark is attribution, so the scene-JS profiler
+    // runs here even though it is off everywhere else.
+    sceneCpu.on = true
+    return () => {
+      sceneCpu.on = false
+      timer.dispose()
+    }
   }, [timer, gl])
 
   // Analysis tick. No audio source is running during a benchmark, and
@@ -94,6 +108,25 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       // making their first run's numbers meaningless. One line, mirroring
       // exactly what the bridge does.
       performanceState.particleDensity = quality.knobs.particleFraction
+
+      // Frame the scene the way the show frames it (F34).
+      //
+      // The default Canvas camera sits at [0, 3, 13] for everything, and a
+      // scene that reads the real camera is then measured from a distance no
+      // viewer ever sees it at: `torusfold`'s anchor is 3.3 units, so at 13 it
+      // is mostly empty space and marches out cheaply. Its row was a floor, not
+      // a measurement — and it is one of the three rows the cost table had to
+      // carry a caveat about.
+      //
+      // The scene's own declared anchor, held STILL. Not CameraDirector: its
+      // modes orbit and drift, so the framing would differ between the warmup
+      // frames and the measured ones, and between two runs of the same cell.
+      // A benchmark needs the representative distance, not the movement.
+      const anchor = getScene(cell.sceneId).metadata.cameraAnchor ?? DEFAULT_ANCHOR
+      const [ax, ay, az] = anchor.target
+      camera.position.set(ax, ay + anchor.height, az + anchor.distance)
+      camera.lookAt(ax, ay, az)
+      camera.updateMatrixWorld()
     }
 
     timer.begin()
@@ -121,7 +154,7 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
     const r = gl.info.render
     if (r.triangles + r.points + r.lines === 0) return
 
-    runner.frame(delta * 1000, timer.poll(), timer.supported)
+    runner.frame(delta * 1000, takeSceneCpu(), timer.poll(), timer.supported)
   }, 1)
 
   const cell = runner.current
