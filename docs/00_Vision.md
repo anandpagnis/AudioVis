@@ -13,7 +13,7 @@ AudioVis is an **AI VJ agent**: a browser-based performance engine that listens 
 The long-term product is a **modular visual instrument** that DJs, bands, venues, and streamers can run as an OBS source, fullscreen installation, or live stage rig. It interprets musical structure (tempo, mood, sections, drops) and composes scenes, cameras, palettes, and overlays in real time — with optional human override at every layer.
 
 ---
-
+ 
 ## Goals
 
 - **Musical intelligence first.** Visuals lock to beats, phrases, and sections — not just RMS.
