@@ -289,7 +289,7 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       replacement is resolution (an offscreen buffer, as FoldPath now uses), which is
       a continuous knob rather than a 3x cliff.
 
-- [ ] **F33 · The bench mismeasured the particle scenes** — *fixed, needs a re-run*
+- [x] **F33 · The bench mismeasured the particle scenes** — *fixed, re-run, folded into the cost table*
       `plasma` read 2.43 ms in one cell and 0.48 ms in the next, which no quality knob
       explains. Two causes, both now fixed in `src/bench/BenchStage.tsx`:
       - `performanceState.particleDensity` is written by `PerformanceStateBridge`,
@@ -300,7 +300,12 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
         refuses to sample until the frame actually drew something
         (`triangles + points + lines > 0`) — summing all three because point and line
         scenes legitimately draw zero triangles forever.
-      **Re-run `/bench` and retag `plasma` / `dissolve` / `pointcloud`.**
+      **Re-run done 2026-08-26** — and it is the run `engine/sceneCost.ts` was
+      built from, so those two guards are baked into every number in the table.
+      `plasma` now reads a clean 1.01 → 0.06 ms across the ladder (a 14x
+      response, where before it was noise), `dissolve` 0.11 → 0.04 and
+      `pointcloud` 0.12 → 0.06. None of the three is `high` by any reading; the
+      labels are gone entirely, which is the retag.
 
 - [ ] **F34 · The bench frames scenes with the wrong camera** — *known limitation*
       It uses the default Canvas camera at `[0,3,13]`, not CameraDirector. Scenes that

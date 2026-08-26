@@ -62,9 +62,18 @@ import type { ScenePerformanceCost } from '../scenes'
  * a substitute for measuring, and it is the reason {@link TIER_BUDGET_MS}
  * still tapers down the ladder at all — see the note there.
  *
+ * One known distortion, recorded rather than corrected: the bench frames every
+ * scene with the default camera at `[0, 3, 13]` rather than through
+ * `CameraDirector` (F34). Scenes that read the real camera — `chrome`,
+ * `inversion`, `torusfold` — are therefore measured from an unrepresentative
+ * distance. `torusfold`'s anchor is 3.3 units, so at 13 it is mostly empty
+ * space and marches out cheaply. **Treat those three rows as a floor**, not as
+ * a measurement.
+ *
  * Provenance: `/bench` full sweep, 2026-08-26, 120 CPU frames + ~135 GPU
- * samples per cell. Re-run it and regenerate this table whenever a scene's
- * shader work changes materially.
+ * samples per cell, with F33's two guards in place (particle density driven
+ * from the tier, and no sampling until the scene actually draws). Re-run it and
+ * regenerate this table whenever a scene's shader work changes materially.
  */
 
 /** Tiers, richest to survival. Every row in the table has exactly this many entries. */
