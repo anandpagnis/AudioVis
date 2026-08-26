@@ -93,9 +93,18 @@ describe('the mirror rack', () => {
     }
   })
 
-  it('stays off on calm material and arrives once there is tension', () => {
-    expect(on(mirrorForSection('groove', 0.1, 0))).toBe(false)
+  it('now engages a groove readily, which is the point of the second pass', () => {
+    // It used to need tension above 0.25 on a groove and fire on one eligible
+    // section in three, which across a whole set meant it essentially never
+    // appeared. Silence and ambient are the only restraint kept.
+    expect(on(mirrorForSection('groove', 0.1, 0))).toBe(true)
     expect(on(mirrorForSection('groove', 0.6, 0))).toBe(true)
+  })
+
+  it('still leaves a dead-calm groove alone', () => {
+    // There is a floor, it is just a low one: no tension at all is still no
+    // reason to fold the frame.
+    expect(on(mirrorForSection('groove', 0, 0))).toBe(false)
   })
 
   it('still sits out some sections even when eligible', () => {

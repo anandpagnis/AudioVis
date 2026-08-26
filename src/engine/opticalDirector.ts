@@ -54,24 +54,27 @@ const TRAILS_FLUX_CEILING = 0.9
  */
 export function trailsTarget(mood: MoodState, flux: number, energy: number): number {
   const busy = Math.min(1, Math.max(0, flux) / TRAILS_FLUX_CEILING)
-  // Floors at 0.5 rather than 0: the busiest mix loses half its trails, not all
-  // of them. Removing them entirely is what made `groove` read as untreated.
-  const sustained = 1 - busy * 0.5
+  // Floors at 0.6 rather than 0: the busiest mix keeps most of its trails. The
+  // penalty exists because history persistence over a dense percussive mix is
+  // mud, and that is still true — but the curve has twice been too shy about it
+  // and the correction each time has been the same direction.
+  const sustained = 1 - busy * 0.4
   const base =
     mood === 'ambient' || mood === 'mellow'
-      ? 0.92
+      ? 1
       : mood === 'groove'
-        ? 0.7
+        ? 0.82
         : mood === 'building'
-          ? 0.78
+          ? 0.9
           : mood === 'peak'
-            ? 0.55
+            ? 0.68
             : mood === 'aggressive'
-              ? 0.45
+              ? 0.58
               : 0
   // Still scaled DOWN by energy rather than up — a peak wants a legible frame —
-  // but 0.15 rather than 0.35, so the top of the show keeps most of its trails.
-  return Math.min(1, Math.max(0, base * sustained * (1 - energy * 0.15)))
+  // but only just, at 0.1. The ordering between moods is what carries the
+  // meaning here; the absolute level is art direction and has been raised twice.
+  return Math.min(1, Math.max(0, base * sustained * (1 - energy * 0.1)))
 }
 
 /** A coherent mirror look. Combining these produces mush, so one is chosen. */
@@ -123,12 +126,16 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
   const t = Math.min(1, Math.max(0, tension))
   const hot = mood === 'peak' || mood === 'aggressive'
   const warm = mood === 'groove' || mood === 'building'
-  // Silence and ambient stay clean: a kaleidoscope over a held pad is an effect
-  // that got stuck on, which is the one failure this rack cannot recover from.
-  if (!hot && !(warm && t > 0.25) && !(t > 0.55)) return MIRROR_OFF
-  // Two sections in three, up from one. Still not every one — the whole point
-  // of the rack is that it arrives.
-  if (seed % 3 === 2) return MIRROR_OFF
+  // Silence and ambient stay clean, and that is the ONE restraint kept: a
+  // kaleidoscope over a held pad is an effect that got stuck on, which is the
+  // single failure this rack cannot recover from. Everything else qualifies
+  // readily now — `mellow` at any real tension, `groove` and `building` almost
+  // always, `peak` and `aggressive` unconditionally.
+  const mellowOk = mood === 'mellow' && t > 0.3
+  if (!hot && !(warm && t > 0.08) && !mellowOk && !(t > 0.4)) return MIRROR_OFF
+  // Three sections in four. Still not every one: an effect present in every
+  // section is not an effect, it is the look.
+  if (seed % 4 === 3) return MIRROR_OFF
 
   const modes: MirrorMode[] = hot
     ? ['kaleido', 'vortex', 'shear', 'kaleido']
@@ -139,19 +146,24 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
     case 'kaleido':
       return {
         mode,
-        // 4, 6 and 8 only. Odd counts read as a broken mirror rather than a
-        // pattern, and above 8 the segments are too thin to show what is in
-        // them.
+        // Still 4, 6 and 8, and also not raised with the rest — same reason as
+        // the tile count. Odd numbers read as a broken mirror rather than a
+        // pattern, and above 8 the wedges are too thin to show what is inside
+        // them. Turning these up makes the effect louder and worse.
         segments: [4, 6, 8][(seed / 3) % 3 | 0],
         tiles: 0,
         twist: 0,
         slice: 0,
-        // Slow. The pattern is the point and a fast spin turns it into a strobe.
-        spin: 0.14 + t * 0.22,
+        // Faster than before but still bounded — the pattern is the point, and
+        // past about 0.7 the fold stops reading as a mandala and starts reading
+        // as a strobe, which is a different effect and not a better one.
+        spin: 0.28 + t * 0.34,
         }
     case 'wallpaper':
-      // 2 and 3 only: at 4 the cells are small enough that the source scene
-      // stops being legible inside them.
+      // Still 2 and 3 only, and deliberately not raised with the rest. This is
+      // a legibility limit rather than timidity: at 4 the cells are small
+      // enough that the source scene stops being readable inside them, and a
+      // wallpaper of unreadable cells is texture, not a mirror.
       return { mode, segments: 0, tiles: 2 + (seed % 2), twist: 0, slice: 0, spin: 0 }
     case 'vortex':
       // Signed, so alternate sections wind the opposite way. Radians at the
@@ -165,12 +177,12 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
         // `seed % 4 === 1`, and every such seed is odd, so the swirl only ever
         // wound one way. Two selectors sharing a bit is a correlation that
         // looks like randomness right up until it does not.
-        twist: ((seed >> 2) & 1 ? 1 : -1) * (0.55 + t * 0.55),
+        twist: ((seed >> 2) & 1 ? 1 : -1) * (1 + t * 0.9),
         slice: 0,
         spin: 0,
       }
     case 'shear':
-      return { mode, segments: 0, tiles: 0, twist: 0, slice: 0.3 + t * 0.45, spin: 0 }
+      return { mode, segments: 0, tiles: 0, twist: 0, slice: 0.55 + t * 0.45, spin: 0 }
     default:
       return MIRROR_OFF
   }

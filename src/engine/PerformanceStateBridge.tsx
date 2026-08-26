@@ -87,6 +87,8 @@ export function PerformanceStateBridge() {
   const lensEngaged = useRef(false)
   /** The mirror look this section committed to; eased toward every frame. */
   const mirrorTarget = useRef<MirrorTarget>(MIRROR_OFF)
+  /** Phrases seen. Separate from the section counter so the two rotate apart. */
+  const mirrorSeed = useRef(0)
   /** When the last section boundary fired, for the dip window. */
   const lastSectionAt = useRef(-Infinity)
   /** Previous window state, so the style is re-picked when it closes too. */
@@ -299,15 +301,30 @@ export function PerformanceStateBridge() {
       0.5,
       f.delta,
     )
-    if (f.sectionChange) {
-      const seed = sectionCount.current++
+    // The mirror re-decides on every PHRASE, the lens only on a SECTION.
+    //
+    // Not a symmetry worth having: they are different kinds of thing. The
+    // mirror is a punctuating transform — it folds the frame and then it stops
+    // — and section boundaries arrive four to six times in a two-minute track,
+    // so tying it to them meant the rack was live in about one sample in eight
+    // no matter how far its eligibility was widened. The limiter was never the
+    // rule, it was how often anything asked.
+    //
+    // The lens is a surface treatment and stays on sections, because a material
+    // IS the look of the frame and swapping it every sixteen beats reads as a
+    // glitch rather than as a choice.
+    const phraseEdge = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
+    if (f.sectionChange || phraseEdge) {
       // The whole rack, not just the segment count. `tiles`, `twist` and
       // `slice` were previously written by nothing but the debug panel, so
       // three of the mirror's five controls were dead in a running show.
-      const mt = mirrorForSection(m.state, p.visualTension, seed)
+      const mt = mirrorForSection(m.state, p.visualTension, mirrorSeed.current++)
       mirrorTarget.current = mt
       p.mirror.segments = mt.segments
       p.mirror.tiles = mt.tiles
+    }
+    if (f.sectionChange) {
+      const seed = sectionCount.current++
       const style = lensForSection(m.state, seed)
       lensEngaged.current = style >= 0
       // Keep the previous material while a disengaged lens eases out. Swapping

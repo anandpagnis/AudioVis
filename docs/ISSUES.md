@@ -2401,6 +2401,49 @@ This is what step 3 was for. The idea holds in shape — the statistics do
 separate subjects from layers, and they reached several calls independently —
 and it is not yet trustworthy enough to give a veto over anyone's submission.
 
+### The agreed fixes for both defects (2026-08-27, not yet built)
+
+**Defect 1 — a second pass, not a flag.** Cost and profile want opposite things
+from the same harness and cannot share a run.
+
+- *Cost pass*: no post chain, exactly as now. A constant added to every scene
+  shrinks the ratios that are the entire point of comparing scenes.
+- *Profile pass*: post chain mounted, exposure servo settled, palette applied.
+  `/bench?profile` is already a separate mode and is the natural home. It needs
+  a longer warmup than the cost pass — the servo's time constant is ~2.3 s, and
+  profiling before it settles measures the wrong gain.
+
+Accepted consequence, deliberately: the profile then depends on the palette and
+on the servo. That is not contamination. A scene that only reads through bloom
+is a scene that only reads through bloom, and a role profile should say so.
+
+**Defect 2 — normalise the field before measuring.** Three options were
+considered:
+
+  (a) make `fill` energy-based — coherent with `conflict`, but loses the thing
+      `fill` is good at, which is a genuinely threshold question: bright subject
+      on black versus dim wash.
+  (b) gate `conflict` on presence — cheap, but moves the incoherence into a
+      discontinuity, and `ribbons` would then have no reading rather than a
+      wrong one.
+  (c) **chosen** — scale each frame so its 99th-percentile luminance maps to a
+      fixed reference, then take both statistics off the normalised field.
+
+(c) makes `fill` mean "how much of the frame is lit relative to this scene's own
+brightest content", which is the question that was always intended, while
+`conflict` keeps its energy weighting. A dim scene and a bright scene with the
+same composition then profile identically — which is correct, because
+**brightness is the engine's job** (the exposure servo and the slot gains), not
+the scene's. The profile should describe COMPOSITION. Keep raw `meanLuma`
+alongside as its own field so absolute brightness is still visible where it
+matters.
+
+**Order: (c) first.** It is self-contained, pure, and testable against the same
+synthetic fields. It may also absorb part of defect 1 on its own, since
+normalising is close to what bloom plus gain does to a dim scene — so re-run the
+validation after it and see how much of the post-chain gap is actually left
+before building a second bench pass for it.
+
 ### Two things genuinely uncertain
 
 - Whether the occlusion test generalises across palettes — a dark palette
