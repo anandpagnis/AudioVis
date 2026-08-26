@@ -12,8 +12,10 @@ import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC } from './transitions'
 import {
   lensAmountTarget,
   lensForSection,
+  MIRROR_OFF,
   mirrorForSection,
   trailsTarget,
+  type MirrorTarget,
 } from './opticalDirector'
 import { quality } from './quality'
 import { useStore } from '../store'
@@ -83,6 +85,8 @@ export function PerformanceStateBridge() {
   const sectionCount = useRef(0)
   /** Whether THIS section took a lens at all — see lensForSection. */
   const lensEngaged = useRef(false)
+  /** The mirror look this section committed to; eased toward every frame. */
+  const mirrorTarget = useRef<MirrorTarget>(MIRROR_OFF)
   /** When the last section boundary fired, for the dip window. */
   const lastSectionAt = useRef(-Infinity)
   /** Previous window state, so the style is re-picked when it closes too. */
@@ -297,16 +301,28 @@ export function PerformanceStateBridge() {
     )
     if (f.sectionChange) {
       const seed = sectionCount.current++
-      p.mirror.segments = mirrorForSection(m.state, p.visualTension, seed)
+      // The whole rack, not just the segment count. `tiles`, `twist` and
+      // `slice` were previously written by nothing but the debug panel, so
+      // three of the mirror's five controls were dead in a running show.
+      const mt = mirrorForSection(m.state, p.visualTension, seed)
+      mirrorTarget.current = mt
+      p.mirror.segments = mt.segments
+      p.mirror.tiles = mt.tiles
       const style = lensForSection(m.state, seed)
       lensEngaged.current = style >= 0
       // Keep the previous material while a disengaged lens eases out. Swapping
       // it on the way down would show a material the section never chose.
       if (style >= 0) p.lens.style = style
     }
-    // The kaleidoscope's own motion, once it is on at all. Slow: the pattern is
-    // the point and a fast spin turns it into a strobe.
-    p.mirror.spin = p.mirror.segments >= 3 ? 0.06 + m.level * 0.1 : 0
+    // The continuous half of the rack eases toward the section's target, while
+    // `segments` and `tiles` snap at the boundary — those two are counts, and
+    // 5.5 segments is not a look halfway between 4 and 8, it is neither.
+    const mt = mirrorTarget.current
+    p.mirror.twist = approach(p.mirror.twist, mt.twist, 0.9, f.delta)
+    p.mirror.slice = approach(p.mirror.slice, mt.slice, 0.9, f.delta)
+    // Spin scales with level on top of the section's base, so a kaleidoscope
+    // breathes with the music rather than turning at a constant rate.
+    p.mirror.spin = mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human drag a value in the debug panel and see it,

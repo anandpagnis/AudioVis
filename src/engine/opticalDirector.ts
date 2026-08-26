@@ -28,56 +28,152 @@ import { LENS_STYLES } from './opticalRack'
  * including the silence at the start of a set where nothing is known yet.
  */
 
-/** Above this, the mix is too busy for trails to read as anything but smear. */
-const TRAILS_FLUX_CEILING = 0.55
+/**
+ * Flux at which the busy-penalty bottoms out.
+ *
+ * Raised from 0.55 along with everything else here. The penalty now removes
+ * about half of the base rather than all of it, so a busy mix still trails —
+ * the original curve took `groove` down to 0.07 in practice, which is nothing.
+ */
+const TRAILS_FLUX_CEILING = 0.9
 
 /**
- * Trails: for sustained, sparse material.
+ * Trails: for sustained material, and now for a great deal else.
  *
- * The instrument is history persistence, so it needs something that *lasts* to
- * persist. A dense percussive mix already fills the frame with new information
- * every beat, and layering ten frames of it produces mud — which is why this is
- * gated on flux (onset density) rather than on energy. Quiet and busy is still
- * busy.
+ * The instrument is history persistence, so it wants something that lasts to
+ * persist — a dense percussive mix already fills the frame with new information
+ * every beat, and layering ten frames of it produces mud. That reasoning still
+ * shapes the curve: flux (onset density) still costs more than energy does, and
+ * `ambient` still trails harder than `aggressive`.
+ *
+ * What changed is the amplitude. The first version measured a maximum of 0.275
+ * across a 90-second set, most of it between 0.07 and 0.2, which is a feature
+ * nobody would notice was there. Bases roughly doubled, the busy penalty capped
+ * at half rather than all, and the energy penalty cut — this is an art-direction
+ * call to make trails a visible part of the show rather than a garnish.
  */
 export function trailsTarget(mood: MoodState, flux: number, energy: number): number {
   const busy = Math.min(1, Math.max(0, flux) / TRAILS_FLUX_CEILING)
-  const sustained = 1 - busy
+  // Floors at 0.5 rather than 0: the busiest mix loses half its trails, not all
+  // of them. Removing them entirely is what made `groove` read as untreated.
+  const sustained = 1 - busy * 0.5
   const base =
     mood === 'ambient' || mood === 'mellow'
-      ? 0.55
+      ? 0.92
       : mood === 'groove'
-        ? 0.22
+        ? 0.7
         : mood === 'building'
-          ? 0.3
-          : 0
-  // Energy scales it down at the top end rather than up: `peak` and
-  // `aggressive` want a clean, legible frame, not a blurred one.
-  return Math.min(1, Math.max(0, base * sustained * (1 - energy * 0.35)))
+          ? 0.78
+          : mood === 'peak'
+            ? 0.55
+            : mood === 'aggressive'
+              ? 0.45
+              : 0
+  // Still scaled DOWN by energy rather than up — a peak wants a legible frame —
+  // but 0.15 rather than 0.35, so the top of the show keeps most of its trails.
+  return Math.min(1, Math.max(0, base * sustained * (1 - energy * 0.15)))
+}
+
+/** A coherent mirror look. Combining these produces mush, so one is chosen. */
+export type MirrorMode = 'off' | 'kaleido' | 'wallpaper' | 'vortex' | 'shear'
+
+/** Target for the whole mirror rack, as one section's decision. */
+export interface MirrorTarget {
+  mode: MirrorMode
+  segments: number
+  tiles: number
+  twist: number
+  slice: number
+  spin: number
+}
+
+export const MIRROR_OFF: MirrorTarget = {
+  mode: 'off',
+  segments: 0,
+  tiles: 0,
+  twist: 0,
+  slice: 0,
+  spin: 0,
 }
 
 /**
- * Kaleidoscope segment count for a section, or 0 for no mirror at all.
+ * The mirror rack's whole state for a section.
  *
- * Returns a WHOLE number and expects to be called once per section, because the
- * count is a choice rather than a magnitude: `segments` is 0 off / 1 mirror-x /
- * 2 quad / >=3 n-fold, and easing between 4 and 6 does not pass through
- * anything that looks like either.
+ * ## Why this returns five fields and not one
  *
- * Off most of the time by construction. `seed` is the caller's section counter,
- * so the pattern is deterministic across a set and reproducible in a recording,
- * rather than a fresh `Math.random()` nobody can reproduce.
+ * The first version drove `segments` and `spin` only, so `tiles`, `twist` and
+ * `slice` were never written by anything but the debug panel — three of the
+ * five controls were dead in the running show. That is why the rack "wasn't
+ * being shown much": most of it was not being shown at all.
+ *
+ * ## Why a MODE rather than five independent dials
+ *
+ * They are not five knobs on one effect, they are four different effects that
+ * happen to share a pass. An n-fold kaleidoscope, an n x n wallpaper repeat, a
+ * radial vortex and alternating shear slabs each read clearly on their own and
+ * turn to mush stacked. So a section picks one and commits to it, and the
+ * magnitudes inside it ease.
+ *
+ * Eligibility is much wider than it was — `groove` and `building` now qualify
+ * at moderate tension, where before it was peak-or-aggressive only and fired on
+ * one eligible section in three. Across a whole set that meant it essentially
+ * never appeared.
  */
-export function mirrorForSection(mood: MoodState, tension: number, seed: number): number {
-  // Peaks earn it; nothing else does. A kaleidoscope during a verse reads as an
-  // effect that got stuck on.
-  const eligible = mood === 'peak' || mood === 'aggressive' || tension > 0.72
-  if (!eligible) return 0
-  // Roughly one section in three among eligible ones, so it stays an event.
-  if (seed % 3 !== 0) return 0
-  // 4, 6 and 8 only. Odd counts read as a broken mirror rather than a pattern,
-  // and above 8 the segments are too thin to show what is inside them.
-  return [4, 6, 8][(seed / 3) % 3 | 0]
+export function mirrorForSection(mood: MoodState, tension: number, seed: number): MirrorTarget {
+  const t = Math.min(1, Math.max(0, tension))
+  const hot = mood === 'peak' || mood === 'aggressive'
+  const warm = mood === 'groove' || mood === 'building'
+  // Silence and ambient stay clean: a kaleidoscope over a held pad is an effect
+  // that got stuck on, which is the one failure this rack cannot recover from.
+  if (!hot && !(warm && t > 0.25) && !(t > 0.55)) return MIRROR_OFF
+  // Two sections in three, up from one. Still not every one — the whole point
+  // of the rack is that it arrives.
+  if (seed % 3 === 2) return MIRROR_OFF
+
+  const modes: MirrorMode[] = hot
+    ? ['kaleido', 'vortex', 'shear', 'kaleido']
+    : ['wallpaper', 'vortex', 'kaleido', 'shear']
+  const mode = modes[seed % modes.length]
+
+  switch (mode) {
+    case 'kaleido':
+      return {
+        mode,
+        // 4, 6 and 8 only. Odd counts read as a broken mirror rather than a
+        // pattern, and above 8 the segments are too thin to show what is in
+        // them.
+        segments: [4, 6, 8][(seed / 3) % 3 | 0],
+        tiles: 0,
+        twist: 0,
+        slice: 0,
+        // Slow. The pattern is the point and a fast spin turns it into a strobe.
+        spin: 0.14 + t * 0.22,
+        }
+    case 'wallpaper':
+      // 2 and 3 only: at 4 the cells are small enough that the source scene
+      // stops being legible inside them.
+      return { mode, segments: 0, tiles: 2 + (seed % 2), twist: 0, slice: 0, spin: 0 }
+    case 'vortex':
+      // Signed, so alternate sections wind the opposite way. Radians at the
+      // centre, falling off exponentially — 1.1 is a strong but readable swirl.
+      return {
+        mode,
+        segments: 0,
+        tiles: 0,
+        // Sign from a DIFFERENT bit than the mode selector uses. `seed % 2` was
+        // the obvious choice and was always +1: vortex is picked when
+        // `seed % 4 === 1`, and every such seed is odd, so the swirl only ever
+        // wound one way. Two selectors sharing a bit is a correlation that
+        // looks like randomness right up until it does not.
+        twist: ((seed >> 2) & 1 ? 1 : -1) * (0.55 + t * 0.55),
+        slice: 0,
+        spin: 0,
+      }
+    case 'shear':
+      return { mode, segments: 0, tiles: 0, twist: 0, slice: 0.3 + t * 0.45, spin: 0 }
+    default:
+      return MIRROR_OFF
+  }
 }
 
 /**

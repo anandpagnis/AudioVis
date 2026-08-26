@@ -40,9 +40,32 @@ describe('trails', () => {
     expect(ambient).toBeGreaterThan(trailsTarget('peak', 0.05, 0.2))
   })
 
-  it('gives a peak a clean frame rather than a blurred one', () => {
-    expect(trailsTarget('peak', 0.05, 0.9)).toBe(0)
-    expect(trailsTarget('aggressive', 0.05, 0.9)).toBe(0)
+  it('still gives a peak less than an ambient passage', () => {
+    // The shape survives the amplitude change: a peak wants a more legible
+    // frame than a held pad does. What changed is that it is no longer ZERO —
+    // trails are meant to be a visible part of the show now, and a top of the
+    // set with none at all was reading as the effect switching off.
+    const peak = trailsTarget('peak', 0.05, 0.9)
+    const ambient = trailsTarget('ambient', 0.05, 0.9)
+    expect(peak).toBeGreaterThan(0.2)
+    expect(peak).toBeLessThan(ambient)
+    expect(trailsTarget('aggressive', 0.05, 0.9)).toBeLessThan(peak)
+  })
+
+  it('leaves a busy mix with half its trails rather than none', () => {
+    // The first curve took `groove` to about 0.07 on a busy passage, which is
+    // nothing. The penalty is still there, it just no longer erases the effect.
+    const calm = trailsTarget('groove', 0.05, 0.4)
+    const busy = trailsTarget('groove', 1.0, 0.4)
+    expect(busy).toBeGreaterThan(calm * 0.4)
+    expect(busy).toBeLessThan(calm)
+  })
+
+  it('reaches values a viewer can actually see', () => {
+    // The measured maximum across a 90 s set used to be 0.275, most of it
+    // between 0.07 and 0.2.
+    expect(trailsTarget('ambient', 0.05, 0.2)).toBeGreaterThan(0.75)
+    expect(trailsTarget('groove', 0.3, 0.5)).toBeGreaterThan(0.45)
   })
 
   it('stays in range for any input, including nonsense', () => {
@@ -58,38 +81,80 @@ describe('trails', () => {
 })
 
 describe('the mirror rack', () => {
-  it('stays off through everything that is not a peak', () => {
-    // A kaleidoscope during a verse reads as an effect that got stuck on.
-    for (const mood of ['silence', 'ambient', 'mellow', 'groove'] as MoodState[]) {
+  const on = (t: ReturnType<typeof mirrorForSection>) => t.mode !== 'off'
+
+  it('stays off through silence and ambient, whatever the tension', () => {
+    // A kaleidoscope over a held pad is an effect that got stuck on, which is
+    // the one failure this rack cannot recover from.
+    for (const mood of ['silence', 'ambient'] as MoodState[]) {
       for (let seed = 0; seed < 12; seed++) {
-        expect(mirrorForSection(mood, 0.3, seed), `${mood} ${seed}`).toBe(0)
+        expect(on(mirrorForSection(mood, 0.4, seed)), `${mood} ${seed}`).toBe(false)
       }
     }
   })
 
-  it('is still rare even when it is eligible', () => {
-    // Roughly one eligible section in three, so it remains an event.
-    const on = Array.from({ length: 30 }, (_, i) => mirrorForSection('peak', 0.9, i)).filter(
-      (v) => v > 0,
-    )
-    expect(on.length).toBeLessThanOrEqual(12)
-    expect(on.length).toBeGreaterThan(0)
+  it('stays off on calm material and arrives once there is tension', () => {
+    expect(on(mirrorForSection('groove', 0.1, 0))).toBe(false)
+    expect(on(mirrorForSection('groove', 0.6, 0))).toBe(true)
   })
 
-  it('only ever picks counts that read as a pattern', () => {
-    // Odd counts read as a broken mirror; above 8 the segments are too thin to
-    // show what is inside them.
+  it('still sits out some sections even when eligible', () => {
+    // Two in three, not every one. The whole point of the rack is that it
+    // arrives rather than being ambient.
+    const fired = Array.from({ length: 30 }, (_, i) => mirrorForSection('peak', 0.9, i)).filter(on)
+    expect(fired.length).toBeLessThan(30)
+    expect(fired.length).toBeGreaterThan(12)
+  })
+
+  it('drives all five fields across a set, not just the segment count', () => {
+    // The defect this replaced: `tiles`, `twist` and `slice` were written by
+    // nothing but the debug panel, so three of five controls were dead.
+    const all = Array.from({ length: 30 }, (_, i) => mirrorForSection('peak', 0.9, i))
+    expect(all.some((t) => t.segments >= 3)).toBe(true)
+    expect(all.some((t) => t.tiles >= 2) || Array.from({ length: 30 }, (_, i) =>
+      mirrorForSection('groove', 0.6, i)).some((t) => t.tiles >= 2)).toBe(true)
+    expect(all.some((t) => Math.abs(t.twist) > 0.3)).toBe(true)
+    expect(all.some((t) => t.slice > 0.2)).toBe(true)
+    expect(all.some((t) => t.spin > 0)).toBe(true)
+  })
+
+  it('never combines two mirror looks in one section', () => {
+    // Four different effects sharing a pass. Each reads clearly alone and they
+    // turn to mush stacked, so a section commits to one.
+    for (const mood of MOODS) {
+      for (let seed = 0; seed < 30; seed++) {
+        const t = mirrorForSection(mood, 0.9, seed)
+        const live = [t.segments >= 1, t.tiles >= 2, Math.abs(t.twist) > 0.001, t.slice > 0.001]
+        expect(live.filter(Boolean).length, `${mood} ${seed}`).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+
+  it('only ever picks segment counts that read as a pattern', () => {
     for (let seed = 0; seed < 40; seed++) {
-      const v = mirrorForSection('peak', 0.9, seed)
+      const v = mirrorForSection('peak', 0.9, seed).segments
       if (v !== 0) expect([4, 6, 8], `seed ${seed}`).toContain(v)
     }
   })
 
+  it('keeps the wallpaper coarse enough for the scene to survive inside it', () => {
+    for (const mood of MOODS) {
+      for (let seed = 0; seed < 30; seed++) {
+        const t = mirrorForSection(mood, 0.9, seed)
+        if (t.tiles > 0) expect([2, 3], `${mood} ${seed}`).toContain(t.tiles)
+      }
+    }
+  })
+
+  it('winds the vortex both ways across a set', () => {
+    const tw = Array.from({ length: 30 }, (_, i) => mirrorForSection('peak', 0.9, i).twist)
+    expect(tw.some((v) => v > 0.3)).toBe(true)
+    expect(tw.some((v) => v < -0.3)).toBe(true)
+  })
+
   it('is deterministic in the seed, so a set reproduces', () => {
-    // Not Math.random(): a recording has to be reproducible, and a director
-    // nobody can replay is a director nobody can debug.
     for (let seed = 0; seed < 20; seed++) {
-      expect(mirrorForSection('peak', 0.9, seed)).toBe(mirrorForSection('peak', 0.9, seed))
+      expect(mirrorForSection('peak', 0.9, seed)).toEqual(mirrorForSection('peak', 0.9, seed))
     }
   })
 })
