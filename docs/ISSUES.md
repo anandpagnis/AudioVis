@@ -1900,8 +1900,56 @@ It did not refine the cost model; it retired it.
       spurious open button, and the output window running the track
       (`contextState: running`, energy 0.62).
 
+- [x] **F104 · Every capture start was cancelled by the output window's own
+      telemetry** — *the real cause of "it is not picking up audio at all";
+      found, bisected and fixed 2026-08-27*
+      `src/store.ts`, `src/engine/outputLink.ts`
+
+      The sequence, which is worth reading slowly because every step looks
+      reasonable on its own:
+
+        1. The console sets `status: 'starting'` and calls `getDisplayMedia`.
+           The share picker opens and the operator sits in it for seconds.
+        2. The output window — idle, nothing handed to it yet — publishes
+           telemetry every 100 ms saying `status: 'idle'`.
+        3. `adoptOutputStatus` wrote that over the console's `'starting'`.
+        4. The picker resolved. `startAudio`'s cancellation guard asked
+           `status !== 'starting'`, read `'idle'`, concluded the operator had
+           backed out, **stopped the tracks and returned silently.**
+
+      No error, no status change, the console back on its source buttons, and an
+      output window that was never handed anything. Exactly "not picking up the
+      audio at all".
+
+      **The file path never hit it**, because nothing is awaited between
+      claiming `starting` and handing over — which is why every test written for
+      this feature passed while the path a person actually uses was broken.
+
+      Two fixes, and the bisect separates what each one does:
+
+      - **The cancellation guard now uses a local token**, not `status`. A guard
+        built on a field another window writes is not a guard. This is the fix
+        that actually rescues the hand-off.
+      - **Telemetry no longer overwrites `status` while a hand-off is in
+        flight** (`shouldAdoptStatus`, unit-tested). This is the fix that stops
+        the console flipping back to its source buttons mid-prompt. The
+        exemption ends the moment the output reports `hasSource`, so evidence
+        always beats the timer.
+
+      Bisected to prove it rather than assert it: with the adoption guard
+      disabled, the console's status is observably stomped to `idle` at t+1s
+      through t+4s of a 4 s prompt — which is the branch the old code cancelled
+      on. Restored, it holds `starting` throughout and reaches `running`, with
+      the output window on a live graph (`contextState: running`, `running:
+      true`).
+
+      Also fixed alongside: `openOutput()` no longer steals focus on the start
+      path. The very next thing after it is a capture prompt owned by the
+      control window, and pulling focus away from that window first is asking
+      for trouble.
+
 - [~] **F103 · A silent output window could not say why** — *diagnosed and made
-      legible; the underlying report is unconfirmed*
+      legible; F104 turned out to be the actual cause of the report*
       `src/audio/AudioEngine.ts`, `src/engine/outputLink.ts`,
       `src/routes/Visualizer.tsx`, `src/ui/Console.tsx`
       Reported as "I share screen and audio, it says output down, and after I
@@ -1971,7 +2019,7 @@ It did not refine the cost model; it retired it.
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **625 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **630 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

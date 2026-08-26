@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { audioEngine, type ResponseTuning, type SourceKind } from './audio/AudioEngine'
-import { handSource, isOutput } from './engine/outputLink'
+import { beginHandoff, endHandoff, handSource, isOutput } from './engine/outputLink'
 import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
@@ -443,6 +443,17 @@ interface AppState {
   setMicDevice: (id: string) => void
 }
 
+/**
+ * Attempt counter for control-window source acquisition.
+ *
+ * The guard after `await acquireSource(...)` used to ask whether `status` was
+ * still `'starting'`, which is a field the OUTPUT window writes through
+ * telemetry — so an idle output window cancelled every screen-share the moment
+ * the picker took longer than 100 ms. A local token cannot be written by
+ * anything else, which is the whole point of it.
+ */
+let handoffToken = 0
+
 /** Shown when a source was acquired but there is no output window to run it. */
 const OUTPUT_REQUIRED =
   'No output window. Open the output window first — it is where the show runs.'
@@ -529,12 +540,18 @@ export const useStore = create<AppState>()(
         // stream crosses by direct reference because a MediaStream does not
         // survive a structured clone.
         if (!isOutput()) {
+          const token = ++handoffToken
+          // Holds telemetry off `status` for the length of the prompt; see
+          // shouldAdoptStatus, which exists because of this exact window.
+          beginHandoff()
           try {
             const stream = await audioEngine.acquireSource(
               kind,
               deviceId ?? get().micDeviceId ?? undefined,
             )
-            if (get().status !== 'starting') {
+            if (token !== handoffToken) {
+              // Superseded or cancelled. Release the capture: nothing else can,
+              // and the OS indicator stays lit until something does.
               stream.getTracks().forEach((t) => t.stop())
               return
             }
@@ -548,6 +565,7 @@ export const useStore = create<AppState>()(
               // capture rather than leaving the OS indicator lit on a device
               // no one is reading.
               stream.getTracks().forEach((t) => t.stop())
+              endHandoff()
               set({ status: 'error', error: OUTPUT_REQUIRED, sourceType: null })
               return
             }
@@ -557,7 +575,8 @@ export const useStore = create<AppState>()(
             set({ status: 'starting', sourceType: kind })
             if (kind === 'mic') void get().refreshDevices()
           } catch (err) {
-            if (get().status !== 'starting') return
+            endHandoff()
+            if (token !== handoffToken) return
             set({ status: 'error', error: describeStartError(err), sourceType: null })
           }
           return
@@ -600,7 +619,10 @@ export const useStore = create<AppState>()(
         // A File clones fine, but it travels the same way as a stream so there
         // is one hand-off path rather than two.
         if (!isOutput()) {
+          handoffToken++
+          beginHandoff()
           if (!handSource({ kind: 'file', file })) {
+            endHandoff()
             set({ status: 'error', error: OUTPUT_REQUIRED, sourceType: null })
             return
           }
@@ -648,6 +670,11 @@ export const useStore = create<AppState>()(
       },
 
       cancelStartAudio: () => {
+        // Invalidates any acquisition still waiting on a prompt: the resolved
+        // stream is released instead of being handed over to a show the
+        // operator has already backed out of.
+        handoffToken++
+        endHandoff()
         audioEngine.cancelStart()
         audioEngine.stop()
         set({ status: 'idle', error: null, sourceType: null })

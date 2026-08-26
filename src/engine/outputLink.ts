@@ -206,6 +206,31 @@ let mirrorStream: MediaStream | null = null
 let mirrorListener: ((s: MediaStream | null) => void) | null = null
 let outputWindow: Window | null = null
 
+/**
+ * How long a hand-off may hold off telemetry adoption.
+ *
+ * Sized against the acquisition it covers, not against a frame: the share
+ * picker's own timeout is 60 s and the operator is choosing a window in it. A
+ * shorter grace would re-open the bug for anyone who hesitates.
+ */
+export const HANDOFF_GRACE_MS = 70_000
+
+let handoffUntil = -Infinity
+
+/** Mark a source acquisition as in progress. Called before the prompt opens. */
+export function beginHandoff(): void {
+  handoffUntil = performance.now() + HANDOFF_GRACE_MS
+}
+
+/** Clear it — on success, on failure, and on cancel. */
+export function endHandoff(): void {
+  handoffUntil = -Infinity
+}
+
+export function handoffInFlight(): boolean {
+  return performance.now() < handoffUntil
+}
+
 /** Handed across by direct reference; consumed once by the output window. */
 export type HandedSource =
   | { kind: 'file'; file: File }
@@ -325,10 +350,13 @@ export function stopLink(): void {
  * why this is folded into the same click that starts audio rather than fired on
  * load. Returns the window so the caller can tell whether it was blocked.
  */
-export function openOutput(): Window | null {
+export function openOutput(opts: { focus?: boolean } = {}): Window | null {
   if (typeof window === 'undefined') return null
   if (outputWindow && !outputWindow.closed) {
-    outputWindow.focus()
+    // Focus only when the operator asked for this window directly. On the start
+    // path the very next thing is a capture prompt owned by THIS window, and
+    // pulling focus away from it first is asking for trouble.
+    if (opts.focus) outputWindow.focus()
     return outputWindow
   }
   // A window already open under this name is REUSED by `window.open`, so a
@@ -574,6 +602,34 @@ export function sendCommand(c: Command): void {
 }
 
 /**
+ * Should the control window take the output window's `status` right now?
+ *
+ * No, while a hand-off is in flight — and getting this wrong killed every
+ * screen-share start. The sequence: the console sets `starting` and opens the
+ * share picker, which the operator can sit in for many seconds. Telemetry keeps
+ * arriving from an output window that is still idle, and adopting it wrote
+ * `idle` over `starting` within 100 ms. When the picker finally resolved,
+ * `startAudio`'s cancellation guard (`status !== 'starting'`) read `idle`,
+ * concluded the user had backed out, stopped the tracks and returned silently.
+ * No error, no status change, console back to its source buttons, output window
+ * never handed anything. The file path never hit it because nothing is awaited
+ * between setting `starting` and handing over.
+ *
+ * `hasSource` ends the exemption early: once the output window actually has a
+ * graph, its status is the truth again whatever this window believes.
+ *
+ * Pure and exported so the rule can be tested without a share picker.
+ */
+export function shouldAdoptStatus(
+  d: Pick<Telemetry, 'status' | 'hasSource'>,
+  handoffInFlight: boolean,
+): boolean {
+  if (!d.status) return false
+  if (d.hasSource) return true
+  return !handoffInFlight
+}
+
+/**
  * Adopt the output window's audio status.
  *
  * The control window has no engine, so its own `status` is a guess it made when
@@ -584,7 +640,8 @@ export function sendCommand(c: Command): void {
 function adoptOutputStatus(d: Telemetry): void {
   const s = useStore.getState()
   const patch: Record<string, unknown> = {}
-  if (d.status && d.status !== s.status) patch.status = d.status
+  if (d.hasSource) endHandoff()
+  if (shouldAdoptStatus(d, handoffInFlight()) && d.status !== s.status) patch.status = d.status
   if (d.sourceType !== s.sourceType) patch.sourceType = d.sourceType
   if (d.recording !== s.isRecording) patch.isRecording = d.recording
   if (Object.keys(patch).length > 0) useStore.setState(patch as never)

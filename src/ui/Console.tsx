@@ -188,7 +188,7 @@ function Transport({
   return (
     <div className="transport">
       {!outputOpen && (
-        <button className="btn-huge accent" onClick={() => openOutput()}>
+        <button className="btn-huge accent" onClick={() => openOutput({ focus: true })}>
           Open output window
           <small>the show runs there</small>
         </button>
