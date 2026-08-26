@@ -1,38 +1,90 @@
 import { useEffect } from 'react'
 import { Stage } from '../engine/Stage'
-import { HUD } from '../ui/HUD'
-import { isProjector } from '../engine/projector'
+import { Console } from '../ui/Console'
+import { claimSource, isOutput } from '../engine/outputLink'
+import { useStore } from '../store'
 
 /** Idle time before the pointer disappears on the output surface. */
 const CURSOR_HIDE_MS = 2000
 
+/**
+ * One route, two entirely different windows.
+ *
+ * `?output` is the show: the engine, the scenes, the post chain, and nothing
+ * else — no chrome, no keyboard map, no pointer. Everything else is the DJ's
+ * control surface, which runs no engine at all and watches the output through a
+ * mirror stream. See engine/outputLink.ts for why the split falls this way.
+ */
 export function Visualizer() {
-  const projector = isProjector()
-  useProjectorSurface(projector)
+  return isOutput() ? <OutputSurface /> : <ControlSurface />
+}
 
+/**
+ * The one window that renders.
+ *
+ * It also starts the audio, because the source it was handed by the control
+ * window is a live object that cannot be analysed anywhere else — see
+ * `claimSource`.
+ */
+function OutputSurface() {
+  useHandedSource()
+  useCleanSurface()
   return (
-    <div className="app">
+    <div className="app app-output">
       <Stage />
-      {/* No chrome in a projector window, and that includes the keyboard map:
-          not mounting the HUD is what removes it. The output surface is driven
-          entirely from the wire, so a stray keypress on the screen an audience
-          is looking at cannot change the show. */}
-      {!projector && <HUD />}
+    </div>
+  )
+}
+
+function ControlSurface() {
+  return (
+    <div className="app app-control">
+      <Console />
     </div>
   )
 }
 
 /**
- * The two things a projector surface owes an audience: no pointer, and a way
- * into fullscreen.
+ * Start whatever the control window handed us.
  *
- * Fullscreen cannot be requested on load — every browser requires a user
- * gesture — so the first click anywhere does it. That is the entire interaction
- * budget of this window, which is rather the point of it.
+ * Polled rather than pushed: this window is still loading while the control
+ * window is putting the source down, and there is no listener to push into
+ * until React has mounted. A short poll is simpler than a second handshake and
+ * ends the moment a source arrives.
  */
-function useProjectorSurface(active: boolean) {
+function useHandedSource() {
   useEffect(() => {
-    if (!active) return
+    let alive = true
+    const tick = () => {
+      if (!alive) return
+      const src = claimSource()
+      if (!src) {
+        window.setTimeout(tick, 100)
+        return
+      }
+      // Routed through the store rather than the engine so the output window's
+      // own `status` follows the source, which is what the post chain and the
+      // directors gate on.
+      if (src.kind === 'file') void useStore.getState().startAudioFile(src.file)
+      else void useStore.getState().startHandedStream(src.stream, src.kind === 'system')
+    }
+    tick()
+    return () => {
+      alive = false
+    }
+  }, [])
+}
+
+/**
+ * The two things an output surface owes an audience: no pointer, and a way into
+ * fullscreen.
+ *
+ * Fullscreen cannot be requested on load — every browser requires a gesture —
+ * so the first click anywhere does it. That is the entire interaction budget of
+ * this window, which is rather the point of it.
+ */
+function useCleanSurface() {
+  useEffect(() => {
     let timer = window.setTimeout(() => {
       document.body.style.cursor = 'none'
     }, CURSOR_HIDE_MS)
@@ -46,9 +98,9 @@ function useProjectorSurface(active: boolean) {
     }
     const goFullscreen = () => {
       if (document.fullscreenElement) return
-      // Rejected when the gesture is not trusted, or when the user has already
-      // declined. Neither is worth surfacing: the window is still a perfectly
-      // good OBS capture target at any size.
+      // Rejected when the gesture is untrusted or already declined. Neither is
+      // worth surfacing: the window is a perfectly good capture target at any
+      // size.
       void document.documentElement.requestFullscreen().catch(() => {})
     }
 
@@ -60,5 +112,5 @@ function useProjectorSurface(active: boolean) {
       window.removeEventListener('pointerdown', goFullscreen)
       document.body.style.cursor = ''
     }
-  }, [active])
+  }, [])
 }

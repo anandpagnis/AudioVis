@@ -1669,8 +1669,14 @@ It did not refine the cost model; it retired it.
 
 ## The output projector window (2026-08-26)
 
+> **Superseded the same day.** F94 shipped a projector that ran a SECOND full
+> engine, which doubled the cost of the heavy scenes (F97). It was replaced by
+> the two-window split in the next section: the output window is now the only
+> renderer and the control window holds no engine at all. F95, F96 and F97 died
+> with that design and are struck through below.
+
 - [x] **F94 · No chrome-free output surface for OBS or a second screen** —
-      *shipped and verified 2026-08-26*
+      *shipped 2026-08-26, replaced by F98 the same day*
       `src/engine/projector.ts` (new), `src/routes/Visualizer.tsx`,
       `src/engine/Stage.tsx`, `src/engine/SceneManager.tsx`, `src/ui/HUD.tsx`
       Ported from lilim's `?output` tab. `O` opens a second window at
@@ -1704,8 +1710,8 @@ It did not refine the cost model; it retired it.
          module load, before React mounts, and the leader answers a snapshot
          addressed to that joiner.
 
-- [ ] **F95 · Two control windows on one machine is ambiguous** — *known, and
-      narrowed rather than solved*
+- [x] ~~**F95 · Two control windows on one machine is ambiguous** — *known, and
+      narrowed rather than solved*~~  *(design retired with F94; see F98)*
       `src/engine/projector.ts`
       Any window without `?output` is a leader. Open the app twice and both
       publish frames and both answer a join, so a projector would take whichever
@@ -1718,8 +1724,8 @@ It did not refine the cost model; it retired it.
       wins, demote the rest to followers. Worth doing before this is a feature
       anyone relies on in front of an audience.
 
-- [ ] **F96 · A projector's clock jumps when its leader dies** — *edge case,
-      one frame*
+- [x] ~~**F96 · A projector's clock jumps when its leader dies** — *edge case,
+      one frame*~~  *(design retired with F94; see F98)*
       `src/engine/projector.ts`, `src/audio/AudioEngine.ts`
       While frames arrive, `features.time` is the leader's `AudioContext` clock.
       After `STALE_MS` the follower falls back to `audioEngine.update()`, whose
@@ -1731,8 +1737,8 @@ It did not refine the cost model; it retired it.
       state — but the fix is small: hold an offset at the moment of changeover
       and keep the clock continuous.
 
-- [ ] **F97 · The projector is a second full render of the same show** —
-      *by design, and the cost should be stated somewhere a user can see it*
+- [x] ~~**F97 · The projector is a second full render of the same show** —
+      *by design, and the cost should be stated somewhere a user can see it*~~  *(design retired with F94; see F98)*
       Two windows means two WebGL contexts, two scene instances, two post
       chains. On the bench GPU most of the roster is under 0.2 ms so this is
       free, but `synthgrid` at 22 ms or `network` at 22 ms is being paid TWICE
@@ -1748,9 +1754,104 @@ It did not refine the cost model; it retired it.
 
 ---
 
+## Two windows, one render (2026-08-26)
+
+- [x] **F98 · The console/output split** — *shipped and verified 2026-08-26*
+      `src/engine/outputLink.ts` (new), `src/ui/Console.tsx` (new),
+      `src/styles/console.css` (new), `src/routes/Visualizer.tsx`,
+      `src/store.ts`, `src/audio/AudioEngine.ts`, `src/engine/Stage.tsx`
+      The output window **is the app**: it owns the audio device, runs every
+      director, mounts the scenes and draws the frame. The control window runs
+      no engine at all — it is a console plus a `<video>` of the output
+      window's own canvas.
+
+      **The constraint that forced the shape** was "the main processing should
+      only happen once". F94's projector rendered the show twice, once per
+      window, doubling exactly the scenes that can least afford it
+      (`synthgrid` and `network` are ~22 ms each). Here the mirror is a
+      `captureStream()` off the canvas that already drew the frame, so the
+      operator's preview costs a frame copy rather than a frame.
+
+      **Three transport primitives were probed before any of it was written**,
+      because the whole design rests on them:
+
+        MediaStream + File by direct reference into an opened window  live, intact
+        captureStream from window B  ->  <video> in window A          readyState 4,
+                                                                      frames advancing
+        ImageBitmap over BroadcastChannel (unused fallback)           works
+
+      Live objects go by direct reference because neither a `MediaStream` nor an
+      open `File` handle survives a structured clone — this is not the faster
+      path, it is the only one. State goes over `BroadcastChannel`: the look
+      downward, a telemetry packet upward at 10 Hz.
+
+      **Audio is acquired in the control window and analysed in the output
+      window.** `getDisplayMedia` and `getUserMedia` need transient user
+      activation and a freshly opened window has none, so the control window
+      prompts inside the click that also opens the output window, then hands
+      the live stream across (`acquireSource` is now public on AudioEngine for
+      exactly this).
+
+      **Verified with two live windows:**
+
+        control canvases          0     (the show renders once, elsewhere)
+        output canvases           1
+        output chrome nodes       0
+        mirror                    1280x720, readyState 4, t 8.45 -> 19.05
+        scene press               wireframe -> plasma in the output window
+        palette press             Ember on both
+        readouts                  BPM 120->130, mood silence->mellow, tier, ms, scene
+
+      Two bugs found and fixed during that verification:
+
+      1. **`captureStream(0)` never emits a frame.** 0 does not mean "on every
+         canvas change" — it means frames are produced only when something calls
+         `track.requestFrame()`. The mirror arrived with `readyState` 4 and
+         `currentTime` pinned at 0 forever. Omitting the argument is what gives
+         a frame per canvas update.
+      2. **A scene press changed nothing.** `requestScene` sets
+         `pendingSceneId`, and only `sceneId` was on the wire — so the request
+         never left the control window and the output sat on `wireframe` through
+         every press. The two windows own different halves of a scene change:
+         the control window owns the REQUEST, the output window owns the
+         COMMITMENT (it alone knows when the incoming scene has warmed and where
+         the next downbeat is), so `pendingSceneId` now travels down and the
+         committed `sceneId` travels back up on telemetry.
+
+- [ ] **F99 · Most of the old HUD has not been ported to the console** —
+      *known gap, deliberately scoped*
+      `src/ui/HUD.tsx`, `src/ui/Console.tsx`
+      The console covers what a set needs: source/transport, recording, the
+      scene grid, all 30 palettes as real five-slot swatches, intensity/speed/
+      reactivity, quality, layer slots, autopilot and mood drive. **Not yet
+      ported:** presets (built-in + saved, favourites, import/export), the cue
+      timeline, MIDI learn and MIDI sync, the analytics panel, the audio-debug
+      panel, the fps meter, per-layer FX (gain/blend), the Post-FX debug
+      overrides, and screenshot.
+      `HUD.tsx` still exists and still works — it is simply no longer mounted,
+      so nothing is lost and the port can continue against a reference. Two of
+      those need more than a UI move: **screenshot** and the **fps meter** read
+      the canvas and the frame loop, both of which now live in the other window,
+      so they need a command going down and a payload coming back rather than a
+      component going across.
+
+- [ ] **F100 · Two control windows or a reloaded output window are untested** —
+      *known, narrower than the F95 it replaces*
+      `src/engine/outputLink.ts`
+      The look wire is broadcast, not addressed, so a second control window
+      would also publish and the two would fight over the same output. The
+      output window answers `hello` by asking for a look, which handles its own
+      reload, but nothing arbitrates two controllers.
+      Also untested: what the output window does when its handed source ends
+      versus when the control window presses Stop (the stop currently acts on
+      the control window's own idle engine, which is not the one playing).
+      Both want a Playwright case before this is used in front of anyone.
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **638 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **625 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

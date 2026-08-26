@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { captureIfRequested } from './recorder'
 import { frameSampler } from './frameSampler'
 import { AutoPilot } from './AutoPilot'
@@ -15,7 +15,7 @@ import { PerformanceDirector } from './PerformanceDirector'
 import { PerformanceStateBridge } from './PerformanceStateBridge'
 import { resetExposure } from './exposure'
 import { resourceCache } from './streaming/resourceCache'
-import { isProjector, publishFrame } from './projector'
+import { publishMirror, publishTelemetry } from './outputLink'
 import { useStore } from '../store'
 
 /**
@@ -56,8 +56,6 @@ import { useStore } from '../store'
  * quality governor's current tier.
  */
 export function Stage() {
-  /** Fixed for the window's lifetime — it is a URL parameter. */
-  const projector = isProjector()
   // Bumped when the GPU context is lost and restored. Keying the
   // resource-holding subtrees on it forces their render targets / materials to
   // rebuild after a restore, instead of sampling dead GPU handles.
@@ -106,45 +104,45 @@ export function Stage() {
       {/* PerfMonitor owns the DPR, so no static dpr prop — it sets it from the
           quality governor on mount and as tiers change. */}
       <PerfMonitor />
-      {/* decide — leader only. A projector window takes this band's output off
-          the wire instead; running it locally would mean two AutoPilots making
-          independently random choices and two windows showing different shows.
-          See engine/projector.ts. */}
-      {!projector && (
-        <>
-          <PerformanceStateBridge />
-          <AutoPilot />
-          <CueTimeline />
-          <EffectDirector />
-          <PerformanceDirector />
-        </>
-      )}
-      {/* execute — runs in both, because it is what actually draws. */}
+      {/* decide */}
+      <PerformanceStateBridge />
+      <AutoPilot />
+      <CueTimeline />
+      <EffectDirector />
+      <PerformanceDirector />
+      {/* execute */}
       <CameraDirector />
       <LightRig />
       <SceneManager key={`scenes-${glEpoch}`} />
       <PostChain glEpoch={glEpoch} />
       <ScreenshotCapture />
-      <ProjectorPublisher />
+      <MirrorPublisher />
     </Canvas>
   )
 }
 
 /**
- * Publishes each decided frame to any projector windows.
+ * Hands this window's canvas to the control window as a `MediaStream`, once.
  *
- * Priority 2 rather than the decide band: at 2 the frame has been fully
- * composited, so what goes on the wire is the state this window actually
- * rendered rather than one a later director was still editing. One frame of
- * latency on a second display is not perceptible; a projector rendering a
- * half-updated state would be.
+ * `captureStream` is the whole reason the show is rendered exactly once: the
+ * control window's mini mirror is a `<video>` fed from here, not a second
+ * renderer. Measured across two windows — 480x270, `readyState` 4, frames
+ * advancing — so what the DJ watches costs a frame copy, not a frame.
  *
- * A no-op in a projector window and while no show is running — both guarded
- * inside `publishFrame`, so the mount stays unconditional and there is one
- * place to read the rule.
+ * Runs at priority 2 and stops publishing itself after the first success:
+ * `captureStream` needs a canvas that has actually drawn, and the first
+ * composited frame is the earliest moment that is true.
  */
-function ProjectorPublisher() {
-  useFrame(() => publishFrame(), 2)
+function MirrorPublisher() {
+  const gl = useThree((s) => s.gl)
+  const done = useRef(false)
+  useFrame(() => {
+    if (!done.current) done.current = publishMirror(gl.domElement)
+    // Rate-limited inside; see TELEMETRY_INTERVAL_MS. Published from the render
+    // loop rather than a timer so it cannot report a frame rate the window is
+    // no longer producing.
+    publishTelemetry()
+  }, 2)
   return null
 }
 
@@ -182,13 +180,7 @@ function ProjectorPublisher() {
  * pass.
  */
 function PostChain({ glEpoch }: { glEpoch: number }) {
-  // A projector window never shows the start card — there is nothing to save
-  // by shedding the chain behind it, and shedding it would leave the output
-  // surface ungraded (GradePass owns the linear->sRGB conversion) until a
-  // status it never reaches. The gate below is about the picker screen, and a
-  // projector does not have one.
-  const output = isProjector()
-  const live = useStore((s) => s.status === 'running' || s.status === 'starting') || output
+  const live = useStore((s) => s.status === 'running' || s.status === 'starting')
   const wasLive = useRef(live)
 
   useEffect(() => {

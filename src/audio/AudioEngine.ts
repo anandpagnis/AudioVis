@@ -233,6 +233,23 @@ class AudioEngine {
     this.connectStream(ctx, stream, kind === 'system')
   }
 
+  /**
+   * Acquire a capture WITHOUT connecting it.
+   *
+   * Public because the two-window split needs the acquisition and the analysis
+   * to happen in different windows: `getDisplayMedia`/`getUserMedia` need
+   * transient user activation and a freshly opened window has none, so the
+   * control window prompts inside the user's click and hands the live stream to
+   * the output window. See engine/outputLink.ts.
+   *
+   * The caller owns the stream until it is connected — if it is never handed
+   * over, its tracks must be stopped or the capture stays live with nothing
+   * able to release it.
+   */
+  acquireSource(kind: SourceKind, deviceId?: string): Promise<MediaStream> {
+    return this.acquireStream(kind, deviceId)
+  }
+
   private async acquireStream(kind: SourceKind, deviceId?: string): Promise<MediaStream> {
     let stream: MediaStream
     if (kind === 'system') {
@@ -363,7 +380,7 @@ class AudioEngine {
    * on the mic path too), OBS audio, WebRTC/network streams, or a synth
    * driven by MIDI. No other part of the app changes.
    */
-  async startWithStream(stream: MediaStream) {
+  async startWithStream(stream: MediaStream, isSystem = false) {
     this.stop()
     if (stream.getAudioTracks().length === 0) {
       throw new Error('The provided MediaStream has no audio track.')
@@ -375,7 +392,7 @@ class AudioEngine {
       void ctx.close().catch(() => {})
       return
     }
-    this.connectStream(ctx, stream, false)
+    this.connectStream(ctx, stream, isSystem)
   }
 
   /**
