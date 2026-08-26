@@ -1828,16 +1828,41 @@ It did not refine the cost model; it retired it.
       fog, trails, the five mirror-rack controls, lens amount and material, and
       the next transition style.
 
-      **Still not ported:** presets (built-in + saved, favourites, import and
-      export), the cue timeline, MIDI learn and MIDI sync, the analytics panel,
-      the audio-debug panel, the fps meter, and per-layer FX (gain/blend).
-      `HUD.tsx` still exists and still works — it is simply not mounted, so
-      nothing is lost and the port can continue against a reference.
+      **All three diagnostic panels are now on the console too** — audio debug,
+      fps meter, analytics — behind buttons in the bottom-left tool row. They
+      are the ORIGINAL components, unmodified: the output window ships the
+      singletons they read and the control window mirrors them into its own idle
+      copies, so `DebugPanel` still reads `audioEngine.features` and `FpsMeter`
+      still reads `frameLoad` exactly as before.
 
-      The fps meter is the one that is not a UI move: it reads the frame loop,
-      which now lives in the other window. Most of what it showed is already on
-      the console's pills (tier, frame ms) off telemetry; a p95 would need
-      adding to the packet rather than moving a component across.
+      That packet is an order of magnitude heavier than the base telemetry (a
+      512-bin spectrum and two 1024-sample waveforms), so it is **sent only
+      while a panel is open**. Verified: with every panel closed the control
+      window's `features` are empty and stay frozen; opening one fills them with
+      live values; closing them all freezes them again.
+
+      Frame times ride the packet RAW rather than as `perf.ms`, which is
+      smoothed — a p95 computed over means understates the tail precisely where
+      the analytics panel exists to show it.
+
+      **Still not ported:** presets (built-in + saved, favourites, import and
+      export), the cue timeline, MIDI learn and MIDI sync, and per-layer FX
+      (gain/blend). `HUD.tsx` still exists and still works — it is simply not
+      mounted, so nothing is lost and the port can continue against a reference.
+
+- [ ] **F101 · The diagnostic panels overlay the console columns** — *cosmetic,
+      by construction*
+      `src/styles/console.css`
+      All three panels were authored for the full-screen HUD, where the only
+      thing under them was the canvas, and all three anchor to `top: 84px` on
+      the same two corners. On the console they landed on top of each other —
+      the fps meter over the debug panel, both over the transport.
+      Re-anchored to the bottom edge with a corner each, which fixes the panels
+      colliding with one another. They still cover the columns while open, which
+      is what an overlay does, but the debug panel in particular sits over the
+      lower half of the Post FX column. A docked layout (a collapsing bottom
+      drawer rather than three floating cards) would be better and is a bigger
+      change than this warranted today.
 
 - [x] **F100 · Two control windows fought, and the transport acted on the wrong
       engine** — *both fixed and verified 2026-08-26*

@@ -1,7 +1,15 @@
 import { audioEngine } from '../audio/AudioEngine'
+import { essentiaBridge } from '../audio/essentia/EssentiaBridge'
+import { voiceBridge } from '../audio/essentia/VoiceBridge'
+import { analytics } from './analyticsMetrics'
+import { exposure } from './exposure'
+import { frameLoad } from './frameLoad'
+import { keyPaletteTracker } from './keyPalette'
+import { perf, frameTimeWindow } from './PerfMonitor'
 import { performanceState } from './performanceState'
 import { quality } from './quality'
 import { frameSampler } from './frameSampler'
+import { transitionMetrics } from './transitionMetrics'
 import { useStore } from '../store'
 
 /**
@@ -124,8 +132,40 @@ export const TELEMETRY_STALE_MS = 1500
  */
 export type Command = 'stop' | 'cancel-start' | 'toggle-record' | 'screenshot'
 
+/**
+ * Everything the operator's diagnostic panels read, in one packet.
+ *
+ * The three panels — audio debug, fps meter, analytics — are operator tools, so
+ * they belong on the console. But every singleton they read now lives in the
+ * output window. Rather than rewrite three panels to take props, this ships the
+ * singletons themselves and the console mirrors them into its own idle copies:
+ * the panels then work unmodified, reading exactly what they always read.
+ *
+ * **Sent only while a panel is open.** It is an order of magnitude heavier than
+ * the base telemetry (a 512-bin spectrum and two 1024-sample waveforms), and
+ * for most of a set nobody is looking at it. The console asks; the output
+ * window stops the moment it stops being asked.
+ */
+export interface Detail {
+  f: unknown
+  ps: unknown
+  fl: unknown
+  perf: unknown
+  exp: unknown
+  an: unknown
+  es: unknown
+  vo: unknown
+  kf: string
+  /** RAW frame times since the last packet, not a smoothed mean. */
+  ms: number[]
+  tx: unknown[]
+  tier: number
+}
+
 type Msg =
   | { t: 'hello'; from: string }
+  | { t: 'want-detail'; on: boolean }
+  | { t: 'detail'; d: Detail }
   | { t: 'look'; look: Look }
   | { t: 'tele'; d: Telemetry }
   | { t: 'cmd'; c: Command }
@@ -150,6 +190,9 @@ const CTL_ANNOUNCE_MS = 800
 let channel: BroadcastChannel | null = null
 let unsubscribe: (() => void) | null = null
 let announceTimer = 0
+let detailWanted = false
+let lastDetailAt = -Infinity
+const rawFrameMs: number[] = []
 let lastTeleAt = -Infinity
 let lastTelePublish = -Infinity
 let telemetry: Telemetry | null = null
@@ -196,6 +239,7 @@ export function startLink(): void {
       if (m.t === 'look') useStore.setState(m.look as never)
       else if (m.t === 'hello') channel?.postMessage({ t: 'look', look: snapshotLook() } satisfies Msg)
       else if (m.t === 'cmd') runCommand(m.c)
+      else if (m.t === 'want-detail') detailWanted = m.on
       return
     }
     if (m.t === 'tele') {
@@ -209,6 +253,8 @@ export function startLink(): void {
       if (isActiveController()) {
         channel?.postMessage({ t: 'look', look: snapshotLook() } satisfies Msg)
       }
+    } else if (m.t === 'detail') {
+      applyDetail(m.d)
     } else if (m.t === 'ctl') {
       if (m.id !== SELF_ID) peers.set(m.id, performance.now())
     } else if (m.t === 'closing') {
@@ -511,4 +557,123 @@ async function runCommand(c: Command): Promise<void> {
     const { saveScreenshot } = await import('./recorder')
     saveScreenshot()
   }
+}
+
+/* -------------------------------------------------------- diagnostic detail */
+
+/** Detail cadence. Heavier than telemetry, so slower. */
+export const DETAIL_INTERVAL_MS = 200
+
+/**
+ * Ask the output window to start or stop sending diagnostic detail.
+ *
+ * Idempotent, and called whenever the set of open panels changes rather than on
+ * a timer: the output window holds the flag, so a console that closes without
+ * saying so leaves detail running. That is a wasted packet every 200 ms, not a
+ * correctness problem, and the next console to open turns it off or on again.
+ */
+export function requestDetail(on: boolean): void {
+  channel?.postMessage({ t: 'want-detail', on } satisfies Msg)
+}
+
+/**
+ * Record one frame's real duration, for the analytics panel's tail statistics.
+ *
+ * Raw, deliberately. Shipping `perf.ms` — which is smoothed — would give the
+ * console a p95 computed over means, which understates the tail precisely where
+ * the panel exists to show it. These are the actual per-frame values, buffered
+ * between packets and drained on send.
+ */
+export function noteFrame(ms: number): void {
+  if (!detailWanted || !isOutput()) return
+  // Bounded: a console that stops reading must not grow this without limit.
+  if (rawFrameMs.length < 240) rawFrameMs.push(ms)
+}
+
+/** Output window: publish the diagnostic packet, if anyone is watching. */
+export function publishDetail(nowMs = performance.now()): void {
+  if (!channel || !isOutput() || !detailWanted) return
+  if (nowMs - lastDetailAt < DETAIL_INTERVAL_MS) return
+  lastDetailAt = nowMs
+  const d: Detail = {
+    f: audioEngine.features,
+    ps: performanceState,
+    fl: frameLoad,
+    perf,
+    exp: exposure,
+    an: analytics,
+    es: essentiaBridge.status,
+    vo: voiceBridge.status,
+    kf: keyPaletteTracker.family,
+    ms: rawFrameMs.slice(),
+    tx: transitionMetrics.history,
+    tier: quality.tier,
+  }
+  rawFrameMs.length = 0
+  channel.postMessage({ t: 'detail', d } satisfies Msg)
+}
+
+/**
+ * Mirror `src` onto `dst` in place, preserving `dst`'s object identity.
+ *
+ * In place is not a style preference: the panels captured references to
+ * `audioEngine.features`, `essentiaBridge.status` and the rest at module load
+ * and hold them for the session, and several of those are `readonly` fields
+ * that cannot be reassigned at all. Replacing any of them would leave every
+ * reader pointed at an object that had stopped updating — silently.
+ *
+ * `prune` is off at the caller's level and on below it. Nested objects always
+ * arrive whole, and one of them (`sceneParams`) is a sparse block whose keys
+ * genuinely come and go; but a top-level payload may legitimately be a subset,
+ * and pruning there would delete live state. That distinction has already cost
+ * one blank-output bug.
+ */
+export function mirrorInto(
+  dst: Record<string, unknown>,
+  src: Record<string, unknown>,
+  prune = false,
+): void {
+  for (const key of Object.keys(src)) {
+    const v = src[key]
+    const cur = dst[key]
+    if (v instanceof Float32Array) {
+      if (cur instanceof Float32Array && cur.length === v.length) cur.set(v)
+      else dst[key] = new Float32Array(v)
+    } else if (Array.isArray(v)) {
+      dst[key] = v
+    } else if (v && typeof v === 'object') {
+      if (!cur || typeof cur !== 'object') dst[key] = {}
+      mirrorInto(dst[key] as Record<string, unknown>, v as Record<string, unknown>, true)
+    } else {
+      dst[key] = v
+    }
+  }
+  if (!prune) return
+  for (const key of Object.keys(dst)) {
+    if (!(key in src)) delete dst[key]
+  }
+}
+
+/** Control window: write the packet into this window's own idle singletons. */
+function applyDetail(d: Detail): void {
+  const rec = (o: unknown) => o as Record<string, unknown>
+  mirrorInto(rec(audioEngine.features), rec(d.f))
+  mirrorInto(rec(performanceState), rec(d.ps))
+  mirrorInto(rec(frameLoad), rec(d.fl))
+  mirrorInto(rec(perf), rec(d.perf))
+  mirrorInto(rec(exposure), rec(d.exp))
+  mirrorInto(rec(analytics), rec(d.an))
+  mirrorInto(rec(essentiaBridge.status), rec(d.es))
+  mirrorInto(rec(voiceBridge.status), rec(d.vo))
+  // `family` is a getter over `committed`, so the backing field is the one that
+  // can be written.
+  ;(keyPaletteTracker as unknown as Record<string, unknown>).committed = d.kf
+  quality.pinTier(d.tier)
+  transitionMetrics.history.length = 0
+  transitionMetrics.history.push(...(d.tx as never[]))
+  // Real per-frame durations, stamped with this window's clock. The VALUES are
+  // the output window's; only the timestamps are local, which is all the
+  // rolling window needs to age them out.
+  const now = performance.now() / 1000
+  for (const ms of d.ms) frameTimeWindow.push(now, ms)
 }

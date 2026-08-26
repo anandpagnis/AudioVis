@@ -732,3 +732,83 @@
     min-height: 100vh;
   }
 }
+
+/* ---------- diagnostics ---------- */
+
+/* Bottom-left, out of the way of the columns and clear of the mirror. These
+   are read while something is wrong, not during a set. */
+.tool-row {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  display: flex;
+  gap: 8px;
+  z-index: 40;
+}
+
+.tool-btn {
+  min-height: 44px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(12, 16, 22, 0.92);
+  color: #dfe6ef;
+  font: 600 12px/1.2 inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  backdrop-filter: blur(6px);
+}
+
+.tool-btn small {
+  font-weight: 400;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.tool-btn.on {
+  background: rgba(80, 170, 255, 0.26);
+  border-color: rgba(130, 205, 255, 0.65);
+  color: #fff;
+}
+
+/* The panels were authored for the old full-screen HUD, where the only thing
+   under them was the canvas. On the console they landed on top of each other —
+   the fps meter over the debug panel, both over the transport — because all
+   three anchor to `top: 84px` on the same two corners.
+   Re-anchored to the bottom edge and given a corner each. They are still
+   overlays and still cover the columns while open, which is what an overlay is
+   for; what they must not do is cover one another. */
+.app-control .analytics-panel,
+.app-control .debug-panel,
+.app-control .fps-meter {
+  position: fixed;
+  top: auto;
+  z-index: 45;
+}
+
+.app-control .analytics-panel {
+  left: 14px;
+  right: auto;
+  bottom: 72px;
+}
+
+.app-control .debug-panel {
+  left: auto;
+  right: 14px;
+  bottom: 66px;
+}
+
+.app-control .fps-meter {
+  left: auto;
+  right: 14px;
+  bottom: 14px;
+}
+
+/* The tool row owns the bottom-left strip, so nothing in the columns may sit
+   under it — a control hidden behind a button is a control that gets missed. */
+.console {
+  padding-bottom: 68px;
+}

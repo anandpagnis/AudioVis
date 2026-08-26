@@ -15,7 +15,7 @@ import { PerformanceDirector } from './PerformanceDirector'
 import { PerformanceStateBridge } from './PerformanceStateBridge'
 import { resetExposure } from './exposure'
 import { resourceCache } from './streaming/resourceCache'
-import { publishMirror, publishTelemetry } from './outputLink'
+import { noteFrame, publishDetail, publishMirror, publishTelemetry } from './outputLink'
 import { useStore } from '../store'
 
 /**
@@ -136,12 +136,16 @@ export function Stage() {
 function MirrorPublisher() {
   const gl = useThree((s) => s.gl)
   const done = useRef(false)
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (!done.current) done.current = publishMirror(gl.domElement)
     // Rate-limited inside; see TELEMETRY_INTERVAL_MS. Published from the render
     // loop rather than a timer so it cannot report a frame rate the window is
     // no longer producing.
     publishTelemetry()
+    // Every frame, unsmoothed — the analytics panel's whole subject is the tail
+    // and a mean would hide it. Buffered, and a no-op when nobody is watching.
+    noteFrame(delta * 1000)
+    publishDetail()
   }, 2)
   return null
 }

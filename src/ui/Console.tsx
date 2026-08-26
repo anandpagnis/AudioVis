@@ -3,8 +3,12 @@ import { SCENES } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
 import { PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { useStore } from '../store'
+import { AnalyticsPanel } from './AnalyticsPanel'
+import { DebugPanel } from './DebugPanel'
+import { FpsMeter } from './FpsMeter'
 import {
   isActiveController,
+  requestDetail,
   onMirror,
   openOutput,
   outputIsOpen,
@@ -57,6 +61,8 @@ export function Console() {
           <PostFx />
         </Section>
       </div>
+
+      <Diagnostics />
     </div>
   )
 }
@@ -655,5 +661,67 @@ function PassiveBanner() {
       Another console window is driving this output — controls here are inactive.
       {state.peers > 1 && ` (${state.peers} others open)`}
     </div>
+  )
+}
+
+/* ------------------------------------------------------------- diagnostics */
+
+/**
+ * The three operator tools, and the switch that pays for them.
+ *
+ * They belong on the console rather than the output window for the obvious
+ * reason — the output window is what an audience is looking at — but every
+ * singleton they read lives over there. So the output window ships those
+ * singletons and this window mirrors them into its own idle copies, which is
+ * why the panels below are the original components, unmodified.
+ *
+ * `requestDetail` is what makes that affordable. The packet carries a 512-bin
+ * spectrum and two 1024-sample waveforms; for most of a set nobody is looking
+ * at any of it, so the output window sends nothing until asked and stops again
+ * the moment the last panel closes.
+ */
+function Diagnostics() {
+  const debugOpen = useStore((s) => s.debugOpen)
+  const fpsMeter = useStore((s) => s.fpsMeter)
+  const analyticsOpen = useStore((s) => s.analyticsOpen)
+  const wanted = debugOpen || fpsMeter || analyticsOpen
+
+  useEffect(() => {
+    requestDetail(wanted)
+    // Asked for again on unmount as `false`: a console that closes without
+    // saying so would leave the output window publishing detail to nobody.
+    return () => requestDetail(false)
+  }, [wanted])
+
+  return (
+    <>
+      <div className="tool-row">
+        <button
+          className={`tool-btn ${debugOpen ? 'on' : ''}`}
+          onClick={() => useStore.getState().toggleDebug()}
+        >
+          Debug
+          <small>spectrum · bands · beat grid</small>
+        </button>
+        <button
+          className={`tool-btn ${fpsMeter ? 'on' : ''}`}
+          onClick={() => useStore.getState().toggleFpsMeter()}
+        >
+          FPS
+          <small>frame time · tier · budget</small>
+        </button>
+        <button
+          className={`tool-btn ${analyticsOpen ? 'on' : ''}`}
+          onClick={() => useStore.getState().toggleAnalytics()}
+        >
+          Analytics
+          <small>transitions · accuracy</small>
+        </button>
+      </div>
+
+      {debugOpen && <DebugPanel />}
+      {fpsMeter && <FpsMeter />}
+      {analyticsOpen && <AnalyticsPanel />}
+    </>
   )
 }
