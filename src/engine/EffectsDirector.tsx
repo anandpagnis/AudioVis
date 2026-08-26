@@ -88,6 +88,20 @@ export function EffectsDirector() {
   const fog = useRef(new FogExp2(0x000000, 0))
 
   /**
+   * The zero-density fog is kept attached, and now does nothing at all.
+   *
+   * `performanceState.fog` moved to the post chain (F46, see GradePass): three
+   * applies `scene.fog` only to materials that opt in, `ShaderMaterial.fog`
+   * defaults to false, and no scene in the roster sets it — so this reached one
+   * scene of sixteen and the dial was steering almost nothing.
+   *
+   * It stays attached at density 0 rather than being removed, for exactly the
+   * reason the original comment gives below: whether a scene has fog at all is
+   * part of three's program cache key, so detaching it would recompile every
+   * material in the scene. Removing a no-op costs a multi-hundred-millisecond
+   * stall; leaving it costs nothing. If a future scene wants real depth fog it
+   * sets `fog: true` on its material and this is already here for it.
+   *
    * Fog is attached ONCE and never detached.
    *
    * Whether a scene has fog at all is part of Three's shader program cache key,
@@ -191,7 +205,10 @@ export function EffectsDirector() {
     // pure black so it reads as air, not as the subject being clipped away.
     // Density alone carries the whole range now — see the attach effect above
     // for why this must never toggle `scene.fog` itself.
-    fog.current.density = p.fog * 0.035
+    // Deliberately no longer driven from `p.fog` — atmosphere is a post-chain
+    // effect now (F46, see GradePass). Held at 0 so the attached FogExp2 stays
+    // a no-op without changing three's program cache key.
+    fog.current.density = 0
     if (p.fog > 0.001) fog.current.color.set(palette.slots.bg)
   })
 
