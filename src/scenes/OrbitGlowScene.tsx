@@ -135,6 +135,25 @@ export const FRAG = /* glsl */ `
   }
 `
 
+/**
+ * The effect slot's exit envelope, over `slotProgress` 0..1.
+ *
+ * Punctuation, not a fade: a fast rise so it lands ON the transient that fired
+ * it, a brief hold, then a long decay that is genuinely zero at 1. The decay
+ * dominates the lifetime because that is what makes a drop read as a hit
+ * followed by a room rather than as a shape that came and went.
+ *
+ * `smoothstep` on both ends so neither edge is a step — an effect that snaps
+ * off at 1 looks like a dropped frame, which is exactly the impression an
+ * effect slot exists to avoid.
+ */
+function effectEnvelope(p: number): number {
+  const t = Math.min(1, Math.max(0, p))
+  const rise = t < 0.05 ? t / 0.05 : 1
+  const fall = 1 - (t - 0.18) / 0.82
+  return rise * Math.max(0, Math.min(1, fall)) ** 1.6
+}
+
 export function OrbitGlowScene() {
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
@@ -171,7 +190,7 @@ export function OrbitGlowScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ f, dt, b, col, vis, params, p }) => {
+  useSceneFrame(({ f, dt, b, col, vis, params, p, role, slotProgress }) => {
     const u = material.uniforms
 
     // Phase ACCUMULATES — see the header. Tempo sets the baseline (a 140 BPM
@@ -217,7 +236,18 @@ export function OrbitGlowScene() {
     u.uCol1.value.copy(col.a)
     u.uCol2.value.copy(col.b)
     u.uCol3.value.copy(col.c)
-    u.uFade.value = vis
+    // In the EFFECT slot this scene owns its own exit.
+    //
+    // `SceneManager` retires an effect entry the moment `slotProgress` reaches
+    // 1 and does NOT fade it out — so a scene that is still bright there simply
+    // vanishes. That requirement is the only reason the effect role went
+    // unclaimed while everything else about the slot was finished and tested
+    // (F20).
+    //
+    // Every other role keeps the plain `vis`, which is what the crossfade
+    // machinery is already driving. Reading `slotProgress` unconditionally
+    // would be a bug: it is 0 for a normal layer, and this envelope is 0 at 0.
+    u.uFade.value = role === 'effect' ? vis * effectEnvelope(slotProgress) : vis
   })
 
   return (

@@ -49,9 +49,42 @@ const advance = (over: Partial<Parameters<typeof advanceEffects>[0]>) =>
     ...over,
   })
 
-describe('the roster ships with no effect scenes', () => {
-  it('getEffectScenes is empty, so every path below is inert in production', () => {
-    expect(getEffectScenes()).toEqual([])
+/**
+ * The effect slot has content now (F20). It shipped finished and empty for a
+ * long time, so what these pin is the CONTRACT — the one requirement that kept
+ * the role unclaimed is the one a future effect scene will also forget.
+ */
+describe('the effect roster', () => {
+  it('has at least one scene, so the slot is no longer inert', () => {
+    expect(getEffectScenes().length).toBeGreaterThan(0)
+  })
+
+  it('gives every effect scene a trigger and a finite lifetime', () => {
+    for (const s of getEffectScenes()) {
+      expect(s.metadata.effect, s.id).toBeDefined()
+      expect(s.metadata.effect!.triggers.length, s.id).toBeGreaterThan(0)
+      expect(s.metadata.effect!.durationSec, s.id).toBeGreaterThan(0)
+    }
+  })
+
+  it('keeps effect lifetimes musical rather than momentary', () => {
+    // Under about a second reads as a dropped frame rather than as
+    // punctuation; over about eight it stops being punctuation at all and
+    // becomes a second subject the composition never budgeted for.
+    for (const s of getEffectScenes()) {
+      expect(s.metadata.effect!.durationSec, s.id).toBeGreaterThan(1)
+      expect(s.metadata.effect!.durationSec, s.id).toBeLessThan(8)
+    }
+  })
+
+  it('does not fire an effect on every transient', () => {
+    // The failure mode the slot is most exposed to: punctuation that happens
+    // several times a bar is texture, and texture belongs in a layer.
+    for (const s of getEffectScenes()) {
+      if (s.metadata.effect!.triggers.includes('transient')) {
+        expect(s.metadata.effect!.cooldownSec ?? 0, s.id).toBeGreaterThan(2)
+      }
+    }
   })
 })
 

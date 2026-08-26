@@ -82,11 +82,24 @@ export function composeLayers(opts: {
   const picks: Partial<Record<LayerRole, SceneDef>> = {}
   const requests: SlotRequest[] = []
 
+  // A scene may only hold ONE slot in a composition.
+  //
+  // The pools overlap heavily — `orbs` carries background, accent and overlay
+  // between them — so without this the same scene is picked for two slots, and
+  // `resolveLayerIds` then drops the later one at mount time for being a
+  // duplicate. The composition the director chose and the composition that
+  // renders are different, which is the flicker F19 describes: a layer chosen
+  // and immediately dropped.
+  //
+  // Excluded from the POOL rather than filtered afterwards, so the later slot
+  // gets a genuine second choice instead of simply losing its turn.
+  const taken = new Set<string>()
   for (const role of LAYER_ROLES) {
-    const pool = pools[role]
+    const pool = pools[role]?.filter((s) => !taken.has(s.id))
     if (!pool || pool.length === 0) continue
     const pick = pickVariedScene(pool, mood, recentIds)
     if (!pick) continue
+    taken.add(pick.id)
     picks[role] = pick
     requests.push({
       slot: role,

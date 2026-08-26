@@ -190,22 +190,54 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       `resetParallelCompileProbe`. `registerPalette` is a documented extension point
       like `registerScene` and should stay.
 
-- [ ] **F18 · The background slot has no content**
-      Zero scenes declare the `background` role, so the most structural slot — with a
-      considered 0.40 gain and section-boundary-only recompose logic — is permanently
-      empty. `orbs` is documented in its own comment as the obvious candidate, and
-      would also widen the layer pool (see F19a).
+- [x] **F18 · The background slot has no content** — *fixed 2026-08-27*
+      `src/scenes/index.ts`
+      `orbs` now declares it, which its own comment had nominated it for. The
+      stated reason for declining — "nothing selects `background`" — was
+      circular: `PerformanceDirector` selects it at section boundaries and
+      `composeLayers` funds it, so the pool was empty only because nobody had
+      gone first.
+      It is also the right scene on the numbers rather than only on the prose:
+      0.06 ms at every tier, the cheapest in the roster by a wide margin, which
+      is what a permanently-present ground layer has to be.
+      Observed filling the slot in a 120 s live show.
 
-- [ ] **F19 · Two primaries produce no layers at all**
-      With `plasma` or `network` as the subject, no compatible scene carries a layer
-      role, so the composition silently collapses to a single scene. Layer presence is
-      an accident of the compatibility graph rather than a decision.
+- [~] **F19 · Two primaries produce no layers at all** — *narrowed; the
+      duplicate-slot half is fixed, the pool half is not*
+      `src/engine/PerformanceDirector.tsx`
+      **Fixed:** a scene could hold two slots at once. The pools overlap heavily
+      — `orbs` carries background, accent and overlay between them — so the same
+      scene was picked twice and `resolveLayerIds` dropped the later one at
+      mount for being a duplicate. Observed live as `acc orbs / ov orbs`: the
+      composition the director chose and the one that rendered were different,
+      which is precisely the flicker this entry describes. Picks now exclude
+      already-taken scenes from the POOL rather than filtering afterwards, so
+      the later slot gets a genuine second choice instead of losing its turn.
+      **Still open:** with `plasma` or `network` as the subject the accent pool
+      is still thin, because only `ribbons`, `orbs` and those two scenes carry
+      layer roles at all. That is the same root cause as Issue 3 and wants
+      authored layer-only scenes, not more role declarations — most of the
+      roster is documented as correctly primary-only, with reasons.
 
-- [ ] **F20 · The effect slot is fully built and completely empty**
-      `EffectDirector`, the pinned-entry lifecycle, `slotProgress`, trigger edges and
-      `syncEffectEntries` all exist and are tested; `getEffectScenes()` returns
-      nothing. The cheapest available upgrade to how a drop *feels* — the machinery is
-      finished and waiting on one authored scene.
+- [x] **F20 · The effect slot is fully built and completely empty** — *fixed
+      2026-08-27; the slot has now fired for the first time*
+      `src/scenes/OrbitGlowScene.tsx`, `src/scenes/index.ts`
+      `orbs` claims the role with `triggers: ['drop']`, a 4.2 s lifetime (just
+      over two bars at 120 BPM) and a 14 s cooldown. Drops only to begin with:
+      `transient` would fire it several times a bar and turn punctuation into
+      texture, which is the failure mode this slot is most exposed to.
+      The one requirement that had kept the role unclaimed is now met.
+      `SceneManager` retires an effect entry the instant `slotProgress` reaches
+      1 and does NOT fade it out, so a scene still bright there simply vanishes.
+      `effectEnvelope` gives it a fast rise (so it lands ON the transient that
+      fired it), a brief hold and a long decay that is exactly zero at 1 — the
+      decay dominating the lifetime is what makes a drop read as a hit followed
+      by a room rather than as a shape that came and went.
+      Read `slotProgress` only in the effect role: it is 0 for a normal layer
+      and the envelope is 0 at 0, so an unconditional read would have made the
+      scene invisible everywhere else.
+      Observed live: two firings in a 120 s set, 85 s apart, both retiring
+      cleanly.
 
 - [ ] **F21 · Docs regressed in the force-push**
       Overwriting `main` dropped `9e6fd90`, so `docs/HANDOFF.md` still describes a
@@ -643,6 +675,15 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       scenes** so the pool is 7–8 wide. Everything above is mitigation until then.
       Note this pulls against Issue 1's cap on frame cost, so it lands after the
       remaining perf work.
+      **Update 2026-08-27.** Two of the three mitigations this entry lists as
+      missing are no longer the binding constraint. The measured cost table
+      (F91) shows nine scenes under 1.1 ms, so the budget no longer refuses
+      cheap layers the way the label ladder did — and `orbs` at 0.06 ms now
+      carries three roles. The remaining fix is unchanged and is still (a):
+      authored layer-only scenes. Most of the roster is documented as correctly
+      primary-only with stated reasons (`wireframe` and `kaleido` would fight
+      the subject; `trail` pays for a render-target pair), so widening the pool
+      by re-declaring roles is largely exhausted.
 
 ---
 
@@ -2189,13 +2230,31 @@ first director drove its amount from tension and measured a peak of 0.045
 across a 90-second set — invisible, and charged for. Engagement became a
 per-section choice with a floor.
 
-### Deliberately not started in this pass
+### The empty slots, done next (2026-08-27)
 
-- **F18 / F19 / F20 / Issue 3** — the background, layer and effect pools are
-  empty because no scene declares those roles. All four are the same root cause
-  and the fix is authoring 3–4 layer-only scenes, which is content work rather
-  than engine work. F20 in particular remains the cheapest available upgrade to
-  how a drop feels: the machinery is finished and waiting on one scene.
+**F18** and **F20** are closed and **F19** is narrowed. `orbs` now carries
+background and effect alongside accent and overlay — the scene its own comment
+had nominated for both, declined on reasons that had expired. "Nothing selects
+`background`" was circular; the pool was empty because nobody had gone first.
+And the effect slot's one real requirement, that a scene drive itself to visual
+zero by `slotProgress` 1, is met by an envelope in the scene.
+
+**The effect slot has now fired for the first time**: two firings in a 120 s
+set, 85 s apart, both retiring cleanly.
+
+Watching it run also turned up a defect the ledger had predicted in the
+abstract: the same scene held two slots at once (`acc orbs / ov orbs`), because
+the pools overlap and nothing deduplicated the picks. `resolveLayerIds` dropped
+the later one at mount, so the composition the director chose and the one that
+rendered were different — F19's "a layer chosen and immediately dropped".
+
+### Still not started
+
+- **Issue 3 / the rest of F19** — the accent pool is still thin under `plasma`
+  and `network`, and the fix is authored layer-only scenes rather than more role
+  declarations. Most of the roster is documented as correctly primary-only with
+  stated reasons: `wireframe` and `kaleido` would fight the subject, `trail`
+  pays for a render-target pair. Re-declaring roles is largely exhausted.
 - **F57** — five of the seven lens materials still unverified by eye. They now
   run autonomously (F56), so they will be seen; that is when to judge them.
 - **F58 / F59** — no scene reads the `shadow` or `bg` slots, and 24 of 30
@@ -2207,7 +2266,7 @@ per-section choice with a floor.
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **647 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **659 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and
