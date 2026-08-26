@@ -160,12 +160,15 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       postprocessing chunk (239 kB) stay shared because the landing tunnel is itself a
       WebGL scene with its own post chain, and those dominate the payload.
 
-- [ ] **F14 · 256-iteration CPU waveform decimation runs while invisible** —
+- [x] **F14 · 256-iteration CPU waveform decimation ran while invisible** —
+      *fixed 2026-08-27*
       `src/scenes/FlowRibbonScene.tsx`
-      The oscilloscope loop and its texture upload run every frame regardless of
-      `vis`. Same class of bug as F05, cheaper per instance, but it applies to every
-      layer instance. Deliberately left out of the F05 pass to keep that change
-      scoped to the three offscreen-pass scenes.
+      The decimation and its texture upload now return early when `vis` is at
+      rest. `ribbons` is layer-capable, so a faded-out copy was paying for a
+      trace nobody could see, once per mounted instance.
+      The smoothing state is deliberately NOT reset on the way out: it is a 26/s
+      exponential follower that re-converges within a frame or two of coming
+      back, and clearing it would snap visibly on fade-in.
 
 - [ ] **F15 · `EffectDirector` and `EffectsDirector` are different subsystems** —
       `src/engine/`
@@ -307,11 +310,20 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       `pointcloud` 0.12 → 0.06. None of the three is `high` by any reading; the
       labels are gone entirely, which is the retag.
 
-- [ ] **F34 · The bench frames scenes with the wrong camera** — *known limitation*
-      It uses the default Canvas camera at `[0,3,13]`, not CameraDirector. Scenes that
-      read the real camera (`chrome`, `inversion`, `torusfold`) are measured from an
-      unrepresentative distance — `torusfold`'s anchor is 3.3 units, so at 13 it is
-      mostly empty space and marches out cheaply. Treat their numbers as a floor.
+- [x] **F34 · The bench framed scenes with the wrong camera** — *fixed
+      2026-08-27; the affected rows need a re-run*
+      `src/bench/BenchStage.tsx`
+      It used the default Canvas camera at `[0,3,13]` for everything, so scenes
+      that read the real camera (`chrome`, `inversion`, `torusfold`) were
+      measured from a distance no viewer sees them at — `torusfold`'s anchor is
+      3.3 units, so at 13 it is mostly empty space and marches out cheaply.
+      The camera now sits on the scene's own declared `cameraAnchor`, held
+      still. Deliberately NOT `CameraDirector`: its modes orbit and drift, so
+      the framing would differ between the warmup frames and the measured ones,
+      and between two runs of the same cell. A benchmark wants the
+      representative distance, not the movement.
+      **`engine/sceneCost.ts` still carries the old numbers for those three
+      rows** and says so at the definition. Re-run `/bench` to replace them.
 
 - [x] **F31 · Chrome punched an invisible hole in other scenes** —
       `src/scenes/ChromeFormScene.tsx`
@@ -542,7 +554,20 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       (`setMode` only reaches 4/2/0), so any test using them asserted against the
       wrong starting point. Now uses `pinTier`.
 
-- [ ] **F25 · No attribution for frame-time spikes** — *not started*
+- [~] **F25 · No attribution for frame-time spikes** — *the scene half is
+      done; the spike half is not*
+      `/bench` now separates **JS** (time inside the scene's own per-frame
+      callback) from **CPU** (whole-frame wall clock). That is the attribution
+      that matters most often, and its absence produced a confidently wrong
+      diagnosis — see F87. `useSceneFrame` accumulates it and the profiler is
+      off outside `/bench`, because a profiler that always runs is one nobody
+      trusts.
+      Still missing: attribution for a spike *during a show*, where the question
+      is "what was on screen when that 60 ms frame happened". The pieces exist
+      (`frameLoad` knows the composition, `transitionMetrics` knows the fades) —
+      nothing correlates them with the sampler's tail.
+
+      Original entry:
       There is still no way to tell whether a heavy scene is steadily expensive or
       whether the red is transitions. Keep the worst ~20 frames of the window, each
       tagged with tier, DPR, primary + layer scene ids, and flags for
@@ -628,8 +653,34 @@ hanging. Measurements below were taken under **SwiftShader (software GL)** in a
 headless browser unless stated otherwise — treat them as *ratios between
 configurations*, never as anyone's real frame rate.
 
-- [ ] **F46 · `performanceState.fog` is inert on 15 of the 16 scenes** — *verified,
-      not fixed*
+- [x] **F46 · `performanceState.fog` was inert on 15 of the 16 scenes** —
+      *fixed 2026-08-27 by moving atmosphere into the post chain*
+      `src/engine/GradePass.ts`, `src/engine/EffectsDirector.tsx`
+      Option (b) from the analysis below, for the reason it gives: per-material
+      fog can never reach a fullscreen quad, and sixteen hand-written copies of
+      the same term is sixteen chances to drift.
+      It is **veiling glare, not distance fog**, because distance is not
+      available — the quad scenes write no usable depth. Veiling is what
+      atmosphere looks like anyway (light scattered out of the subject into the
+      air in front of it), and unlike a depth ramp it acts on a black field,
+      which is what this roster mostly is. Two terms: blacks lift in proportion
+      to how much light is actually in the frame, and contrast collapses toward
+      that same scattered level. `uLuma` is the exposure servo's own whole-frame
+      mean, already measured every 0.18 s for another purpose, so this costs a
+      uniform rather than a pass. The haze takes the palette's `bg` slot,
+      because scattered light is the colour of what it scatters through.
+      **Measured on `wireframe`** — the scene `scene.fog` reached nothing on —
+      edge luminance 8.4 → 26.8 → 74.6 across the dial, centre only 122 → 168.
+      That ratio is the point: the subject stays clearly readable above the
+      haze. The first calibration lifted the edge to 119 of 255, which is
+      erasure rather than atmosphere, and the director genuinely reaches fog 1.0
+      on a sparse ambient passage, so both constants were halved.
+      The zero-density `FogExp2` stays attached and is simply never written now:
+      detaching it would change three's program cache key and recompile every
+      material in the scene, and a future scene wanting real depth fog will find
+      it already there.
+
+      Original diagnosis:
       `src/engine/EffectsDirector.tsx`, every scene file
       The plumbing is correct end to end: the `FogExp2` instance is attached to the
       scene for the whole session (`sceneFogAttached: true` when probed live) and
@@ -652,8 +703,32 @@ configurations*, never as anyone's real frame rate.
       the roster. Do not "fix" this by wiring fog into each shader by hand — that is
       sixteen copies of the same term with sixteen chances to drift.
 
-- [ ] **F47 · Vignette is applied but reads as inert on most scenes** — *partly
-      diagnosed*
+- [x] **F47 · Vignette reads as inert on most scenes** — *A/B finished
+      2026-08-27; the suspicion was right, and the dial gained a second term*
+      `src/engine/GradePass.ts`
+      The A/B the entry below asks for, run on the output window's real pixels
+      (sampled in-frame, since a canvas without `preserveDrawingBuffer` only
+      holds pixels inside the frame that drew it):
+
+        kaleido  (fills the frame)   edge/centre  0.85 → 0.31   at vignette 0 → 1
+        wireframe (subject on black) edge/centre  0.041 → 0.004
+
+      **The vignette was never broken.** On a scene that fills the frame it
+      darkens the periphery 2.7x relative to the centre, exactly as intended. On
+      `wireframe` the edge sits at 4% of centre BEFORE it touches anything, and
+      multiplying black by a smaller number is still black. The exposure
+      discipline that makes this show look the way it does is precisely what
+      leaves a vignette nothing to act on.
+      So the dial keeps the vignette and gains a term that works on a black
+      field: a small inward scale. Pushing in magnifies the subject, which reads
+      as the frame closing whatever is in the corners. Deliberately **4%** at
+      full — anything a viewer can identify as a zoom stops reading as tension
+      and starts reading as a camera move, which `CameraDirector` already owns.
+      Verified wired by amplifying it 10x, where whole-frame luminance jumps
+      23 → 32 and 18 → 48 as magnification pushes the subject across more of the
+      frame.
+
+      Original diagnosis:
       `src/engine/EffectsDirector.tsx`
       Confirmed by live probe that the value reaches the shader: with the debug
       override at 0, `performanceState.vignette` is 0 **and** the effect's own
@@ -766,8 +841,18 @@ configurations*, never as anyone's real frame rate.
       the chain actually fits a frame. Until then the number is defensible but
       unproven, and it is now load-bearing for every high-DPI display.
 
-- [ ] **F52 · `trails` has no director, and its control surface is scaffolding** —
-      *by design, needs following up*
+- [x] **F52 · `trails` has no director** — *fixed 2026-08-27,
+      `src/engine/opticalDirector.ts`*
+      Driven from mood and **flux**, not energy: onset density is what decides
+      whether history persistence reads as a trail or as mud, and quiet-but-busy
+      is still busy. Highest on sustained ambient material, near zero on a peak —
+      a peak wants a clean legible frame, not a blurred one.
+      Observed across a 90 s set: 0.068 to 0.275, dropping on `groove` and
+      rising on `mellow`, exactly the intended shape.
+      The Post FX debug section is now a genuine override rather than the only
+      thing that moves this, and stays for that reason.
+
+      Original entry:
       `src/engine/performanceState.ts`, `src/ui/HUD.tsx`,
       `src/engine/PerformanceStateBridge.tsx`
       The feedback pass is fully wired and defaults to `trails: 0`, where it disables
@@ -831,8 +916,19 @@ ratios between configurations, never anyone's real frame rate.
       `enabled` branch costing nothing at rest. **Net frame cost is unchanged** —
       the blit moved rather than being added.
 
-- [ ] **F55 · Both optical racks are invisible to the frame budget** — *open,
-      and it must close before any director drives them*
+- [x] **F55 · Both optical racks were invisible to the frame budget** —
+      *closed 2026-08-27, immediately before F56 as required*
+      `src/engine/frameLoad.ts`
+      `mirrorRackMs` and `lensRackMs` price from the racks' live settings, with
+      `anamorphic` charged double for the 24 extra taps its streak gather costs.
+      Zero at rest is still exact — both racks set their own `enabled` and the
+      composer skips a disabled pass — but switched on they are now reserved.
+      Observed working: the frame's fixed cost tracked 3.8 ms → 4.6 ms as the
+      director engaged `anamorphic`.
+      The magnitudes are **estimates**, in the same family as `POST_CHAIN_MS`
+      and folded into F90.
+
+      Original entry:
       `src/engine/frameLoad.ts`
       `OPTICAL_RACK_UNITS = 0`, which is honest today and dangerous tomorrow.
       At rest the mirror rack genuinely costs nothing (skipped before the swap)
@@ -846,8 +942,29 @@ ratios between configurations, never anyone's real frame rate.
       Fold into F44's bench task: measure a rack on and off at two resolutions,
       set real units, and re-check the ladder.
 
-- [ ] **F56 · Neither optical rack has a director** — *by design, same posture as
-      F52*
+- [x] **F56 · Neither optical rack has a director** — *fixed 2026-08-27,
+      after F55 as the ordering required*
+      `src/engine/opticalDirector.ts`
+      Choices and magnitudes are separated deliberately. The mirror segment
+      count and the lens material are **choices** — 4 and 6 segments have
+      nothing meaningful between them, and a material is the look of the frame
+      rather than an amount of it — so they are re-taken only at a section
+      boundary and then held. The lens amount is a magnitude and eases.
+      Seeded from a section counter rather than `Math.random()`, so a set is
+      deterministic and a recording reproduces.
+      The mirror is peak-or-high-tension only and then roughly one eligible
+      section in three, because a kaleidoscope during a verse reads as an effect
+      that got stuck on. It deliberately never fired in the 90 s observation run
+      — the track never reached peak — which is the restraint working, and it is
+      pinned by unit test rather than by that run.
+      **One correction found by watching it.** Driving the lens amount straight
+      from tension gave a measured peak of 0.045 across the set: a lens nobody
+      can see attached to a cost everybody pays. An effect that is always
+      slightly on is the worst of both. Engagement became a per-section choice
+      with a visible floor, which measured 0.21 with materials cycling and whole
+      sections sitting it out.
+
+      Original entry:
       Both default to inert and are moved only by the **Post FX (debug)** panel.
       Nothing decides when a show should reach for a kaleidoscope or a lens
       material, which is the actual creative work and is the same shape as
@@ -1009,8 +1126,14 @@ causes; two fixed here, one is the likely dominant one and is still open.
       0.8. Before the fix the same test showed `transition.active` never once
       true.
 
-- [ ] **F65 · Transition styles are debug-only and undriven** — *same posture as
-      F52 / F56*
+- [x] **F65 · Transition styles are debug-only and undriven** — *already done
+      when the transition vocabulary landed; confirmed 2026-08-27*
+      `pickTransitionStyle` is wired in `PerformanceStateBridge`, re-picked on a
+      mood change or inside the section window rather than every frame, and
+      `smear` was observed running three times in a twelve-change set. The entry
+      below predates that work.
+
+      Original entry:
       `src/engine/transitions.ts`
       Six styles exist (`cut`, `dissolve`, `dipToBlack`, `smear`, `melt`,
       `collapse`) and three of them drive the racks rather than the mix, so they
@@ -1589,17 +1712,35 @@ It did not refine the cost model; it retired it.
       regenerated from a knob — rather than a smooth cost curve. Until it is
       found, `sceneCost.ts` charges chrome a flat 9.25 ms at every tier, which
       is honest but blunt: it refuses chrome as a layer everywhere.
+      **Same caveat as F87**: that CPU figure is whole-frame wall clock and
+      cannot on its own show the cost is on the main thread. `/bench` now has a
+      JS column; re-run it before hunting. `chrome` is also one of the three
+      scenes F34's camera fix changes, so its numbers move for that reason too.
 
-- [ ] **F87 · `ribbons` spends 68 ms per frame on the CPU at tier 0** — *scene
-      bug, exposed by the sweep*
+- [~] **F87 · `ribbons` shows a 68 ms frame at tier 0** — *my diagnosis was
+      wrong; the instrument to settle it now exists*
       `src/scenes/FlowRibbonScene.tsx`
-      CPU mean tiers 0→4: **68.4 / 27.1 / 16.7 / 19.9 / 16.7 ms**. Sixty-eight
-      milliseconds is 15 fps from a scene using 0.03 ms of GPU. It does respond
-      to the tier, so unlike F86 the direction is right, but tier 0 — the tier
-      most users start on — is unusable.
-      Almost certainly per-frame geometry regeneration (tube/curve rebuild)
-      scaled by a quality knob. The GPU cost says the drawing is free; all of
-      this is JS.
+      CPU mean tiers 0→4: 68.4 / 27.1 / 16.7 / 19.9 / 16.7 ms, against 0.03 ms
+      of GPU.
+
+      **"All of this is JS" was not supportable and is not true.** `/bench`'s CPU
+      column is `delta * 1000` — the whole frame's wall clock, including the
+      vsync wait and back-pressure from a GPU still finishing the previous frame.
+      It cannot distinguish scene JavaScript from anything else. And `ribbons`
+      builds its geometry once in a `useMemo` (22 ribbons x 90 segments x 2 =
+      3,960 vertices, ~7,700 triangles) and its per-frame loop runs about 1,300
+      iterations. Whatever costs 68 ms there, it is not that.
+      The more likely candidate on the evidence available: `DoubleSide` +
+      `AdditiveBlending` overdraw, which is fill the GPU timer may be
+      under-reporting.
+
+      The instrument now separates them — `/bench` has a **JS** column
+      (time inside the scene's own callback) beside the CPU one, so a re-run
+      answers this outright. High CPU with low JS is a scene waiting on the GPU;
+      high CPU with high JS is a scene doing too much on the main thread.
+      **Re-run `/bench` and read the JS column for `ribbons` and `chrome`.**
+      F14 (the decimation running while invisible) was in this file and is
+      fixed regardless, since it was wrong on its own terms.
 
 - [ ] **F88 · The cost table is one machine's measurements** — *known
       limitation, stated at the definition*
@@ -2022,9 +2163,51 @@ It did not refine the cost model; it retired it.
 
 ---
 
+## Visuals and performance pass (2026-08-27)
+
+Worked through the visual and performance half of the ledger. What landed:
+**F14**, **F33**, **F34**, **F46**, **F47**, **F52**, **F55**, **F56**, **F65**,
+and **F25** in part. **F87** was corrected rather than fixed — the diagnosis in
+it was mine and was not supportable.
+
+Three things are worth carrying forward from it.
+
+**An instrument that cannot distinguish two causes will eventually be read as
+whichever one you expected.** `/bench`'s CPU column is whole-frame wall clock;
+I read it as scene JavaScript and wrote F87 accordingly, about a scene that
+builds its geometry once and loops 1,300 times. The column that settles it now
+exists, and both F86 and F87 are one bench run from an answer.
+
+**A dial that is visible but dead is worse than no dial**, and two of them had
+been dead for weeks in ways nobody could see from the code: fog reached one
+scene of sixteen because `ShaderMaterial.fog` defaults to false, and the
+vignette was working perfectly on a periphery that was already black. Both were
+found by measuring pixels, not by reading source.
+
+**An effect that is always slightly on is the worst of both.** The lens rack's
+first director drove its amount from tension and measured a peak of 0.045
+across a 90-second set — invisible, and charged for. Engagement became a
+per-section choice with a floor.
+
+### Deliberately not started in this pass
+
+- **F18 / F19 / F20 / Issue 3** — the background, layer and effect pools are
+  empty because no scene declares those roles. All four are the same root cause
+  and the fix is authoring 3–4 layer-only scenes, which is content work rather
+  than engine work. F20 in particular remains the cheapest available upgrade to
+  how a drop feels: the machinery is finished and waiting on one scene.
+- **F57** — five of the seven lens materials still unverified by eye. They now
+  run autonomously (F56), so they will be seen; that is when to judge them.
+- **F58 / F59** — no scene reads the `shadow` or `bg` slots, and 24 of 30
+  palettes are unreachable by autopilot. The five-slot rewrite is still half
+  delivered visually.
+- **F78** — one scene of eighteen declares modes.
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **630 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **647 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and
