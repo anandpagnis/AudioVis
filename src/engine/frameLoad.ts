@@ -85,7 +85,7 @@ export const FEEDBACK_MS = 1
  * crossfade overlap was possible. That is why three of the six transition styles
  * were unreachable (F84).
  *
- * This is the same reasoning already written into `OPTICAL_RACK_MS`, which is 0
+ * This is the same reasoning already written into the optical racks' reservations, which are 0
  * because those racks bypass themselves at rest. It simply had not been applied
  * here.
  */
@@ -94,23 +94,49 @@ export function feedbackMsFor(trails: number): number {
 }
 
 /**
- * The optical racks (`MirrorPass`, `LensPass`) — deliberately **zero**.
+ * The optical racks (`MirrorPass`, `LensPass`).
  *
- * Not an oversight and not an estimate. Both racks default to inert and set
- * their own `enabled` flag from their settings, and `EffectComposer` skips a
- * disabled pass before it ever renders, so at rest they cost exactly nothing —
- * there is no draw to reserve against.
+ * Zero at rest, and that part is not an estimate: both racks set their own
+ * `enabled` from their settings and `EffectComposer` skips a disabled pass
+ * before it ever renders, so there is no draw to reserve against.
  *
- * When one IS switched on it costs roughly a fullscreen pass (the mirror is a
- * single UV remap plus one tap; the lens is three taps for the prismatic split,
- * and `anamorphic` adds 24 more for its streak gather). That cost is real and
- * currently unreserved, which is defensible only while nothing autonomous turns
- * them on — a human moving a slider is a human who can see the frame rate.
- * **Before any director drives these, give them a real non-zero reservation**
- * and fold them into the F44 bench task, or the budget will admit a layer on
- * top of a rack it did not know was running.
+ * Switched ON they are no longer free, and this stopped being an academic point
+ * the moment a director started moving them (F56). While the sole thing that
+ * turned a rack on was a human dragging a slider, an unreserved cost was
+ * defensible — a human can see the frame rate. An autonomous director cannot,
+ * and `composeLayers` would happily admit a layer on top of a rack it did not
+ * know was running, which is the class of bug F43 exists to record.
+ *
+ * **ESTIMATES**, in the same family as POST_CHAIN_MS and for the same reason:
+ * `/bench` excludes the post chain, so nothing in it has been weighed. Reasoned
+ * from what the shaders do — the mirror is a UV remap plus one tap, so about
+ * half a fullscreen pass; the lens is three taps for the prismatic split, which
+ * is a little more. `anamorphic` gathers 24 further samples for its streaks and
+ * is charged double for it, because a rack style that costs four times its
+ * siblings should not be priced as though it did not. Measuring all three is
+ * folded into F90.
  */
-export const OPTICAL_RACK_MS = 0
+export const MIRROR_RACK_MS = 0.5
+export const LENS_RACK_MS = 0.8
+/** `anamorphic` — index 2 in LENS_STYLES — gathers 24 extra taps per pixel. */
+export const LENS_STREAK_EXTRA_MS = 0.8
+
+/** What the mirror rack is actually costing, from its live settings. */
+export function mirrorRackMs(m: {
+  segments: number
+  tiles: number
+  twist: number
+  slice: number
+}): number {
+  const active = m.segments >= 1 || m.tiles >= 2 || Math.abs(m.twist) > 0.001 || m.slice > 0.001
+  return active ? MIRROR_RACK_MS : 0
+}
+
+/** What the lens rack is actually costing, from its live settings. */
+export function lensRackMs(l: { amount: number; style: number }): number {
+  if (!(l.amount > 0.001)) return 0
+  return LENS_RACK_MS + (Math.round(l.style) === 2 ? LENS_STREAK_EXTRA_MS : 0)
+}
 
 /**
  * Live breakdown of the frame's committed cost. Mutated in place once per frame

@@ -9,6 +9,12 @@ import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
 import { advanceSteer, clearSteer } from './sceneSteer'
 import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC } from './transitions'
+import {
+  lensAmountTarget,
+  lensForSection,
+  mirrorForSection,
+  trailsTarget,
+} from './opticalDirector'
 import { quality } from './quality'
 import { useStore } from '../store'
 
@@ -72,6 +78,11 @@ export function PerformanceStateBridge() {
   const lastStyleMood = useRef('')
   /** Deterministic cycle position, on its own counter. */
   const styleRotation = useRef(0)
+  /** Sections seen this session. Seeds the rack choices so a set is
+   *  deterministic and a recording reproduces — not `Math.random()`. */
+  const sectionCount = useRef(0)
+  /** Whether THIS section took a lens at all — see lensForSection. */
+  const lensEngaged = useRef(false)
   /** When the last section boundary fired, for the dip window. */
   const lastSectionAt = useRef(-Infinity)
   /** Previous window state, so the style is re-picked when it closes too. */
@@ -264,6 +275,38 @@ export function PerformanceStateBridge() {
         p.transitionStyle,
       )
     }
+
+    // --- The optical racks and the feedback pass --------------------------
+    //
+    // All three shipped as executors with nothing driving them (F52, F56): the
+    // engine could do a great deal that no viewer ever saw, because the only
+    // thing that moved any of it was a debug panel.
+    //
+    // Two different kinds of decision here, and they are deliberately handled
+    // differently. `trails` and the lens AMOUNT are magnitudes, so they are
+    // eased every frame. The mirror segment count and the lens MATERIAL are
+    // choices — 4 segments and 6 segments have nothing meaningful between them,
+    // and a material is the look of the frame rather than an amount of it — so
+    // they are re-taken only at a section boundary and then held.
+    p.trails = approach(p.trails, trailsTarget(m.state, f.flux, m.level), 0.7, f.delta)
+    p.lens.amount = approach(
+      p.lens.amount,
+      lensAmountTarget(m.state, p.visualTension, lensEngaged.current),
+      0.5,
+      f.delta,
+    )
+    if (f.sectionChange) {
+      const seed = sectionCount.current++
+      p.mirror.segments = mirrorForSection(m.state, p.visualTension, seed)
+      const style = lensForSection(m.state, seed)
+      lensEngaged.current = style >= 0
+      // Keep the previous material while a disengaged lens eases out. Swapping
+      // it on the way down would show a material the section never chose.
+      if (style >= 0) p.lens.style = style
+    }
+    // The kaleidoscope's own motion, once it is on at all. Slow: the pattern is
+    // the point and a fast spin turns it into a strobe.
+    p.mirror.spin = p.mirror.segments >= 3 ? 0.06 + m.level * 0.1 : 0
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human drag a value in the debug panel and see it,
