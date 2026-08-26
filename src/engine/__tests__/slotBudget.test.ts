@@ -9,7 +9,7 @@ import {
 } from '../slotBudget'
 import { FEEDBACK_MS, POST_CHAIN_MS } from '../frameLoad'
 import { SCENE_COST_MS, sceneCostMs } from '../sceneCost'
-import { SCENES, type ScenePerformanceCost } from '../../scenes'
+import { SCENES } from '../../scenes'
 
 /**
  * Fixed per-frame cost: the post chain, plus the feedback pass when trails are
@@ -20,8 +20,6 @@ import { SCENES, type ScenePerformanceCost } from '../../scenes'
 const FIXED = POST_CHAIN_MS + FEEDBACK_MS
 /** The budget a composition actually gets at `tier`, as production computes it. */
 const sceneBudget = (tier: number) => TIER_BUDGET_MS[tier] - FIXED
-
-const COSTS: ScenePerformanceCost[] = ['low', 'medium', 'high']
 
 /** Two ends of the measured roster, used throughout. */
 const EXPENSIVE = 'synthgrid' // 22.35 ms at tier 0 — dearest scene registered
@@ -205,35 +203,51 @@ describe('canFundOverlap', () => {
  * This is the state the code actually ships in, so it is the primary path, not
  * an edge case.
  */
-describe('no-op acceptance with zero background/effect scenes', () => {
-  it('registers no background or effect scenes', () => {
-    for (const s of SCENES) {
-      expect(s.metadata.roles, s.id).not.toContain('background')
-      expect(s.metadata.roles, s.id).not.toContain('effect')
-    }
+/**
+ * The background and effect slots have content now (F18, F20). This block used
+ * to assert the opposite — that both pools were empty and the whole composition
+ * machinery was therefore a visual no-op. That was an accurate record of the
+ * state, and the state changed on purpose.
+ */
+describe('composition with the background slot filled', () => {
+  it('registers at least one background scene', () => {
+    const bg = SCENES.filter((s) => s.metadata.roles.includes('background'))
+    expect(bg.length).toBeGreaterThan(0)
   })
 
-  it('never fills the background slot, at any quality tier', () => {
-    for (let tier = 0; tier < TIER_BUDGET_MS.length; tier++) {
-      for (const cost of COSTS) {
-        const out = composeLayers({
-          primaryId: CHEAP,
-          primaryCost: cost,
-          budget: sceneBudget(tier),
-          tier,
-          // What PerformanceDirector actually passes today: the background pool
-          // is whatever declares the role, which is nothing.
-          pools: {
-            background: SCENES.filter((s) => s.metadata.roles.includes('background')),
-            accent: SCENES.filter((s) => s.metadata.roles.includes('accent')),
-            overlay: SCENES.filter((s) => s.metadata.roles.includes('overlay')),
-          },
-          mood: 'groove',
-          recentIds: [],
-        })
-        expect(out.background, `tier ${tier} / ${cost} primary`).toBeNull()
-      }
-    }
+  it('fills the background under a cheap primary', () => {
+    // The slot has the most considered treatment of any — a 0.40 default gain
+    // and section-boundary-only recompose — and until now it was permanently
+    // empty, so none of that had ever run.
+    const out = composeLayers({
+      primaryId: CHEAP,
+      primaryCost: 'low',
+      budget: sceneBudget(0),
+      tier: 0,
+      pools: {
+        background: SCENES.filter((s) => s.metadata.roles.includes('background')),
+      },
+      mood: 'groove',
+      recentIds: [],
+    })
+    expect(out.background).not.toBeNull()
+  })
+
+  it('still refuses it under a primary that leaves no room', () => {
+    // The budget outranks the pool. `synthgrid` is 22 ms measured; a ground
+    // layer under it is not a composition, it is a dropped frame.
+    const out = composeLayers({
+      primaryId: EXPENSIVE,
+      primaryCost: 'medium',
+      budget: sceneBudget(4),
+      tier: 4,
+      pools: {
+        background: SCENES.filter((s) => s.metadata.roles.includes('background')),
+      },
+      mood: 'groove',
+      recentIds: [],
+    })
+    expect(out.background).toBeNull()
   })
 
   it('runs a genuinely expensive primary solo at every tier', () => {

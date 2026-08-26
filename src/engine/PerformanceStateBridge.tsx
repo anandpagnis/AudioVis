@@ -9,6 +9,14 @@ import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
 import { advanceSteer, clearSteer } from './sceneSteer'
 import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC } from './transitions'
+import {
+  lensAmountTarget,
+  lensForSection,
+  MIRROR_OFF,
+  mirrorForSection,
+  trailsTarget,
+  type MirrorTarget,
+} from './opticalDirector'
 import { quality } from './quality'
 import { useStore } from '../store'
 
@@ -72,6 +80,15 @@ export function PerformanceStateBridge() {
   const lastStyleMood = useRef('')
   /** Deterministic cycle position, on its own counter. */
   const styleRotation = useRef(0)
+  /** Sections seen this session. Seeds the rack choices so a set is
+   *  deterministic and a recording reproduces — not `Math.random()`. */
+  const sectionCount = useRef(0)
+  /** Whether THIS section took a lens at all — see lensForSection. */
+  const lensEngaged = useRef(false)
+  /** The mirror look this section committed to; eased toward every frame. */
+  const mirrorTarget = useRef<MirrorTarget>(MIRROR_OFF)
+  /** Phrases seen. Separate from the section counter so the two rotate apart. */
+  const mirrorSeed = useRef(0)
   /** When the last section boundary fired, for the dip window. */
   const lastSectionAt = useRef(-Infinity)
   /** Previous window state, so the style is re-picked when it closes too. */
@@ -264,6 +281,65 @@ export function PerformanceStateBridge() {
         p.transitionStyle,
       )
     }
+
+    // --- The optical racks and the feedback pass --------------------------
+    //
+    // All three shipped as executors with nothing driving them (F52, F56): the
+    // engine could do a great deal that no viewer ever saw, because the only
+    // thing that moved any of it was a debug panel.
+    //
+    // Two different kinds of decision here, and they are deliberately handled
+    // differently. `trails` and the lens AMOUNT are magnitudes, so they are
+    // eased every frame. The mirror segment count and the lens MATERIAL are
+    // choices — 4 segments and 6 segments have nothing meaningful between them,
+    // and a material is the look of the frame rather than an amount of it — so
+    // they are re-taken only at a section boundary and then held.
+    p.trails = approach(p.trails, trailsTarget(m.state, f.flux, m.level), 0.7, f.delta)
+    p.lens.amount = approach(
+      p.lens.amount,
+      lensAmountTarget(m.state, p.visualTension, lensEngaged.current),
+      0.5,
+      f.delta,
+    )
+    // The mirror re-decides on every PHRASE, the lens only on a SECTION.
+    //
+    // Not a symmetry worth having: they are different kinds of thing. The
+    // mirror is a punctuating transform — it folds the frame and then it stops
+    // — and section boundaries arrive four to six times in a two-minute track,
+    // so tying it to them meant the rack was live in about one sample in eight
+    // no matter how far its eligibility was widened. The limiter was never the
+    // rule, it was how often anything asked.
+    //
+    // The lens is a surface treatment and stays on sections, because a material
+    // IS the look of the frame and swapping it every sixteen beats reads as a
+    // glitch rather than as a choice.
+    const phraseEdge = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
+    if (f.sectionChange || phraseEdge) {
+      // The whole rack, not just the segment count. `tiles`, `twist` and
+      // `slice` were previously written by nothing but the debug panel, so
+      // three of the mirror's five controls were dead in a running show.
+      const mt = mirrorForSection(m.state, p.visualTension, mirrorSeed.current++)
+      mirrorTarget.current = mt
+      p.mirror.segments = mt.segments
+      p.mirror.tiles = mt.tiles
+    }
+    if (f.sectionChange) {
+      const seed = sectionCount.current++
+      const style = lensForSection(m.state, seed)
+      lensEngaged.current = style >= 0
+      // Keep the previous material while a disengaged lens eases out. Swapping
+      // it on the way down would show a material the section never chose.
+      if (style >= 0) p.lens.style = style
+    }
+    // The continuous half of the rack eases toward the section's target, while
+    // `segments` and `tiles` snap at the boundary — those two are counts, and
+    // 5.5 segments is not a look halfway between 4 and 8, it is neither.
+    const mt = mirrorTarget.current
+    p.mirror.twist = approach(p.mirror.twist, mt.twist, 0.9, f.delta)
+    p.mirror.slice = approach(p.mirror.slice, mt.slice, 0.9, f.delta)
+    // Spin scales with level on top of the section's base, so a kaleidoscope
+    // breathes with the music rather than turning at a constant rate.
+    p.mirror.spin = mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human drag a value in the debug panel and see it,

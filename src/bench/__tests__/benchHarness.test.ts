@@ -5,7 +5,10 @@ const OPTS = { warmupFrames: 3, measureFrames: 4, drainFrames: 2 }
 
 /** Drive `n` frames of constant cost, with no GPU results. */
 function runCpu(r: BenchRunner, n: number, ms: number, supported = false) {
-  for (let i = 0; i < n; i++) r.frame(ms, [], supported)
+  // JS time defaults to a fixed fraction of the frame so the two columns are
+  // distinguishable in assertions — the point of the column is that they are
+  // NOT the same number.
+  for (let i = 0; i < n; i++) r.frame(ms, ms / 4, [], supported)
 }
 
 describe('buildPlan', () => {
@@ -51,14 +54,14 @@ describe('BenchRunner — phases', () => {
 
   it('drains late GPU results after CPU sampling ends', () => {
     const r = new BenchRunner([{ sceneId: 'a', tier: 0 }], OPTS)
-    for (let i = 0; i < 3; i++) r.frame(16, [], true) // warmup
+    for (let i = 0; i < 3; i++) r.frame(16, 1, [], true) // warmup
     // Measure: queries are issued now but resolve later, so nothing lands yet.
-    for (let i = 0; i < 4; i++) r.frame(16, [], true)
+    for (let i = 0; i < 4; i++) r.frame(16, 1, [], true)
     expect(r.currentPhase).toBe('drain')
     // The tail arrives during the drain. Without this phase every cell would
     // lose its last few samples.
-    r.frame(16, [4, 4], true)
-    r.frame(16, [4, 4], true)
+    r.frame(16, 1, [4, 4], true)
+    r.frame(16, 1, [4, 4], true)
     expect(r.done).toBe(true)
     expect(r.results[0].gpu?.count).toBe(4)
     expect(r.results[0].gpu?.meanMs).toBeCloseTo(4, 6)
@@ -94,7 +97,7 @@ describe('BenchRunner — statistics', () => {
   it('computes mean, p95 and max over measured frames only', () => {
     const r = new BenchRunner([{ sceneId: 'a', tier: 0 }], { ...OPTS, measureFrames: 20 })
     runCpu(r, 3, 999) // warmup, discarded
-    for (let i = 0; i < 20; i++) r.frame(i === 19 ? 100 : 10, [], false)
+    for (let i = 0; i < 20; i++) r.frame(i === 19 ? 100 : 10, 2, [], false)
     const cpu = r.results[0].cpu
     expect(cpu.count).toBe(20)
     expect(cpu.maxMs).toBe(100)
@@ -109,9 +112,9 @@ describe('BenchRunner — statistics', () => {
     // A disjoint run yields no usable timings. Inventing a number from an empty
     // set would be worse than admitting there isn't one.
     const r = new BenchRunner([{ sceneId: 'a', tier: 0 }], OPTS)
-    for (let i = 0; i < 3; i++) r.frame(16, [], true)
-    for (let i = 0; i < 4; i++) r.frame(16, [], true)
-    for (let i = 0; i < 2; i++) r.frame(16, [], true)
+    for (let i = 0; i < 3; i++) r.frame(16, 1, [], true)
+    for (let i = 0; i < 4; i++) r.frame(16, 1, [], true)
+    for (let i = 0; i < 2; i++) r.frame(16, 1, [], true)
     expect(r.done).toBe(true)
     expect(r.results[0].gpu).toBeNull()
   })
@@ -120,9 +123,9 @@ describe('BenchRunner — statistics', () => {
     // The point of the whole exercise: vsync pins CPU at the refresh interval
     // while the GPU number reveals what the scene actually cost.
     const r = new BenchRunner([{ sceneId: 'heavy', tier: 0 }], OPTS)
-    for (let i = 0; i < 3; i++) r.frame(16.7, [], true)
-    for (let i = 0; i < 4; i++) r.frame(16.7, [9.5], true)
-    for (let i = 0; i < 2; i++) r.frame(16.7, [], true)
+    for (let i = 0; i < 3; i++) r.frame(16.7, 1, [], true)
+    for (let i = 0; i < 4; i++) r.frame(16.7, 1, [9.5], true)
+    for (let i = 0; i < 2; i++) r.frame(16.7, 1, [], true)
     expect(r.results[0].cpu.meanMs).toBeCloseTo(16.7, 6)
     expect(r.results[0].gpu?.meanMs).toBeCloseTo(9.5, 6)
   })
@@ -138,5 +141,28 @@ describe('formatResults', () => {
     expect(md).toContain('| a | 3 |')
     expect(md).toContain('n/a')
     expect(md).toContain('12.50')
+  })
+})
+
+/**
+ * The whole reason the JS column exists: it must be able to disagree with the
+ * CPU column. A scene stalled on the GPU shows a long frame and almost no
+ * JavaScript, and reading the first as the second is how F87 got diagnosed as
+ * a main-thread problem in a scene that loops 1,300 times.
+ */
+describe('BenchRunner — JS time is measured separately from frame time', () => {
+  it('records a long frame with trivial JS as exactly that', () => {
+    const r = new BenchRunner([{ sceneId: 'a', tier: 0 }], OPTS)
+    for (let i = 0; i < 3; i++) r.frame(68, 0.05, [], false)
+    for (let i = 0; i < 4; i++) r.frame(68, 0.05, [], false)
+    const row = r.results[0]
+    expect(row.cpu.meanMs).toBeCloseTo(68, 6)
+    expect(row.js.meanMs).toBeCloseTo(0.05, 6)
+  })
+
+  it('counts the same number of samples in both columns', () => {
+    const r = new BenchRunner([{ sceneId: 'a', tier: 0 }], OPTS)
+    for (let i = 0; i < 7; i++) r.frame(16.7, 4, [], false)
+    expect(r.results[0].js.count).toBe(r.results[0].cpu.count)
   })
 })

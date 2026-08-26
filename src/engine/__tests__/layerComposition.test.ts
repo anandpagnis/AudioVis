@@ -332,3 +332,46 @@ describe('resolveLayerIds — budget enforcement', () => {
     expect(resolveLayerIds(ids, 'wireframe', null)).toEqual(ids)
   })
 })
+
+/**
+ * One scene, one slot.
+ *
+ * The pools overlap — `orbs` carries background, accent and overlay between
+ * them — so the same scene was picked for two slots and `resolveLayerIds` then
+ * dropped the later one at mount for being a duplicate. Observed live as
+ * `acc orbs / ov orbs`: the composition the director chose and the composition
+ * that rendered were different, which is exactly the flicker F19 describes.
+ */
+describe('composeLayers — no scene holds two slots', () => {
+  const base = {
+    mood: 'groove' as const,
+    recentIds: [] as string[],
+    primaryId: 'synthetic-primary',
+    tier: 0,
+    budget: 20,
+  }
+
+  it('never assigns the same scene to two slots', () => {
+    const shared = [lowA]
+    const out = composeLayers({
+      ...base,
+      primaryCost: 'low',
+      pools: { background: shared, accent: shared, overlay: shared },
+    })
+    const filled = [out.background, out.accent, out.overlay].filter(Boolean)
+    expect(new Set(filled).size).toBe(filled.length)
+  })
+
+  it('gives the later slot a real second choice rather than nothing', () => {
+    // Excluded from the pool rather than filtered after the fact: with two
+    // scenes available both slots should fill, with one each.
+    const out = composeLayers({
+      ...base,
+      primaryCost: 'low',
+      pools: { accent: [lowA, lowB], overlay: [lowA, lowB] },
+    })
+    expect(out.accent).not.toBeNull()
+    expect(out.overlay).not.toBeNull()
+    expect(out.accent).not.toBe(out.overlay)
+  })
+})

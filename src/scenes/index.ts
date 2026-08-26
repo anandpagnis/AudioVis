@@ -672,13 +672,31 @@ export const SCENES: SceneDef[] = [
       // nowhere near enough structure to carry a frame as the subject, but they
       // composite beautifully over one.
       //
-      // This is the roster's strongest BACKGROUND and EFFECT candidate: it is
-      // the cheapest scene here by a wide margin, and its per-orb glow gives it
-      // the contrast dynamics a dimmed ground needs to still read as alive.
-      // Neither role is claimed yet because both are inert — nothing selects
-      // `background`, and an `effect` scene must additionally drive itself to
-      // visual zero by `slotProgress` 1, which this does not yet do.
-      roles: ['accent', 'overlay'],
+      // The roster's strongest BACKGROUND and EFFECT candidate, and now the
+      // holder of both: it is the cheapest scene here by a wide margin (0.06 ms
+      // at every tier, measured) and its per-orb glow gives it the contrast
+      // dynamics a dimmed ground needs to still read as alive.
+      //
+      // Both roles used to be declined for reasons that have since expired.
+      // "Nothing selects background" was circular: PerformanceDirector selects
+      // it at section boundaries and composeLayers funds it, so the pool was
+      // empty only because nobody had gone first (F18). And the effect slot's
+      // one real requirement — that the scene drive itself to visual zero by
+      // slotProgress 1 — is now met by effectEnvelope in the scene (F20).
+      roles: ['accent', 'overlay', 'background', 'effect'],
+      effect: {
+        // Drops only, to begin with. `transient` would fire this several times
+        // a bar and turn punctuation into texture, which is the failure mode
+        // the effect slot is most exposed to.
+        triggers: ['drop'],
+        // Just over two bars at 120 BPM: long enough for the decay to read as a
+        // room opening up rather than as a blink, short enough that a second
+        // drop is not competing with the first.
+        durationSec: 4.2,
+        // A floor under how often the show punctuates, independent of how often
+        // the detector fires.
+        cooldownSec: 14,
+      },
       // The calm end of the roster. Deliberately stops at `building`: three
       // drifting orbs have no punch to offer a peak, and pretending otherwise
       // would just put a soft layer under a loud moment.

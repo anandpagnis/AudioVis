@@ -160,12 +160,15 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       postprocessing chunk (239 kB) stay shared because the landing tunnel is itself a
       WebGL scene with its own post chain, and those dominate the payload.
 
-- [ ] **F14 · 256-iteration CPU waveform decimation runs while invisible** —
+- [x] **F14 · 256-iteration CPU waveform decimation ran while invisible** —
+      *fixed 2026-08-27*
       `src/scenes/FlowRibbonScene.tsx`
-      The oscilloscope loop and its texture upload run every frame regardless of
-      `vis`. Same class of bug as F05, cheaper per instance, but it applies to every
-      layer instance. Deliberately left out of the F05 pass to keep that change
-      scoped to the three offscreen-pass scenes.
+      The decimation and its texture upload now return early when `vis` is at
+      rest. `ribbons` is layer-capable, so a faded-out copy was paying for a
+      trace nobody could see, once per mounted instance.
+      The smoothing state is deliberately NOT reset on the way out: it is a 26/s
+      exponential follower that re-converges within a frame or two of coming
+      back, and clearing it would snap visibly on fade-in.
 
 - [ ] **F15 · `EffectDirector` and `EffectsDirector` are different subsystems** —
       `src/engine/`
@@ -187,22 +190,54 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       `resetParallelCompileProbe`. `registerPalette` is a documented extension point
       like `registerScene` and should stay.
 
-- [ ] **F18 · The background slot has no content**
-      Zero scenes declare the `background` role, so the most structural slot — with a
-      considered 0.40 gain and section-boundary-only recompose logic — is permanently
-      empty. `orbs` is documented in its own comment as the obvious candidate, and
-      would also widen the layer pool (see F19a).
+- [x] **F18 · The background slot has no content** — *fixed 2026-08-27*
+      `src/scenes/index.ts`
+      `orbs` now declares it, which its own comment had nominated it for. The
+      stated reason for declining — "nothing selects `background`" — was
+      circular: `PerformanceDirector` selects it at section boundaries and
+      `composeLayers` funds it, so the pool was empty only because nobody had
+      gone first.
+      It is also the right scene on the numbers rather than only on the prose:
+      0.06 ms at every tier, the cheapest in the roster by a wide margin, which
+      is what a permanently-present ground layer has to be.
+      Observed filling the slot in a 120 s live show.
 
-- [ ] **F19 · Two primaries produce no layers at all**
-      With `plasma` or `network` as the subject, no compatible scene carries a layer
-      role, so the composition silently collapses to a single scene. Layer presence is
-      an accident of the compatibility graph rather than a decision.
+- [~] **F19 · Two primaries produce no layers at all** — *narrowed; the
+      duplicate-slot half is fixed, the pool half is not*
+      `src/engine/PerformanceDirector.tsx`
+      **Fixed:** a scene could hold two slots at once. The pools overlap heavily
+      — `orbs` carries background, accent and overlay between them — so the same
+      scene was picked twice and `resolveLayerIds` dropped the later one at
+      mount for being a duplicate. Observed live as `acc orbs / ov orbs`: the
+      composition the director chose and the one that rendered were different,
+      which is precisely the flicker this entry describes. Picks now exclude
+      already-taken scenes from the POOL rather than filtering afterwards, so
+      the later slot gets a genuine second choice instead of losing its turn.
+      **Still open:** with `plasma` or `network` as the subject the accent pool
+      is still thin, because only `ribbons`, `orbs` and those two scenes carry
+      layer roles at all. That is the same root cause as Issue 3 and wants
+      authored layer-only scenes, not more role declarations — most of the
+      roster is documented as correctly primary-only, with reasons.
 
-- [ ] **F20 · The effect slot is fully built and completely empty**
-      `EffectDirector`, the pinned-entry lifecycle, `slotProgress`, trigger edges and
-      `syncEffectEntries` all exist and are tested; `getEffectScenes()` returns
-      nothing. The cheapest available upgrade to how a drop *feels* — the machinery is
-      finished and waiting on one authored scene.
+- [x] **F20 · The effect slot is fully built and completely empty** — *fixed
+      2026-08-27; the slot has now fired for the first time*
+      `src/scenes/OrbitGlowScene.tsx`, `src/scenes/index.ts`
+      `orbs` claims the role with `triggers: ['drop']`, a 4.2 s lifetime (just
+      over two bars at 120 BPM) and a 14 s cooldown. Drops only to begin with:
+      `transient` would fire it several times a bar and turn punctuation into
+      texture, which is the failure mode this slot is most exposed to.
+      The one requirement that had kept the role unclaimed is now met.
+      `SceneManager` retires an effect entry the instant `slotProgress` reaches
+      1 and does NOT fade it out, so a scene still bright there simply vanishes.
+      `effectEnvelope` gives it a fast rise (so it lands ON the transient that
+      fired it), a brief hold and a long decay that is exactly zero at 1 — the
+      decay dominating the lifetime is what makes a drop read as a hit followed
+      by a room rather than as a shape that came and went.
+      Read `slotProgress` only in the effect role: it is 0 for a normal layer
+      and the envelope is 0 at 0, so an unconditional read would have made the
+      scene invisible everywhere else.
+      Observed live: two firings in a 120 s set, 85 s apart, both retiring
+      cleanly.
 
 - [ ] **F21 · Docs regressed in the force-push**
       Overwriting `main` dropped `9e6fd90`, so `docs/HANDOFF.md` still describes a
@@ -289,7 +324,7 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       replacement is resolution (an offscreen buffer, as FoldPath now uses), which is
       a continuous knob rather than a 3x cliff.
 
-- [ ] **F33 · The bench mismeasured the particle scenes** — *fixed, needs a re-run*
+- [x] **F33 · The bench mismeasured the particle scenes** — *fixed, re-run, folded into the cost table*
       `plasma` read 2.43 ms in one cell and 0.48 ms in the next, which no quality knob
       explains. Two causes, both now fixed in `src/bench/BenchStage.tsx`:
       - `performanceState.particleDensity` is written by `PerformanceStateBridge`,
@@ -300,13 +335,27 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
         refuses to sample until the frame actually drew something
         (`triangles + points + lines > 0`) — summing all three because point and line
         scenes legitimately draw zero triangles forever.
-      **Re-run `/bench` and retag `plasma` / `dissolve` / `pointcloud`.**
+      **Re-run done 2026-08-26** — and it is the run `engine/sceneCost.ts` was
+      built from, so those two guards are baked into every number in the table.
+      `plasma` now reads a clean 1.01 → 0.06 ms across the ladder (a 14x
+      response, where before it was noise), `dissolve` 0.11 → 0.04 and
+      `pointcloud` 0.12 → 0.06. None of the three is `high` by any reading; the
+      labels are gone entirely, which is the retag.
 
-- [ ] **F34 · The bench frames scenes with the wrong camera** — *known limitation*
-      It uses the default Canvas camera at `[0,3,13]`, not CameraDirector. Scenes that
-      read the real camera (`chrome`, `inversion`, `torusfold`) are measured from an
-      unrepresentative distance — `torusfold`'s anchor is 3.3 units, so at 13 it is
-      mostly empty space and marches out cheaply. Treat their numbers as a floor.
+- [x] **F34 · The bench framed scenes with the wrong camera** — *fixed
+      2026-08-27; the affected rows need a re-run*
+      `src/bench/BenchStage.tsx`
+      It used the default Canvas camera at `[0,3,13]` for everything, so scenes
+      that read the real camera (`chrome`, `inversion`, `torusfold`) were
+      measured from a distance no viewer sees them at — `torusfold`'s anchor is
+      3.3 units, so at 13 it is mostly empty space and marches out cheaply.
+      The camera now sits on the scene's own declared `cameraAnchor`, held
+      still. Deliberately NOT `CameraDirector`: its modes orbit and drift, so
+      the framing would differ between the warmup frames and the measured ones,
+      and between two runs of the same cell. A benchmark wants the
+      representative distance, not the movement.
+      **`engine/sceneCost.ts` still carries the old numbers for those three
+      rows** and says so at the definition. Re-run `/bench` to replace them.
 
 - [x] **F31 · Chrome punched an invisible hole in other scenes** —
       `src/scenes/ChromeFormScene.tsx`
@@ -537,7 +586,20 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       (`setMode` only reaches 4/2/0), so any test using them asserted against the
       wrong starting point. Now uses `pinTier`.
 
-- [ ] **F25 · No attribution for frame-time spikes** — *not started*
+- [~] **F25 · No attribution for frame-time spikes** — *the scene half is
+      done; the spike half is not*
+      `/bench` now separates **JS** (time inside the scene's own per-frame
+      callback) from **CPU** (whole-frame wall clock). That is the attribution
+      that matters most often, and its absence produced a confidently wrong
+      diagnosis — see F87. `useSceneFrame` accumulates it and the profiler is
+      off outside `/bench`, because a profiler that always runs is one nobody
+      trusts.
+      Still missing: attribution for a spike *during a show*, where the question
+      is "what was on screen when that 60 ms frame happened". The pieces exist
+      (`frameLoad` knows the composition, `transitionMetrics` knows the fades) —
+      nothing correlates them with the sampler's tail.
+
+      Original entry:
       There is still no way to tell whether a heavy scene is steadily expensive or
       whether the red is transitions. Keep the worst ~20 frames of the window, each
       tagged with tier, DPR, primary + layer scene ids, and flags for
@@ -613,6 +675,15 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       scenes** so the pool is 7–8 wide. Everything above is mitigation until then.
       Note this pulls against Issue 1's cap on frame cost, so it lands after the
       remaining perf work.
+      **Update 2026-08-27.** Two of the three mitigations this entry lists as
+      missing are no longer the binding constraint. The measured cost table
+      (F91) shows nine scenes under 1.1 ms, so the budget no longer refuses
+      cheap layers the way the label ladder did — and `orbs` at 0.06 ms now
+      carries three roles. The remaining fix is unchanged and is still (a):
+      authored layer-only scenes. Most of the roster is documented as correctly
+      primary-only with stated reasons (`wireframe` and `kaleido` would fight
+      the subject; `trail` pays for a render-target pair), so widening the pool
+      by re-declaring roles is largely exhausted.
 
 ---
 
@@ -623,8 +694,34 @@ hanging. Measurements below were taken under **SwiftShader (software GL)** in a
 headless browser unless stated otherwise — treat them as *ratios between
 configurations*, never as anyone's real frame rate.
 
-- [ ] **F46 · `performanceState.fog` is inert on 15 of the 16 scenes** — *verified,
-      not fixed*
+- [x] **F46 · `performanceState.fog` was inert on 15 of the 16 scenes** —
+      *fixed 2026-08-27 by moving atmosphere into the post chain*
+      `src/engine/GradePass.ts`, `src/engine/EffectsDirector.tsx`
+      Option (b) from the analysis below, for the reason it gives: per-material
+      fog can never reach a fullscreen quad, and sixteen hand-written copies of
+      the same term is sixteen chances to drift.
+      It is **veiling glare, not distance fog**, because distance is not
+      available — the quad scenes write no usable depth. Veiling is what
+      atmosphere looks like anyway (light scattered out of the subject into the
+      air in front of it), and unlike a depth ramp it acts on a black field,
+      which is what this roster mostly is. Two terms: blacks lift in proportion
+      to how much light is actually in the frame, and contrast collapses toward
+      that same scattered level. `uLuma` is the exposure servo's own whole-frame
+      mean, already measured every 0.18 s for another purpose, so this costs a
+      uniform rather than a pass. The haze takes the palette's `bg` slot,
+      because scattered light is the colour of what it scatters through.
+      **Measured on `wireframe`** — the scene `scene.fog` reached nothing on —
+      edge luminance 8.4 → 26.8 → 74.6 across the dial, centre only 122 → 168.
+      That ratio is the point: the subject stays clearly readable above the
+      haze. The first calibration lifted the edge to 119 of 255, which is
+      erasure rather than atmosphere, and the director genuinely reaches fog 1.0
+      on a sparse ambient passage, so both constants were halved.
+      The zero-density `FogExp2` stays attached and is simply never written now:
+      detaching it would change three's program cache key and recompile every
+      material in the scene, and a future scene wanting real depth fog will find
+      it already there.
+
+      Original diagnosis:
       `src/engine/EffectsDirector.tsx`, every scene file
       The plumbing is correct end to end: the `FogExp2` instance is attached to the
       scene for the whole session (`sceneFogAttached: true` when probed live) and
@@ -647,8 +744,32 @@ configurations*, never as anyone's real frame rate.
       the roster. Do not "fix" this by wiring fog into each shader by hand — that is
       sixteen copies of the same term with sixteen chances to drift.
 
-- [ ] **F47 · Vignette is applied but reads as inert on most scenes** — *partly
-      diagnosed*
+- [x] **F47 · Vignette reads as inert on most scenes** — *A/B finished
+      2026-08-27; the suspicion was right, and the dial gained a second term*
+      `src/engine/GradePass.ts`
+      The A/B the entry below asks for, run on the output window's real pixels
+      (sampled in-frame, since a canvas without `preserveDrawingBuffer` only
+      holds pixels inside the frame that drew it):
+
+        kaleido  (fills the frame)   edge/centre  0.85 → 0.31   at vignette 0 → 1
+        wireframe (subject on black) edge/centre  0.041 → 0.004
+
+      **The vignette was never broken.** On a scene that fills the frame it
+      darkens the periphery 2.7x relative to the centre, exactly as intended. On
+      `wireframe` the edge sits at 4% of centre BEFORE it touches anything, and
+      multiplying black by a smaller number is still black. The exposure
+      discipline that makes this show look the way it does is precisely what
+      leaves a vignette nothing to act on.
+      So the dial keeps the vignette and gains a term that works on a black
+      field: a small inward scale. Pushing in magnifies the subject, which reads
+      as the frame closing whatever is in the corners. Deliberately **4%** at
+      full — anything a viewer can identify as a zoom stops reading as tension
+      and starts reading as a camera move, which `CameraDirector` already owns.
+      Verified wired by amplifying it 10x, where whole-frame luminance jumps
+      23 → 32 and 18 → 48 as magnification pushes the subject across more of the
+      frame.
+
+      Original diagnosis:
       `src/engine/EffectsDirector.tsx`
       Confirmed by live probe that the value reaches the shader: with the debug
       override at 0, `performanceState.vignette` is 0 **and** the effect's own
@@ -761,8 +882,18 @@ configurations*, never as anyone's real frame rate.
       the chain actually fits a frame. Until then the number is defensible but
       unproven, and it is now load-bearing for every high-DPI display.
 
-- [ ] **F52 · `trails` has no director, and its control surface is scaffolding** —
-      *by design, needs following up*
+- [x] **F52 · `trails` has no director** — *fixed 2026-08-27,
+      `src/engine/opticalDirector.ts`*
+      Driven from mood and **flux**, not energy: onset density is what decides
+      whether history persistence reads as a trail or as mud, and quiet-but-busy
+      is still busy. Highest on sustained ambient material, near zero on a peak —
+      a peak wants a clean legible frame, not a blurred one.
+      Observed across a 90 s set: 0.068 to 0.275, dropping on `groove` and
+      rising on `mellow`, exactly the intended shape.
+      The Post FX debug section is now a genuine override rather than the only
+      thing that moves this, and stays for that reason.
+
+      Original entry:
       `src/engine/performanceState.ts`, `src/ui/HUD.tsx`,
       `src/engine/PerformanceStateBridge.tsx`
       The feedback pass is fully wired and defaults to `trails: 0`, where it disables
@@ -826,8 +957,19 @@ ratios between configurations, never anyone's real frame rate.
       `enabled` branch costing nothing at rest. **Net frame cost is unchanged** —
       the blit moved rather than being added.
 
-- [ ] **F55 · Both optical racks are invisible to the frame budget** — *open,
-      and it must close before any director drives them*
+- [x] **F55 · Both optical racks were invisible to the frame budget** —
+      *closed 2026-08-27, immediately before F56 as required*
+      `src/engine/frameLoad.ts`
+      `mirrorRackMs` and `lensRackMs` price from the racks' live settings, with
+      `anamorphic` charged double for the 24 extra taps its streak gather costs.
+      Zero at rest is still exact — both racks set their own `enabled` and the
+      composer skips a disabled pass — but switched on they are now reserved.
+      Observed working: the frame's fixed cost tracked 3.8 ms → 4.6 ms as the
+      director engaged `anamorphic`.
+      The magnitudes are **estimates**, in the same family as `POST_CHAIN_MS`
+      and folded into F90.
+
+      Original entry:
       `src/engine/frameLoad.ts`
       `OPTICAL_RACK_UNITS = 0`, which is honest today and dangerous tomorrow.
       At rest the mirror rack genuinely costs nothing (skipped before the swap)
@@ -841,8 +983,29 @@ ratios between configurations, never anyone's real frame rate.
       Fold into F44's bench task: measure a rack on and off at two resolutions,
       set real units, and re-check the ladder.
 
-- [ ] **F56 · Neither optical rack has a director** — *by design, same posture as
-      F52*
+- [x] **F56 · Neither optical rack has a director** — *fixed 2026-08-27,
+      after F55 as the ordering required*
+      `src/engine/opticalDirector.ts`
+      Choices and magnitudes are separated deliberately. The mirror segment
+      count and the lens material are **choices** — 4 and 6 segments have
+      nothing meaningful between them, and a material is the look of the frame
+      rather than an amount of it — so they are re-taken only at a section
+      boundary and then held. The lens amount is a magnitude and eases.
+      Seeded from a section counter rather than `Math.random()`, so a set is
+      deterministic and a recording reproduces.
+      The mirror is peak-or-high-tension only and then roughly one eligible
+      section in three, because a kaleidoscope during a verse reads as an effect
+      that got stuck on. It deliberately never fired in the 90 s observation run
+      — the track never reached peak — which is the restraint working, and it is
+      pinned by unit test rather than by that run.
+      **One correction found by watching it.** Driving the lens amount straight
+      from tension gave a measured peak of 0.045 across the set: a lens nobody
+      can see attached to a cost everybody pays. An effect that is always
+      slightly on is the worst of both. Engagement became a per-section choice
+      with a visible floor, which measured 0.21 with materials cycling and whole
+      sections sitting it out.
+
+      Original entry:
       Both default to inert and are moved only by the **Post FX (debug)** panel.
       Nothing decides when a show should reach for a kaleidoscope or a lens
       material, which is the actual creative work and is the same shape as
@@ -1004,8 +1167,14 @@ causes; two fixed here, one is the likely dominant one and is still open.
       0.8. Before the fix the same test showed `transition.active` never once
       true.
 
-- [ ] **F65 · Transition styles are debug-only and undriven** — *same posture as
-      F52 / F56*
+- [x] **F65 · Transition styles are debug-only and undriven** — *already done
+      when the transition vocabulary landed; confirmed 2026-08-27*
+      `pickTransitionStyle` is wired in `PerformanceStateBridge`, re-picked on a
+      mood change or inside the section window rather than every frame, and
+      `smear` was observed running three times in a twelve-change set. The entry
+      below predates that work.
+
+      Original entry:
       `src/engine/transitions.ts`
       Six styles exist (`cut`, `dissolve`, `dipToBlack`, `smear`, `melt`,
       `collapse`) and three of them drive the racks rather than the mix, so they
@@ -1584,17 +1753,35 @@ It did not refine the cost model; it retired it.
       regenerated from a knob — rather than a smooth cost curve. Until it is
       found, `sceneCost.ts` charges chrome a flat 9.25 ms at every tier, which
       is honest but blunt: it refuses chrome as a layer everywhere.
+      **Same caveat as F87**: that CPU figure is whole-frame wall clock and
+      cannot on its own show the cost is on the main thread. `/bench` now has a
+      JS column; re-run it before hunting. `chrome` is also one of the three
+      scenes F34's camera fix changes, so its numbers move for that reason too.
 
-- [ ] **F87 · `ribbons` spends 68 ms per frame on the CPU at tier 0** — *scene
-      bug, exposed by the sweep*
+- [~] **F87 · `ribbons` shows a 68 ms frame at tier 0** — *my diagnosis was
+      wrong; the instrument to settle it now exists*
       `src/scenes/FlowRibbonScene.tsx`
-      CPU mean tiers 0→4: **68.4 / 27.1 / 16.7 / 19.9 / 16.7 ms**. Sixty-eight
-      milliseconds is 15 fps from a scene using 0.03 ms of GPU. It does respond
-      to the tier, so unlike F86 the direction is right, but tier 0 — the tier
-      most users start on — is unusable.
-      Almost certainly per-frame geometry regeneration (tube/curve rebuild)
-      scaled by a quality knob. The GPU cost says the drawing is free; all of
-      this is JS.
+      CPU mean tiers 0→4: 68.4 / 27.1 / 16.7 / 19.9 / 16.7 ms, against 0.03 ms
+      of GPU.
+
+      **"All of this is JS" was not supportable and is not true.** `/bench`'s CPU
+      column is `delta * 1000` — the whole frame's wall clock, including the
+      vsync wait and back-pressure from a GPU still finishing the previous frame.
+      It cannot distinguish scene JavaScript from anything else. And `ribbons`
+      builds its geometry once in a `useMemo` (22 ribbons x 90 segments x 2 =
+      3,960 vertices, ~7,700 triangles) and its per-frame loop runs about 1,300
+      iterations. Whatever costs 68 ms there, it is not that.
+      The more likely candidate on the evidence available: `DoubleSide` +
+      `AdditiveBlending` overdraw, which is fill the GPU timer may be
+      under-reporting.
+
+      The instrument now separates them — `/bench` has a **JS** column
+      (time inside the scene's own callback) beside the CPU one, so a re-run
+      answers this outright. High CPU with low JS is a scene waiting on the GPU;
+      high CPU with high JS is a scene doing too much on the main thread.
+      **Re-run `/bench` and read the JS column for `ribbons` and `chrome`.**
+      F14 (the decimation running while invisible) was in this file and is
+      fixed regardless, since it was wrong on its own terms.
 
 - [ ] **F88 · The cost table is one machine's measurements** — *known
       limitation, stated at the definition*
@@ -1667,9 +1854,609 @@ It did not refine the cost model; it retired it.
 
 ---
 
+## The output projector window (2026-08-26)
+
+> **Superseded the same day.** F94 shipped a projector that ran a SECOND full
+> engine, which doubled the cost of the heavy scenes (F97). It was replaced by
+> the two-window split in the next section: the output window is now the only
+> renderer and the control window holds no engine at all. F95, F96 and F97 died
+> with that design and are struck through below.
+
+- [x] **F94 · No chrome-free output surface for OBS or a second screen** —
+      *shipped 2026-08-26, replaced by F98 the same day*
+      `src/engine/projector.ts` (new), `src/routes/Visualizer.tsx`,
+      `src/engine/Stage.tsx`, `src/engine/SceneManager.tsx`, `src/ui/HUD.tsx`
+      Ported from lilim's `?output` tab. `O` opens a second window at
+      `?output`; it renders the same show with no HUD, no start card, no
+      keyboard map, a pointer that hides after 2 s and a first click that goes
+      fullscreen. State crosses on a `BroadcastChannel`.
+
+      **Verified with two live windows** (Playwright, one browser context so the
+      channel connects). After opening the projector mid-track and then cycling
+      the palette on the leader:
+
+        LEADER    scene wireframe · palette ember · bloom 1.631 · bpm 129 · beat 32
+        PROJECTOR scene wireframe · palette ember · bloom 1.631 · bpm 129 · beat 32
+        HUD nodes: leader 2, projector 0 · page errors: 0
+        projector screenshot 206 KB (drawing, not blank)
+
+      Three design decisions worth keeping in view:
+
+      1. **Roles are asymmetric.** A follower never publishes and a leader never
+         applies, so the echo problem cannot arise at all — no origin tags, no
+         loop suppression. lilim needs those because every tab there is a peer.
+      2. **The scene lifecycle stays local.** `scene`, `activeScene`, `layers`
+         and `transition` are NOT on the wire; the follower's own SceneManager
+         computes them from the same `sceneId` and the same beat grid. Sending
+         them would mean one window driving another's mount lifecycle, warm
+         gates and fade clocks across a channel with no ordering guarantee
+         against the frames interleaved with it.
+      3. **The join handshake is not optional.** The look publishes on CHANGE,
+         so a projector opened mid-set would otherwise sit on boot defaults
+         forever — lilim's own log records exactly that. The follower asks at
+         module load, before React mounts, and the leader answers a snapshot
+         addressed to that joiner.
+
+- [x] ~~**F95 · Two control windows on one machine is ambiguous** — *known, and
+      narrowed rather than solved*~~  *(design retired with F94; see F98)*
+      `src/engine/projector.ts`
+      Any window without `?output` is a leader. Open the app twice and both
+      publish frames and both answer a join, so a projector would take whichever
+      message arrived last — a 60 Hz flicker between two shows.
+      Narrowed by gating both publishing and the join answer on
+      `status === 'running'`, which covers the realistic case (a second tab
+      sitting on the start card cannot stamp its defaults over a live set). It
+      does not cover two tabs actually playing.
+      Proper fix: a leader election on the channel — announce on join, lowest id
+      wins, demote the rest to followers. Worth doing before this is a feature
+      anyone relies on in front of an audience.
+
+- [x] ~~**F96 · A projector's clock jumps when its leader dies** — *edge case,
+      one frame*~~  *(design retired with F94; see F98)*
+      `src/engine/projector.ts`, `src/audio/AudioEngine.ts`
+      While frames arrive, `features.time` is the leader's `AudioContext` clock.
+      After `STALE_MS` the follower falls back to `audioEngine.update()`, whose
+      no-context branch sets `time` from `performance.now() / 1000`. Those are
+      different epochs, so `time` jumps on the changeover.
+      `delta` is clamped to 0.1 s so nothing integrating it will explode, but a
+      scene using `time` directly as an absolute phase will visibly skip once.
+      Only reachable when a leader stops publishing, which is already a degraded
+      state — but the fix is small: hold an offset at the moment of changeover
+      and keep the clock continuous.
+
+- [x] ~~**F97 · The projector is a second full render of the same show** —
+      *by design, and the cost should be stated somewhere a user can see it*~~  *(design retired with F94; see F98)*
+      Two windows means two WebGL contexts, two scene instances, two post
+      chains. On the bench GPU most of the roster is under 0.2 ms so this is
+      free, but `synthgrid` at 22 ms or `network` at 22 ms is being paid TWICE
+      when a projector is open, and each window runs its own quality governor
+      with no knowledge of the other.
+      A mirror (leader renders once, projector blits the pixels) would avoid it
+      but needs a transferable stream — `captureStream` into a `MediaStream`
+      handed over, or an `OffscreenCanvas` — and loses the ability for the
+      projector to run at its own resolution. Measure the two-window cost on the
+      heavy scenes before deciding; today the governor's response would be to
+      quietly drop BOTH windows a tier, which is the correct behaviour but not
+      an obvious one.
+
+---
+
+## Two windows, one render (2026-08-26)
+
+- [x] **F98 · The console/output split** — *shipped and verified 2026-08-26*
+      `src/engine/outputLink.ts` (new), `src/ui/Console.tsx` (new),
+      `src/styles/console.css` (new), `src/routes/Visualizer.tsx`,
+      `src/store.ts`, `src/audio/AudioEngine.ts`, `src/engine/Stage.tsx`
+      The output window **is the app**: it owns the audio device, runs every
+      director, mounts the scenes and draws the frame. The control window runs
+      no engine at all — it is a console plus a `<video>` of the output
+      window's own canvas.
+
+      **The constraint that forced the shape** was "the main processing should
+      only happen once". F94's projector rendered the show twice, once per
+      window, doubling exactly the scenes that can least afford it
+      (`synthgrid` and `network` are ~22 ms each). Here the mirror is a
+      `captureStream()` off the canvas that already drew the frame, so the
+      operator's preview costs a frame copy rather than a frame.
+
+      **Three transport primitives were probed before any of it was written**,
+      because the whole design rests on them:
+
+        MediaStream + File by direct reference into an opened window  live, intact
+        captureStream from window B  ->  <video> in window A          readyState 4,
+                                                                      frames advancing
+        ImageBitmap over BroadcastChannel (unused fallback)           works
+
+      Live objects go by direct reference because neither a `MediaStream` nor an
+      open `File` handle survives a structured clone — this is not the faster
+      path, it is the only one. State goes over `BroadcastChannel`: the look
+      downward, a telemetry packet upward at 10 Hz.
+
+      **Audio is acquired in the control window and analysed in the output
+      window.** `getDisplayMedia` and `getUserMedia` need transient user
+      activation and a freshly opened window has none, so the control window
+      prompts inside the click that also opens the output window, then hands
+      the live stream across (`acquireSource` is now public on AudioEngine for
+      exactly this).
+
+      **Verified with two live windows:**
+
+        control canvases          0     (the show renders once, elsewhere)
+        output canvases           1
+        output chrome nodes       0
+        mirror                    1280x720, readyState 4, t 8.45 -> 19.05
+        scene press               wireframe -> plasma in the output window
+        palette press             Ember on both
+        readouts                  BPM 120->130, mood silence->mellow, tier, ms, scene
+
+      Two bugs found and fixed during that verification:
+
+      1. **`captureStream(0)` never emits a frame.** 0 does not mean "on every
+         canvas change" — it means frames are produced only when something calls
+         `track.requestFrame()`. The mirror arrived with `readyState` 4 and
+         `currentTime` pinned at 0 forever. Omitting the argument is what gives
+         a frame per canvas update.
+      2. **A scene press changed nothing.** `requestScene` sets
+         `pendingSceneId`, and only `sceneId` was on the wire — so the request
+         never left the control window and the output sat on `wireframe` through
+         every press. The two windows own different halves of a scene change:
+         the control window owns the REQUEST, the output window owns the
+         COMMITMENT (it alone knows when the incoming scene has warmed and where
+         the next downbeat is), so `pendingSceneId` now travels down and the
+         committed `sceneId` travels back up on telemetry.
+
+- [~] **F99 · Most of the old HUD has not been ported to the console** —
+      *narrowed 2026-08-26: post FX and screenshot are in*
+      `src/ui/HUD.tsx`, `src/ui/Console.tsx`
+      The console covers what a set needs: source/transport, recording,
+      screenshot, the scene grid, all 30 palettes as real five-slot swatches,
+      intensity/speed/reactivity, quality, layer slots, autopilot, mood drive,
+      and now the **whole post chain** — bloom, threshold, glitch, vignette,
+      fog, trails, the five mirror-rack controls, lens amount and material, and
+      the next transition style.
+
+      **All three diagnostic panels are now on the console too** — audio debug,
+      fps meter, analytics — behind buttons in the bottom-left tool row. They
+      are the ORIGINAL components, unmodified: the output window ships the
+      singletons they read and the control window mirrors them into its own idle
+      copies, so `DebugPanel` still reads `audioEngine.features` and `FpsMeter`
+      still reads `frameLoad` exactly as before.
+
+      That packet is an order of magnitude heavier than the base telemetry (a
+      512-bin spectrum and two 1024-sample waveforms), so it is **sent only
+      while a panel is open**. Verified: with every panel closed the control
+      window's `features` are empty and stay frozen; opening one fills them with
+      live values; closing them all freezes them again.
+
+      Frame times ride the packet RAW rather than as `perf.ms`, which is
+      smoothed — a p95 computed over means understates the tail precisely where
+      the analytics panel exists to show it.
+
+      **Still not ported:** presets (built-in + saved, favourites, import and
+      export), the cue timeline, MIDI learn and MIDI sync, and per-layer FX
+      (gain/blend). `HUD.tsx` still exists and still works — it is simply not
+      mounted, so nothing is lost and the port can continue against a reference.
+
+- [x] **F101 · The diagnostic panels overlaid the console columns** — *fixed
+      2026-08-27 by docking them*
+      `src/styles/console.css`, `src/ui/Console.tsx`
+      All three panels were authored for the full-screen HUD, where the only
+      thing under them was the canvas, and all three anchor to `top: 84px` on
+      the same two corners. On the console they landed on top of each other and
+      on top of the transport.
+      They are now docked inline in the header, in the gap between the BPM
+      readout and the mood pill — the one piece of horizontal space nothing else
+      wants. Three things had to be got right for that to work:
+        - `.console-top` is `align-items: start`, not `stretch`. A 370px-tall
+          dock stretched the mirror cell to match until it filled half the
+          screen.
+        - The middle column is `minmax(0, 1fr)` and `.readouts` gets
+          `min-width: 0`. A grid item defaults to `min-width: auto`, which
+          refuses to shrink below its content, so a wide dock pushed the Post FX
+          column off the right edge of the window.
+        - The panels stack in a scrolling COLUMN, not a row. Side by side they
+          want ~850px, more than the gap has, so the third was clipped
+          horizontally while still reserving its 352px of height — an empty band
+          under the two that fit.
+
+- [x] **F102 · "output down" while displaying that output's own telemetry** —
+      *found from a user screenshot, reproduced, fixed 2026-08-27*
+      `src/engine/outputLink.ts`
+      The console reported `output down` in the same breath as it displayed the
+      output window's tier, frame time and current scene, offered "Open output
+      window" for a window that was already open, and — the damaging part —
+      refused to hand over an acquired audio source, stopping the stream with
+      "No output window".
+
+      `outputIsOpen()` read `!!outputWindow && !outputWindow.closed`, and
+      `outputWindow` is module state. **Any reload of the control window loses
+      it** — every HMR update in dev, any refresh in production — while the
+      output window carries on rendering and publishing perfectly happily.
+      `handSource()` used the same dead handle.
+
+      Fixed in two parts. Presence now comes from telemetry: a packet inside
+      `TELEMETRY_STALE_MS` is proof the window is alive, and the handle is only
+      a secondary signal for the moment before its first frame. And the handle
+      is recovered rather than mourned — `window.open('', 'audiovis-output')`
+      returns an existing named window without navigating it, guarded on
+      telemetry because with no such window that same call would create a blank
+      popup.
+
+      Reproduced exactly (open output, reload the console, hand over a file):
+      before, `output down` and a dead hand-off; after, `output live`, no
+      spurious open button, and the output window running the track
+      (`contextState: running`, energy 0.62).
+
+- [x] **F104 · Every capture start was cancelled by the output window's own
+      telemetry** — *the real cause of "it is not picking up audio at all";
+      found, bisected and fixed 2026-08-27*
+      `src/store.ts`, `src/engine/outputLink.ts`
+
+      The sequence, which is worth reading slowly because every step looks
+      reasonable on its own:
+
+        1. The console sets `status: 'starting'` and calls `getDisplayMedia`.
+           The share picker opens and the operator sits in it for seconds.
+        2. The output window — idle, nothing handed to it yet — publishes
+           telemetry every 100 ms saying `status: 'idle'`.
+        3. `adoptOutputStatus` wrote that over the console's `'starting'`.
+        4. The picker resolved. `startAudio`'s cancellation guard asked
+           `status !== 'starting'`, read `'idle'`, concluded the operator had
+           backed out, **stopped the tracks and returned silently.**
+
+      No error, no status change, the console back on its source buttons, and an
+      output window that was never handed anything. Exactly "not picking up the
+      audio at all".
+
+      **The file path never hit it**, because nothing is awaited between
+      claiming `starting` and handing over — which is why every test written for
+      this feature passed while the path a person actually uses was broken.
+
+      Two fixes, and the bisect separates what each one does:
+
+      - **The cancellation guard now uses a local token**, not `status`. A guard
+        built on a field another window writes is not a guard. This is the fix
+        that actually rescues the hand-off.
+      - **Telemetry no longer overwrites `status` while a hand-off is in
+        flight** (`shouldAdoptStatus`, unit-tested). This is the fix that stops
+        the console flipping back to its source buttons mid-prompt. The
+        exemption ends the moment the output reports `hasSource`, so evidence
+        always beats the timer.
+
+      Bisected to prove it rather than assert it: with the adoption guard
+      disabled, the console's status is observably stomped to `idle` at t+1s
+      through t+4s of a 4 s prompt — which is the branch the old code cancelled
+      on. Restored, it holds `starting` throughout and reaches `running`, with
+      the output window on a live graph (`contextState: running`, `running:
+      true`).
+
+      Also fixed alongside: `openOutput()` no longer steals focus on the start
+      path. The very next thing after it is a capture prompt owned by the
+      control window, and pulling focus away from that window first is asking
+      for trouble.
+
+- [~] **F103 · A silent output window could not say why** — *diagnosed and made
+      legible; F104 turned out to be the actual cause of the report*
+      `src/audio/AudioEngine.ts`, `src/engine/outputLink.ts`,
+      `src/routes/Visualizer.tsx`, `src/ui/Console.tsx`
+      Reported as "I share screen and audio, it says output down, and after I
+      fullscreen it still is not displaying — debug and analytics show it is not
+      picking up audio."
+
+      F102 covers the `output down` half and the failed hand-off it caused. The
+      silence half has a second candidate that the two-window split introduced
+      and nothing was reporting: **the output window is opened
+      programmatically, so it may never have received a user gesture, and an
+      AudioContext created there starts `suspended`.** That reads as perfect
+      silence with no error anywhere — a flat 120 BPM and empty meters, which is
+      exactly what the screenshot showed.
+      `connectStream` already installs a resume-on-gesture listener, but only
+      once a graph exists; there was nothing covering the window before that.
+
+      Now: `audioEngine.resumeContext()` fires on every pointer-down in the
+      output window (the same handler that requests fullscreen), and telemetry
+      carries `audioState` and `hasSource` so the console can tell the two
+      silences apart — "click the output window to start audio" versus "output
+      has no audio source". They need different things from the operator, and
+      showing neither was the actual defect.
+
+      **Not confirmed**: a real screen-share cannot be driven from the test
+      harness, so the system-audio path specifically has not been reproduced
+      end to end. What is verified is the file path through the same hand-off,
+      and that the console now names the failure instead of showing a plausible
+      idle state.
+
+- [x] **F100 · Two control windows fought, and the transport acted on the wrong
+      engine** — *both fixed and verified 2026-08-26*
+      `src/engine/outputLink.ts`, `src/ui/Console.tsx`, `src/store.ts`
+
+      **The transport was pressing buttons in the wrong window.** `Stop`,
+      `Record` and `cancel` called the control window's own store, whose
+      `AudioContext` is idle, whose `MediaRecorder` does not exist and whose
+      canvas is empty. Nothing stopped and nothing recorded, while the button
+      lit up as though it had. Worse, the control window set its own status to
+      `running` the moment it handed the source over — optimism rather than
+      knowledge, so a track ending in the output window left the console showing
+      a live transport indefinitely.
+
+      Fixed with a command message (`stop`, `cancel-start`, `toggle-record`,
+      `screenshot`) going down, and the output window's REAL `status`,
+      `sourceType` and `recording` coming back on telemetry, which the control
+      window adopts. Hand-off now sets `starting`, not `running`: whether the
+      show actually started is a fact only the output window has.
+      Verified: output `running` → `idle` on a Stop pressed in the console, and
+      the console followed to `idle` and returned to its source buttons.
+
+      **Two consoles both published.** The look wire is broadcast, so the output
+      window took whichever message landed last — the show flickering between
+      two people's idea of it. Now every console announces itself on the channel
+      and the lowest id drives; the rest go passive and say so in a banner. No
+      handshake and no leader term: every controller evaluates the same rule
+      from the same evidence, and one that closes stops announcing and ages out
+      after 2.5 s. The cost of being wrong for one interval is one duplicated
+      look message, which is idempotent.
+      Verified with two consoles: exactly one stood down, and closing the active
+      one promoted the survivor within the TTL.
+
+      One thing NOT verified: whether `screenshot` actually writes a file. The
+      command reaches the output window and `saveScreenshot()` runs there, but a
+      download initiated from a popup was not confirmed end to end.
+
+---
+
+## Visuals and performance pass (2026-08-27)
+
+Worked through the visual and performance half of the ledger. What landed:
+**F14**, **F33**, **F34**, **F46**, **F47**, **F52**, **F55**, **F56**, **F65**,
+and **F25** in part. **F87** was corrected rather than fixed — the diagnosis in
+it was mine and was not supportable.
+
+Three things are worth carrying forward from it.
+
+**An instrument that cannot distinguish two causes will eventually be read as
+whichever one you expected.** `/bench`'s CPU column is whole-frame wall clock;
+I read it as scene JavaScript and wrote F87 accordingly, about a scene that
+builds its geometry once and loops 1,300 times. The column that settles it now
+exists, and both F86 and F87 are one bench run from an answer.
+
+**A dial that is visible but dead is worse than no dial**, and two of them had
+been dead for weeks in ways nobody could see from the code: fog reached one
+scene of sixteen because `ShaderMaterial.fog` defaults to false, and the
+vignette was working perfectly on a periphery that was already black. Both were
+found by measuring pixels, not by reading source.
+
+**An effect that is always slightly on is the worst of both.** The lens rack's
+first director drove its amount from tension and measured a peak of 0.045
+across a 90-second set — invisible, and charged for. Engagement became a
+per-section choice with a floor.
+
+### The empty slots, done next (2026-08-27)
+
+**F18** and **F20** are closed and **F19** is narrowed. `orbs` now carries
+background and effect alongside accent and overlay — the scene its own comment
+had nominated for both, declined on reasons that had expired. "Nothing selects
+`background`" was circular; the pool was empty because nobody had gone first.
+And the effect slot's one real requirement, that a scene drive itself to visual
+zero by `slotProgress` 1, is met by an envelope in the scene.
+
+**The effect slot has now fired for the first time**: two firings in a 120 s
+set, 85 s apart, both retiring cleanly.
+
+Watching it run also turned up a defect the ledger had predicted in the
+abstract: the same scene held two slots at once (`acc orbs / ov orbs`), because
+the pools overlap and nothing deduplicated the picks. `resolveLayerIds` dropped
+the later one at mount, so the composition the director chose and the one that
+rendered were different — F19's "a layer chosen and immediately dropped".
+
+### Still not started
+
+- **Issue 3 / the rest of F19** — the accent pool is still thin under `plasma`
+  and `network`, and the fix is authored layer-only scenes rather than more role
+  declarations. Most of the roster is documented as correctly primary-only with
+  stated reasons: `wireframe` and `kaleido` would fight the subject, `trail`
+  pays for a render-target pair. Re-declaring roles is largely exhausted.
+- **F57** — five of the seven lens materials still unverified by eye. They now
+  run autonomously (F56), so they will be seen; that is when to judge them.
+- **F58 / F59** — no scene reads the `shadow` or `bg` slots, and 24 of 30
+  palettes are unreachable by autopilot. The five-slot rewrite is still half
+  delivered visually.
+- **F78** — one scene of eighteen declares modes.
+
+---
+
+## Automating role assignment for a marketplace (2026-08-27)
+
+**Not an issue — a design decision recorded before it is acted on.** Raised as:
+role assignment is manual today, a marketplace with third-party scenes cannot
+be, so how does it get automated? Options considered were an AI engine that
+reads scene semantics, staying manual until MVP, or driving everything from
+DSP.
+
+### The finding
+
+Every manual role call in the roster was decided on **pixels**, not semantics.
+The reasons are already written in `src/scenes/index.ts`:
+
+- `orbs` → background: *"nowhere near enough structure to carry a frame as the
+  subject, but composites beautifully over one"*, plus cheapest in the roster.
+- `kaleido` → primary only: *"a centred mandala owns the middle of the frame by
+  construction; composited over another subject the two symmetries fight, and
+  behind one it is entirely hidden by its own dark centre."*
+- `wireframe` → primary only: *"two subjects fighting for the same frame."*
+- `trail` → primary only: it pays for a render-target pair.
+
+Coverage, spatial distribution, occlusion, cost. All four are **measurable from
+rendered frames**. None required knowing what the scene means. So the
+automation this wants is a *measurement*, not an inference.
+
+### The proposal: extend `/bench` into a scene profiler
+
+Most of it exists. `/bench` already mounts any scene in isolation at any tier
+with the right camera and renders it; `ExposureSampler` already reads back a
+downsampled frame and computes mean, p85, p99 and blown share; the in-frame
+readback technique used for the F47 vignette A/B already samples centre versus
+edge. What a role profile adds on top:
+
+- **Fill** — fraction of pixels above a luminance threshold. Separates "subject
+  on black" from "wash".
+- **Radial distribution** — centre / mid / edge luminance. This is the statistic
+  that would have caught `kaleido` on its own.
+- **Temporal variance** — does it change per beat or per phrase? Accent
+  (punctuating) versus background (sustained).
+- **Occlusion** — composite the scene over a known reference field and measure
+  how much of the reference survives. "Two subjects fighting" is exactly this,
+  quantified, and it is the direct test of *can this be a layer*.
+- **Cost** — already measured, per tier, with the JS/GPU split.
+
+Run at submission time, cache in the manifest. One admission step covering
+performance, role eligibility and licence rather than three.
+
+### Where AI does belong
+
+Narrowly, and not here. `moodFit` is genuinely semantic and hard to measure
+(though even it could be learned from how a scene's output responds to audio
+features). Metadata, naming and marketplace copy. Source review for licence
+provenance and unsafe shader patterns.
+
+**Not role assignment.** An LLM reading shader source would be guessing at
+something measurable — slower, non-deterministic, unauditable, and when a
+marketplace scene is mis-roled "the model thought it was a background" is not a
+debuggable answer.
+
+### Why DSP is a different axis
+
+"Wire everything to DSP" is already what the directors do — mood, tension,
+flux, phrase and section all drive the choices. But DSP answers *when*, and this
+problem is *which scene is eligible for what*. Audio analysis cannot tell you
+whether a scene occludes what is behind it.
+
+### Sequencing, and why it is not "after MVP"
+
+There are sixteen hand-made role decisions in the roster **with written
+reasons** — a labelled validation set with rationales, which is a rare thing to
+have. Build the profiler while it still exists and it can be checked against
+them: does it independently reach "kaleido is primary-only"? Where it disagrees,
+one of the two is wrong and that is cheap to find out. Defer it and the same
+thing gets built later against a replaced roster with no ground truth.
+
+  1. Write the role criteria down as a measurable contract. No machinery.
+  2. Extend `/bench` with the four statistics plus the occlusion test. Output a
+     profile per scene, wired to nothing.
+  3. Validate against the sixteen. Tune. This is where the idea is proved or not.
+  4. Only then, have `registerScene` derive role eligibility from the profile
+     for untrusted scenes.
+
+**A declared role is a claim the profile may VETO, never one it grants.**
+Declaration is intent; measurement is a safety check. Same posture
+`trusted: false` already takes on cost claims.
+
+### Step 3 result — validated against the sixteen (2026-08-27)
+
+Steps 1 and 2 are done: `docs/10_Scene_Roles.md` is the contract,
+`src/bench/sceneProfile.ts` is the implementation, and `/bench?profile` sweeps
+tier 0 only so the whole roster can be profiled in one run.
+
+Profiled all sixteen and compared the verdicts to the hand-made role calls.
+**13/16 agree.** The profile is a veto, so the disagreements that count are
+declared roles it REFUSES — three of them:
+
+  scene        fill   centre   conflict   declared -> refused because
+  plasma      0.019     0.89       1.65   accent/overlay/primary -> conflict, and fill
+  ribbons     0.000     0.79       1.40   accent/overlay         -> conflict
+  trail       0.018     0.39       0.91   primary                -> fill 0.018 < 0.02
+
+It also independently reached several of the calls it was being checked
+against: `kaleido` conflicts (0.53) far more than `orbs` (0.42) or `network`
+(0.37); `synthgrid` and `juliawings` are refused as layers on fill alone (0.65
+and 0.76); `orbs` clears every background threshold, which is the call the
+roster's own comment had reasoned to in prose.
+
+**Two real defects, found by running it rather than by thinking about it.**
+
+1. **The profile is measured with no post chain, and it needs one.** `BenchStage`
+   deliberately excludes the post chain so scene COSTS compare cleanly — a
+   constant added to every scene shrinks the ratios that are the point. But a
+   profile is about what a viewer sees, and bloom plus the exposure servo change
+   fill and conflict enormously. `ribbons` profiling at `fill 0.000` is not a
+   scene with nothing on screen; it is a scene whose output sits below the lit
+   threshold until bloom and gain reach it. Cost wants no post chain, profile
+   wants one, and the profiler was built on the cost harness. They have to be
+   separate passes.
+
+2. **`fill` is thresholded and `conflict` is energy-weighted, so they disagree
+   about a dim scene.** `ribbons` reads `fill 0.000` (nothing above threshold)
+   and `conflict 1.40` (strongly centred) in the same breath. Both are
+   internally correct and together they are incoherent. Either fill becomes an
+   energy share, or conflict gains a presence gate, or the field is normalised
+   before either is taken.
+
+**Step 4 is deliberately NOT started.** Wiring `registerScene` to a profile that
+cannot see the post chain would refuse legitimate scenes for being dim, and the
+first thing it would refuse is `ribbons` — a scene that has been a working layer
+for the entire life of the project. The thresholds are also not worth tuning yet:
+tuning them to reach 16/16 against sixteen points is overfitting, and the two
+defects above would still be there underneath.
+
+This is what step 3 was for. The idea holds in shape — the statistics do
+separate subjects from layers, and they reached several calls independently —
+and it is not yet trustworthy enough to give a veto over anyone's submission.
+
+### The agreed fixes for both defects (2026-08-27, not yet built)
+
+**Defect 1 — a second pass, not a flag.** Cost and profile want opposite things
+from the same harness and cannot share a run.
+
+- *Cost pass*: no post chain, exactly as now. A constant added to every scene
+  shrinks the ratios that are the entire point of comparing scenes.
+- *Profile pass*: post chain mounted, exposure servo settled, palette applied.
+  `/bench?profile` is already a separate mode and is the natural home. It needs
+  a longer warmup than the cost pass — the servo's time constant is ~2.3 s, and
+  profiling before it settles measures the wrong gain.
+
+Accepted consequence, deliberately: the profile then depends on the palette and
+on the servo. That is not contamination. A scene that only reads through bloom
+is a scene that only reads through bloom, and a role profile should say so.
+
+**Defect 2 — normalise the field before measuring.** Three options were
+considered:
+
+  (a) make `fill` energy-based — coherent with `conflict`, but loses the thing
+      `fill` is good at, which is a genuinely threshold question: bright subject
+      on black versus dim wash.
+  (b) gate `conflict` on presence — cheap, but moves the incoherence into a
+      discontinuity, and `ribbons` would then have no reading rather than a
+      wrong one.
+  (c) **chosen** — scale each frame so its 99th-percentile luminance maps to a
+      fixed reference, then take both statistics off the normalised field.
+
+(c) makes `fill` mean "how much of the frame is lit relative to this scene's own
+brightest content", which is the question that was always intended, while
+`conflict` keeps its energy weighting. A dim scene and a bright scene with the
+same composition then profile identically — which is correct, because
+**brightness is the engine's job** (the exposure servo and the slot gains), not
+the scene's. The profile should describe COMPOSITION. Keep raw `meanLuma`
+alongside as its own field so absolute brightness is still visible where it
+matters.
+
+**Order: (c) first.** It is self-contained, pure, and testable against the same
+synthetic fields. It may also absorb part of defect 1 on its own, since
+normalising is close to what bloom plus gain does to a dim scene — so re-run the
+validation after it and see how much of the post-chain gap is actually left
+before building a second bench pass for it.
+
+### Two things genuinely uncertain
+
+- Whether the occlusion test generalises across palettes — a dark palette
+  occludes differently from a bright one.
+- Whether `effect` can be profiled at all. It is a *contract* (drive yourself to
+  visual zero by `slotProgress` 1), not a property, so it probably has to stay
+  declared-and-verified rather than inferred.
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **625 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **659 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { captureIfRequested } from './recorder'
 import { frameSampler } from './frameSampler'
 import { AutoPilot } from './AutoPilot'
@@ -15,6 +15,7 @@ import { PerformanceDirector } from './PerformanceDirector'
 import { PerformanceStateBridge } from './PerformanceStateBridge'
 import { resetExposure } from './exposure'
 import { resourceCache } from './streaming/resourceCache'
+import { noteFrame, publishDetail, publishMirror, publishTelemetry } from './outputLink'
 import { useStore } from '../store'
 
 /**
@@ -115,8 +116,38 @@ export function Stage() {
       <SceneManager key={`scenes-${glEpoch}`} />
       <PostChain glEpoch={glEpoch} />
       <ScreenshotCapture />
+      <MirrorPublisher />
     </Canvas>
   )
+}
+
+/**
+ * Hands this window's canvas to the control window as a `MediaStream`, once.
+ *
+ * `captureStream` is the whole reason the show is rendered exactly once: the
+ * control window's mini mirror is a `<video>` fed from here, not a second
+ * renderer. Measured across two windows — 480x270, `readyState` 4, frames
+ * advancing — so what the DJ watches costs a frame copy, not a frame.
+ *
+ * Runs at priority 2 and stops publishing itself after the first success:
+ * `captureStream` needs a canvas that has actually drawn, and the first
+ * composited frame is the earliest moment that is true.
+ */
+function MirrorPublisher() {
+  const gl = useThree((s) => s.gl)
+  const done = useRef(false)
+  useFrame((_, delta) => {
+    if (!done.current) done.current = publishMirror(gl.domElement)
+    // Rate-limited inside; see TELEMETRY_INTERVAL_MS. Published from the render
+    // loop rather than a timer so it cannot report a frame rate the window is
+    // no longer producing.
+    publishTelemetry()
+    // Every frame, unsmoothed — the analytics panel's whole subject is the tail
+    // and a mean would hide it. Buffered, and a no-op when nobody is watching.
+    noteFrame(delta * 1000)
+    publishDetail()
+  }, 2)
+  return null
 }
 
 /**

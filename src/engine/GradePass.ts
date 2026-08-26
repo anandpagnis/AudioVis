@@ -2,6 +2,9 @@ import * as THREE from 'three'
 import { Pass } from 'postprocessing'
 import { FULLSCREEN_VERT } from './glsl'
 import { exposure } from './exposure'
+import { performanceState } from './performanceState'
+import { getPalette } from './palettes'
+import { useStore } from '../store'
 
 /**
  * The finishing stage: one multiply on the composited frame, driven by the
@@ -28,6 +31,49 @@ import { exposure } from './exposure'
  * paying is now this pass, doing useful work instead of copying.
  *
  * ## Multiply, not offset
+ *
+ * ## `uFog`, and why atmosphere moved out of the scene graph
+ *
+ * `performanceState.fog` drove `scene.fog`, an exponential `FogExp2` attached
+ * for the whole session. The plumbing was perfect and it reached almost no
+ * pixels: three applies `scene.fog` only to materials that opt in,
+ * `ShaderMaterial.fog` defaults to false, and no scene in the roster sets it.
+ * The one fog-capable material was `chrome`'s `MeshPhysicalMaterial`. So a
+ * director moving `fog` was steering something that answered on **one scene of
+ * sixteen** (F46).
+ *
+ * Per-material fog could never have fixed that, because most of this roster is
+ * a fullscreen quad with no depth to fog. The two honest options were sixteen
+ * hand-written copies of the same term — sixteen chances to drift — or one
+ * post-chain effect that reaches every scene by construction. This is the
+ * second.
+ *
+ * It is veiling glare, not distance fog, because distance is not available:
+ * the quad scenes write no usable depth. Veiling is what atmosphere actually
+ * looks like anyway — light scattered out of the subject into the air in front
+ * of it — and unlike a depth ramp it acts on a black field, which is what this
+ * roster mostly is.
+ *
+ * ## `uIris`, and why the vignette needed a partner
+ *
+ * The intent behind `performanceState.vignette` is "the frame tightens through
+ * a build". A vignette delivers that by darkening the periphery — a MULTIPLY —
+ * and measured on `kaleido`, which fills the frame, it does exactly that: the
+ * edge falls from 0.85 of centre luminance to 0.31, a 2.7x relative darkening.
+ *
+ * On most of this roster it can do nothing at all, and that is not a bug in the
+ * vignette. Measured on `wireframe`, the edge sits at **4% of centre luminance
+ * before the vignette touches anything** — the periphery is already black, and
+ * multiplying black by a smaller number is still black. The exposure discipline
+ * that makes the show look the way it does (a bright subject on true black, see
+ * docs/09_Rendering_Engine.md) is precisely what leaves the vignette nothing to
+ * act on. That was F47.
+ *
+ * So the dial keeps the vignette AND gains a term that works on a black field:
+ * a small inward scale. Pushing in magnifies the subject, which reads as the
+ * frame closing regardless of what is in the corners. One dial, two mechanisms,
+ * and between them it now does something visible on every scene in the roster
+ * rather than on the four that fill the frame.
  *
  * `uGain` multiplies. This is not a stylistic choice: docs/09_Rendering_Engine.md
  * records that a previous grade attempt used `BrightnessContrast.brightness`,
@@ -61,10 +107,46 @@ const GRADE_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
   uniform float uGain;
+  uniform float uIris;
+  uniform float uFog;
+  uniform float uLuma;
+  uniform vec3 uFogColor;
   varying vec2 vUv;
 
   void main() {
-    vec3 col = texture2D(tDiffuse, vUv).rgb * uGain;
+    // Iris: push in toward the centre. See the note on uIris below for why the
+    // vignette needed a partner that works on a black field.
+    //
+    // Scaling UV toward the centre magnifies, so the subject grows and the
+    // frame reads as closing in. Deliberately tiny — 4% at full — because this
+    // rides a director dial that moves through every build, and anything a
+    // viewer can identify as a zoom stops reading as tension and starts reading
+    // as a camera move, which CameraDirector already owns.
+    vec2 uv = (vUv - 0.5) * (1.0 - uIris * 0.04) + 0.5;
+    vec3 col = texture2D(tDiffuse, uv).rgb * uGain;
+
+    // Atmosphere, as veiling glare rather than as distance fog.
+    //
+    // Two terms, both of which act on a black field — which is the whole reason
+    // this is here rather than on scene.fog. See the note above.
+    //
+    //   LIFT: light scattered out of the subject and into the surrounding air,
+    //   so the blacks rise in proportion to how much light is actually in the
+    //   frame. uLuma is the exposure servo's own whole-frame mean, already
+    //   measured every 0.18 s for a different purpose, so this costs a uniform
+    //   rather than a pass.
+    //
+    //   VEIL: contrast collapses toward that same scattered level. Held low on
+    //   purpose. The director really does reach fog 1.0 on a sparse ambient
+    //   passage (sparse*0.6 + 0.25 + relaxed*0.2), so full deflection has to be
+    //   heavy weather rather than a white-out — measured at the first pass, 1.0
+    //   lifted a black edge from 8.7 to 119 of 255, which is not atmosphere,
+    //   it is erasure.
+    if (uFog > 0.0001) {
+      float scatter = uLuma * uFog;
+      col += uFogColor * scatter * 0.45;
+      col = mix(col, vec3(scatter), uFog * 0.18);
+    }
     // No clamp and no curve. Clamping here would hide exactly the blown
     // highlights the servo is measuring on the next sample, so the loop would
     // stop being able to see the fault it exists to correct.
@@ -109,6 +191,10 @@ export class GradePass extends Pass {
       uniforms: {
         tDiffuse: { value: null },
         uGain: { value: 1 },
+        uIris: { value: 0 },
+        uFog: { value: 0 },
+        uLuma: { value: 0 },
+        uFogColor: { value: new THREE.Color(0.05, 0.06, 0.09) },
       },
     })
     this.fsScene = new THREE.Scene()
@@ -125,6 +211,16 @@ export class GradePass extends Pass {
     // only consumer, and going through the singleton means a context loss that
     // resets exposure reaches the shader on the very next frame.
     this.material.uniforms.uGain.value = exposure.gain
+    this.material.uniforms.uIris.value = performanceState.vignette
+    const u = this.material.uniforms
+    u.uFog.value = performanceState.fog
+    // The servo's mean is in output space and updates on its own 0.18 s cadence,
+    // which is far slower than the eye needs for a haze level — atmosphere that
+    // snapped per frame would read as flicker, so the lag is a feature.
+    u.uLuma.value = exposure.mean
+    // Haze takes the palette's own ground colour. Scattered light is the colour
+    // of what it scatters through, and `bg` is exactly that slot.
+    ;(u.uFogColor.value as THREE.Color).set(getPalette(useStore.getState().paletteId).slots.bg)
     this.material.uniforms.tDiffuse.value = inputBuffer.texture
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
     renderer.render(this.fsScene, this.orthoCamera)

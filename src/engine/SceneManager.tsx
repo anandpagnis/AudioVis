@@ -14,7 +14,14 @@ import {
 } from './transitions'
 import { quality } from './quality'
 import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
-import { applyFrameLoad, feedbackMsFor, frameLoad, POST_CHAIN_MS } from './frameLoad'
+import {
+  applyFrameLoad,
+  feedbackMsFor,
+  frameLoad,
+  lensRackMs,
+  mirrorRackMs,
+  POST_CHAIN_MS,
+} from './frameLoad'
 import { canFundOverlap, slotCostMs } from './slotBudget'
 import { perf, suspendFrameSampling } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
@@ -766,7 +773,11 @@ export function SceneManager() {
     // so the value read is one frame old. Acceptable for a reservation — the
     // pass cannot switch on and cost a full unit within a single frame of the
     // director deciding to use it — but worth knowing it is not instantaneous.
-    const fixedMs = POST_CHAIN_MS + feedbackMsFor(performanceState.trails)
+    const fixedMs =
+      POST_CHAIN_MS +
+      feedbackMsFor(performanceState.trails) +
+      mirrorRackMs(performanceState.mirror) +
+      lensRackMs(performanceState.lens)
     const budgetTier = quality.tier
     let nonLayerMs = fixedMs
     for (const e of entriesRef.current) {
@@ -860,7 +871,10 @@ export function SceneManager() {
           ),
         }
       }),
-      POST_CHAIN_MS + feedbackMsFor(performanceState.trails),
+      POST_CHAIN_MS +
+        feedbackMsFor(performanceState.trails) +
+        mirrorRackMs(performanceState.mirror) +
+        lensRackMs(performanceState.lens),
     )
     // Everything on screen shares one framebuffer at one internal resolution, so
     // the budgets combine rather than compete — see combinePixelBudgets. Set at

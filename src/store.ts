@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { audioEngine, type ResponseTuning, type SourceKind } from './audio/AudioEngine'
+import { beginHandoff, endHandoff, handSource, isOutput } from './engine/outputLink'
 import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
@@ -379,6 +380,14 @@ interface AppState {
 
   startAudio: (kind: SourceKind, deviceId?: string) => Promise<void>
   startAudioFile: (file: File) => Promise<void>
+  /**
+   * Start from a stream the control window acquired and handed over.
+   *
+   * Output window only. The prompt has already happened in the other window —
+   * this is the second half of that gesture, arriving as a live object rather
+   * than over a wire. See engine/outputLink.ts.
+   */
+  startHandedStream: (stream: MediaStream, isSystem: boolean) => Promise<void>
   cancelStartAudio: () => void
   stopAudio: () => void
   captureCue: () => void
@@ -432,6 +441,29 @@ interface AppState {
 
   refreshDevices: () => Promise<void>
   setMicDevice: (id: string) => void
+}
+
+/**
+ * Attempt counter for control-window source acquisition.
+ *
+ * The guard after `await acquireSource(...)` used to ask whether `status` was
+ * still `'starting'`, which is a field the OUTPUT window writes through
+ * telemetry — so an idle output window cancelled every screen-share the moment
+ * the picker took longer than 100 ms. A local token cannot be written by
+ * anything else, which is the whole point of it.
+ */
+let handoffToken = 0
+
+/** Shown when a source was acquired but there is no output window to run it. */
+const OUTPUT_REQUIRED =
+  'No output window. Open the output window first — it is where the show runs.'
+
+/** One place to turn a start failure into something a human can act on. */
+function describeStartError(err: unknown): string {
+  if (err instanceof DOMException && err.name === 'NotAllowedError') {
+    return 'Permission denied — allow access and try again.'
+  }
+  return err instanceof Error ? err.message : 'Could not start audio capture.'
 }
 
 export const useStore = create<AppState>()(
@@ -502,6 +534,54 @@ export const useStore = create<AppState>()(
         // two concurrent acquisitions would race to commit engine state.
         if (get().status === 'starting') return
         set({ status: 'starting', error: null })
+
+        // Two-window path: this window prompts (it has the user activation; a
+        // freshly opened window does not) and the output window analyses. The
+        // stream crosses by direct reference because a MediaStream does not
+        // survive a structured clone.
+        if (!isOutput()) {
+          const token = ++handoffToken
+          // Holds telemetry off `status` for the length of the prompt; see
+          // shouldAdoptStatus, which exists because of this exact window.
+          beginHandoff()
+          try {
+            const stream = await audioEngine.acquireSource(
+              kind,
+              deviceId ?? get().micDeviceId ?? undefined,
+            )
+            if (token !== handoffToken) {
+              // Superseded or cancelled. Release the capture: nothing else can,
+              // and the OS indicator stays lit until something does.
+              stream.getTracks().forEach((t) => t.stop())
+              return
+            }
+            // `startAudio` is only ever called with a capture kind; `file`
+            // has its own action. Narrowed here rather than by widening the
+            // hand-off type, which would let a File-shaped payload claim to
+            // carry a stream.
+            const capture = kind === 'file' ? 'mic' : kind
+            if (!handSource({ kind: capture, stream })) {
+              // Nothing took it, so nothing will ever stop it. Release the
+              // capture rather than leaving the OS indicator lit on a device
+              // no one is reading.
+              stream.getTracks().forEach((t) => t.stop())
+              endHandoff()
+              set({ status: 'error', error: OUTPUT_REQUIRED, sourceType: null })
+              return
+            }
+            // NOT `running`: this window has no engine, so whether the show
+            // actually started is a fact only the output window has. It arrives
+            // on telemetry a moment later — see adoptOutputStatus.
+            set({ status: 'starting', sourceType: kind })
+            if (kind === 'mic') void get().refreshDevices()
+          } catch (err) {
+            endHandoff()
+            if (token !== handoffToken) return
+            set({ status: 'error', error: describeStartError(err), sourceType: null })
+          }
+          return
+        }
+
         try {
           await audioEngine.start(kind, deviceId ?? get().micDeviceId ?? undefined)
           // start() resolves without connecting when it was cancelled or
@@ -536,6 +616,20 @@ export const useStore = create<AppState>()(
       startAudioFile: async (file) => {
         if (get().status === 'starting') return
         set({ status: 'starting', error: null })
+        // A File clones fine, but it travels the same way as a stream so there
+        // is one hand-off path rather than two.
+        if (!isOutput()) {
+          handoffToken++
+          beginHandoff()
+          if (!handSource({ kind: 'file', file })) {
+            endHandoff()
+            set({ status: 'error', error: OUTPUT_REQUIRED, sourceType: null })
+            return
+          }
+          // See the note in startAudio: the output window confirms.
+          set({ status: 'starting', sourceType: 'file' })
+          return
+        }
         try {
           await audioEngine.startWithFile(file)
           if (get().status !== 'starting') return
@@ -560,7 +654,27 @@ export const useStore = create<AppState>()(
        * to its source list. If the user then answers the dialog, the grant is
        * discarded and its tracks stopped (see AudioEngine.cancelStart).
        */
+      startHandedStream: async (stream, isSystem) => {
+        set({ status: 'starting', error: null })
+        try {
+          await audioEngine.startWithStream(stream, isSystem)
+          if (!audioEngine.running) {
+            set({ status: 'idle', sourceType: null })
+            return
+          }
+          audioEngine.onEnded = () => set({ status: 'idle', sourceType: null })
+          set({ status: 'running', sourceType: isSystem ? 'system' : 'mic' })
+        } catch (err) {
+          set({ status: 'error', error: describeStartError(err), sourceType: null })
+        }
+      },
+
       cancelStartAudio: () => {
+        // Invalidates any acquisition still waiting on a prompt: the resolved
+        // stream is released instead of being handed over to a show the
+        // operator has already backed out of.
+        handoffToken++
+        endHandoff()
         audioEngine.cancelStart()
         audioEngine.stop()
         set({ status: 'idle', error: null, sourceType: null })

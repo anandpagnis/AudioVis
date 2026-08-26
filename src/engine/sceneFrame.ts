@@ -291,8 +291,48 @@ export function useSceneFrame(
     b.snare = f.percussion.snare.env * R
     b.hihat = f.percussion.hihat.env * R
 
+    if (!sceneCpu.on) {
+      callback(c)
+      return
+    }
+    const t0 = performance.now()
     callback(c)
+    sceneCpu.ms += performance.now() - t0
   })
+}
+
+/**
+ * How long the mounted scenes spent in their own per-frame callbacks.
+ *
+ * ## Why this exists
+ *
+ * `/bench`'s CPU column is `delta * 1000` — the whole frame's wall clock,
+ * including the vsync wait and any back-pressure from a GPU that has not
+ * finished the previous frame. It cannot tell "this scene's JavaScript is slow"
+ * from "this frame is slow for reasons that have nothing to do with JavaScript",
+ * and reading it as the former produced a confidently wrong diagnosis: F87
+ * concluded `ribbons` burns 68 ms of JS per frame, when `ribbons` builds its
+ * geometry once (3,960 vertices) and its per-frame loop is about 1,300
+ * iterations. Whatever costs 68 ms there, it is not this.
+ *
+ * Accumulated across every mounted scene rather than per scene, because that is
+ * what the frame actually pays and the bench measures one scene at a time
+ * anyway. Read and reset once per frame by the caller.
+ *
+ * **Off by default.** Two `performance.now()` calls per scene per frame is
+ * nothing measurable, but a profiler that is always running is a profiler
+ * nobody trusts — and this must never be the reason a frame is slow.
+ */
+export const sceneCpu = {
+  on: false,
+  ms: 0,
+}
+
+/** Read the accumulated scene time and start the next frame's tally at zero. */
+export function takeSceneCpu(): number {
+  const ms = sceneCpu.ms
+  sceneCpu.ms = 0
+  return ms
 }
 
 /**

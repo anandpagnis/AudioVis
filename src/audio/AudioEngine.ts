@@ -182,6 +182,33 @@ class AudioEngine {
   }
 
   /**
+   * The AudioContext's own state, or `'none'` when there is no graph.
+   *
+   * `running` only says a graph was built. A context can be built and
+   * `suspended`, which reads as perfect silence with no error anywhere — and in
+   * the two-window split that is the likely failure, because the output window
+   * is opened programmatically and may never have received a user gesture. The
+   * console needs to be able to tell "no source" from "source, but the browser
+   * has not let it start yet", because those need different things from the
+   * operator.
+   */
+  get contextState(): string {
+    return this.ctx ? this.ctx.state : 'none'
+  }
+
+  /**
+   * Resume a suspended context. Safe to call on every gesture.
+   *
+   * `connectStream` installs its own listener when it finds a suspended
+   * context, but that only exists once a graph has been built. This covers the
+   * window before that, and is called from the output window's own click
+   * handler.
+   */
+  resumeContext(): void {
+    if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume().catch(() => {})
+  }
+
+  /**
    * Abandon any in-flight start attempt (see {@link startToken}). Safe to call
    * when nothing is starting. Callers that also want the graph torn down should
    * follow with {@link stop}.
@@ -231,6 +258,23 @@ class AudioEngine {
     }
 
     this.connectStream(ctx, stream, kind === 'system')
+  }
+
+  /**
+   * Acquire a capture WITHOUT connecting it.
+   *
+   * Public because the two-window split needs the acquisition and the analysis
+   * to happen in different windows: `getDisplayMedia`/`getUserMedia` need
+   * transient user activation and a freshly opened window has none, so the
+   * control window prompts inside the user's click and hands the live stream to
+   * the output window. See engine/outputLink.ts.
+   *
+   * The caller owns the stream until it is connected — if it is never handed
+   * over, its tracks must be stopped or the capture stays live with nothing
+   * able to release it.
+   */
+  acquireSource(kind: SourceKind, deviceId?: string): Promise<MediaStream> {
+    return this.acquireStream(kind, deviceId)
   }
 
   private async acquireStream(kind: SourceKind, deviceId?: string): Promise<MediaStream> {
@@ -363,7 +407,7 @@ class AudioEngine {
    * on the mic path too), OBS audio, WebRTC/network streams, or a synth
    * driven by MIDI. No other part of the app changes.
    */
-  async startWithStream(stream: MediaStream) {
+  async startWithStream(stream: MediaStream, isSystem = false) {
     this.stop()
     if (stream.getAudioTracks().length === 0) {
       throw new Error('The provided MediaStream has no audio track.')
@@ -375,7 +419,7 @@ class AudioEngine {
       void ctx.close().catch(() => {})
       return
     }
-    this.connectStream(ctx, stream, false)
+    this.connectStream(ctx, stream, isSystem)
   }
 
   /**

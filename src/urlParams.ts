@@ -52,6 +52,7 @@ function applySharedLook(patch: Record<string, unknown>) {
  *   ?scene=tunnel&palette=ember          preselect scene + palette
  *   ?background=x&accent=ribbons&overlay=y  compose persistent secondary layers
  *   ?ui=hidden                           start with all chrome hidden
+ *   ?output                              the projector window (engine/projector.ts)
  *   ?quality=low                         pin render quality
  *   ?intensity=1.2&speed=0.8&reactivity=1.4
  *
