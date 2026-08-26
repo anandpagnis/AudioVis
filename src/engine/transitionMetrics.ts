@@ -1,7 +1,21 @@
+import type { TransitionStyle } from './transitions'
+
 /** One completed primary-scene transition, for the live Analytics panel. */
 export interface TransitionRecord {
   fromScene: string | null
   toScene: string
+  /**
+   * Which transition style actually ran.
+   *
+   * Recorded because the styles are not interchangeable in cost: `dissolve` and
+   * `dipToBlack` are pure mix curves, while `smear`, `melt` and `collapse` each
+   * switch on a post-chain rack for the duration. Without this field the panel
+   * reports a frame-time spike during a transition with no way to attribute it,
+   * and "which of the six is expensive" cannot be answered from the history at
+   * all. A `cut` here also distinguishes a style the director CHOSE from one the
+   * budget guard imposed — see `hardCut`.
+   */
+  style: TransitionStyle
   onDownbeat: boolean
   hardCut: boolean
   /** How long the request sat pending before it committed. */

@@ -5,7 +5,7 @@ import type { MoodState } from '../audio/types'
 import { cueState } from './CueTimeline'
 import { keyPaletteTracker } from './keyPalette'
 import { PALETTES } from './palettes'
-import { getPrimaryScenesForMood, pickVariedScene } from '../scenes'
+import { getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
 import { useStore } from '../store'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
@@ -89,6 +89,9 @@ export function AutoPilot() {
   const lastPalettePick = useRef('')
   /** Deterministic cycle position — not random, so a recorded set repeats. */
   const paletteRotation = useRef(0)
+  /** The same idea for modes, on its own counter: sharing the palette's would
+   *  couple a scene's look to how often the colours happened to change. */
+  const modeRotation = useRef(0)
 
   useFrame(() => {
     const f = audioEngine.features
@@ -222,7 +225,20 @@ export function AutoPilot() {
     // trigger here (a mood change, a predicted transition) is a section-scale
     // fact with no exact instant to hit, so those keep the beat-locked
     // crossfade — the drop is the exception, not the new default.
-    if (pick) s.requestScene(pick.id, { auto: true, immediate: dropEdge })
+    if (pick) {
+      // Choose the LOOK as well as the scene. Picked before the request so the
+      // mode is already in the store when the scene mounts — a scene reads its
+      // mode reactively and rebuilds geometry on a change, so setting it after
+      // the commit would show the old look for a frame and then rebuild during
+      // the crossfade, which is the most expensive moment to do it.
+      //
+      // Only fires for a scene that declares more than one mode, which today is
+      // one scene of eighteen — see pickVariedMode for why that ratio is the
+      // actual problem rather than this code being speculative.
+      const nextMode = pickVariedMode(pick.id, s.sceneModes[pick.id], modeRotation.current++)
+      if (nextMode) s.setSceneMode(pick.id, nextMode, { auto: true })
+      s.requestScene(pick.id, { auto: true, immediate: dropEdge })
+    }
   }, -90) // right after the audio engine tick (-100), before scenes
   return null
 }

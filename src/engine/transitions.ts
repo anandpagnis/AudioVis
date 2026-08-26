@@ -38,6 +38,27 @@
  * trusting each curve's algebra by eye.
  */
 
+/**
+ * Styles that exist but may not currently be CHOSEN.
+ *
+ * `cut` is disabled: it reads as jarring against the rest of the vocabulary, and
+ * an instantaneous change is exactly the thing the eased curves were added to
+ * stop happening by accident.
+ *
+ * **This disables it as a choice, not as a fallback.** `SceneManager` still
+ * forces a cut when the frame budget cannot fund two primaries at once, and on a
+ * drop, where an overlap is either unaffordable or editorially wrong. Those are
+ * safety and editorial mechanisms rather than styles, they bypass this list
+ * deliberately, and they remain by far the most common source of a hard cut in
+ * practice — see F64. Removing `cut` from the picker will therefore not, on its
+ * own, stop you seeing cuts.
+ *
+ * Kept in the vocabulary rather than deleted: the value is stored in cues and
+ * recorded in transition telemetry, so removing the name would orphan saved
+ * shows and make old records unreadable. A disabled style still has to resolve.
+ */
+export const DISABLED_STYLES: readonly TransitionStyle[] = ['cut']
+
 /** Everything the director can choose between. Append-only: stored in cues. */
 export const TRANSITION_STYLES = [
   /** Instant. Still the right answer on a drop — see SceneManager. */
@@ -58,6 +79,135 @@ export const TRANSITION_STYLES = [
 ] as const
 
 export type TransitionStyle = (typeof TRANSITION_STYLES)[number]
+
+/** May a director or a human pick this style? See {@link DISABLED_STYLES}. */
+export function isStyleSelectable(style: TransitionStyle): boolean {
+  return !DISABLED_STYLES.includes(style)
+}
+
+/** The styles a picker should offer. */
+export function selectableStyles(): TransitionStyle[] {
+  return TRANSITION_STYLES.filter(isStyleSelectable)
+}
+
+/**
+ * Fade length used when the frame budget cannot fund two primaries at once.
+ *
+ * ## Why a short fade rather than no fade
+ *
+ * This path used to be an instantaneous cut, and that was a performance
+ * mechanism producing an editorial result: on a machine that was already
+ * struggling, EVERY scene change became a hard cut. Measured under load, the
+ * primary count never exceeded 1 and `transition.active` was never once true —
+ * the crossfade simply never ran, which is both the jarring look and the reason
+ * no styled transition could ever be seen or measured.
+ *
+ * The budget's real concern is **how long** the frame carries two subjects, not
+ * whether it ever does. A cut takes that window to zero; this takes it to about
+ * a fifth of a second. At 60fps that is ~12 frames of elevated cost instead of
+ * ~60, and those frames are additionally covered by the two-tier complexity
+ * discount that already runs during any overlap (TRANSITION_DISCOUNT_TIERS in
+ * quality.ts). So the guard keeps its intent — bound the exposure — while the
+ * picture stops teleporting.
+ *
+ * This is a deliberate trade and worth stating plainly: it accepts a brief,
+ * bounded overcommit in exchange for never snapping. It is not free, and on a
+ * machine deep into the survival tier those twelve frames will still be the
+ * most expensive of the transition.
+ *
+ * A drop is not covered by this. That stays a true cut — see SceneManager.
+ */
+export const CONSTRAINED_FADE_SEC = 0.2
+
+/**
+ * How long this transition's fade should last.
+ *
+ * `musical` is the tempo-derived length (~two beats). When the budget cannot
+ * fund the overlap the fade is shortened rather than removed, and never
+ * lengthened — if the musical duration is already shorter than the constrained
+ * one, the shorter wins, because the constraint is a ceiling on exposure rather
+ * than a target.
+ */
+export function fadeDurationFor(musical: number, constrained: boolean): number {
+  const base = isFinite(musical) && musical > 0 ? musical : CONSTRAINED_FADE_SEC
+  return constrained ? Math.min(base, CONSTRAINED_FADE_SEC) : base
+}
+
+/**
+ * Transition styles each mood prefers, best first.
+ *
+ * Lists rather than a single style per mood, for the same reason the scene and
+ * palette tables are lists: a fixed mapping means every breakdown gets the same
+ * transition, which is the flatness the vocabulary was built to remove. The
+ * pick below rotates within the list and refuses to repeat.
+ *
+ * The assignments are editorial, and the reasoning is worth keeping:
+ *  - `smear` leaves a trail, so it reads as dreamy or unresolved — the quiet
+ *    moods, where the picture should feel like it is drifting rather than
+ *    being replaced.
+ *  - `collapse` folds the frame into a kaleidoscope and back out. Geometric and
+ *    energetic; it suits a build, where a transition should feel like pressure.
+ *  - `melt` liquefies. Woozy rather than energetic, which fits the top end where
+ *    everything is already moving and a fold would be noise on noise.
+ *  - `dissolve` is the neutral one, and the only thing `silence` should ever do.
+ *
+ * `cut` appears nowhere: it is disabled as a choice (see {@link DISABLED_STYLES})
+ * and a drop already forces one structurally, so a director choosing it would
+ * only ever duplicate something the engine does anyway.
+ */
+const MOOD_STYLES: Record<string, TransitionStyle[]> = {
+  silence: ['dissolve'],
+  ambient: ['dissolve', 'smear'],
+  mellow: ['smear', 'dissolve'],
+  groove: ['dissolve', 'smear', 'melt'],
+  building: ['collapse', 'smear'],
+  peak: ['collapse', 'melt'],
+  aggressive: ['melt', 'collapse'],
+}
+
+/**
+ * How long after a section boundary a transition still counts as marking it.
+ *
+ * A section change is a single-frame edge, but the scene change it should
+ * punctuate commits on the next downbeat — up to a bar later. Without a window
+ * the two never coincide; with an unbounded latch the opposite happens, and
+ * every subsequent transition inherits the dip long after the boundary has
+ * passed. Measured that second failure directly: five consecutive changes all
+ * ran `dipToBlack` because the flag had been set once and never cleared.
+ *
+ * ~2 s is about a bar at 120bpm, so a commit that is genuinely punctuating the
+ * boundary lands inside it and a later one does not.
+ */
+export const SECTION_DIP_WINDOW_SEC = 2
+
+/**
+ * Choose the style for the next scene change.
+ *
+ * A **section change** overrides the mood entirely with `dipToBlack`. That is
+ * the one moment where the two scenes are not continuous material — the music
+ * itself has drawn a line — and a dip states that, where a blend would smooth
+ * over the structure the show is supposed to be expressing.
+ *
+ * Otherwise the mood picks, rotating through its list and never repeating
+ * `last` when an alternative exists. Deterministic from `rotation` so a recorded
+ * set replays identically, matching `pickPalette` and `pickVariedMode`.
+ *
+ * Anything disabled is filtered out, so disabling a style removes it from the
+ * autonomy as well as from the picker rather than only from the UI.
+ */
+export function pickTransitionStyle(
+  mood: string,
+  sectionChange: boolean,
+  rotation: number,
+  last: TransitionStyle | undefined,
+): TransitionStyle {
+  if (sectionChange && isStyleSelectable('dipToBlack')) return 'dipToBlack'
+  const preferred = (MOOD_STYLES[mood] ?? MOOD_STYLES.groove).filter(isStyleSelectable)
+  if (preferred.length === 0) return 'dissolve'
+  const fresh = preferred.filter((st) => st !== last)
+  const pool = fresh.length > 0 ? fresh : preferred
+  return pool[Math.abs(rotation) % pool.length]
+}
 
 /** How visible each scene is at a point in the transition. */
 export interface TransitionMix {
@@ -198,7 +348,12 @@ export function usesRack(style: TransitionStyle): boolean {
  * future style should degrade to the gentlest transition, not the harshest.
  */
 export function resolveTransitionStyle(raw: unknown): TransitionStyle {
-  return typeof raw === 'string' && (TRANSITION_STYLES as readonly string[]).includes(raw)
-    ? (raw as TransitionStyle)
-    : 'dissolve'
+  if (typeof raw !== 'string' || !(TRANSITION_STYLES as readonly string[]).includes(raw)) {
+    return 'dissolve'
+  }
+  const style = raw as TransitionStyle
+  // A disabled style resolves to the default rather than being honoured. This is
+  // what makes the disable real for a cue or a preset saved while it was still
+  // available, instead of only hiding it from the picker.
+  return isStyleSelectable(style) ? style : 'dissolve'
 }

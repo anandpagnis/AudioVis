@@ -1,7 +1,23 @@
 import type { ScenePerformanceCost, SceneRole } from '../scenes'
+import { sceneCostMs } from './sceneCost'
 
 /**
- * Composition budget: how much simultaneous scene cost the machine can carry.
+ * Composition budget: how much simultaneous scene cost the machine can carry,
+ * **in milliseconds of frame time**.
+ *
+ * ## Why the currency is milliseconds
+ *
+ * It used to be an abstract unit, priced from a hand-written `low`/`medium`/
+ * `high` label through `{ 1, 2, 4 }`. The `/bench` sweep showed that label was
+ * unrelated to cost — `synthgrid` is labelled `medium` and costs 18.4 ms, while
+ * `pointcloud` is labelled `high` and costs 0.12 ms, so the roster's second
+ * cheapest scene was charged twice what its most expensive one was. Inside the
+ * `medium` label alone the spread is a factor of 650.
+ *
+ * Milliseconds fix that and bring a second thing for free: the budget is now
+ * denominated in the same unit as the thing it is protecting. "Scenes may claim
+ * 9 ms of a 16.7 ms frame" is a claim that can be checked. "Scenes may claim 9
+ * units" never was. See engine/sceneCost.ts for the table and its provenance.
  *
  * ## Why this replaced `maxHeavyLayers`
  *
@@ -39,57 +55,82 @@ export type SecondarySlot = 'background' | 'accent' | 'overlay' | 'effect'
  */
 export const SLOT_PRIORITY: SecondarySlot[] = ['background', 'accent', 'overlay', 'effect']
 
-/** Cost in budget units per declared `performanceCost`. */
-const COST_UNITS: Record<ScenePerformanceCost, number> = { low: 1, medium: 2, high: 4 }
 
 /**
- * TOTAL frame capacity per quality tier, indexed like `quality.tier`
- * (0 richest → 4 survival). **The single ladder** — `quality.ts` builds its
- * `layerBudget` knob from this rather than declaring a second copy.
+ * TOTAL frame capacity per quality tier in MILLISECONDS, indexed like
+ * `quality.tier` (0 richest → 4 survival). **The single ladder** — `quality.ts`
+ * builds its `frameBudgetMs` knob from this rather than declaring a second copy.
  *
- * Calibrated against the two behaviours worth preserving from `maxHeavyLayers`:
- * two heavy scenes may overlap at tier 0, and a heavy primary runs strictly solo
- * from tier 2 down.
+ * Everything the frame carries counts against it: both primaries during a
+ * crossfade, every composition layer, live effects, and the fixed per-frame
+ * costs in frameLoad.ts.
  *
- * ## Why these are 3 higher than they used to be
+ * ## Reading the numbers
  *
- * The ladder was `[8, 6, 4, 3, 2]` back when the post chain and the generative
- * overlay were reserved at ZERO — so their cost was always implicitly baked
- * into these numbers. Now that frameLoad.ts reserves them explicitly, keeping
- * the old figures would charge for them twice: the effective budget for scenes
- * would have fallen to `[5, 3, 1, 0, 0]`, which strips layers from the show
- * entirely at tier 2 and below. Correct arithmetic, wrong product.
+ * A 60 Hz frame is 16.67 ms. Tier 0 lets the composition claim 11 of those,
+ * leaving ~5.7 ms for the browser's own compositing, R3F's traversal, audio
+ * analysis and the UI. That is the whole calibration; it is a division of a real
+ * frame rather than a scale someone chose.
  *
- * Rebased by exactly `POST_CHAIN_UNITS + GENERATIVE_UNITS` so the numbers now
- * mean what the name says — everything the frame carries, fixed costs included
- * — and the change is behaviour-neutral for the composition it already
- * produced, while the previously-blind claimants finally see the truth.
+ * ## Why it still tapers, now that costs are per-tier measurements
+ *
+ * The old ladder `[11, 9, 7, 6, 5]` cut capacity by 2.2x across the ladder while
+ * scene prices stayed flat, so the tier punished a composition **twice**: once
+ * by making every scene genuinely cheaper (pixel scale 1.0 → 0.23, raymarch
+ * steps 96 → 28) and again by shrinking the wallet those cheaper scenes had to
+ * fit inside. That double count is what made an overlap arithmetically
+ * impossible at tier 4 and left three of the six transition styles unreachable
+ * (F84). Scene prices are now per-tier measurements, so the first reduction is
+ * already in the price and the second is no longer needed.
+ *
+ * It still tapers, gently, for a different reason: engine/sceneCost.ts is one
+ * machine's table, and a device three times slower carries three times those
+ * costs while the numbers read the same. The tier is the only evidence available
+ * about how far from the bench machine this one is — sitting at tier 4 IS the
+ * signal — so the taper is a margin against that unknown, not a second
+ * complexity cut. 1.7x across the ladder rather than 2.2x, and for a stated
+ * reason.
  */
-export const TIER_BUDGET: number[] = [11, 9, 7, 6, 5]
+export const TIER_BUDGET_MS: number[] = [11, 9.5, 8.5, 7.5, 6.5]
 
 /**
- * Budget units a scene costs in a given slot.
+ * Fraction of its measured cost a `roleScalable` scene is charged outside the
+ * primary slot.
  *
- * A scene in a non-primary slot may be discounted one step — but ONLY if it
- * declared `roleScalable`, meaning it actually reads `ctx.role` and reduces its
- * own shader work (step counts, iterations, particle counts) when it is not the
+ * Not measured, and honestly labelled: no scene in the roster declares
+ * `roleScalable` today, so this multiplier has never been exercised (F89). The
+ * old code expressed the same idea as "one step down the 1/2/4 ladder", which is
+ * a 0.5 discount for a `high` scene and a 0.5 for a `medium` — so 0.6 is that
+ * intent, slightly more conservative, in the new currency.
+ */
+export const ROLE_SCALED_FRACTION = 0.6
+
+/**
+ * Milliseconds a scene costs in a given slot at a given tier.
+ *
+ * A scene in a non-primary slot is discounted — but ONLY if it declared
+ * `roleScalable`, meaning it actually reads `ctx.role` and reduces its own
+ * shader work (step counts, iterations, particle counts) when it is not the
  * subject. Discounting a scene that ignores the signal would be budgeting for
  * work it is still doing at full cost, which is how a governor ends up
  * confidently overcommitting the GPU.
  */
-export function slotCost(
-  cost: ScenePerformanceCost,
+export function slotCostMs(
+  sceneId: string,
+  tier: number,
   slot: SceneRole | 'primary',
   roleScalable = false,
+  declared?: ScenePerformanceCost,
 ): number {
-  const units = COST_UNITS[cost]
-  if (slot === 'primary' || !roleScalable) return units
-  return Math.max(1, units === 4 ? 2 : units === 2 ? 1 : 1)
+  const ms = sceneCostMs(sceneId, tier, declared)
+  if (slot === 'primary' || !roleScalable) return ms
+  return ms * ROLE_SCALED_FRACTION
 }
 
 export interface SlotRequest {
   slot: SecondarySlot
-  units: number
+  /** Milliseconds, from {@link slotCostMs}. */
+  ms: number
 }
 
 /**
@@ -122,8 +163,8 @@ export function admitSlots(
   for (const slot of priority) {
     const req = requests.find((r) => r.slot === slot)
     if (!req) continue
-    if (req.units > remaining) continue
-    remaining -= req.units
+    if (req.ms > remaining) continue
+    remaining -= req.ms
     admitted.push(slot)
   }
   return admitted
@@ -141,20 +182,21 @@ export function admitSlots(
  * The previous version took only the incoming primary and asked
  * `primaryUnits * 2 <= budget`, which ignored the layers entirely. At tier 0
  * that let `network` + `heap` (4 + 4 = 8 of 8) crossfade while `ribbons` and an
- * overlay were also live — 11 units of real load against a budget of 8, or
- * ~14 ms of scene work before the post chain. That is where the 33-35 ms
- * transition frames came from: not a stall, just more scene than the frame
- * could hold, for about a second.
+ * overlay were also live. The measured cost of exactly that composition is
+ * 22.4 + 5.9 + 13.1 ms — **over 41 ms of scene work in a 16.7 ms frame**, which
+ * the old currency valued at 8 units of 8 and called affordable. That is where
+ * the 33-35 ms transition frames came from: not a stall, just far more scene
+ * than the frame could hold, for about a second.
  *
  * Callers that cannot fund the overlap hard-cut instead, which costs nothing
  * and is a documented part of the visual language.
  */
 export function canFundOverlap(
-  budget: number,
-  outgoingUnits: number,
-  incomingUnits: number,
+  budgetMs: number,
+  outgoingMs: number,
+  incomingMs: number,
   /** Cost of every layer that stays on screen through the fade. */
-  layerUnits = 0,
+  layerMs = 0,
 ): boolean {
-  return outgoingUnits + incomingUnits + layerUnits <= budget
+  return outgoingMs + incomingMs + layerMs <= budgetMs
 }

@@ -3,9 +3,20 @@ import { audioEngine } from '../audio/AudioEngine'
 import { essentiaBridge } from '../audio/essentia/EssentiaBridge'
 import { voiceBridge } from '../audio/essentia/VoiceBridge'
 import { perf } from '../engine/PerfMonitor'
-import { genStatus } from '../engine/textureGenerator'
+import { exposure } from '../engine/exposure'
 
 const W = 280
+/**
+ * Panel height. Rows sit on a 12px grid starting at y=14:
+ *
+ *   14 bpm · 26 phrase strip · 36 fps/tier/dpr · 48 render scale ·
+ *   60 exposure · 72 GPU telemetry · 84 mood · 96 key · 108 voice
+ *
+ * Written down because the rows are drawn by separate blocks in this file and
+ * two of them silently shared y=48 for a while — the later draw simply painted
+ * over the earlier one, which looks like a missing readout rather than a
+ * collision. Add a row here before adding one below.
+ */
 const H = 154
 
 /** Spectrum + band meters + beat markers, drawn straight to a canvas. */
@@ -116,29 +127,37 @@ export function DebugPanel() {
         6,
         48,
       )
+      // The exposure servo's inputs AND its output. Calibration of the targets
+      // is explicitly outstanding (docs/09_Rendering_Engine.md: only valid
+      // against a real playing track), and a servo whose measurements you
+      // cannot see is one you cannot calibrate. `--` until the first sample.
+      ctx.fillText(
+        exposure.sampled
+          ? `exp ×${exposure.gain.toFixed(2)}  luma ${exposure.mean.toFixed(3)}` +
+              `  p85 ${exposure.p85.toFixed(2)} p99 ${exposure.p99.toFixed(2)}` +
+              `  blown ${(exposure.blownShare * 100).toFixed(1)}%`
+          : 'exp -- (no sample yet)',
+        6,
+        60,
+      )
       ctx.fillStyle = 'rgba(255, 214, 130, 0.8)'
       ctx.fillText(
         `${perf.drawCalls} draws  ${(perf.triangles / 1000).toFixed(0)}k tris  geo ${perf.geometries}  tex ${perf.textures}  prg ${perf.programs}`,
         6,
-        60,
+        72,
       )
       ctx.fillStyle = 'rgba(255,255,255,0.7)'
-      // Mood readout: state → prediction, velocities, generative backend.
+      // Mood readout: state → prediction, velocities.
       const m = f.mood
       const pred =
         m.predictedState !== m.state && m.beatsTillTransition >= 0
           ? ` → ${m.predictedState} in ~${m.beatsTillTransition.toFixed(0)}b`
           : ''
-      const gen = !genStatus.available
-        ? 'gen:off'
-        : genStatus.pending > 0
-          ? `gen:${genStatus.pending}…`
-          : 'gen:ok'
       ctx.fillStyle = 'rgba(130, 255, 190, 0.85)'
       ctx.fillText(
-        `${m.state}${pred}  ${(m.confidence * 100).toFixed(0)}%  vE ${m.energyVel >= 0 ? '+' : ''}${m.energyVel.toFixed(2)}  ${gen}`,
+        `${m.state}${pred}  ${(m.confidence * 100).toFixed(0)}%  vE ${m.energyVel >= 0 ? '+' : ''}${m.energyVel.toFixed(2)}`,
         6,
-        48,
+        84,
       )
       // Key + raw danceability from the essentia worker (read-only for now).
       if (f.key || f.danceability > 0) {
@@ -146,7 +165,7 @@ export function DebugPanel() {
         ctx.fillText(
           `${f.key ? `${f.key} ${f.scale} ${f.keyConfidence.toFixed(2)}` : 'key —'}   dance ${f.danceability.toFixed(2)}`,
           6,
-          72,
+          96,
         )
       }
       // Voice + mood heads from the classifier worker (read-only for now).
@@ -157,11 +176,11 @@ export function DebugPanel() {
         ctx.fillText(
           `voc ${(f.vocalPresence * 100).toFixed(0)}%  hap ${m.happy.toFixed(2)} agg ${m.aggressive.toFixed(2)} par ${m.party.toFixed(2)} rel ${m.relaxed.toFixed(2)}`,
           6,
-          84,
+          108,
         )
       } else if (vs.error) {
         ctx.fillStyle = 'rgba(255, 138, 101, 0.75)'
-        ctx.fillText(`voice: ${vs.missing ? 'models not fetched' : vs.error.slice(0, 34)}`, 6, 84)
+        ctx.fillText(`voice: ${vs.missing ? 'models not fetched' : vs.error.slice(0, 34)}`, 6, 108)
       }
 
       raf = requestAnimationFrame(draw)

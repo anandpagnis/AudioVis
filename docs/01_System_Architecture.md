@@ -16,7 +16,6 @@ src/engine/    Visual framework (directors, transitions, quality, post)
 src/scenes/    Content (7 registered scenes)
 src/ui/        Chrome (HUD, debug + analytics panels)
 src/store.ts   Zustand persisted state
-backend/       Optional local sd-turbo texture server (:8787)
 ```
 
 ---
@@ -192,17 +191,6 @@ Map every subsystem: purpose, inputs, outputs, update frequency, dependencies.
 | **Update frequency** | Every frame (after scenes) |
 | **Dependencies** | `@react-three/postprocessing` |
 
-#### Generative Layer
-
-| | |
-|---|---|
-| **Purpose** | Optional AI texture overlay |
-| **Location** | `src/engine/GenerativeLayer.tsx`, `textureGenerator.ts` |
-| **Input** | Mood, palette, backend health |
-| **Output** | Additive fullscreen shader with crossfaded textures |
-| **Update frequency** | Every frame; texture fetch async |
-| **Dependencies** | `backend/server.py` (optional) |
-
 #### Scene Registry
 
 | | |
@@ -245,7 +233,6 @@ MediaStream
   → CameraDirector (−80) ─────────► camera, from the scene's anchor
   → SceneManager: warm-up, downbeat commit, crossfade
   → R3F scenes (features, animationSignals, SceneFade, quality.knobs)
-  → GenerativeLayer (optional)
   → EffectsDirector ──────────────► bloom / aberration / vignette
   ▲
 PerfMonitor → QualityGovernor → DPR + complexity knobs
@@ -276,7 +263,7 @@ an entirely different renderer — to be added without touching the other side.
 | Layer | Key files |
 |-------|-----------|
 | Audio | `AudioEngine.ts`, `BpmEstimator.ts`, `PhraseDetector.ts`, `MoodEstimator.ts`, `MidiClock.ts`, `types.ts` |
-| Engine | `Stage.tsx`, `SceneManager.tsx`, `performanceState.ts`, `PerformanceStateBridge.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`, `CueTimeline.tsx`, `CameraDirector.tsx`, `AnimationDirector.ts`, `EffectsDirector.tsx`, `quality.ts`, `LightRig.tsx`, `palettes.ts`, `presets.ts`, `moodParams.ts`, `audioResponse.ts`, `GenerativeLayer.tsx`, `recorder.ts` |
+| Engine | `Stage.tsx`, `SceneManager.tsx`, `performanceState.ts`, `PerformanceStateBridge.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`, `CueTimeline.tsx`, `CameraDirector.tsx`, `AnimationDirector.ts`, `EffectsDirector.tsx`, `quality.ts`, `LightRig.tsx`, `palettes.ts`, `presets.ts`, `moodParams.ts`, `audioResponse.ts`, `recorder.ts` |
 | Scenes | 5 registered in `SCENES[]`; 16 legacy on disk |
 | UI | `HUD.tsx`, `TacticalHUD.tsx`, `DebugPanel.tsx`, `BpmReadout.tsx` |
 
@@ -369,7 +356,6 @@ user manual action
 |---------|----------|
 | Beat grid untrusted (`confidence ≤ 0.25`) | Scene commit after 2.5 s timeout instead of downbeat |
 | WebGL context lost | `preventDefault()` + `glEpoch` remount in Stage |
-| AI backend down | Health probe fails; GenerativeLayer alpha = 0 |
 | Stale scene ID in preset/URL | `getScene()` falls back to `SCENES[0]` (schematic) |
 | Source stop/restart | Full analysis reset (beat, mood, phrase, onset history) |
 

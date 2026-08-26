@@ -73,6 +73,18 @@ const MAX_SWIRL = 0.35
 const MAX_WOBBLE = 0.4
 
 /**
+ * Is the feedback pass doing anything at this `trails` value?
+ *
+ * Shared by the pass (which sets `enabled` from it) and by the frame budget
+ * (which reserves units from it), so the two cannot disagree about whether the
+ * pass is running. They did disagree: the pass bypassed itself at rest while the
+ * budget reserved for it unconditionally — see F85.
+ */
+export function isFeedbackActive(trails: number): boolean {
+  return resolveFeedbackKnobs(trails).persist > 0
+}
+
+/**
  * Resolve the shader knobs for the current `trails` value.
  *
  * Every knob is a plain multiple of `trails` (clamped 0..1 first), so the

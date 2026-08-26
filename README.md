@@ -24,7 +24,6 @@ fullscreen.
 | `R` | Record the canvas + audio to a downloadable .webm |
 | `S` | Save a PNG screenshot |
 | `M` | Mood drive — mood scales intensity/speed/reactivity on top of your sliders |
-| `G` | AI textures — mood-matched generated art from the local backend |
 | `P` | Cycle color palette |
 | `B` | Presets panel (built-ins + your saved presets, favorites, JSON import/export) |
 | `T` | Tune panel (intensity / speed / reactivity + quality) |
@@ -53,27 +52,8 @@ Three switches (all on by default, all in the tune panel):
 - **Mood drive (`M`)** — mood multiplies your intensity/speed/reactivity sliders
   (mellow ≈ 0.88×/0.72×/1.15×, peak ≈ 1.32×/1.25×/1.4×), eased over ~1.5 s so shifts
   feel like weather, not switches.
-- **AI textures (`G`)** — see below.
 
 The debug panel (`D`) shows the live read: `building → peak in ~6b  82%  vE +0.31`.
-
-## AI textures (local Stable Diffusion)
-
-A local sd-turbo server generates mood-matched abstract art that washes over whatever
-scene is playing (audio-warped, beat-shimmering, crossfaded in-shader). Fully optional —
-without the backend the app is simply 100% procedural.
-
-```bash
-backend/run.sh    # one-time: creates venv + installs deps; first run downloads ~2.5 GB
-```
-
-Runs on Apple Silicon (MPS), 512×512 at 2 diffusion steps, on port 8787. Generation
-takes seconds to ~a minute depending on the machine and what else is using the GPU —
-it happens fully in the background and fades in whenever it's ready. Every
-mood × palette × style combo is generated once and cached on disk in
-`backend/textures/`, so a library builds up across sessions and repeats are instant.
-The frontend prefetches the *predicted* mood's art, so the drop's texture is ready
-before the drop hits.
 
 ## Performance
 

@@ -24,12 +24,27 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       its source, and add a build-time gate.
       **Today only 3 scenes are provably safe to sell.**
 
-- [ ] **F02 · The "AI" tier depends on the customer's own localhost** —
-      `src/engine/textureGenerator.ts`
-      `generative: true` is the default and the layer polls `http://127.0.0.1:8787`
-      for the sd-turbo server in `backend/server.py`. No paying customer will run
-      that. Either host inference behind an authenticated endpoint, or default the
-      toggle off and label it a developer feature.
+- [x] **F02 · The "AI" tier depended on the customer's own localhost** —
+      *resolved 2026-08-26 by deleting the feature*
+      `generative: true` was the default and the layer polled
+      `http://127.0.0.1:8787` for the sd-turbo server in `backend/server.py`. No
+      paying customer would run that.
+
+      The two survivable fixes were "host inference behind an authenticated
+      endpoint" or "default the toggle off and label it a developer feature" —
+      but the deciding fact was that the feature had never actually been used.
+      What shipped was a standalone FastAPI + uvicorn process holding a ~2.5 GB
+      diffusion model in GPU memory, never started or stopped by `npm run dev`,
+      with no shutdown path tied to the frontend's lifetime. A visualizer whose
+      whole problem is GPU headroom does not get to keep an unused 2.5 GB
+      resident alongside it.
+
+      Removed: `backend/` (server, runner, requirements), `GenerativeLayer.tsx`,
+      `textureGenerator.ts`, the `generative` store flag and its `G` binding, the
+      `gen` URL param, the "AI textures" chip, the DebugPanel readout, and
+      `GENERATIVE_UNITS`. The frame budget's fixed cost drops from 4 units to 2
+      at rest — see the F84 note, where that unit is what decides whether a
+      crossfade can carry two primaries.
 
 - [ ] **F03 · No account, entitlement or billing surface exists** — `wrangler.jsonc`
       Cloudflare static assets with SPA fallback: no Worker routes, no auth, no
@@ -688,17 +703,49 @@ configurations*, never as anyone's real frame rate.
       on drivers without `KHR_parallel_shader_compile` — where, per this file's own
       header, its resolution is a lie anyway.
 
-- [ ] **F50 · The full engine renders behind the start card** — *known, not fixed*
-      `src/routes/Visualizer.tsx`
-      `<Stage/>` is mounted unconditionally, so every director, the scene, and the
-      whole post chain run at full cost while the user is still looking at the audio
-      source picker. Bisected: removing only the post chain took that screen from
-      133 ms to **16.7 ms per frame**, so it is ~87% of the cost of a screen that is
-      showing a dialog.
-      Gating `<Stage/>` (or at least `<EffectsDirector/>`) on `status === 'running'`
-      is the lever. The cheaper half-measure — dropping bloom's `mipmapBlur` while
-      idle — changes the effect list, which per this component's own header rebuilds
-      the merged shader, so gating the mount is the safer shape.
+- [x] **F50 · The full engine rendered behind the start card** — *fixed and
+      measured 2026-08-26*
+      `src/engine/Stage.tsx`
+      `<Stage/>` was mounted unconditionally, so every director, the scene, and the
+      whole post chain ran at full cost while the user was still looking at the
+      audio source picker. Bisected: removing only the post chain took that screen
+      from 133 ms to **16.7 ms per frame**, so it was ~87% of the cost of a screen
+      that is showing a dialog.
+
+      **The gate is `PostChain` in `Stage.tsx`**, which mounts `EffectsDirector`
+      and `ExposureSampler` only while `status` is `starting` or `running`.
+
+      Three decisions worth recording:
+
+      1. **The scene keeps rendering.** `.overlay` is a translucent scrim
+         (0.25–0.72 black), so the stage behind the card is deliberately visible
+         — an idling preview is the product's first impression. Since the post
+         chain is 87% of the cost, shedding it alone reaches 60 fps without going
+         black.
+      2. **`starting`, not just `running`.** Building the composer allocates its
+         buffers and compiles the merged effect shader; doing that on the
+         transition to `running` would land the stall on the first bar. `starting`
+         covers permission, decode and analysis warm-up — long enough to hide the
+         build, and a moment where a wait is already expected.
+      3. **The governor's idle history is discarded, not carried.** `PerfMonitor`
+         fed every picker-screen frame to the quality governor, so a 133 ms idle
+         screen walked the tier to survival *before a note played* and the show
+         opened already pinned — which is the mechanism behind F84. On the
+         transition to live the gate now calls `resetExposure()`,
+         `frameSampler.reset()` and `frameSampler.suspend(120)`, the same
+         treatment the context-restore path gets, for the same reason: nothing
+         measured before describes the frame about to be rendered.
+
+      **Measured** (Playwright + SwiftShader, 1400x900 — software GL, so read the
+      idle figure as a ratio and the running figure as a floor):
+
+        start screen   16.7 ms mean / 16.8 p95 / 60 fps   (was 133 ms)
+        tier at t=14s on the picker screen   1   (budget 9)
+        tier 1.5 s after the show starts     2   (budget 7)
+
+      The show now opens at tier 2 with real headroom instead of pinned at the
+      survival tier. Under SwiftShader it still settles to tier 4 during playback
+      at ~17 fps, which is the software renderer, not the gate.
 
 - [ ] **F51 · `POST_CHAIN_PIXEL_BUDGET` is another reasoned estimate** — *extends
       F44*
@@ -749,8 +796,8 @@ Found while porting lilim's mirror rack, lens rack and five-slot palettes.
 Frame-time figures are **SwiftShader (software GL)** in a headless browser —
 ratios between configurations, never anyone's real frame rate.
 
-- [ ] **F54 · The lens rack pays one fullscreen blit that never switches off** —
-      *by construction, needs a better answer*
+- [x] **F54 · The lens rack pays one fullscreen blit that never switches off** —
+      *fixed — the better answer arrived with the exposure servo*
       `src/engine/LensPass.ts`
       `MirrorPass` and `FeedbackPass` follow the rule the racks were built to:
       always mounted, defaulted to inert, `enabled` as the only branch, zero cost
@@ -772,6 +819,12 @@ ratios between configurations, never anyone's real frame rate.
       earns its keep — the grade/exposure pass lilim has as `finishPass` and this
       chain does not — at which point the lens can go back to a plain `enabled`
       branch like the other two.
+
+      **Fixed exactly that way.** `GradePass` now sits last and is genuinely
+      always-on (it applies the exposure servo's gain), so the presentation duty
+      belongs to something that earns it and `LensPass` is back to a plain
+      `enabled` branch costing nothing at rest. **Net frame cost is unchanged** —
+      the blit moved rather than being added.
 
 - [ ] **F55 · Both optical racks are invisible to the frame budget** — *open,
       and it must close before any director drives them*
@@ -909,8 +962,8 @@ causes; two fixed here, one is the likely dominant one and is still open.
       This is the same correction `TrailLineScene`'s header already spelled out
       for its own decay — the lesson had never reached the shared helper.
 
-- [ ] **F64 · Every transition becomes a hard cut once the tier drops** —
-      *the likely dominant cause of the original report; open*
+- [x] **F64 · Every transition becomes a hard cut once the tier drops** —
+      *fixed: the budget now shortens the fade instead of deleting it*
       `src/engine/SceneManager.tsx`
       `hardCut = immediate || !fundsOverlap`. When the frame budget cannot fund
       two primaries the crossfade is replaced by an instantaneous cut — so
@@ -928,10 +981,28 @@ causes; two fixed here, one is the likely dominant one and is still open.
       but their on-screen effect **cannot be observed on a machine in this state**,
       because no crossfade ever runs. Anyone verifying transition feel must
       first confirm the tier is not pinned low.
-      The fix is to degrade instead of teleport — shorten the fade, or dip
-      through black over a few frames — so the budget guarantee is kept without
-      the visual cliff. Ordering: this should land before any further transition
-      styling work, since it currently masks all of it.
+      **Fixed by separating the two conditions that were conflated.**
+      `hardCut = immediate || !fundsOverlap` let a performance constraint decide
+      the edit. A drop cutting is an editorial decision and stays; an
+      unaffordable overlap is a cost problem, and the answer to a cost problem is
+      to spend less, not to change the edit.
+      The budget path now shortens the fade to `CONSTRAINED_FADE_SEC` (0.2 s)
+      rather than removing it — the guard's real concern is how LONG the frame
+      carries two subjects, and a cut takes that to zero where this takes it to
+      ~12 frames at 60fps, already covered by the two-tier complexity discount
+      that runs during any overlap. A deliberate, bounded overcommit in exchange
+      for never snapping.
+      The duration is committed once at commit time and carried on
+      `performanceState.transition.durationSec`, so a fade cannot change speed
+      while the viewer is watching it, and layers keep the musical ~two beats —
+      a constrained subject swap is no reason for a background to arrive faster
+      than the music. `targetDurationSec` in the telemetry records the committed
+      duration rather than the musical ideal, or the panel would flag every
+      constrained fade as a failure (the same mistake as F39).
+      Verified under load: three forced scene changes each ran a real crossfade
+      at `style=dissolve, duration=0.2s` with progress advancing 0.25 -> 0.6 ->
+      0.8. Before the fix the same test showed `transition.active` never once
+      true.
 
 - [ ] **F65 · Transition styles are debug-only and undriven** — *same posture as
       F52 / F56*
@@ -960,9 +1031,645 @@ causes; two fixed here, one is the likely dominant one and is still open.
 
 ---
 
+## Adaptive exposure (2026-08-25)
+
+A slow closed loop on the final frame's luminance, ported from lilim. Landed
+with `GradePass` (the chain's first real finishing stage) and an async
+`createImageBitmap` readback.
+
+- [x] **F67 · Nothing measured the frame the audience actually sees** —
+      `src/engine/exposure.ts`, `src/engine/ExposureSampler.tsx`,
+      `src/engine/GradePass.ts`
+      Additive scenes plus feedback plus bloom drift over tens of seconds, and
+      no scene can fix that because none of them can see the composite. There is
+      now a servo (tau ~2.3 s, far slower than any musical event, so dynamics
+      pass through untouched) with three regimes — washout, hot, muddy — and an
+      energy gate so a dark screen over quiet audio is read as the product
+      working rather than as a fault.
+      Readback is `createImageBitmap`, not `drawImage` off the WebGL canvas:
+      lilim measured the synchronous path at **117 ms every eleventh frame** at
+      3200x1800, enough on its own to halve a scene's frame rate. A sample
+      already in flight is skipped rather than queued, so back-pressure cannot
+      build on the frames that are already slow.
+      Verified running against a real track: gain rode 1.01 -> 0.68 over 30 s on
+      a frame measuring mean 0.09-0.19 against a 0.078 target, monotone and with
+      no hunting.
+
+- [x] **F68 · The muddy guard read the wrong statistic and pinned the gain** —
+      `src/engine/exposure.ts`
+      First implementation gated the muddy regime on the 85th percentile at 0.5,
+      reasoned from this project's documented "<=15% lit" budget. Sound
+      reasoning, wrong constant: **this roster is far sparser than 15%**, so p85
+      measures how much black is in the frame rather than how bright the subject
+      is. Measured live, p85 ranged **0.006 to 0.67** purely with scene
+      sparsity — on a wireframe it read 0.01, the servo concluded "no
+      highlights, must be muddy", and drove the gain to its ceiling on a picture
+      that was working as authored.
+      p99 measured **0.80 to 0.94** across the same frames, because it tracks the
+      subject rather than the subject-to-background ratio. The guard now uses p99
+      against 0.7. Both percentiles are still shown in the debug panel; watching
+      them diverge is what makes scene sparsity legible.
+      Caught only by running the servo and reading its own telemetry, which is
+      the calibration docs/09_Rendering_Engine.md says is the only valid kind.
+
+- [ ] **F69 · The exposure targets still need a calibration pass on real
+      hardware** — *derived and partly measured; not signed off*
+      `TARGET_MEAN` comes straight from the documented budget (20/255).
+      `TARGET_HIGHLIGHT`, `BLOWN_TOLERANCE`, `GAIN_MIN`/`GAIN_MAX` and the step
+      are reasoned, and only `TARGET_HIGHLIGHT` has been checked against
+      measurements — taken under a software renderer at ~6fps, on two scenes,
+      on one track.
+      What is untested: how the loop behaves across the whole roster, over a
+      full track with real dynamics, and on a GPU.
+      The frame-counted sample interval noted here originally — which made the
+      real time constant scale with frame rate, ~2.3 s at 60fps but ~23 s at
+      6fps — **is fixed**: the interval is now wall-clock
+      (`SAMPLE_INTERVAL_SEC = 0.18`, which is what 11 frames came to at 60fps),
+      so the documented constant is true at any frame rate.
+
+- [ ] **F70 · The filmic grade is now unblocked but not attempted** —
+      *deliberate*
+      `src/engine/GradePass.ts`
+      docs/09_Rendering_Engine.md records the grade being built and reverted
+      twice, and names the real blocker: the scenes render hot, so any tone
+      mapper parks the image on its rolloff knee and flattens it. The servo is
+      the mechanism that addresses that blocker — it brings the level down from
+      measurement rather than from hoping every scene behaves — and `GradePass`
+      is where a curve would go (after the multiply, last in the pipeline, which
+      that document is explicit about).
+      Not attempted here because the same document is equally explicit that
+      exposure constants are only valid when calibrated against a real playing
+      track, and F69 is that calibration. Do F69 first; a curve fitted on top of
+      unverified exposure is the third revert.
+      One trap already recorded and worth repeating: `BrightnessContrast.brightness`
+      is an ADDITIVE offset, not exposure. A negative value drives black negative
+      and AgX returns it as lifted mid-grey. Exposure is a multiply.
+
+- [x] **F71 · Two debug-panel rows were drawing on top of each other** —
+      `src/ui/DebugPanel.tsx`
+      The render-scale readout added with the pixel-budget work took y=48, which
+      the mood row — drawn later, by a separate block in the same file — already
+      used. The later draw simply painted over the earlier one, which looks like
+      a missing readout rather than a collision, and it went unnoticed because
+      the two blocks are ~40 lines apart.
+      Rows are now on an explicit 12px grid documented at the `H` constant, and
+      every y is unique.
+
+---
+
+## Exposure readback cost, and transition telemetry (2026-08-25)
+
+- [x] **F72 · The exposure sampler cost 60% of the frame rate** —
+      `src/engine/ExposureSampler.tsx`
+      Reported as "the transitions have slowed down by a lot", and it was not the
+      transitions — everything had slowed, so a fade that already had few frames
+      to work with had far fewer.
+      Measured by A/B on the same build: **128 ms/frame with the sampler, 80 ms
+      without** — 7.8fps against 12.5fps, a 48 ms average cost per frame.
+      The cause was mine and the header's own claim was wrong.
+      `createImageBitmap(canvas)` was called on the FULL canvas and the downscale
+      to 24x16 then happened on the CPU in `drawImage`. The expensive part was
+      never the downscale: it was copying an entire framebuffer out of the GPU,
+      several times a second. "Asynchronous" only meant the JS thread was not
+      blocked; the work was still done and still had to be paid for.
+      Fixed by resizing DURING snapshot —
+      `createImageBitmap(canvas, { resizeWidth, resizeHeight, resizeQuality })` —
+      so 384 pixels cross the boundary instead of the whole frame. Re-measured at
+      **78.8 ms against 80.0 ms with the sampler removed entirely**: free within
+      noise.
+      Lesson worth keeping: an async API that returns a promise is not
+      automatically cheap. It moves *when* the cost lands, not *whether*.
+
+- [x] **F73 · Transition records did not say which style ran** —
+      `src/engine/transitionMetrics.ts`, `src/ui/AnalyticsPanel.tsx`
+      `TransitionRecord` captured from/to, downbeat, hard-cut, waited, target vs
+      actual duration and frame time during the fade — but not the style. With
+      six styles now, and three of them switching on a post-chain rack for the
+      duration (`smear` -> feedback, `melt` -> lens, `collapse` -> mirror), a
+      frame-time spike in the history was unattributable and "which of the six is
+      expensive" could not be answered from the data at all.
+      The record now carries `style`, and the panel prints it in place of the
+      old fixed `fade` label. A `cut` in that column is also now distinguishable
+      as a style the director chose versus one the budget guard imposed, which
+      `hardCut` alone could not express.
+
+- [ ] **F74 · No style has been measured against the others** — *the point of
+      F73, not yet acted on*
+      The telemetry to answer this now exists, and nothing has been recorded with
+      it. Expected shape, worth confirming rather than assuming: `cut` and
+      `dissolve` free, `dipToBlack` free, `smear` the cost of the feedback pass
+      for the fade's duration, `melt` the cost of the lens rack's most expensive
+      material, `collapse` the mirror rack plus a tiling multiply.
+      `collapse` is the one to watch — it drives `mirrorTiles`, and tiling
+      re-samples the frame per cell.
+      **Unblocked by F64 and F83** — styled transitions now run and a director
+      chooses them, so the comparison is finally possible. Note that under a
+      constrained budget the rack styles are deliberately downgraded to
+      `dissolve`, so measuring them needs a machine that can fund an overlap. Note the constrained fade is
+      0.2 s, so a rack style has less time to show itself than at full length;
+      measure both constrained and unconstrained.
+
+---
+
+- [x] **F75 · The exposure servo applied a permanent darkness effect** —
+      `src/engine/exposure.ts`
+      Two compounding bugs, both mine, both in the first implementation.
+
+      **It aimed at an art-direction budget instead of a fault threshold.** The
+      servo targeted this project's documented "mean luma < 20 of 255" (0.078)
+      and treated 1.4x of it as hot. But the composited frame **measures
+      0.09-0.19 in normal operation**, so it sat above the hot threshold nearly
+      always and corrected content that was working — pulling the whole show
+      down by roughly half. A budget is a goal for scene authors; a servo
+      threshold has to describe a FAULT. An auto-exposure that enforces an
+      aspiration is just a dimmer.
+
+      **The dead zone ratcheted.** Zero error meant the gain stayed wherever it
+      had been left, so there was no restoring force: every hot passage dragged
+      it down and nothing ever brought it back. That is the "permanent" part —
+      one bright moment darkened the rest of the session, and it accumulated
+      across a set.
+
+      Fixed on both counts. `HOT_MEAN = 0.30` and `MUDDY_MEAN = 0.02` are placed
+      in the gap between measured normal operation (0.09-0.19) and a real
+      washout (docs/09_Rendering_Engine.md records one at mean 0.65), so ordinary
+      content falls in a wide dead zone and the servo does nothing at all. And
+      zero error now eases the gain back toward unity at a quarter of the
+      correction rate, so a sustained fault still wins while a brief one is
+      forgiven over a few seconds rather than forever.
+      Verified live: gain held at exactly 1.00 across a full run on real content
+      (mean 0.026-0.059, blown 0-1.3%). Regression tests pin both halves —
+      the seven measured normal means all produce zero error, and a corrected
+      gain returns to unity once the fault clears.
+
+---
+
+## Scene modes (2026-08-25)
+
+- [x] **F76 · Modes existed but no director could select one** —
+      `src/scenes/index.ts`, `src/engine/AutoPilot.tsx`, `src/store.ts`
+      Scene Contract v1 already shipped a complete mode primitive: declared
+      `modes`, `useSceneMode`, `resolveSceneMode`, per-mode `paramLabels`
+      (including `null` for a parameter that is inert in that mode), and a
+      mode-scoped `summarizeContract` explicitly built for marketplace listings.
+      **`setSceneMode` had exactly one caller: a click handler in the HUD.**
+      So a scene with three authored looks showed one of them for the entire
+      life of an autonomous show, and the other two existed only for someone who
+      opened the menu and found them.
+      Same shape as F59 for palettes — a capability the roster declares that the
+      autonomy cannot reach. `AutoPilot` now picks a mode alongside the scene,
+      deterministically from its own rotation counter (a recorded set has to
+      replay identically), never returning the mode already showing. `auto: true`
+      keeps it out of the manual-backoff path, as automatic palette changes
+      already are.
+      One edge worth keeping: `pickVariedMode` deliberately does NOT go through
+      `getSceneContract`, which falls back to `SCENES[0]` for an unknown id. That
+      fallback is right for rendering — a stale persisted id must still draw
+      something — and wrong for a selector, which would otherwise answer with a
+      mode belonging to a different scene and store it against the bogus id. A
+      selector should decline where a renderer degrades.
+
+- [ ] **F77 · Modes cannot widen the LAYER pool, because roles are per-scene** —
+      *the premise that does not hold; needs a decision*
+      `src/scenes/index.ts`
+      Modes were proposed as a cheaper fix for the four-scene layer pool than
+      authoring new scenes. They are a cheaper unit of authorship and they do
+      widen variety — but not in the layer slots, and the reason is structural:
+      **`roles` is declared on `SceneMetadata`, not per mode.** A mode of a
+      primary-only scene is still primary-only, so adding five modes to
+      `synthgrid` adds five looks to the PRIMARY pool and zero layer candidates.
+      Measured on the current roster: 16 primary-capable scenes, **4
+      layer-capable** (`plasma`, `ribbons`, `network`, `orbs`), and **0
+      background-capable** — which is F18 restated from the data.
+      Two ways forward, and they are genuinely different products:
+      (a) **Per-mode roles.** One scene contributes to both pools — `synthgrid`
+      as a horizon is a primary, as a bare grid is an overlay. This is what makes
+      modes a layer-pool fix, and it is a contract change: `roles`, and probably
+      `performanceCost` and `pixelBudget` with it, become per-mode. It also
+      sharpens the marketplace story, since one submission could list under both.
+      (b) **Just declare layer roles on more existing scenes.** Far cheaper, no
+      new mechanism, and it is the actual F19 fix — but it does nothing for
+      authorship economics.
+      Not chosen unilaterally: (a) is a real extension to a contract that
+      external scenes will be written against.
+
+- [ ] **F78 · Only one scene of eighteen declares modes** — *content work,
+      unblocked by F76*
+      `wireframe` has three (`crystal`, `shard`, `cage`); every other scene has
+      none, so the roster is 18 scenes and 20 looks. Now that a director can
+      select them, adding modes is the cheapest variety available.
+      The candidates named as carrying four or five each are `SynthGridScene`
+      (588 lines) and `KernelPanicScene` (296 plus 683 lines of GLSL).
+      **Implement them as a uniform branch, not a `#define`.** Both compile every
+      branch into one program, so switching costs no recompile — which is the
+      constraint this codebase treats as paramount (`EffectsDirector`'s header,
+      F48). A `#define` would be a smaller shader and a recompile per switch,
+      which is the wrong trade here. Note `wireframe` is not that pattern: it
+      rebuilds geometry in a `useMemo` on mode change, which is bounded but is a
+      real rebuild, and is why the mode is picked BEFORE the scene is requested
+      rather than after it commits.
+
+---
+
+- [x] **F79 · The whole show rendered ~5x too dark: no output colour-space
+      conversion** — `src/engine/GradePass.ts`
+      Reported as "it's still dark always", after the servo's own gain had
+      already been fixed to hold at 1.00 — so the darkness was not the servo.
+      The composer works in **linear**; the display is **sRGB**; the last pass in
+      the chain owns that conversion. postprocessing's own shaders all end with
+      `#include <colorspace_fragment>`, so for as long as its merged `EffectPass`
+      was last, it did the conversion on everyone's behalf. **Every pass this
+      project wrote omits that line**, which was harmless until one of ours took
+      the final position — first `LensPass` during the optical-rack work, then
+      `GradePass`. At that moment the conversion silently disappeared and linear
+      values went straight to an sRGB framebuffer.
+      Measured: canvas mean **0.024-0.063 before, 0.158-0.394 after** the include
+      was added — about 5x, exactly what the missing transform predicts (a linear
+      0.05 should display near 0.24).
+      Nothing in any individual file looked wrong, which is why this survived
+      several passes of review: the bug lived in which file happened to be last.
+      **The rule, now written into GradePass's header: whatever is final in the
+      chain owns the output conversion.** That is the second duty the final
+      position carries, alongside never being skipped (F54).
+
+- [x] **F80 · The exposure constants were calibrated through the broken
+      pipeline** — `src/engine/exposure.ts`
+      Direct consequence of F79, and worth its own entry because the failure mode
+      is general. `HOT_MEAN` and `BLOWN_TOLERANCE` had been derived from live
+      telemetry — the right method — but every one of those samples came through
+      a pipeline rendering 5x too dark, so the constants were wrong in the same
+      direction as the bug that produced them.
+      Re-measured after the fix, across 89 samples: mean **0.07-0.46**
+      (median 0.19), blown **0-13.8%** (median **2.6%**).
+      Both constants were badly placed against that: `HOT_MEAN = 0.30` sat
+      *inside* the normal range, and `BLOWN_TOLERANCE = 0.02` was **below the
+      median blown share**, so the harshest regime in the servo would have fired
+      on more than half of all healthy frames.
+      Now `HOT_MEAN = 0.55` (above the observed max of 0.459, below the recorded
+      washout at 0.65) and `BLOWN_TOLERANCE = 0.20` (above the observed max of
+      0.138, below the recorded washout's 0.39). Verified live: gain holds at
+      exactly 1.00 across a full run.
+      Lesson recorded in the source: the discipline is not "measure" but "a
+      measurement is only as good as the pipeline it was taken through" — a
+      constant derived from instrumentation must be re-derived whenever that
+      pipeline changes. Notably, lilim's looser 0.30 blown tolerance was closer
+      to correct than the budget-derived 0.02, for the same reason its mean
+      target was: it had been measured rather than aspired to.
+
+- [ ] **F81 · Three other passes omit the colour-space conversion** — *latent,
+      correct today by position only*
+      `MirrorPass`, `FeedbackPass` and `LensPass` are all ShaderMaterials with no
+      `colorspace_fragment` include. That is correct while they render to
+      intermediate linear buffers and something else is last — but it means the
+      chain is only correct because of the current ORDER, and reordering it (or
+      disabling `GradePass`) reintroduces F79 silently.
+      Options: give every pass the include and make it conditional on
+      `renderToScreen`, or add a test/assert that the final pass is one that
+      converts. The second is cheaper and catches the real mistake, which is a
+      reorder rather than a missing line.
+
+---
+
+- [x] **F82 · `cut` disabled as a selectable style** — `src/engine/transitions.ts`,
+      `src/ui/HUD.tsx`
+      Reported as too jarring. Disabled as a **choice**, not as a fallback:
+      `SceneManager` still forces a cut when the frame budget cannot fund two
+      primaries and on a drop, and those paths assign the style directly rather
+      than going through `resolveTransitionStyle`, so they are unaffected.
+      Kept in `TRANSITION_STYLES` rather than deleted — the value is stored in
+      cues and recorded in transition telemetry, so removing the name would
+      orphan saved shows and make old records unreadable. `resolveTransitionStyle`
+      now maps it to `dissolve`, which is what makes the disable real for a cue
+      saved while it was still available rather than only hiding it from the
+      picker. The chip is shown struck-through and inert, with a tooltip saying
+      it is still used automatically — a control that silently vanishes reads as
+      a bug.
+      **This will not, on its own, stop hard cuts appearing.** See F64.
+
+- [x] **F83 · Nothing selects a transition style — there is no algorithm** —
+      *fixed: there is one now*
+      Asked directly: which algorithm decides the transition? There is none.
+      `performanceState.transitionStyle` defaults to `dissolve` and its only
+      writer is the Post FX debug panel. No mood, no section, no phrase, no
+      tension term feeds it, so an autonomous show uses `dissolve` for every
+      change it is allowed to make.
+      Compounding that, F64 means the style is overridden entirely whenever the
+      budget cannot fund an overlap — which under load is every transition. So
+      the observed behaviour is "everything is a cut, and none of the other
+      styles ever appear", from two independent causes:
+        1. nothing ever *chooses* anything but `dissolve` (this entry), and
+        2. what is chosen is then *overridden* to `cut` (F64).
+      **Both causes are now fixed.** F64 stopped the override; this entry adds
+      the choice.
+      `pickTransitionStyle` lives in transitions.ts as a pure function and is
+      called from `PerformanceStateBridge` (the decide band). Per-mood preference
+      LISTS rather than one style each — a fixed mapping means every breakdown
+      gets the same transition, which is the flatness the vocabulary exists to
+      remove — with rotation and no-repeat, deterministic so a recorded set
+      replays. `smear` for the quiet moods (a trail reads as drifting rather than
+      being replaced), `collapse` for a build (geometric, reads as pressure),
+      `melt` at the top end (woozy, where a fold would be noise on noise),
+      `dissolve` neutral and the only thing `silence` ever does. Disabled styles
+      are filtered out, so a disable reaches the autonomy and not just the picker.
+
+      Two things found by running it rather than reasoning about it:
+
+      **The section override latched.** `dipToBlack` marks a section boundary,
+      but a boundary is a single-frame edge while the scene change it should
+      punctuate commits on the next downbeat. Setting the style on the edge meant
+      it never cleared: five consecutive changes all ran `dipToBlack` from one
+      boundary long past. It is now a bounded WINDOW
+      (`SECTION_DIP_WINDOW_SEC`, ~2 s, about a bar at 120bpm), and the style is
+      re-picked when the window closes as well as when it opens.
+
+      **A rack style is downgraded when the budget is constrained.** A rack style
+      switches on an extra fullscreen pass for the fade's length, and the worst
+      moment to add one is a machine that already could not fund the overlap —
+      where the fade is 0.2 s anyway, too brief for a smear to read as anything
+      but a flicker. `SceneManager` falls back to `dissolve` in that case.
+      Verified live: the director chose `smear` and `dipToBlack` across six
+      forced changes, `dipToBlack` ran as chosen, and `smear` was correctly
+      downgraded to `dissolve` under load.
+
+---
+
+## The rack transition styles never appear (2026-08-26)
+
+- [x] **F84 · `smear`, `melt` and `collapse` never ran in practice** — *fixed
+      2026-08-26 by repricing the budget in milliseconds; see the section below*
+      `src/engine/SceneManager.tsx`, `src/engine/slotBudget.ts`
+      The director now picks them (F83) and the fade now runs (F64), but the
+      three rack styles are downgraded to `dissolve` whenever the frame budget
+      could not fund a two-primary overlap. That downgrade is deliberate and
+      right in isolation — a rack style switches on an extra fullscreen pass for
+      the fade's duration, and the worst moment to add one is a machine that
+      already said it could not afford the overlap. The problem is how often the
+      condition fires.
+
+      **The arithmetic, which is the actual finding.**
+      `canFundOverlap` asks `outgoing + incoming + layers + fixed <= budget`.
+      Fixed costs were `POST_CHAIN(2) + FEEDBACK(1) + GENERATIVE(1, on by
+      default) = 4`. So per tier, with no layers:
+
+        tier 0  budget 11  ->  outgoing + incoming <= 7
+        tier 1  budget  9  ->  <= 5
+        tier 2  budget  7  ->  <= 3
+        tier 3  budget  6  ->  <= 2
+        tier 4  budget  5  ->  <= 1
+
+      **VERIFIED FIXED 2026-08-26.** `smear` now runs. Twelve forced scene
+      changes driven through the real app (Playwright + SwiftShader, 1280x800,
+      tier 3 falling to 4 — i.e. the worst case this issue is about):
+
+        dissolve 4 · dipToBlack 5 · **smear 3**
+        5 of 12 fades ran at full duration; before, every one was constrained.
+
+      The three `smear` fades ran at 0.87-1.10 s, not the 0.2 s constrained
+      fade, so the rack pass was genuinely funded rather than downgraded. Note
+      which ones: `smear` was picked when the destination was cheap (`wireframe`
+      0.16 ms, `torusfold` 0.11, `plasma` 1.01) and the fade was constrained
+      when it was expensive (`ribbons` 13.1, `foldpath` 14.1, `chrome` 9.25,
+      `network` 22.4). That is the budget discriminating per scene instead of
+      globally, which is exactly the behaviour the old currency could not
+      express.
+
+      `melt` and `collapse` did not appear in this run. That is now a question
+      about **selection frequency**, not about funding — `smear` proves the rack
+      path is affordable, and all three are gated by the same `usesRack` /
+      `canFundOverlap` branch. Tracked separately if it persists.
+
+      **Update 2026-08-26 — two of those four units are now gone.** F85 made the
+      feedback reservation conditional (0 while trails are at rest, the common
+      case) and F02's removal deleted `GENERATIVE_UNITS` outright, so a quiet
+      frame's fixed cost is `POST_CHAIN(2)` alone. The same table becomes:
+
+        tier 0  budget 11  ->  outgoing + incoming <= 9
+        tier 1  budget  9  ->  <= 7
+        tier 2  budget  7  ->  <= 5
+        tier 3  budget  6  ->  <= 4
+        tier 4  budget  5  ->  <= 3
+
+      Two `medium` scenes cost 4, so an overlap is now fundable from tier 3 up
+      rather than tier 1 up, and even tier 4 can carry a `low` + `medium` pair.
+      That should make the three rack styles reachable on most machines. **Not
+      yet verified in a foregrounded browser** — the observation that opened this
+      issue was six forced changes with every one constrained, and that
+      measurement has not been repeated. Leaving it open until it has been.
+
+      Two primaries cost at least 1 + 1 = 2, so **at tier 4 an overlap is
+      arithmetically impossible even for the two cheapest scenes in the roster**,
+      and at tier 3 only a `low` + `low` pair fits. Most of the roster is `medium`
+      (2) or `high` (4): two mediums need a budget of 8, i.e. tier 1 or better.
+      Observed directly — six forced scene changes, every one constrained, every
+      rack style downgraded.
+
+      **Partly improved by F85**, which freed one of those four fixed units when
+      the feedback pass is bypassed: the survival tier now allows
+      `outgoing + incoming <= 2` instead of `<= 1`, so a `low` + `low` overlap is
+      possible. Re-tested afterwards and the rack styles were still downgraded —
+      correctly, because the scenes involved were `medium`/`high` (2 + 2 = 4),
+      still over the ceiling. The fix is real and insufficient on its own.
+
+      So this is not really a transition bug. It is the frame budget being pinned
+      low, and the transition vocabulary is just the first feature to visibly
+      depend on having headroom. Anything else gated on `canFundOverlap` is
+      equally dark. Fixing it means one of: raising real frame rate so the
+      governor stops pinning the tier, reducing the fixed reservations (see F85),
+      or making the downgrade finer-grained than all-or-nothing — for instance
+      allowing `smear` specifically, since the feedback pass is already mounted
+      and its cost is two fullscreen draws rather than a new program.
+
+- [x] **F85 · `FEEDBACK_UNITS` is reserved even while the pass is bypassed** —
+      *fixed*
+      `src/engine/frameLoad.ts`, `src/engine/SceneManager.tsx`
+      `FeedbackPass` sets `enabled = false` whenever `trails` is 0 — which is the
+      default and the overwhelmingly common case — and `EffectComposer` skips a
+      disabled pass entirely, so it costs nothing. But the fixed-cost sum adds
+      `FEEDBACK_UNITS` unconditionally: `POST_CHAIN + FEEDBACK + (generative ?
+      ...)`.
+      At tier 4 that is **1 of only 5 budget units reserved for work that is not
+      happening** — 20% of the frame's entire capacity — and it is exactly the
+      unit that decides whether `outgoing + incoming <= 1` or `<= 2`, i.e.
+      whether any overlap at all is possible.
+      This contradicts the reasoning already written into `OPTICAL_RACK_UNITS`,
+      which is 0 precisely because those racks bypass themselves at rest. The
+      same argument applies here and I did not apply it.
+      Fixed with `feedbackUnitsFor(trails)`, which shares one predicate —
+      `isFeedbackActive` — with the pass itself, so the budget and the pass can
+      no longer disagree about whether it is running. That disagreement was the
+      entire bug.
+      Measured live: fixed costs dropped **4 -> 3** and the room for two
+      primaries doubled **1 -> 2** at the survival tier, which makes a `low` +
+      `low` overlap possible where it had been arithmetically impossible.
+      The ordering subtlety is documented at the call site rather than left to be
+      discovered: the reservation is computed in `SceneManager` at priority -100
+      and `trails` is written by the bridge at -95, so the value read is one frame
+      stale. Acceptable for a reservation — the pass cannot switch on and cost a
+      full unit within one frame of the director deciding to use it.
+
+---
+
+## The budget spent an invented currency (2026-08-26)
+
+The `/bench` sweep was finally run across all 16 registered scenes x 5 tiers.
+It did not refine the cost model; it retired it.
+
+- [x] **F91 · Scene cost was a label, and the label was unrelated to cost** —
+      *fixed; the budget is now denominated in milliseconds*
+      `src/engine/sceneCost.ts` (new), `src/engine/slotBudget.ts`,
+      `src/engine/frameLoad.ts`, `src/engine/quality.ts`
+      `slotCost()` priced every scene from a hand-written `performanceCost`
+      label through `{ low: 1, medium: 2, high: 4 }`, and `TIER_BUDGET` handed
+      out `[11, 9, 7, 6, 5]` of those units. Nothing in that chain had been
+      weighed. What the sweep found:
+
+      | scene | declared | measured (tier 0) | charged | should have been |
+      |---|---|---|---|---|
+      | `synthgrid` | medium | **22.4 ms** | 2 units | the dearest thing on the roster |
+      | `network` | high | 22.4 ms | 4 units | ✓ |
+      | `ribbons` | medium | 13.1 ms (CPU-bound) | 2 units | refused as a layer |
+      | `pointcloud` | high | **0.12 ms** | 4 units | nearly free |
+      | `orbs` | low | 0.06 ms | 1 unit | ✓ |
+
+      The roster's second-cheapest scene was charged **twice** what its most
+      expensive one was. Inside the single `medium` label the spread is 0.03 ms
+      to 22.4 ms — a factor of 650. No budget can mean anything on top of that.
+
+      Fixed by making the currency milliseconds and the prices measurements:
+      `TIER_BUDGET_MS = [11, 9.5, 8.5, 7.5, 6.5]` now reads as "of a 16.67 ms
+      frame, the composition may claim 11", which is a claim that can be
+      checked. `layerBudget` → `frameBudgetMs`, `slotCost` → `slotCostMs`,
+      `committedUnits` → `committedMs`, `POST_CHAIN_UNITS` → `POST_CHAIN_MS`:
+      renamed rather than reinterpreted, because a field named `units` holding
+      milliseconds is precisely how the next bug gets written.
+
+      Two judgements inside the table, both recorded at its definition:
+      **GPU cost is monotonised** (the raw sweep is not monotone — `juliawings`
+      measured 12.5 / 5.5 / 7.4 / 8.7 / 7.8 across the ladder — and a budget
+      where dropping a tier can make a scene dearer would have "shed load"
+      sometimes adding load), and **CPU cost is one constant per scene** rather
+      than per tier, because the evidence says the ladder does not control it
+      (see F86).
+
+- [x] **F92 · The tier ladder charged for the same reduction twice** —
+      *fixed with F91; this is what actually unblocked F84*
+      `src/engine/slotBudget.ts`
+      Dropping a tier made every scene genuinely cheaper (pixel scale 1.0 →
+      0.23, raymarch steps 96 → 28) **and** shrank the wallet those cheaper
+      scenes had to fit inside (11 → 5), while their prices stayed flat. One
+      piece of evidence, two punishments. At tier 4 that left 1 unit for scenes
+      after fixed costs, so two primaries could not overlap at any price and
+      three of the six transition styles were unreachable (F84).
+
+      Prices are per-tier measurements now, so the first reduction is already in
+      the price. The ladder still tapers — 1.7x rather than 2.2x — but for a
+      stated and different reason: `sceneCost.ts` is one machine's table, and
+      the tier is the only evidence available about how far from that machine
+      the current one is. The taper is a margin against that unknown.
+
+      Measured effect: at **every** tier, at least half the roster can now
+      crossfade with itself, versus effectively none at tier 4 before. Pinned by
+      a test rather than a comment (`slotBudget.test.ts`).
+
+- [ ] **F86 · `chrome` gets ~5x MORE expensive as quality drops** — *scene bug,
+      exposed by the sweep*
+      `src/scenes/ChromeFormScene.tsx`
+      CPU mean per frame, tiers 0→4: **21.3 / 19.9 / 16.7 / 27.8 / 43.6 ms**,
+      with p95 reaching 72 ms. GPU is a flat 0.06 ms throughout, so this is
+      entirely CPU and entirely backwards — the governor's response to a slow
+      frame is to drop a tier, which on this scene makes it worse.
+
+      Non-monotone in the middle too (fine at tier 2, bad on both sides), which
+      smells like a per-mount rebuild — a PMREM/envMap prefilter, or geometry
+      regenerated from a knob — rather than a smooth cost curve. Until it is
+      found, `sceneCost.ts` charges chrome a flat 9.25 ms at every tier, which
+      is honest but blunt: it refuses chrome as a layer everywhere.
+
+- [ ] **F87 · `ribbons` spends 68 ms per frame on the CPU at tier 0** — *scene
+      bug, exposed by the sweep*
+      `src/scenes/FlowRibbonScene.tsx`
+      CPU mean tiers 0→4: **68.4 / 27.1 / 16.7 / 19.9 / 16.7 ms**. Sixty-eight
+      milliseconds is 15 fps from a scene using 0.03 ms of GPU. It does respond
+      to the tier, so unlike F86 the direction is right, but tier 0 — the tier
+      most users start on — is unusable.
+      Almost certainly per-frame geometry regeneration (tube/curve rebuild)
+      scaled by a quality knob. The GPU cost says the drawing is free; all of
+      this is JS.
+
+- [ ] **F88 · The cost table is one machine's measurements** — *known
+      limitation, stated at the definition*
+      `src/engine/sceneCost.ts`
+      Every number came off one GPU. A device three times slower carries three
+      times these costs while the table reads identically, so the budget would
+      overcommit it by 3x. The tier is the runtime adaptation — a slow machine
+      sits lower and is priced from the lower row — and `TIER_BUDGET_MS` keeps a
+      taper specifically as margin against this, but neither is calibration.
+      The real fix is a short startup probe (render a known scene, compare
+      against its table entry, scale the whole table by the ratio) or shipping
+      per-GPU-class tables. Until then the model is right and the constants are
+      local.
+
+- [ ] **F89 · `roleScalable` is declared by exactly zero scenes** —
+      *the discount has never once been applied*
+      `src/scenes/index.ts`, `src/engine/slotBudget.ts`
+      `slotCostMs` discounts a scene outside the primary slot only if it
+      declared `roleScalable`, meaning it actually reads `ctx.role` and reduces
+      its own shader work. Grepping all 16 registered scenes: **not one does.**
+      It is an optional field on the type and nothing else, so every layer is
+      charged full primary price in every slot.
+      Two ways out, and the choice is real: implement it in the scenes that are
+      plausibly layerable (a background at 0.6x its work is a genuine saving on
+      the six expensive scenes), or delete the parameter and stop implying a
+      discount that cannot happen. Do not leave it as decoration.
+
+- [ ] **F90 · The post chain and the feedback pass are the last invented
+      numbers** — *supersedes the F43/F44/F51 estimate notes*
+      `src/engine/frameLoad.ts`
+      `POST_CHAIN_MS = 2` and `FEEDBACK_MS = 1` are the only costs in the budget
+      that have not been measured, and the post chain is the one cost present in
+      **every single frame**. `/bench` deliberately excludes it so scene costs
+      compare cleanly, which is why the most universal cost is the least known
+      one.
+      Sanity check says 2 ms is not absurd — `plasma` renders a full particle
+      field for 0.87 ms on the bench GPU, so 2 ms buys roughly two
+      fullscreen-equivalents for a nine-level mip pyramid plus two cheap passes
+      — but "not absurd" is not "measured". Extend `BenchStage` with a cell that
+      runs an empty scene with and without `EffectsDirector`; the difference is
+      the number. Same run can price the mirror and lens racks, which are
+      currently reserved at zero (`OPTICAL_RACK_MS`) on the grounds that nothing
+      autonomous switches them on — true today, and a trap the moment a director
+      does.
+
+---
+
+- [ ] **F93 · `compileAsync` can throw from a timer, where the try/catch cannot
+      reach it** — *observed once during F84 verification; not investigated*
+      `src/engine/streaming/shaderPrewarm.ts`
+      One `pageerror` during twelve rapid forced scene changes:
+      `Cannot read properties of undefined (reading 'isReady')`.
+
+      `prewarmShaders` wraps `await gl.compileAsync(...)` in a try/catch, and
+      that catch is why the error reached the page rather than the fallback:
+      three polls `program.isReady()` from an internal timer callback, not from
+      the awaited chain, so a throw inside the poll escapes the promise
+      entirely. The catch cannot see it. If the warming scene is disposed while
+      its poll is still in flight — which rapid switching on a slow renderer
+      makes likely — the program is gone and the poll dereferences undefined.
+
+      **Whether this predates the budget rework is not established.** It was
+      seen under conditions the app does not normally produce (twelve switches
+      in ~55 s under SwiftShader), and nothing in that change touches the
+      prewarm path, but that is reasoning rather than evidence. Reproduce on the
+      pre-change build before assuming either way.
+      Likely fix: a `window.onerror`/`unhandledrejection` guard around the warm
+      path, or track the in-flight prewarm per entry and abandon it explicitly
+      on dispose rather than leaving three's poll pointed at a dead program.
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **553 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **625 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

@@ -5,8 +5,8 @@ import type { AudioFeatures } from '../audio/types'
 import { cueState } from './CueTimeline'
 import { performanceState, type ActiveEffect } from './performanceState'
 import { quality } from './quality'
-import { committedUnits } from './frameLoad'
-import { admitSlots, slotCost } from './slotBudget'
+import { committedMs } from './frameLoad'
+import { admitSlots, slotCostMs } from './slotBudget'
 import { getEffectScenes, pickVariedScene, type EffectTrigger, type SceneDef } from '../scenes'
 import { useStore } from '../store'
 
@@ -81,18 +81,20 @@ export function advanceEffects(opts: {
   /**
    * Everything the frame has ALREADY committed — the primary, any second
    * primary mid-crossfade, every mounted layer, the live effects, the post
-   * chain and the generative overlay.
+   * chain.
    *
    * Was `primaryUnits`, which is what made this claimant dangerous: it reserved
    * only the subject, so an effect could fire on top of a full three-slot
    * composition believing the frame held one scene. See frameLoad.ts.
    */
-  committedUnits: number
+  committedMs: number
+  /** Quality tier the costs should be priced at. */
+  tier: number
   lastFiredAt: Map<string, number>
   mood: Parameters<typeof pickVariedScene>[1]
   recentIds: readonly string[]
 }): ActiveEffect[] {
-  const { active, fired, candidates, now, budget, committedUnits, lastFiredAt, mood, recentIds } =
+  const { active, fired, candidates, now, budget, committedMs, tier, lastFiredAt, mood, recentIds } =
     opts
 
   // Retire: expired, or stranded by a source restart that rewound the clock.
@@ -118,12 +120,18 @@ export function advanceEffects(opts: {
   if (!pick) return kept as ActiveEffect[]
 
   // Effects are last in line for budget — the frame still reads without them.
-  // `committedUnits` already includes the effects currently firing, so nothing
+  // `committedMs` already includes the effects currently firing, so nothing
   // is added for `kept` here; double-counting them would make an effect
   // progressively harder to fire the longer the previous one ran.
-  const reserved = committedUnits
-  const units = slotCost(pick.metadata.performanceCost, 'effect', pick.metadata.roleScalable)
-  if (admitSlots(budget, reserved, [{ slot: 'effect', units }]).length === 0) {
+  const reserved = committedMs
+  const ms = slotCostMs(
+    pick.id,
+    tier,
+    'effect',
+    pick.metadata.roleScalable,
+    pick.metadata.performanceCost,
+  )
+  if (admitSlots(budget, reserved, [{ slot: 'effect', ms }]).length === 0) {
     return kept as ActiveEffect[]
   }
 
@@ -169,8 +177,9 @@ export function EffectDirector() {
       fired: suppressed ? [] : fired,
       candidates,
       now: f.time,
-      budget: quality.knobs.layerBudget,
-      committedUnits: committedUnits(),
+      budget: quality.knobs.frameBudgetMs,
+      committedMs: committedMs(),
+      tier: quality.tier,
       lastFiredAt: lastFiredAt.current,
       mood: f.mood.state,
       recentIds: s.recentSceneIds,

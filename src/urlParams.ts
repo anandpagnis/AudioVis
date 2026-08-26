@@ -85,7 +85,6 @@ export function applyUrlParams() {
   for (const [param, key] of [
     ['autopilot', 'autoPilot'],
     ['mooddrive', 'moodDrive'],
-    ['gen', 'generative'],
   ] as const) {
     const raw = q.get(param)
     if (raw === '1' || raw === 'true') patch[key] = true

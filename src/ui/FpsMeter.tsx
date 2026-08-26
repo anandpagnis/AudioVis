@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { perf } from '../engine/PerfMonitor'
-import { committedUnits, frameLoad } from '../engine/frameLoad'
+import { committedMs, frameLoad } from '../engine/frameLoad'
 import { quality } from '../engine/quality'
 
 /**
@@ -115,11 +115,16 @@ export function FpsMeter() {
       // shows whether the budget is seeing the WHOLE frame — for a long time it
       // was not, and each claimant reserved against its own partial view of it
       // (see frameLoad.ts). Red once committed exceeds capacity.
-      const budget = quality.knobs.layerBudget
-      const used = committedUnits()
+      //
+      // Milliseconds, one decimal. The currency used to be an abstract unit and
+      // printed as an integer; now every term is a measured cost and floats
+      // would otherwise render as `0.30000000000000004`.
+      const budget = quality.knobs.frameBudgetMs
+      const used = committedMs()
+      const d = (n: number) => n.toFixed(1)
       const load =
-        `${frameLoad.primary}+${frameLoad.incoming}+${frameLoad.layers}` +
-        `+${frameLoad.effects}+${frameLoad.fixed} = ${used}/${budget}`
+        `${d(frameLoad.primary)}+${d(frameLoad.incoming)}+${d(frameLoad.layers)}` +
+        `+${d(frameLoad.effects)}+${d(frameLoad.fixed)} = ${d(used)}/${d(budget)}ms`
       if (load !== lastLoad && loadRef.current) {
         lastLoad = load
         loadRef.current.textContent = load

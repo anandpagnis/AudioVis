@@ -1,3 +1,5 @@
+import { isFeedbackActive } from './feedbackParams'
+
 /**
  * What is actually rendering right now, in budget units.
  *
@@ -7,32 +9,32 @@
  * different partial view of the same frame:
  *
  *   - `composeLayers` reserved the primary and admitted layers — blind to
- *     effects, the post chain and the generative overlay.
+ *     effects and to the post chain.
  *   - `EffectDirector` reserved the primary and any live effects — blind to the
  *     **layers**, so an effect could fire on top of a full three-slot
  *     composition while believing the frame held one scene.
  *   - `canFundOverlap` reserved the two primaries — blind to effects.
  *
- * And nothing at all accounted for the two costs that are present in *every*
- * frame: the post chain (a bloom mip pyramid plus chromatic aberration and
- * vignette) and `GenerativeLayer`, which `Stage` keeps mounted for the session
- * once it has ever been enabled — and `generative` defaults to true.
+ * And nothing at all accounted for the cost that is present in *every* frame:
+ * the post chain — a bloom mip pyramid plus chromatic aberration and vignette.
  *
  * Three partial views of one resource is how a budget confidently overcommits:
  * each claimant is individually correct and the sum is not. This module is the
  * single place that knows the whole frame, so a claimant asks "what is already
  * committed?" instead of assembling its own guess.
  *
- * ## Units, and their honesty
+ * ## Milliseconds, and their honesty
  *
- * Same scale as slotBudget.ts — low 1 / medium 2 / high 4, calibrated per
- * `ScenePerformanceCost`. Scene costs are now measured (see `/bench`); the two
- * fixed costs below are NOT, and are flagged as estimates. They are reasoned
- * rather than invented — a bloom mip chain is roughly a fullscreen pass and a
- * half, the generative overlay is one fullscreen fbm quad — but reserving a
- * reasoned estimate is strictly better than the previous reservation of zero,
- * which is what let a full composition plus post plus generative present itself
- * to the budget as a single scene.
+ * Same currency as slotBudget.ts: frame-time milliseconds. Scene costs are
+ * measured per tier (engine/sceneCost.ts, from the `/bench` sweep). **The two
+ * fixed costs below are still estimates**, and they are now the only invented
+ * numbers left in the budget — `/bench` deliberately excludes the post chain so
+ * scene costs compare cleanly, which means the one cost present in every single
+ * frame is the one nobody has weighed. They are reasoned rather than guessed —
+ * a bloom mip chain is roughly a fullscreen pass and a half, the feedback pass
+ * is two fullscreen draws — and reserving a reasoned estimate beats the
+ * previous reservation of zero, which is what let a full composition plus post
+ * present itself to the budget as a single scene. Measuring them is F90.
  */
 
 /**
@@ -45,10 +47,16 @@
  *
  * **ESTIMATE — not measured.** `/bench` deliberately excludes the post chain so
  * that scene costs compare cleanly, which means the one constant cost in every
- * frame is the one number never measured. Treated as `medium`. Measuring it is
- * the obvious next benchmark task; see F43 in docs/ISSUES.md.
+ * frame is the one number never measured. Measuring it is the obvious next
+ * benchmark task; see F43 and F90 in docs/ISSUES.md.
+ *
+ * 2 ms is the old `medium` unit reading carried across at the exchange rate the
+ * rest of the ladder now uses (tier 0 was 11 units and is 11 ms). Sanity check
+ * against the sweep: `plasma` renders a full particle field for 0.87 ms on this
+ * GPU, so 2 ms buys roughly two fullscreen-equivalents — about right for a
+ * nine-level mip pyramid plus two cheap passes, and deliberately not generous.
  */
-export const POST_CHAIN_UNITS = 2
+export const POST_CHAIN_MS = 2
 
 /**
  * `FeedbackPass`, mounted permanently in the post chain (see EffectsDirector).
@@ -59,11 +67,31 @@ export const POST_CHAIN_UNITS = 2
  * estimate, because it is present whether or not `trails` is doing anything
  * visible. **Still an ESTIMATE**, not a `/bench` measurement — `/bench`
  * excludes the whole post chain today (see the caveat above), and this pass
- * did not exist when that decision was made. Treated as `low`: a warp-sample
- * fullscreen pass is lighter than bloom's nine-tap mip pyramid, and the copy
- * draw is close to free.
+ * did not exist when that decision was made. A warp-sample fullscreen pass is
+ * lighter than bloom's nine-tap mip pyramid, and the copy draw is close to
+ * free — hence half the post chain's reservation.
  */
-export const FEEDBACK_UNITS = 1
+export const FEEDBACK_MS = 1
+
+/**
+ * The feedback pass's reservation for a given `trails` value.
+ *
+ * **Conditional, and that matters more than it looks.** `FeedbackPass` disables
+ * itself whenever `trails` is at rest — the default, and the overwhelmingly
+ * common case — and `EffectComposer` skips a disabled pass entirely, so it
+ * genuinely costs nothing. Reserving for it anyway held 1 of only 5 units at the
+ * survival tier under the old currency: 20% of the frame's whole capacity, for
+ * work that was not happening, and precisely the unit that decided whether ANY
+ * crossfade overlap was possible. That is why three of the six transition styles
+ * were unreachable (F84).
+ *
+ * This is the same reasoning already written into `OPTICAL_RACK_MS`, which is 0
+ * because those racks bypass themselves at rest. It simply had not been applied
+ * here.
+ */
+export function feedbackMsFor(trails: number): number {
+  return isFeedbackActive(trails) ? FEEDBACK_MS : 0
+}
 
 /**
  * The optical racks (`MirrorPass`, `LensPass`) — deliberately **zero**.
@@ -82,21 +110,7 @@ export const FEEDBACK_UNITS = 1
  * and fold them into the F44 bench task, or the budget will admit a layer on
  * top of a rack it did not know was running.
  */
-export const OPTICAL_RACK_UNITS = 0
-
-/**
- * The AI-texture overlay, when enabled.
- *
- * One fullscreen additive quad with an fbm-based warp — cheaper than a
- * raymarcher, comparable to a simple procedural scene. **ESTIMATE**, same
- * caveat as above. Treated as `low`.
- *
- * Worth knowing: `Stage` mounts this permanently once `generative` has ever
- * been true in a session (so toggling off fades gracefully), and the store
- * defaults it to true — so for most users this cost is always present, and it
- * was never in the budget at all.
- */
-export const GENERATIVE_UNITS = 1
+export const OPTICAL_RACK_MS = 0
 
 /**
  * Live breakdown of the frame's committed cost. Mutated in place once per frame
@@ -107,7 +121,7 @@ export const GENERATIVE_UNITS = 1
  * many readers, no allocation in the render loop.
  */
 export const frameLoad = {
-  /** The committed primary subject. */
+  /** The committed primary subject, in milliseconds. */
   primary: 0,
   /** A second primary during a crossfade, or a warming candidate still drawing. */
   incoming: 0,
@@ -115,8 +129,8 @@ export const frameLoad = {
   layers: 0,
   /** Effect scenes currently firing. */
   effects: 0,
-  /** Post chain, the feedback pass, plus the generative overlay when mounted. */
-  fixed: POST_CHAIN_UNITS + FEEDBACK_UNITS,
+  /** Post chain, plus the feedback pass while trails are actually running. */
+  fixed: POST_CHAIN_MS + FEEDBACK_MS,
 }
 
 /**
@@ -126,7 +140,7 @@ export const frameLoad = {
  * during a crossfade the frame really is carrying two subjects, and that is
  * exactly the moment an extra layer or effect must not be admitted.
  */
-export function committedUnits(): number {
+export function committedMs(): number {
   return (
     frameLoad.primary + frameLoad.incoming + frameLoad.layers + frameLoad.effects + frameLoad.fixed
   )
@@ -138,8 +152,8 @@ export function committedUnits(): number {
  * Floors at 0 rather than going negative: an overcommitted frame should admit
  * nothing more, not wrap around into apparent headroom.
  */
-export function remainingUnits(budget: number): number {
-  return Math.max(0, budget - committedUnits())
+export function remainingMs(budgetMs: number): number {
+  return Math.max(0, budgetMs - committedMs())
 }
 
 /** The minimum a mounted entry has to expose for its cost to be attributed. */
@@ -154,8 +168,8 @@ export interface FrameLoadEntry {
    * SceneManager's warm bookkeeping.
    */
   drawing: boolean
-  /** Already resolved through `slotCost` for this entry's role. */
-  units: number
+  /** Milliseconds, already resolved through `slotCostMs` for this entry's role. */
+  ms: number
 }
 
 /**
@@ -177,12 +191,12 @@ export function applyFrameLoad(entries: readonly FrameLoadEntry[], fixed: number
     if (e.role === 'primary') {
       // The entry fading IN is the committed subject; any other live primary is
       // the outgoing one, or a candidate still warming — both are overlap.
-      if (e.dir === 1) primary += e.units
-      else incoming += e.units
+      if (e.dir === 1) primary += e.ms
+      else incoming += e.ms
     } else if (e.role === 'effect') {
-      effects += e.units
+      effects += e.ms
     } else {
-      layers += e.units
+      layers += e.ms
     }
   }
   frameLoad.primary = primary

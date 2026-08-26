@@ -222,6 +222,15 @@ export interface PerformanceState {
     style: TransitionStyle
     progress: number
     active: boolean
+    /**
+     * Seconds this fade was committed to run for.
+     *
+     * Captured at commit rather than recomputed per frame, because it can be
+     * shortened by the frame budget (see `fadeDurationFor`) and a duration that
+     * changed mid-fade would make the transition speed up or slow down while the
+     * viewer is watching it.
+     */
+    durationSec: number
   }
 
   /**
@@ -283,7 +292,7 @@ export const performanceState: PerformanceState = {
   lens: { amount: 0, style: 0 },
   rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0 },
   transitionStyle: 'dissolve',
-  transition: { style: 'dissolve', progress: 1, active: false },
+  transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1 },
 
   // Empty, not neutral: at boot the director has formed no opinion yet, and
   // every scene's own authored defaults are the right thing to show until it

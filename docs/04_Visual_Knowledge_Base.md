@@ -65,7 +65,6 @@ Directors query VKB → rank candidates → store actions → SceneManager rende
 | Palettes | `Palette` in `src/engine/palettes.ts` | `getPalette`, `MOOD_PALETTES` in AutoPilot |
 | Cameras | `CameraMode` catalog | Declared in scene metadata (`cameraAnchor` + `cameraModes`) |
 | Transitions | SceneManager fade | Implicit crossfade |
-| AI textures | Mood×palette×variant keys | `textureGenerator.ts` cache |
 
 ---
 

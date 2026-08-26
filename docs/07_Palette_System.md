@@ -71,7 +71,6 @@ PALETTES[] ──► getPalette(store.paletteId)
 | Palette definitions | `palettes.ts` | Static catalog + `registerPalette()` |
 | PaletteBlender | `palettes.ts` | Temporal color ease |
 | MOOD_PALETTES | `AutoPilot.tsx` | Mood → palette id list |
-| PALETTE_WORDS | `textureGenerator.ts` | AI prompt color vocabulary |
 | LightRig | `LightRig.tsx` | Palette-colored lights for mesh scenes |
 
 ---
@@ -188,5 +187,3 @@ N/A — palette is stateless definition + store id + blender positions.
 - **Brightness limits:** clamp max luminance for post-chain headroom.
 - **Scene overrides:** accent color slot per scene while keeping global palette.
 - **Accessibility presets:** high-contrast mono variants.
-
-See [11_Generative_AI.md](11_Generative_AI.md) for AI palette prompts.

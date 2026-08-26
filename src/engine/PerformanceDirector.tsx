@@ -6,7 +6,7 @@ import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { frameLoad } from './frameLoad'
 import { quality } from './quality'
-import { admitSlots, slotCost, type SlotRequest } from './slotBudget'
+import { admitSlots, slotCostMs, type SlotRequest } from './slotBudget'
 import {
   getCompatibleScenes,
   getPrimaryScenesForMood,
@@ -64,8 +64,13 @@ const MAX_LAYERS_BY_PRIMARY_COST: Record<ScenePerformanceCost, number> = {
  * Exported for the unit test; the component is the only production caller.
  */
 export function composeLayers(opts: {
+  /** The subject the layers are being composed around — priced, not just capped. */
+  primaryId: string
   primaryCost: ScenePerformanceCost
+  /** Milliseconds available for everything in this composition. */
   budget: number
+  /** Quality tier the costs are priced at. */
+  tier: number
   /** Candidate list per slot, best fit first. Empty or absent = leave unfilled. */
   pools: Partial<Record<LayerRole, readonly SceneDef[]>>
   mood: MoodState
@@ -73,7 +78,7 @@ export function composeLayers(opts: {
   /** Admission order; lets the busier of accent/overlay get first refusal. */
   priority?: readonly LayerRole[]
 }): Record<LayerRole, string | null> {
-  const { primaryCost, budget, pools, mood, recentIds, priority } = opts
+  const { primaryId, primaryCost, budget, tier, pools, mood, recentIds, priority } = opts
   const picks: Partial<Record<LayerRole, SceneDef>> = {}
   const requests: SlotRequest[] = []
 
@@ -85,11 +90,16 @@ export function composeLayers(opts: {
     picks[role] = pick
     requests.push({
       slot: role,
-      units: slotCost(pick.metadata.performanceCost, role, pick.metadata.roleScalable),
+      ms: slotCostMs(pick.id, tier, role, pick.metadata.roleScalable, pick.metadata.performanceCost),
     })
   }
 
-  const affordable = admitSlots(budget, slotCost(primaryCost, 'primary'), requests, priority)
+  const affordable = admitSlots(
+    budget,
+    slotCostMs(primaryId, tier, 'primary', false, primaryCost),
+    requests,
+    priority,
+  )
 
   // Then the editorial cap, applied to what the budget already allowed. Order
   // matters: `admitSlots` returns slots in the caller's priority order, so
@@ -241,12 +251,14 @@ export function PerformanceDirector() {
     const backgroundPool = f.sectionChange ? forRole('background') : []
 
     const slots = composeLayers({
+      primaryId,
       primaryCost: getScene(primaryId).metadata.performanceCost,
+      tier: quality.tier,
       // The tier's budget LESS the costs that are present in every frame and
-      // were previously invisible to it: the post chain, and the generative
+      // were previously invisible to it: the post chain and the feedback pass
       // overlay when enabled. Composing against the raw tier budget meant the
       // layers were funded out of money the post chain had already spent.
-      budget: quality.knobs.layerBudget - frameLoad.fixed,
+      budget: quality.knobs.frameBudgetMs - frameLoad.fixed,
       pools: {
         background: backgroundPool,
         [leadRole]: forRole(leadRole),
