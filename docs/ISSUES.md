@@ -2264,6 +2264,102 @@ rendered were different — F19's "a layer chosen and immediately dropped".
 
 ---
 
+## Automating role assignment for a marketplace (2026-08-27)
+
+**Not an issue — a design decision recorded before it is acted on.** Raised as:
+role assignment is manual today, a marketplace with third-party scenes cannot
+be, so how does it get automated? Options considered were an AI engine that
+reads scene semantics, staying manual until MVP, or driving everything from
+DSP.
+
+### The finding
+
+Every manual role call in the roster was decided on **pixels**, not semantics.
+The reasons are already written in `src/scenes/index.ts`:
+
+- `orbs` → background: *"nowhere near enough structure to carry a frame as the
+  subject, but composites beautifully over one"*, plus cheapest in the roster.
+- `kaleido` → primary only: *"a centred mandala owns the middle of the frame by
+  construction; composited over another subject the two symmetries fight, and
+  behind one it is entirely hidden by its own dark centre."*
+- `wireframe` → primary only: *"two subjects fighting for the same frame."*
+- `trail` → primary only: it pays for a render-target pair.
+
+Coverage, spatial distribution, occlusion, cost. All four are **measurable from
+rendered frames**. None required knowing what the scene means. So the
+automation this wants is a *measurement*, not an inference.
+
+### The proposal: extend `/bench` into a scene profiler
+
+Most of it exists. `/bench` already mounts any scene in isolation at any tier
+with the right camera and renders it; `ExposureSampler` already reads back a
+downsampled frame and computes mean, p85, p99 and blown share; the in-frame
+readback technique used for the F47 vignette A/B already samples centre versus
+edge. What a role profile adds on top:
+
+- **Fill** — fraction of pixels above a luminance threshold. Separates "subject
+  on black" from "wash".
+- **Radial distribution** — centre / mid / edge luminance. This is the statistic
+  that would have caught `kaleido` on its own.
+- **Temporal variance** — does it change per beat or per phrase? Accent
+  (punctuating) versus background (sustained).
+- **Occlusion** — composite the scene over a known reference field and measure
+  how much of the reference survives. "Two subjects fighting" is exactly this,
+  quantified, and it is the direct test of *can this be a layer*.
+- **Cost** — already measured, per tier, with the JS/GPU split.
+
+Run at submission time, cache in the manifest. One admission step covering
+performance, role eligibility and licence rather than three.
+
+### Where AI does belong
+
+Narrowly, and not here. `moodFit` is genuinely semantic and hard to measure
+(though even it could be learned from how a scene's output responds to audio
+features). Metadata, naming and marketplace copy. Source review for licence
+provenance and unsafe shader patterns.
+
+**Not role assignment.** An LLM reading shader source would be guessing at
+something measurable — slower, non-deterministic, unauditable, and when a
+marketplace scene is mis-roled "the model thought it was a background" is not a
+debuggable answer.
+
+### Why DSP is a different axis
+
+"Wire everything to DSP" is already what the directors do — mood, tension,
+flux, phrase and section all drive the choices. But DSP answers *when*, and this
+problem is *which scene is eligible for what*. Audio analysis cannot tell you
+whether a scene occludes what is behind it.
+
+### Sequencing, and why it is not "after MVP"
+
+There are sixteen hand-made role decisions in the roster **with written
+reasons** — a labelled validation set with rationales, which is a rare thing to
+have. Build the profiler while it still exists and it can be checked against
+them: does it independently reach "kaleido is primary-only"? Where it disagrees,
+one of the two is wrong and that is cheap to find out. Defer it and the same
+thing gets built later against a replaced roster with no ground truth.
+
+  1. Write the role criteria down as a measurable contract. No machinery.
+  2. Extend `/bench` with the four statistics plus the occlusion test. Output a
+     profile per scene, wired to nothing.
+  3. Validate against the sixteen. Tune. This is where the idea is proved or not.
+  4. Only then, have `registerScene` derive role eligibility from the profile
+     for untrusted scenes.
+
+**A declared role is a claim the profile may VETO, never one it grants.**
+Declaration is intent; measurement is a safety check. Same posture
+`trusted: false` already takes on cost claims.
+
+### Two things genuinely uncertain
+
+- Whether the occlusion test generalises across palettes — a dark palette
+  occludes differently from a bright one.
+- Whether `effect` can be profiled at all. It is a *contract* (drive yourself to
+  visual zero by `slotProgress` 1), not a property, so it probably has to stay
+  declared-and-verified rather than inferred.
+
+---
+
 ## Verification status
 
 `npm run check` passes: typecheck, lint (0 errors, 0 warnings), **659 tests**, build.
