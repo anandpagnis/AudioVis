@@ -551,7 +551,10 @@ export const useStore = create<AppState>()(
               set({ status: 'error', error: OUTPUT_REQUIRED, sourceType: null })
               return
             }
-            set({ status: 'running', sourceType: kind })
+            // NOT `running`: this window has no engine, so whether the show
+            // actually started is a fact only the output window has. It arrives
+            // on telemetry a moment later — see adoptOutputStatus.
+            set({ status: 'starting', sourceType: kind })
             if (kind === 'mic') void get().refreshDevices()
           } catch (err) {
             if (get().status !== 'starting') return
@@ -601,7 +604,8 @@ export const useStore = create<AppState>()(
             set({ status: 'error', error: OUTPUT_REQUIRED, sourceType: null })
             return
           }
-          set({ status: 'running', sourceType: 'file' })
+          // See the note in startAudio: the output window confirms.
+          set({ status: 'starting', sourceType: 'file' })
           return
         }
         try {

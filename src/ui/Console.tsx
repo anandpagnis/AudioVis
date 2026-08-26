@@ -3,7 +3,19 @@ import { SCENES } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
 import { PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { useStore } from '../store'
-import { onMirror, openOutput, outputIsOpen, readTelemetry, type Telemetry } from '../engine/outputLink'
+import {
+  isActiveController,
+  onMirror,
+  openOutput,
+  outputIsOpen,
+  peerControllerCount,
+  readTelemetry,
+  sendCommand,
+  type Telemetry,
+} from '../engine/outputLink'
+import { LENS_STYLES } from '../engine/opticalRack'
+import { selectableStyles } from '../engine/transitions'
+import type { DebugPostFx } from '../store'
 
 /**
  * The DJ-facing control surface.
@@ -24,6 +36,7 @@ export function Console() {
 
   return (
     <div className="console">
+      <PassiveBanner />
       <header className="console-top">
         <Mirror />
         <Readouts tele={tele} outputOpen={outputOpen} />
@@ -39,6 +52,9 @@ export function Console() {
         </Section>
         <Section title="Look">
           <LookControls />
+        </Section>
+        <Section title="Post FX">
+          <PostFx />
         </Section>
       </div>
     </div>
@@ -183,20 +199,35 @@ function Transport({
         </div>
       ) : (
         <div className="source-buttons">
-          <button className="btn-huge" onClick={() => useStore.getState().stopAudio()}>
+          {/* Commands, not local calls. The AudioContext, the MediaRecorder
+              and the canvas all live in the output window; this window's copies
+              are idle and empty, so calling them here stopped nothing and
+              recorded nothing while the button lit up as though it had. */}
+          <button className="btn-huge" onClick={() => sendCommand('stop')}>
             Stop
             <small>{sourceType}</small>
           </button>
           <button
             className={`btn-huge ${isRecording ? 'recording' : ''}`}
-            onClick={() => useStore.getState().toggleRecording()}
+            onClick={() => sendCommand('toggle-record')}
           >
             {isRecording ? 'Stop rec' : 'Record'}
+          </button>
+          <button className="btn-huge" onClick={() => sendCommand('screenshot')}>
+            Frame
+            <small>save PNG</small>
           </button>
         </div>
       )}
 
-      {status === 'starting' && <p className="transport-note">Waiting for permission…</p>}
+      {status === 'starting' && (
+        <p className="transport-note">
+          Starting…{' '}
+          <button className="link-btn" onClick={() => sendCommand('cancel-start')}>
+            cancel
+          </button>
+        </p>
+      )}
       {error && <p className="transport-error">{error}</p>}
 
       <input
@@ -448,4 +479,181 @@ function useOutputPresence(): boolean {
     return () => window.clearInterval(id)
   }, [])
   return open
+}
+
+/* ------------------------------------------------------------------ post fx */
+
+/**
+ * The post chain, exposed directly.
+ *
+ * Every value here is normally owned by the directors, which is why it sits
+ * behind one master switch: `PerformanceStateBridge` copies this whole block
+ * over its own output when `enabled` is set, and ignores it entirely when it is
+ * not. Half-overriding was never on the table — a chain where some values are
+ * driven and some are held reads as neither, and the switch is the only branch.
+ *
+ * It reaches the output window on the ordinary look wire, because `debugPostFx`
+ * is plain store state. Nothing here needed a new channel.
+ */
+function PostFx() {
+  const fx = useStore((s) => s.debugPostFx)
+  const set = (patch: Partial<DebugPostFx>) => useStore.getState().setDebugPostFx(patch)
+  const off = !fx.enabled
+
+  return (
+    <>
+      <button className={`toggle-wide ${fx.enabled ? 'on' : ''}`} onClick={() => set({ enabled: !fx.enabled })}>
+        Manual post FX
+        <small>{fx.enabled ? 'you are driving' : 'directors are driving'}</small>
+      </button>
+
+      <div className={`fx-block ${off ? 'inert' : ''}`}>
+        <FxSlider label="bloom" value={fx.bloom} min={0} max={2} onChange={(v) => set({ bloom: v })} />
+        <FxSlider
+          label="threshold"
+          value={fx.bloomThreshold}
+          min={0}
+          max={1}
+          onChange={(v) => set({ bloomThreshold: v })}
+        />
+        <FxSlider label="glitch" value={fx.glitch} min={0} max={1} onChange={(v) => set({ glitch: v })} />
+        <FxSlider label="vignette" value={fx.vignette} min={0} max={1} onChange={(v) => set({ vignette: v })} />
+        <FxSlider label="fog" value={fx.fog} min={0} max={1} onChange={(v) => set({ fog: v })} />
+        <FxSlider label="trails" value={fx.trails} min={0} max={1} onChange={(v) => set({ trails: v })} />
+
+        <h3 className="fx-head">mirror</h3>
+        {/* Integers: `segments` is 0 off / 1 mirror-x / 2 quad / >=3 n-fold, and
+            `tiles` is an n x n repeat. A fractional value between two of those
+            is not a half-way look, it is the wrong one. */}
+        <FxSlider
+          label="segments"
+          value={fx.mirrorSegments}
+          min={0}
+          max={12}
+          step={1}
+          onChange={(v) => set({ mirrorSegments: v })}
+        />
+        <FxSlider
+          label="tiles"
+          value={fx.mirrorTiles}
+          min={0}
+          max={6}
+          step={1}
+          onChange={(v) => set({ mirrorTiles: v })}
+        />
+        <FxSlider
+          label="twist"
+          value={fx.mirrorTwist}
+          min={-3.14}
+          max={3.14}
+          onChange={(v) => set({ mirrorTwist: v })}
+        />
+        <FxSlider label="slice" value={fx.mirrorSlice} min={0} max={1} onChange={(v) => set({ mirrorSlice: v })} />
+        <FxSlider
+          label="spin"
+          value={fx.mirrorSpin}
+          min={-2}
+          max={2}
+          onChange={(v) => set({ mirrorSpin: v })}
+        />
+
+        <h3 className="fx-head">lens</h3>
+        <FxSlider label="amount" value={fx.lensAmount} min={0} max={1} onChange={(v) => set({ lensAmount: v })} />
+        <label className="fx-select">
+          <span>material</span>
+          <select
+            value={fx.lensStyle}
+            onChange={(e) => set({ lensStyle: Number(e.target.value) })}
+          >
+            {LENS_STYLES.map((name, i) => (
+              <option key={name} value={i}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <h3 className="fx-head">transition</h3>
+        <label className="fx-select">
+          <span>next change</span>
+          {/* `selectableStyles()` and not the whole list: `cut` is disabled, and
+              offering a style the engine will refuse is worse than not
+              offering it. */}
+          <select
+            value={fx.transitionStyle}
+            onChange={(e) => set({ transitionStyle: e.target.value as DebugPostFx['transitionStyle'] })}
+          >
+            {selectableStyles().map((st) => (
+              <option key={st} value={st}>
+                {st}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </>
+  )
+}
+
+/**
+ * A compact slider. Same idea as {@link BigSlider} — the number is always
+ * visible — at a density that fits fourteen of them in a column.
+ */
+function FxSlider({
+  label,
+  value,
+  min,
+  max,
+  step = 0.01,
+  onChange,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  step?: number
+  onChange: (v: number) => void
+}) {
+  return (
+    <label className="fx-slider">
+      <span className="fx-label">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <span className="fx-value">{step >= 1 ? value.toFixed(0) : value.toFixed(2)}</span>
+    </label>
+  )
+}
+
+/* -------------------------------------------------------------- arbitration */
+
+/**
+ * Say so when this console is not the one driving.
+ *
+ * Two control windows both publishing means the output takes whichever message
+ * landed last, and the show flickers between two people's idea of it. The
+ * election is silent and automatic (lowest id wins), so the only thing left to
+ * do is tell the person whose controls have quietly stopped mattering.
+ */
+function PassiveBanner() {
+  const [state, setState] = useState({ active: true, peers: 0 })
+  useEffect(() => {
+    const id = window.setInterval(
+      () => setState({ active: isActiveController(), peers: peerControllerCount() }),
+      600,
+    )
+    return () => window.clearInterval(id)
+  }, [])
+  if (state.active) return null
+  return (
+    <div className="passive-banner">
+      Another console window is driving this output — controls here are inactive.
+      {state.peers > 1 && ` (${state.peers} others open)`}
+    </div>
+  )
 }

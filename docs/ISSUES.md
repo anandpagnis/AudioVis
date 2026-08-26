@@ -1818,34 +1818,62 @@ It did not refine the cost model; it retired it.
          the next downbeat is), so `pendingSceneId` now travels down and the
          committed `sceneId` travels back up on telemetry.
 
-- [ ] **F99 · Most of the old HUD has not been ported to the console** —
-      *known gap, deliberately scoped*
+- [~] **F99 · Most of the old HUD has not been ported to the console** —
+      *narrowed 2026-08-26: post FX and screenshot are in*
       `src/ui/HUD.tsx`, `src/ui/Console.tsx`
-      The console covers what a set needs: source/transport, recording, the
-      scene grid, all 30 palettes as real five-slot swatches, intensity/speed/
-      reactivity, quality, layer slots, autopilot and mood drive. **Not yet
-      ported:** presets (built-in + saved, favourites, import/export), the cue
-      timeline, MIDI learn and MIDI sync, the analytics panel, the audio-debug
-      panel, the fps meter, per-layer FX (gain/blend), the Post-FX debug
-      overrides, and screenshot.
-      `HUD.tsx` still exists and still works — it is simply no longer mounted,
-      so nothing is lost and the port can continue against a reference. Two of
-      those need more than a UI move: **screenshot** and the **fps meter** read
-      the canvas and the frame loop, both of which now live in the other window,
-      so they need a command going down and a payload coming back rather than a
-      component going across.
+      The console covers what a set needs: source/transport, recording,
+      screenshot, the scene grid, all 30 palettes as real five-slot swatches,
+      intensity/speed/reactivity, quality, layer slots, autopilot, mood drive,
+      and now the **whole post chain** — bloom, threshold, glitch, vignette,
+      fog, trails, the five mirror-rack controls, lens amount and material, and
+      the next transition style.
 
-- [ ] **F100 · Two control windows or a reloaded output window are untested** —
-      *known, narrower than the F95 it replaces*
-      `src/engine/outputLink.ts`
-      The look wire is broadcast, not addressed, so a second control window
-      would also publish and the two would fight over the same output. The
-      output window answers `hello` by asking for a look, which handles its own
-      reload, but nothing arbitrates two controllers.
-      Also untested: what the output window does when its handed source ends
-      versus when the control window presses Stop (the stop currently acts on
-      the control window's own idle engine, which is not the one playing).
-      Both want a Playwright case before this is used in front of anyone.
+      **Still not ported:** presets (built-in + saved, favourites, import and
+      export), the cue timeline, MIDI learn and MIDI sync, the analytics panel,
+      the audio-debug panel, the fps meter, and per-layer FX (gain/blend).
+      `HUD.tsx` still exists and still works — it is simply not mounted, so
+      nothing is lost and the port can continue against a reference.
+
+      The fps meter is the one that is not a UI move: it reads the frame loop,
+      which now lives in the other window. Most of what it showed is already on
+      the console's pills (tier, frame ms) off telemetry; a p95 would need
+      adding to the packet rather than moving a component across.
+
+- [x] **F100 · Two control windows fought, and the transport acted on the wrong
+      engine** — *both fixed and verified 2026-08-26*
+      `src/engine/outputLink.ts`, `src/ui/Console.tsx`, `src/store.ts`
+
+      **The transport was pressing buttons in the wrong window.** `Stop`,
+      `Record` and `cancel` called the control window's own store, whose
+      `AudioContext` is idle, whose `MediaRecorder` does not exist and whose
+      canvas is empty. Nothing stopped and nothing recorded, while the button
+      lit up as though it had. Worse, the control window set its own status to
+      `running` the moment it handed the source over — optimism rather than
+      knowledge, so a track ending in the output window left the console showing
+      a live transport indefinitely.
+
+      Fixed with a command message (`stop`, `cancel-start`, `toggle-record`,
+      `screenshot`) going down, and the output window's REAL `status`,
+      `sourceType` and `recording` coming back on telemetry, which the control
+      window adopts. Hand-off now sets `starting`, not `running`: whether the
+      show actually started is a fact only the output window has.
+      Verified: output `running` → `idle` on a Stop pressed in the console, and
+      the console followed to `idle` and returned to its source buttons.
+
+      **Two consoles both published.** The look wire is broadcast, so the output
+      window took whichever message landed last — the show flickering between
+      two people's idea of it. Now every console announces itself on the channel
+      and the lowest id drives; the rest go passive and say so in a banner. No
+      handshake and no leader term: every controller evaluates the same rule
+      from the same evidence, and one that closes stops announcing and ages out
+      after 2.5 s. The cost of being wrong for one interval is one duplicated
+      look message, which is idempotent.
+      Verified with two consoles: exactly one stood down, and closing the active
+      one promoted the survivor within the TTL.
+
+      One thing NOT verified: whether `screenshot` actually writes a file. The
+      command reaches the output window and `saveScreenshot()` runs there, but a
+      download initiated from a popup was not confirmed end to end.
 
 ---
 

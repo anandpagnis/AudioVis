@@ -79,6 +79,18 @@ export type Look = Record<LookField, unknown>
 
 /** What the output window reports back for the control surface's readouts. */
 export interface Telemetry {
+  /**
+   * The output window's REAL audio status.
+   *
+   * The control window used to set its own `status` to `running` the moment it
+   * handed the source over, which is optimism rather than knowledge: if the
+   * output window failed to decode the file or the track ended, the console
+   * went on showing a running transport with a Stop button for a show that had
+   * already finished. What is playing is a fact only the output window has.
+   */
+  status: string
+  sourceType: string | null
+  recording: boolean
   bpm: number
   confidence: number
   energy: number
@@ -99,14 +111,45 @@ export const TELEMETRY_INTERVAL_MS = 100
 /** The control surface calls the output dead after this long without a packet. */
 export const TELEMETRY_STALE_MS = 1500
 
+/**
+ * Things only the output window can do, asked for from the control window.
+ *
+ * Not state, and that is why they are a separate message rather than more
+ * fields on the look. Stopping audio, arming the recorder and saving a frame
+ * all act on objects that live exclusively in the output window — the
+ * `AudioContext`, the `MediaRecorder`, the canvas — and the control window's
+ * own copies of those are idle and empty. Calling them locally, which is what
+ * the console did at first, stopped nothing and recorded nothing while the
+ * button lit up as though it had worked.
+ */
+export type Command = 'stop' | 'cancel-start' | 'toggle-record' | 'screenshot'
+
 type Msg =
-  | { t: 'hello' }
+  | { t: 'hello'; from: string }
   | { t: 'look'; look: Look }
   | { t: 'tele'; d: Telemetry }
+  | { t: 'cmd'; c: Command }
+  | { t: 'ctl'; id: string }
   | { t: 'closing' }
+
+/**
+ * Identifies this window on the channel.
+ *
+ * Sorts, because the arbitration between two control windows is "lowest id
+ * wins" and a random string gives a stable total order with no negotiation.
+ */
+const SELF_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+/** Other control windows seen recently, and when. Used only for the election. */
+const peers = new Map<string, number>()
+/** How long a controller stays counted after its last announcement. */
+const PEER_TTL_MS = 2500
+/** Announcement cadence. Well inside the TTL so one dropped message is nothing. */
+const CTL_ANNOUNCE_MS = 800
 
 let channel: BroadcastChannel | null = null
 let unsubscribe: (() => void) | null = null
+let announceTimer = 0
 let lastTeleAt = -Infinity
 let lastTelePublish = -Infinity
 let telemetry: Telemetry | null = null
@@ -152,16 +195,22 @@ export function startLink(): void {
       // echo its own applies straight back.
       if (m.t === 'look') useStore.setState(m.look as never)
       else if (m.t === 'hello') channel?.postMessage({ t: 'look', look: snapshotLook() } satisfies Msg)
+      else if (m.t === 'cmd') runCommand(m.c)
       return
     }
     if (m.t === 'tele') {
       telemetry = m.d
       lastTeleAt = performance.now()
       adoptCommittedScene(m.d)
+      adoptOutputStatus(m.d)
     } else if (m.t === 'hello') {
-      // The output window has (re)loaded and has nothing. Answer immediately —
-      // it is showing the boot defaults until this lands.
-      channel?.postMessage({ t: 'look', look: snapshotLook() } satisfies Msg)
+      // The output window has (re)loaded and has nothing. Only the active
+      // controller answers, or two consoles would race to define the look.
+      if (isActiveController()) {
+        channel?.postMessage({ t: 'look', look: snapshotLook() } satisfies Msg)
+      }
+    } else if (m.t === 'ctl') {
+      if (m.id !== SELF_ID) peers.set(m.id, performance.now())
     } else if (m.t === 'closing') {
       telemetry = null
       lastTeleAt = -Infinity
@@ -173,12 +222,18 @@ export function startLink(): void {
   if (isOutput()) {
     // Ask before rendering anything: the control window holds the real look and
     // this window is otherwise about to open on whatever `persist` restored.
-    channel.postMessage({ t: 'hello' } satisfies Msg)
+    channel.postMessage({ t: 'hello', from: SELF_ID } satisfies Msg)
     window.addEventListener('pagehide', () => {
       channel?.postMessage({ t: 'closing' } satisfies Msg)
     })
     return
   }
+
+  // Announce so other control windows can see this one. See isActiveController.
+  channel.postMessage({ t: 'ctl', id: SELF_ID } satisfies Msg)
+  announceTimer = window.setInterval(() => {
+    channel?.postMessage({ t: 'ctl', id: SELF_ID } satisfies Msg)
+  }, CTL_ANNOUNCE_MS)
 
   let prev = snapshotLook()
   unsubscribe = useStore.subscribe(() => {
@@ -187,6 +242,10 @@ export function startLink(): void {
     for (const k of LOOK_FIELDS) if (next[k] !== prev[k]) changed = true
     if (!changed) return
     prev = next
+    // A passive controller watches; it does not drive. Without this, two open
+    // consoles both publish and the output window takes whichever message
+    // landed last — the show flickering between two people's ideas of it.
+    if (!isActiveController()) return
     channel?.postMessage({ t: 'look', look: next } satisfies Msg)
   })
 }
@@ -194,6 +253,9 @@ export function startLink(): void {
 export function stopLink(): void {
   unsubscribe?.()
   unsubscribe = null
+  if (announceTimer !== 0) window.clearInterval(announceTimer)
+  announceTimer = 0
+  peers.clear()
   channel?.close()
   channel = null
   telemetry = null
@@ -367,6 +429,86 @@ export function publishTelemetry(nowMs = performance.now()): void {
       fps: mean > 0 ? 1000 / mean : 0,
       frameMs: mean,
       running: audioEngine.running,
+      status: useStore.getState().status,
+      sourceType: useStore.getState().sourceType,
+      recording: useStore.getState().isRecording,
     },
   } satisfies Msg)
+}
+
+/**
+ * Is this the control window that drives the output?
+ *
+ * Lowest id wins, over the set of controllers that have announced recently.
+ * There is no handshake and no leader term: every controller can evaluate the
+ * same rule from the same evidence, and a controller that closes simply stops
+ * announcing and ages out. The cost of being wrong for one interval is one
+ * duplicated look message, which is idempotent.
+ *
+ * The output window is never a controller and always returns false.
+ */
+export function isActiveController(): boolean {
+  if (isOutput()) return false
+  const now = performance.now()
+  for (const [id, at] of peers) {
+    if (now - at > PEER_TTL_MS) peers.delete(id)
+    else if (id < SELF_ID) return false
+  }
+  return true
+}
+
+/** How many other control windows are currently announcing. For the console. */
+export function peerControllerCount(): number {
+  const now = performance.now()
+  let n = 0
+  for (const [id, at] of peers) {
+    if (now - at > PEER_TTL_MS) peers.delete(id)
+    else n++
+  }
+  return n
+}
+
+/**
+ * Ask the output window to do something only it can do.
+ *
+ * Fire and forget: the result comes back as a changed telemetry packet rather
+ * than as a reply, because the console is already rendering from telemetry and
+ * a second path would give it two answers that could disagree.
+ */
+export function sendCommand(c: Command): void {
+  channel?.postMessage({ t: 'cmd', c } satisfies Msg)
+}
+
+/**
+ * Adopt the output window's audio status.
+ *
+ * The control window has no engine, so its own `status` is a guess it made when
+ * it handed the source over. This replaces the guess with the fact — including
+ * the case that motivated it: a track ending in the output window used to leave
+ * the console showing a live transport indefinitely.
+ */
+function adoptOutputStatus(d: Telemetry): void {
+  const s = useStore.getState()
+  const patch: Record<string, unknown> = {}
+  if (d.status && d.status !== s.status) patch.status = d.status
+  if (d.sourceType !== s.sourceType) patch.sourceType = d.sourceType
+  if (d.recording !== s.isRecording) patch.isRecording = d.recording
+  if (Object.keys(patch).length > 0) useStore.setState(patch as never)
+}
+
+/**
+ * Run a command in the output window.
+ *
+ * Imported lazily: `recorder` pulls in the capture path, and the control window
+ * has no use for any of it.
+ */
+async function runCommand(c: Command): Promise<void> {
+  const store = useStore.getState()
+  if (c === 'stop') store.stopAudio()
+  else if (c === 'cancel-start') store.cancelStartAudio()
+  else if (c === 'toggle-record') store.toggleRecording()
+  else if (c === 'screenshot') {
+    const { saveScreenshot } = await import('./recorder')
+    saveScreenshot()
+  }
 }

@@ -287,7 +287,7 @@
 
 .console-body {
   display: grid;
-  grid-template-columns: 1.15fr 1.35fr 1fr;
+  grid-template-columns: 1.05fr 1.3fr 0.95fr 1.05fr;
   gap: 14px;
   min-height: 0;
 }
@@ -597,4 +597,138 @@
 
 .layer-slot select option {
   background: #12161c;
+}
+
+/* ---------- post fx ---------- */
+
+/* Inert, not hidden. The values still read correctly while the directors are
+   driving, and seeing where they sit is half the reason to open this column —
+   but they are not what the frame is using, and the column has to say so. */
+.fx-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: opacity 140ms ease;
+}
+
+.fx-block.inert {
+  opacity: 0.38;
+}
+
+.fx-head {
+  margin: 10px 0 2px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.fx-slider {
+  display: grid;
+  grid-template-columns: 66px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.fx-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.fx-value {
+  font: 500 12px/1 ui-monospace, "Cascadia Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.fx-slider input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 24px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.fx-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.fx-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #eaf4ff;
+  border: 2px solid #4ba8ff;
+}
+
+.fx-select {
+  display: grid;
+  grid-template-columns: 66px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.fx-select > span {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.fx-select select {
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.045);
+  color: #dfe6ef;
+  font: 500 12px/1 inherit;
+  cursor: pointer;
+}
+
+.fx-select select option {
+  background: #12161c;
+}
+
+/* ---------- arbitration ---------- */
+
+.passive-banner {
+  padding: 9px 14px;
+  border-radius: 8px;
+  background: rgba(255, 190, 90, 0.16);
+  border: 1px solid rgba(255, 200, 120, 0.4);
+  color: #ffdca8;
+  font-size: 12px;
+}
+
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #7ce0ff;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Four columns is the widescreen case; below that the console stops being a
+   console and becomes a list, so let it scroll rather than crushing targets. */
+@media (max-width: 1500px) {
+  .console-body {
+    grid-template-columns: 1fr 1fr;
+  }
+  .console {
+    overflow: auto;
+    height: auto;
+    min-height: 100vh;
+  }
 }
