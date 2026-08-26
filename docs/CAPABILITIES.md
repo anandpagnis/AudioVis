@@ -176,9 +176,10 @@ Budget at 60 Hz is 16.67 ms for *everything*, including the post chain.
   the logs. (F25)
 
 ### 4.4 Product-technical
-- **No clean output path.** Nothing produces a chrome-free render surface for
-  OBS or a projector beyond screen-capturing the whole page. No Syphon/Spout/NDI
-  equivalent, no second-window output.
+- **Second-window output shipped** (`O`, or `?output`). A chrome-free window
+  synced over `BroadcastChannel`: the laptop window tunes, the projector window
+  stays clean. That covers OBS window capture, a real second-screen setup and
+  streaming. Still no Syphon/Spout/NDI equivalent — those need a native tier.
 - **No MIDI control surface.** `MidiClock` exists for *sync* only; no mapping
   from controller input to scene, layer, palette or parameter.
 - **No offline/deterministic render.** Everything is real-time only; there is no

@@ -27,6 +27,7 @@ fullscreen.
 | `P` | Cycle color palette |
 | `B` | Presets panel (built-ins + your saved presets, favorites, JSON import/export) |
 | `T` | Tune panel (intensity / speed / reactivity + quality) |
+| `O` | Open the output projector window (chrome-free second window) |
 | `F` | Fullscreen |
 | `D` | Audio-analysis debug panel (spectrum, bands, BPM, confidence, phrase, drop/build flags) |
 | `J` | fps meter — fps, mean frame time, **p95 frame time**, quality tier |

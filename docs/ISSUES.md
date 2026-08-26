@@ -1667,9 +1667,90 @@ It did not refine the cost model; it retired it.
 
 ---
 
+## The output projector window (2026-08-26)
+
+- [x] **F94 · No chrome-free output surface for OBS or a second screen** —
+      *shipped and verified 2026-08-26*
+      `src/engine/projector.ts` (new), `src/routes/Visualizer.tsx`,
+      `src/engine/Stage.tsx`, `src/engine/SceneManager.tsx`, `src/ui/HUD.tsx`
+      Ported from lilim's `?output` tab. `O` opens a second window at
+      `?output`; it renders the same show with no HUD, no start card, no
+      keyboard map, a pointer that hides after 2 s and a first click that goes
+      fullscreen. State crosses on a `BroadcastChannel`.
+
+      **Verified with two live windows** (Playwright, one browser context so the
+      channel connects). After opening the projector mid-track and then cycling
+      the palette on the leader:
+
+        LEADER    scene wireframe · palette ember · bloom 1.631 · bpm 129 · beat 32
+        PROJECTOR scene wireframe · palette ember · bloom 1.631 · bpm 129 · beat 32
+        HUD nodes: leader 2, projector 0 · page errors: 0
+        projector screenshot 206 KB (drawing, not blank)
+
+      Three design decisions worth keeping in view:
+
+      1. **Roles are asymmetric.** A follower never publishes and a leader never
+         applies, so the echo problem cannot arise at all — no origin tags, no
+         loop suppression. lilim needs those because every tab there is a peer.
+      2. **The scene lifecycle stays local.** `scene`, `activeScene`, `layers`
+         and `transition` are NOT on the wire; the follower's own SceneManager
+         computes them from the same `sceneId` and the same beat grid. Sending
+         them would mean one window driving another's mount lifecycle, warm
+         gates and fade clocks across a channel with no ordering guarantee
+         against the frames interleaved with it.
+      3. **The join handshake is not optional.** The look publishes on CHANGE,
+         so a projector opened mid-set would otherwise sit on boot defaults
+         forever — lilim's own log records exactly that. The follower asks at
+         module load, before React mounts, and the leader answers a snapshot
+         addressed to that joiner.
+
+- [ ] **F95 · Two control windows on one machine is ambiguous** — *known, and
+      narrowed rather than solved*
+      `src/engine/projector.ts`
+      Any window without `?output` is a leader. Open the app twice and both
+      publish frames and both answer a join, so a projector would take whichever
+      message arrived last — a 60 Hz flicker between two shows.
+      Narrowed by gating both publishing and the join answer on
+      `status === 'running'`, which covers the realistic case (a second tab
+      sitting on the start card cannot stamp its defaults over a live set). It
+      does not cover two tabs actually playing.
+      Proper fix: a leader election on the channel — announce on join, lowest id
+      wins, demote the rest to followers. Worth doing before this is a feature
+      anyone relies on in front of an audience.
+
+- [ ] **F96 · A projector's clock jumps when its leader dies** — *edge case,
+      one frame*
+      `src/engine/projector.ts`, `src/audio/AudioEngine.ts`
+      While frames arrive, `features.time` is the leader's `AudioContext` clock.
+      After `STALE_MS` the follower falls back to `audioEngine.update()`, whose
+      no-context branch sets `time` from `performance.now() / 1000`. Those are
+      different epochs, so `time` jumps on the changeover.
+      `delta` is clamped to 0.1 s so nothing integrating it will explode, but a
+      scene using `time` directly as an absolute phase will visibly skip once.
+      Only reachable when a leader stops publishing, which is already a degraded
+      state — but the fix is small: hold an offset at the moment of changeover
+      and keep the clock continuous.
+
+- [ ] **F97 · The projector is a second full render of the same show** —
+      *by design, and the cost should be stated somewhere a user can see it*
+      Two windows means two WebGL contexts, two scene instances, two post
+      chains. On the bench GPU most of the roster is under 0.2 ms so this is
+      free, but `synthgrid` at 22 ms or `network` at 22 ms is being paid TWICE
+      when a projector is open, and each window runs its own quality governor
+      with no knowledge of the other.
+      A mirror (leader renders once, projector blits the pixels) would avoid it
+      but needs a transferable stream — `captureStream` into a `MediaStream`
+      handed over, or an `OffscreenCanvas` — and loses the ability for the
+      projector to run at its own resolution. Measure the two-window cost on the
+      heavy scenes before deciding; today the governor's response would be to
+      quietly drop BOTH windows a tier, which is the correct behaviour but not
+      an obvious one.
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **625 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **638 tests**, build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

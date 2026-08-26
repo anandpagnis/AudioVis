@@ -16,6 +16,7 @@ import { quality } from './quality'
 import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
 import { applyFrameLoad, feedbackMsFor, frameLoad, POST_CHAIN_MS } from './frameLoad'
 import { canFundOverlap, slotCostMs } from './slotBudget'
+import { applyIncomingFrame } from './projector'
 import { perf, suspendFrameSampling } from './PerfMonitor'
 import { updateAnimationSignals } from './AnimationDirector'
 import { sampleAnalytics } from './analyticsMetrics'
@@ -527,7 +528,14 @@ export function SceneManager() {
 
   useFrame(({ clock }) => {
     // Audio feature pipeline runs once per frame, before any scene reads it.
-    audioEngine.update()
+    //
+    // No role branch here on purpose. A leader never stores a wire frame, so
+    // `applyIncomingFrame` is always false for it and this reads as the plain
+    // local tick. In a projector window it is true while a leader is alive and
+    // false when one stops publishing — which is exactly when the projector
+    // should fall back to the local tick and keep its idle motion going rather
+    // than freeze on the last frame it was handed. See engine/projector.ts.
+    if (!applyIncomingFrame()) audioEngine.update()
     const f = audioEngine.features
     sampleAnalytics(f)
     // Animation primitives are derived once, centrally, so N scenes reading

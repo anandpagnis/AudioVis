@@ -17,6 +17,7 @@ import {
   type SceneParamKey,
 } from '../scenes/contract'
 import { PALETTES, PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
+import { openProjectorWindow } from '../engine/projector'
 import { BUILTIN_PRESETS, type Preset } from '../engine/presets'
 import { saveScreenshot } from '../engine/recorder'
 import { buildShareUrl } from '../urlParams'
@@ -151,7 +152,9 @@ export function HUD() {
         s.toggleAutoPilot()
       } else if (e.key === 'm' || e.key === 'M') {
         s.toggleMoodDrive()
-            } else if (e.key === 'c' || e.key === 'C') {
+      } else if (e.key === 'o' || e.key === 'O') {
+        openProjectorWindow()
+      } else if (e.key === 'c' || e.key === 'C') {
         if (s.status === 'running') s.captureCue()
       } else if (e.key === 'r' || e.key === 'R') {
         if (s.status === 'running' || s.isRecording) s.toggleRecording()
