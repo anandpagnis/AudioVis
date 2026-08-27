@@ -3234,11 +3234,79 @@ denominated in milliseconds on this side.
       Neither is guess-fixable from this data; both need the estimator itself
       opened up against a known track.
 
+- [x] **F122 - Nothing ever put back the detail the render scale takes away** -
+      `src/engine/GradePass.ts` *(fixed 2026-08-28)*
+      Reported as "it still looks a bit ass ... I think we may have to implement
+      upscaling", and the arithmetic backs it up: the governor lowers the
+      DRAWING BUFFER and leaves the canvas's CSS size alone, so the browser
+      stretches the result with plain bilinear filtering and nothing else. On a
+      2560x1440 panel at scale 0.40 that is **1536x864 blown up to 2560x1440** -
+      a 1.67x linear stretch with no reconstruction at any stage.
+      The ladder itself is not the fault and was not touched: shedding pixels is
+      how the frame gets cheap, and the recordings show that working. What was
+      missing is that the pixels were never reconstructed on the way back up.
+      Added contrast-adaptive sharpening (AMD's CAS, 5-tap) as the last thing
+      before display scaling - which is exactly where FSR1 puts its RCAS stage
+      and exactly the problem it solves.
+      **Folded into GradePass rather than added as a pass.** A separate pass
+      would be another full-frame read/write, and F110 exists precisely because
+      fullscreen draws dominate this chain. GradePass is already last and
+      already samples this texture, so the filter costs FOUR EXTRA TAPS instead.
+      The taps run at the INTERNAL resolution, so the pass gets cheaper exactly
+      when the sharpening is needed most.
+      Adaptive rather than a fixed unsharp mask, because a fixed one would ruin
+      the frames it is meant to help - it rings on high-contrast edges, and half
+      this roster (wireframe, pointcloud, kifs) is nothing but high-contrast
+      edges. CAS measures local contrast and sharpens inversely to it.
+      `sharpenForScale` is exported and tested: zero at native (so the shader
+      branch skips the taps entirely and a native frame pays nothing), ramping
+      to a cap of 0.85 at `RENDER_SCALE_FLOOR`. Capped below 1 deliberately -
+      past ~0.85 CAS stops recovering detail and starts manufacturing edges, and
+      a false edge on a wireframe scene is worse than a soft real one.
+      **Not the full fix.** The architecturally correct version decouples the
+      SCENE resolution from the POST-CHAIN resolution - bloom, vignette, CA and
+      fog are all low-frequency and would look identical at half resolution,
+      while points and edges would stay native. That is a composer rewrite and
+      touches the code path that has produced F48 three times. This recovers
+      most of the perceived sharpness for a fraction of the risk; the rewrite
+      stays on the table if a recording says it is still not enough.
+
+- [x] **F123 - Draw-call telemetry measured the post chain's last quad, not the
+      show** - `src/engine/PerfMonitor.tsx` *(fixed 2026-08-28)*
+      Found in a session recording, and unmissable once the data was in one
+      place: **all 600 samples reported `drawCalls: 1, triangles: 2`** -
+      identically, for a raymarched fragment shader, an instanced wireframe and
+      a 200-segment torus knot alike. Two triangles is a fullscreen quad.
+      `renderer.info` resets itself on every `render()` call and the post chain
+      makes many per frame, so the value read was always whatever the composer
+      drew last. Both fields have therefore been meaningless for as long as they
+      have existed, in the FPS panel as well as the recorder.
+      Fixed with `info.autoReset = false` plus an explicit `reset()` after the
+      read, which is the standard three.js pattern for measuring across multiple
+      render calls. PerfMonitor runs at priority 0 and the composer at 1, so the
+      value read is the previous frame complete - one frame stale, which for a
+      draw-call readout is not a distinction anyone can perceive.
+
+- [x] **F124 - The worst-frame report could not see a hitch** -
+      `src/engine/sessionLog.ts` *(fixed 2026-08-28)*
+      The summary's "worst samples" section was built from the 4 Hz state
+      samples, which is one frame in fifteen. A recording showed what that
+      costs: **p99 21.5 ms and a max of 139.6 ms, while the worst thing the
+      list could find was 21.9 ms.** Three frames over 100 ms in that session
+      were invisible to the section whose entire purpose is to find them.
+      The raw per-frame ring was already being recorded for exactly this reason
+      (see the F115 note on why hitches are single-frame events) - the summary
+      simply was not reading it. Added a "worst single frames" section sourced
+      from the ring, with each frame matched to the nearest 4 Hz sample so it
+      still says which scene and tier were live. Times are reconstructed from
+      frame index rather than stamped, so they are good to about a second -
+      enough to line a hitch up against the event list, which is what it is for.
+
 ---
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **756 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **760 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

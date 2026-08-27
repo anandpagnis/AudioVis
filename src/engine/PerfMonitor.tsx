@@ -187,6 +187,9 @@ export function PerfMonitor() {
   // a guess, and re-solving against the new full-resolution megapixel count is
   // the whole point of a budget expressed in megapixels rather than in a scale.
   useEffect(() => {
+    // See the F123 note in the frame loop: the counters have to survive the
+    // post chain's many render() calls to mean anything.
+    gl.info.autoReset = false
     quality.setMode(storeQuality)
     renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
     applyRenderScale()
@@ -213,14 +216,30 @@ export function PerfMonitor() {
     frameSampler.push(clock.elapsedTime, ms)
     perf.tier = quality.tier
 
-    // GPU memory + draw-call telemetry (renderer.info reflects the last
-    // rendered frame — close enough for a live readout).
+    // GPU memory + draw-call telemetry.
+    //
+    // `info.render` is ACCUMULATED here rather than read raw, because raw was
+    // measuring the wrong thing entirely (F123). `renderer.info` resets itself
+    // on every `render()` call, and the post chain makes many of them per
+    // frame — so whatever this read last was the composer's final fullscreen
+    // quad, not the show. A session recording made that unmissable: all 600
+    // samples reported `drawCalls: 1, triangles: 2`, identically, for a
+    // raymarched shader, an instanced wireframe and a 200-segment torus knot
+    // alike. Two triangles is a fullscreen quad.
+    //
+    // With `autoReset` off the counters accumulate across every render in the
+    // frame, so this reads the whole frame's true cost; resetting immediately
+    // after means the next frame starts clean. This component runs at the
+    // default priority 0, ahead of the composer at 1, so what is read here is
+    // the PREVIOUS frame complete — one frame stale, which for a draw-call
+    // readout is not a distinction anyone can perceive.
     const info = gl.info
     perf.drawCalls = info.render.calls
     perf.triangles = info.render.triangles
     perf.geometries = info.memory.geometries
     perf.textures = info.memory.textures
     perf.programs = info.programs?.length ?? 0
+    info.reset()
 
     // Percentiles recomputed a few times a second rather than every frame:
     // `percentile()` sorts its window, and the statistic moves far too slowly

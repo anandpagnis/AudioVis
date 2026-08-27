@@ -805,6 +805,31 @@ class SessionLog {
     // --- worst frames -----------------------------------------------------
     // Located in TIME, so they can be matched against the event list above and
     // against the contact sheet.
+    // RAW frames first. The 4Hz list below cannot see a hitch — it samples one
+    // frame in fifteen — and a recording proved it: p99 21.5 ms and a max of
+    // 139.6 ms, while the worst thing the sampled list could find was 21.9 (F124).
+    // Three frames over 100 ms in that session were invisible to the report
+    // whose entire job is to find them.
+    L.push('--- worst single frames (every frame, not sampled) ---')
+    const worstFrames = ft
+      .map((ms, i) => ({ ms, t: (i / Math.max(1, ft.length)) * dur }))
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 10)
+    for (const f of worstFrames) {
+      // Time is approximate — reconstructed from the frame's index rather than
+      // stamped, since the ring stores durations only. Good to a second or so,
+      // which is all that is needed to line it up against the event list.
+      const near = this.samples.reduce(
+        (best, s) => (Math.abs(s.t - f.t) < Math.abs(best.t - f.t) ? s : best),
+        this.samples[0],
+      )
+      L.push(
+        `~${f.t.toFixed(1).padStart(7)}s  ${f.ms.toFixed(1).padStart(7)} ms   ` +
+          `${near ? `${near.activeScene} t${near.tier} x${near.renderScale.toFixed(2)}` : ''}`,
+      )
+    }
+    L.push('')
+
     L.push('--- worst 4Hz samples (what was on screen) ---')
     for (const s of [...this.samples].sort((a, b) => b.ms - a.ms).slice(0, 12)) {
       const layers = [s.background, s.accent, s.overlay].filter(Boolean).join('+') || '-'

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
 import { FULLSCREEN_VERT } from './glsl'
+import { renderScale } from './renderScale'
 import { exposure } from './exposure'
 import { performanceState } from './performanceState'
 import { getPalette } from './palettes'
@@ -111,6 +112,72 @@ const GRADE_FRAG = /* glsl */ `
   uniform float uFog;
   uniform float uLuma;
   uniform vec3 uFogColor;
+  uniform float uSharpen;
+  uniform vec2 uTexel;
+
+  /**
+   * Contrast-adaptive sharpening, run on the frame before the browser stretches
+   * it to the canvas (F122).
+   *
+   * ## Why sharpening, and why here
+   *
+   * The render-scale governor lowers the DRAWING BUFFER and leaves the canvas's
+   * CSS size alone, so the browser stretches the result with plain bilinear
+   * filtering. On a 2560x1440 panel at scale 0.40 that is 1536x864 blown up to
+   * 2560x1440 — a 1.67x linear stretch with no reconstruction at all, which is
+   * exactly the "everything looks soft" the tier ladder trades away.
+   *
+   * The ladder is not the thing to change: shedding pixels IS how the frame gets
+   * cheap, and the recordings show it working. What was missing is that nothing
+   * ever put the detail back. Sharpening before the upscale is the standard
+   * answer — it is what FSR1's RCAS stage does, and it is deployed exactly this
+   * way, as the last thing before display scaling.
+   *
+   * ## Why it lives inside the grade rather than as its own pass
+   *
+   * A separate pass would be a whole extra fullscreen draw, and F110 exists
+   * because fullscreen draws are the dominant cost in this chain. GradePass is
+   * already the final pass and already samples this texture, so folding the
+   * filter in costs FOUR EXTRA TAPS instead of a full-frame read/write cycle.
+   * The taps are also at the INTERNAL resolution, so the pass gets cheaper at
+   * exactly the moment the sharpening is needed most.
+   *
+   * ## The algorithm
+   *
+   * AMD's CAS, in its 5-tap form. The point of the "adaptive" part is that a
+   * fixed unsharp mask ruins the frame it is meant to help: it rings on
+   * high-contrast edges (the wireframe scenes are nothing but high-contrast
+   * edges) and amplifies noise in flat regions. CAS instead measures local
+   * contrast and sharpens INVERSELY to it, so a flat area gets a lot and an
+   * already-crisp edge gets almost none.
+   */
+  vec3 casSharpen(vec2 uv, vec3 centre) {
+    // Cross neighbourhood. The 3x3 corners are deliberately skipped: they cost
+    // four more taps for a difference that does not survive a 1.6x stretch.
+    vec3 up    = texture2D(tDiffuse, uv + vec2(0.0, -uTexel.y)).rgb;
+    vec3 down  = texture2D(tDiffuse, uv + vec2(0.0,  uTexel.y)).rgb;
+    vec3 left  = texture2D(tDiffuse, uv + vec2(-uTexel.x, 0.0)).rgb;
+    vec3 right = texture2D(tDiffuse, uv + vec2( uTexel.x, 0.0)).rgb;
+
+    // Contrast is measured per channel and then reduced, which keeps a strongly
+    // coloured edge (this roster is full of them) from being treated as flat
+    // just because its luma happens not to move.
+    vec3 mn = min(min(up, down), min(left, min(right, centre)));
+    vec3 mx = max(max(up, down), max(left, max(right, centre)));
+
+    // How much headroom the neighbourhood has before it clips, in either
+    // direction. Near-black and near-white regions get less, which is what
+    // stops the filter from tearing halos out of a bloom bloom-out.
+    vec3 amp = clamp(min(mn, 1.0 - mx) / max(mx, 0.0001), 0.0, 1.0);
+    amp = sqrt(amp);
+
+    // Negative lobe. Normalising by the total weight keeps the average level
+    // unchanged, so this sharpens without shifting exposure — which matters
+    // because the exposure servo is watching this same frame.
+    float w = -(1.0 / mix(8.0, 5.0, uSharpen)) * dot(amp, vec3(0.3333));
+    vec3 sum = centre + (up + down + left + right) * w;
+    return clamp(sum / (1.0 + 4.0 * w), 0.0, 1.0e4);
+  }
   varying vec2 vUv;
 
   void main() {
@@ -123,7 +190,13 @@ const GRADE_FRAG = /* glsl */ `
     // viewer can identify as a zoom stops reading as tension and starts reading
     // as a camera move, which CameraDirector already owns.
     vec2 uv = (vUv - 0.5) * (1.0 - uIris * 0.04) + 0.5;
-    vec3 col = texture2D(tDiffuse, uv).rgb * uGain;
+    vec3 col = texture2D(tDiffuse, uv).rgb;
+    // Sharpen BEFORE the gain, so the filter's clamp works in the same range it
+    // was derived for. Skipped entirely when the frame is already native — the
+    // branch is on a uniform, so every fragment takes the same path and the
+    // taps genuinely are not paid for at scale 1.
+    if (uSharpen > 0.001) col = casSharpen(uv, col);
+    col *= uGain;
 
     // Atmosphere, as veiling glare rather than as distance fog.
     //
@@ -172,6 +245,25 @@ const GRADE_FRAG = /* glsl */ `
   }
 `
 
+/**
+ * How hard to sharpen, given the scale the frame was rendered at (F122).
+ *
+ * Pure and exported because it is the whole tuning surface of the upscale, and
+ * a mapping that silently returned a non-zero value at scale 1 would sharpen a
+ * native frame that has nothing to reconstruct — spending taps to add edges
+ * that were never lost.
+ *
+ * The ramp reaches its cap at scale 0.4, which is `RENDER_SCALE_FLOOR`: the
+ * softest the governor may ever go, and therefore the frame most in need of
+ * reconstruction. It is capped BELOW 1 on purpose — past roughly 0.85 CAS stops
+ * recovering detail and starts manufacturing edges of its own, and a false edge
+ * on a wireframe scene reads far worse than a soft true one.
+ */
+export function sharpenForScale(scale: number): number {
+  if (!isFinite(scale) || scale >= 1) return 0
+  return Math.min(0.85, Math.max(0, (1 - scale) * 1.4))
+}
+
 export class GradePass extends Pass {
   private readonly material: THREE.ShaderMaterial
   private readonly fsScene: THREE.Scene
@@ -195,6 +287,8 @@ export class GradePass extends Pass {
         uFog: { value: 0 },
         uLuma: { value: 0 },
         uFogColor: { value: new THREE.Color(0.05, 0.06, 0.09) },
+        uSharpen: { value: 0 },
+        uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
       },
     })
     this.fsScene = new THREE.Scene()
@@ -221,6 +315,16 @@ export class GradePass extends Pass {
     // Haze takes the palette's own ground colour. Scattered light is the colour
     // of what it scatters through, and `bg` is exactly that slot.
     ;(u.uFogColor.value as THREE.Color).set(getPalette(useStore.getState().paletteId).slots.bg)
+    // Sharpening tracks how far the frame is from native, because that is
+    // exactly how much bilinear stretching the browser is about to do to it.
+    //
+    // The ramp reaches its cap by scale 0.4, which is RENDER_SCALE_FLOOR — the
+    // blurriest the governor is ever allowed to get, and so the case that needs
+    // the most reconstruction. Capped below 1 deliberately: past about 0.85 CAS
+    // stops recovering detail and starts drawing its own edges, and a false
+    // edge on a wireframe scene is worse than a soft real one.
+    u.uSharpen.value = sharpenForScale(renderScale.applied)
+    ;(u.uTexel.value as THREE.Vector2).set(1 / inputBuffer.width, 1 / inputBuffer.height)
     this.material.uniforms.tDiffuse.value = inputBuffer.texture
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
     renderer.render(this.fsScene, this.orthoCamera)
