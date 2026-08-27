@@ -62,8 +62,18 @@ describe('the statistics say what they claim', () => {
     expect(p.centre).toBe(0)
   })
 
-  it('reads a full wash as filling the frame', () => {
-    expect(profileOf(WASH).fill).toBe(1)
+  it('reads a FLAT wash as structureless rather than as full', () => {
+    // A perfectly uniform field has no range to normalise, so it reports no
+    // structure — which is true, and is why the layer veto also consults
+    // absolute brightness. Judged on shape alone this looks like an empty
+    // frame; judged on light it covers everything.
+    expect(profileOf(WASH).fill).toBe(0)
+    expect(profileOf(WASH).meanLuma).toBeCloseTo(0.5, 2)
+  })
+
+  it('reads a textured wash as filling the frame', () => {
+    const textured = field((x, y) => 0.4 + 0.35 * Math.sin(x * 0.4) * Math.cos(y * 0.4))
+    expect(profileOf(textured).fill).toBeGreaterThan(0.5)
     expect(profileOf(CENTRED).fill).toBeLessThan(0.6)
   })
 
@@ -117,8 +127,15 @@ describe('eligibility', () => {
     expect(canBeBackground(p).ok).toBe(true)
   })
 
-  it('refuses a full wash as a layer — nothing can sit under it', () => {
+  it('refuses a flat wash as a layer, on brightness rather than on shape', () => {
     const v = canBeLayer(profileOf(WASH))
+    expect(v.ok).toBe(false)
+    expect(v.why).toContain('wash')
+  })
+
+  it('refuses a textured wash as a layer, on shape', () => {
+    const textured = field((x, y) => 0.1 + 0.08 * Math.sin(x * 0.4) * Math.cos(y * 0.4))
+    const v = canBeLayer(profileOf(textured))
     expect(v.ok).toBe(false)
     expect(v.why).toContain('fill')
   })
@@ -210,5 +227,25 @@ describe('the field is normalised before anything is measured', () => {
     const a = profileOf(bright)
     const b = profileOf(withHot)
     expect(b.fill).toBeCloseTo(a.fill, 1)
+  })
+})
+
+describe('the floor is removed before the field is amplified', () => {
+  it('is not fooled by a scene whose black has been lifted', () => {
+    // The failure that made the first attempt worse than no fix: with the post
+    // chain mounted there is no true black -- bloom's halo and the fog veil lift
+    // it -- and normalising to p99 alone then amplified that lifted floor past
+    // the lit threshold. Every scene in the roster came out above fill 0.83 and
+    // the statistic stopped discriminating at all.
+    const clean = field((x, y) => subjectReference(x, y) / 0.75)
+    const lifted = field((x, y) => 0.05 + (subjectReference(x, y) / 0.75) * 0.9)
+    expect(Math.abs(profileOf(clean).fill - profileOf(lifted).fill)).toBeLessThan(0.06)
+  })
+
+  it('still calls a genuine full-frame wash full', () => {
+    // The floor subtraction must not turn a real wash into an empty frame: a
+    // uniform field has no range, which is exactly the empty signal.
+    const washy = field((x, y) => 0.4 + 0.35 * Math.sin(x * 0.4) * Math.cos(y * 0.4))
+    expect(profileOf(washy).fill).toBeGreaterThan(0.5)
   })
 })

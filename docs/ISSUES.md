@@ -2415,8 +2415,29 @@ gain, which is the exact blind spot the pass exists to remove. Warmup goes
 profiling a gain that is still travelling makes a scene's profile depend on
 what the previous cell left behind.
 
-**Defect 2.** The field is normalised to a fixed 99th percentile before any
-composition statistic is taken. Three things the tests changed:
+**Defect 2.** The field is normalised before any composition statistic is
+taken — but to its **RANGE**, [p5, p99], not to its top.
+
+That correction cost a whole validation run and is the most useful thing this
+work produced. Normalising to p99 alone, with the post chain now mounted, took
+`orbs` from `fill 0.021` to `fill 0.963` and `kaleido` from 0.061 to 0.992.
+Every scene in the roster came out above 0.83 and `fill` stopped discriminating
+at all — agreement fell from 13/16 to 12/16, worse than before either fix.
+
+The two fixes had interacted. With the post chain there is no true black any
+more: bloom's halo and the fog veil lift the floor. Normalising to the top then
+multiplies that lifted floor up, and a threshold calibrated for raw frames
+counts all of it as lit. The tell was `orbs` being vetoed as a background — the
+scene the whole roster agrees is the best one — which is a metric being wrong
+rather than a roster being wrong.
+
+**A flat field has no range**, so range-normalisation reports it as having no
+structure. That is true and it opened a hole: judged on shape alone a mid-grey
+wash looks like an empty frame and would be admitted as a layer, where it would
+destroy everything under it. `canBeLayer` therefore also consults **absolute**
+`meanLuma` — the one place level is still checked, and it has to be.
+
+Three further things the tests changed:
 
   - `normaliseScale` returns **0**, not 1, for an effectively empty frame. A
     distinct signal rather than a scale, because returning 1 left `conflict`

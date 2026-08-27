@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
 import { updateAnimationSignals } from '../engine/AnimationDirector'
 import { EffectsDirector } from '../engine/EffectsDirector'
+import { memo } from 'react'
 import { LightRig } from '../engine/LightRig'
 import { performanceState } from '../engine/performanceState'
 import { quality } from '../engine/quality'
@@ -58,6 +59,25 @@ import type { BenchRunner } from './benchHarness'
 const PROFILE_PASS =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
 
+/**
+ * `EffectsDirector`, wrapped so it can never re-render.
+ *
+ * Not a precaution — it crashed the sweep. `Bench` re-renders on every progress
+ * update, which re-rendered this, and `@react-three/postprocessing` memoizes
+ * effect args on `JSON.stringify(props)`. Under React 19 `ref` is an ordinary
+ * prop, and its `.current` carries R3F's circular `__r3f` graph, so the
+ * stringify throws: "Converting circular structure to JSON".
+ *
+ * This is F48 exactly, in a second place. That entry documents the same failure
+ * taking the whole Canvas down in the app, and `EffectsDirector`'s own header
+ * carries it as a numbered constraint — the component must not re-render. A
+ * constraint that has now been violated twice by different callers is worth
+ * enforcing at the boundary rather than restating.
+ */
+const StablePostChain = memo(function StablePostChain() {
+  return <EffectsDirector />
+})
+
 export function BenchStage({ runner, version }: { runner: BenchRunner; version: number }) {
   return (
     <Canvas
@@ -71,7 +91,7 @@ export function BenchStage({ runner, version }: { runner: BenchRunner; version: 
       {/* Renders at priority 1 and takes the draw away from BenchDriver, which
           is why the driver skips its own `gl.render` in this mode — two
           renderers at the same priority would both run. */}
-      {PROFILE_PASS && <EffectsDirector />}
+      {PROFILE_PASS && <StablePostChain />}
     </Canvas>
   )
 }

@@ -99,38 +99,59 @@ export const REFERENCE_P99 = 0.8
 export const EMPTY_P99 = 0.004
 
 /**
- * Scale factor bringing this frame's 99th percentile to {@link REFERENCE_P99}.
+ * Percentile of the field treated as its black FLOOR.
  *
- * Returns **0** for a frame that is effectively empty — a distinct signal, not
- * a scale — so the caller can report it as empty across the board rather than
- * deriving a composition from sensor-floor noise. Returning 1 was not enough:
- * `conflict` is energy-weighted and produced a confident 0.26 from a field
- * whose brightest pixel was 0.0016.
+ * Subtracting a floor is not a refinement, it is the difference between the
+ * statistic working and not. Measured: normalising to p99 alone, with the post
+ * chain mounted, took `orbs` from `fill 0.021` to `fill 0.963` and `kaleido`
+ * from 0.061 to 0.992 — every scene in the roster came out above 0.83 and the
+ * statistic stopped discriminating entirely.
+ *
+ * The cause is the two fixes interacting. Bloom's halo and the fog veil mean
+ * there is no true black any more, normalisation then multiplies that lifted
+ * floor up, and a threshold calibrated for raw frames counts it all as lit.
+ * Mapping the RANGE rather than the top removes the floor before it can be
+ * amplified.
+ */
+const FLOOR_PCT = 0.05
+
+/**
+ * Floor and scale mapping this frame's [p5, p99] onto [0, {@link REFERENCE_P99}].
+ *
+ * Returns `scale: 0` for a frame that is effectively empty — a distinct signal,
+ * not a scale — so the caller can report it as empty across the board rather
+ * than deriving a composition from sensor-floor noise. Returning 1 was not
+ * enough: `conflict` is energy-weighted and produced a confident 0.26 from a
+ * field whose brightest pixel was 0.0016.
  *
  * p99 rather than the maximum: a single stuck bright pixel, a specular hit or a
  * particle exactly on the camera axis would otherwise set the scale for the
  * whole frame and normalise everything else into the floor.
  */
-export function normaliseScale(luma: Float32Array, hist: Uint16Array): number {
+export function normaliseRange(
+  luma: Float32Array,
+  hist: Uint16Array,
+): { floor: number; scale: number } {
   hist.fill(0)
   for (let i = 0; i < luma.length; i++) {
     const v = luma[i]
     const b = v <= 0 ? 0 : v >= 1 ? HIST_BINS - 1 : (v * (HIST_BINS - 1)) | 0
     hist[b]++
   }
-  const target = luma.length * 0.99
-  let seen = 0
-  let bin = HIST_BINS - 1
-  for (let b = 0; b < HIST_BINS; b++) {
-    seen += hist[b]
-    if (seen >= target) {
-      bin = b
-      break
+  const pct = (p: number) => {
+    const target = luma.length * p
+    let seen = 0
+    for (let b = 0; b < HIST_BINS; b++) {
+      seen += hist[b]
+      if (seen >= target) return b / (HIST_BINS - 1)
     }
+    return 1
   }
-  const p99 = bin / (HIST_BINS - 1)
-  if (p99 < EMPTY_P99) return 0
-  return REFERENCE_P99 / p99
+  const floor = pct(FLOOR_PCT)
+  const top = pct(0.99)
+  const range = top - floor
+  if (top < EMPTY_P99 || range < EMPTY_P99) return { floor, scale: 0 }
+  return { floor, scale: REFERENCE_P99 / range }
 }
 
 /**
@@ -250,11 +271,13 @@ export class ProfileAccumulator {
    * same by the time a viewer sees them.
    */
   push(luma: Float32Array, dt: number): void {
-    const scale = normaliseScale(luma, this.hist)
+    const { floor, scale } = normaliseRange(luma, this.hist)
     const norm = this.scratch
     // scale 0 means "nothing on this frame". Zeroing the field is what makes an
     // empty scene report as empty in every statistic rather than only in `fill`.
-    for (let i = 0; i < luma.length; i++) norm[i] = Math.min(1, luma[i] * scale)
+    for (let i = 0; i < luma.length; i++) {
+      norm[i] = Math.min(1, Math.max(0, (luma[i] - floor) * scale))
+    }
     this.pushNormalised(luma, norm, dt)
   }
 
@@ -366,6 +389,17 @@ export const T = {
   backgroundMaxCentre: 0.5,
   /** Summed with a subject, this much of the frame going white is too much. */
   maxBlowout: 0.06,
+  /**
+   * Absolute mean luminance above which a scene is a wash, whatever its shape.
+   *
+   * The one place absolute brightness is still consulted, and it has to be.
+   * Normalisation deliberately discards level so that composition can be
+   * compared across scenes — but a FLAT field has no range to normalise, so it
+   * reports `fill 0` (no structure) while covering the frame in light. Judged
+   * on structure alone a mid-grey wash looks like an empty frame, and it would
+   * be admitted as a layer and destroy everything under it.
+   */
+  layerMaxMeanLuma: 0.3,
 }
 
 /** Can this profile hold the subject? */
@@ -380,6 +414,11 @@ export function canBePrimary(p: SceneProfile): RoleVerdict {
 export function canBeLayer(p: SceneProfile): RoleVerdict {
   if (p.fill > T.layerMaxFill) {
     return { ok: false, why: `fill ${p.fill.toFixed(3)} — covers the frame, nothing can sit under it` }
+  }
+  // Absolute, not normalised. A flat field has no range and so reports no
+  // structure, which judged on shape alone looks like an empty frame.
+  if (p.meanLuma > T.layerMaxMeanLuma) {
+    return { ok: false, why: `meanLuma ${p.meanLuma.toFixed(2)} — a wash; it lights the whole frame` }
   }
   // Conflict before blowout, deliberately. Both can be true of a centred
   // scene, and "its light lands where the subject already is" is the reason an
