@@ -2401,7 +2401,38 @@ This is what step 3 was for. The idea holds in shape — the statistics do
 separate subjects from layers, and they reached several calls independently —
 and it is not yet trustworthy enough to give a veto over anyone's submission.
 
-### The agreed fixes for both defects (2026-08-27, not yet built)
+### Both defects fixed (2026-08-27)
+
+Built as planned below, with three corrections the tests forced.
+
+**Defect 1.** `/bench?profile` now mounts `EffectsDirector`. It also skips
+`BenchDriver`'s own `gl.render` in that mode — the composer draws at priority 1
+too, and two renderers at one priority both run — and moves the readback to
+priority 2, which is the first moment the COMPOSITED frame exists. A readback
+taken alongside the draw would have sampled the frame before bloom, grade and
+gain, which is the exact blind spot the pass exists to remove. Warmup goes
+60 → 240 frames because the exposure servo has a ~2.3 s time constant, and
+profiling a gain that is still travelling makes a scene's profile depend on
+what the previous cell left behind.
+
+**Defect 2.** The field is normalised to a fixed 99th percentile before any
+composition statistic is taken. Three things the tests changed:
+
+  - `normaliseScale` returns **0**, not 1, for an effectively empty frame. A
+    distinct signal rather than a scale, because returning 1 left `conflict`
+    energy-weighting sensor-floor noise into a confident 0.26 on a field whose
+    brightest pixel was 0.0016. An empty frame now reports empty in every
+    statistic, not only in `fill`.
+  - **Motion is measured on the RAW field**, like `meanLuma` and unlike
+    everything else. Normalising every frame to the same level made a scene that
+    pulses in brightness read as perfectly still — exactly wrong for the
+    question motion is asked for, which is whether something can sit under a
+    composition for a whole section without pulling the eye.
+  - p99 from a 256-bin histogram, so the scale is quantised; equality
+    assertions between a dim and a bright version of the same field had to
+    become a tolerance.
+
+### The plan these were built from (2026-08-27)
 
 **Defect 1 — a second pass, not a flag.** Cost and profile want opposite things
 from the same harness and cannot share a run.

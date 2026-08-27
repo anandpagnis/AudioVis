@@ -2,6 +2,7 @@ import { Suspense, useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
 import { updateAnimationSignals } from '../engine/AnimationDirector'
+import { EffectsDirector } from '../engine/EffectsDirector'
 import { LightRig } from '../engine/LightRig'
 import { performanceState } from '../engine/performanceState'
 import { quality } from '../engine/quality'
@@ -33,6 +34,30 @@ import type { BenchRunner } from './benchHarness'
  * and between two runs of the same cell. A benchmark wants the representative
  * distance, not the movement.
  */
+/**
+ * Is this the PROFILE pass rather than the cost pass?
+ *
+ * The two want opposite things from the same harness and cannot share a run.
+ *
+ * The **cost** pass excludes the post chain, and must: it is a constant added
+ * to every scene, so including it shrinks the ratios that are the entire point
+ * of comparing scenes to each other.
+ *
+ * The **profile** pass has to include it, and must: the question a profile
+ * answers is *what does a viewer see*, and a viewer sees the post chain. The
+ * first roster run measured `ribbons` at `fill 0.000` — a working layer for the
+ * whole life of the project, reading as an empty frame, because its output sits
+ * below the lit threshold until bloom reaches it. Profiling without the chain
+ * would have vetoed it.
+ *
+ * The consequence is accepted deliberately: the profile then depends on the
+ * palette and on the exposure servo's gain. That is not contamination. A scene
+ * that only reads through bloom is a scene that only reads through bloom, and a
+ * role profile should say so.
+ */
+const PROFILE_PASS =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
+
 export function BenchStage({ runner, version }: { runner: BenchRunner; version: number }) {
   return (
     <Canvas
@@ -43,6 +68,10 @@ export function BenchStage({ runner, version }: { runner: BenchRunner; version: 
       <color attach="background" args={['#000000']} />
       <LightRig />
       <BenchDriver runner={runner} version={version} />
+      {/* Renders at priority 1 and takes the draw away from BenchDriver, which
+          is why the driver skips its own `gl.render` in this mode — two
+          renderers at the same priority would both run. */}
+      {PROFILE_PASS && <EffectsDirector />}
     </Canvas>
   )
 }
@@ -139,31 +168,13 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       camera.updateMatrixWorld()
     }
 
-    timer.begin()
-    gl.render(scene, camera)
-    timer.end()
-
-    // Read the frame back for the role profile, in the same tick that drew it.
-    //
-    // Priority is not the issue here (this useFrame owns the render), but the
-    // drawing buffer is: without `preserveDrawingBuffer` a canvas only holds
-    // pixels between the draw and the browser reclaiming it, which is why this
-    // sits immediately after `gl.render` rather than in a separate hook. Same
-    // constraint ExposureSampler documents.
-    if (profileCtx) {
-      try {
-        profileCtx.drawImage(gl.domElement, 0, 0, PROFILE_W, PROFILE_H)
-        const d = profileCtx.getImageData(0, 0, PROFILE_W, PROFILE_H).data
-        for (let i = 0, j = 0; i < d.length; i += 4, j++) {
-          // Rec.709 luma on the OUTPUT-space bytes. The profile reasons about
-          // what a viewer sees, not about linear radiometry.
-          luma[j] = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255
-        }
-        runner.profileFrame(luma, delta)
-      } catch {
-        // A tainted or zero-sized canvas: skip this frame's profile rather than
-        // taking the whole sweep down.
-      }
+    // In the profile pass `EffectsDirector` owns the draw (also priority 1), so
+    // rendering here as well would draw the scene twice and time the wrong one.
+    // GPU timings are meaningless in that pass and are not read.
+    if (!PROFILE_PASS) {
+      timer.begin()
+      gl.render(scene, camera)
+      timer.end()
     }
 
     // Do not feed the runner until the scene's lazy chunk has actually landed.
@@ -189,6 +200,30 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
 
     runner.frame(delta * 1000, takeSceneCpu(), timer.poll(), timer.supported)
   }, 1)
+
+  // Profile readback, at priority 2.
+  //
+  // After the composer rather than inside the render callback: in the profile
+  // pass the post chain draws at priority 1, so a readback taken alongside it
+  // would sample the frame BEFORE bloom, grade and the exposure gain — the
+  // exact blind spot this pass exists to remove. Priority 2 is the first moment
+  // the composited frame exists and the drawing buffer still holds it.
+  useFrame((_, delta) => {
+    if (!profileCtx || !runner.current) return
+    try {
+      profileCtx.drawImage(gl.domElement, 0, 0, PROFILE_W, PROFILE_H)
+      const d = profileCtx.getImageData(0, 0, PROFILE_W, PROFILE_H).data
+      for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+        // Rec.709 luma on the OUTPUT-space bytes. The profile reasons about
+        // what a viewer sees, not about linear radiometry.
+        luma[j] = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255
+      }
+      runner.profileFrame(luma, delta)
+    } catch {
+      // A tainted or zero-sized canvas: skip this frame's profile rather than
+      // taking the whole sweep down.
+    }
+  }, 2)
 
   const cell = runner.current
   if (!cell) return null

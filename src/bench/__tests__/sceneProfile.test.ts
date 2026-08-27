@@ -156,3 +156,59 @@ describe('eligibility', () => {
     }
   })
 })
+
+/**
+ * Normalisation, which is the fix for the incoherence the first roster run
+ * exposed: `ribbons` reported `fill 0.000` and `conflict 1.40` in the same
+ * breath, because one statistic was thresholded and the other was
+ * energy-weighted.
+ */
+describe('the field is normalised before anything is measured', () => {
+  const dim = field((x, y) => (subjectReference(x, y) / 0.75) * 0.08)
+  const bright = field((x, y) => subjectReference(x, y) / 0.75)
+
+  it('gives a dim scene and a bright one the same composition', () => {
+    // The point of the whole change. Brightness is the engine's job — the
+    // exposure servo and the slot gains own level — so two scenes with the same
+    // shape must profile the same, because that is how they will be seen.
+    const a = profileOf(dim)
+    const b = profileOf(bright)
+    // Tolerance rather than equality: the p99 is found from a 256-bin
+    // histogram, so the scale is quantised and two brightnesses land on
+    // slightly different bins. 0.02 is far below the ~0.4 difference the two
+    // fields would show unnormalised.
+    expect(Math.abs(a.fill - b.fill)).toBeLessThan(0.02)
+    expect(Math.abs(a.centre - b.centre)).toBeLessThan(0.02)
+    expect(Math.abs(a.conflict - b.conflict)).toBeLessThan(0.02)
+  })
+
+  it('stops fill and conflict disagreeing about a dim scene', () => {
+    // Before: fill said "nothing here", conflict said "strongly centred".
+    const p = profileOf(dim)
+    expect(p.fill).toBeGreaterThan(0.05)
+    expect(p.conflict).toBeGreaterThan(0.5)
+  })
+
+  it('keeps meanLuma raw, so absolute brightness is still visible', () => {
+    expect(profileOf(dim).meanLuma).toBeLessThan(profileOf(bright).meanLuma / 4)
+  })
+
+  it('refuses to amplify an empty frame into a composition', () => {
+    // The failure that would make the profiler worse than no profiler: scaling
+    // sensor-floor noise up to the reference and handing an empty scene
+    // confident-looking statistics.
+    const noise = field((x, y) => (((x * 7 + y * 13) % 5) / 5) * 0.002)
+    const p = profileOf(noise)
+    expect(p.fill).toBe(0)
+    expect(p.conflict).toBe(0)
+  })
+
+  it('is not thrown off by one stuck bright pixel', () => {
+    // p99 rather than the maximum: a single specular hit or an on-axis particle
+    // would otherwise set the scale for the whole frame.
+    const withHot = field((x, y) => (x === 3 && y === 3 ? 1 : subjectReference(x, y) / 0.75))
+    const a = profileOf(bright)
+    const b = profileOf(withHot)
+    expect(b.fill).toBeCloseTo(a.fill, 1)
+  })
+})

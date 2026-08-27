@@ -39,8 +39,25 @@ const PROFILE_ONLY =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
 const TIERS = PROFILE_ONLY ? [0] : [0, 1, 2, 3, 4]
 
+/**
+ * The profile pass needs a longer warmup than the cost pass, for a reason the
+ * cost pass does not have.
+ *
+ * It mounts the post chain, which means the adaptive exposure servo is running
+ * — and the servo samples every 0.18 s with a ~2.3 s time constant. Profiling
+ * before it settles measures a gain that is still travelling, so the same scene
+ * would profile differently depending on what the PREVIOUS cell left the servo
+ * holding. 240 frames is ~4 s at 60 Hz, comfortably past settling.
+ *
+ * Fewer measured frames to pay for it: the profile is a whole-field average
+ * over a static camera, which converges far faster than a p95 frame time does.
+ */
+const PROFILE_OPTIONS = { warmupFrames: 240, measureFrames: 60, drainFrames: 0 }
+
 /** Roughly how long a full sweep takes, for the pre-run warning. */
-const SECONDS_PER_CELL = 3.3
+// Profile cells warm up for 240 frames rather than 60, so they take longer
+// despite measuring fewer.
+const SECONDS_PER_CELL = PROFILE_ONLY ? 5.5 : 3.3
 
 export function Bench() {
   const [running, setRunning] = useState(false)
@@ -67,7 +84,7 @@ export function Bench() {
   }, [])
 
   const start = useCallback(() => {
-    const runner = new BenchRunner(plan)
+    const runner = new BenchRunner(plan, PROFILE_ONLY ? PROFILE_OPTIONS : undefined)
     runnerRef.current = runner
     setResults([])
     setProgress(0)

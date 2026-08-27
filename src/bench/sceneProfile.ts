@@ -77,6 +77,62 @@ export function emptyProfile(): SceneProfile {
   }
 }
 
+/** Histogram bins used to find the 99th percentile without sorting or allocating. */
+const HIST_BINS = 256
+
+/**
+ * Where a scene's 99th-percentile luminance is scaled to sit.
+ *
+ * Below 1 on purpose: normalising the brightest content to full white would put
+ * every scene permanently on the edge of clipping, and `blowout` would then
+ * measure the normalisation rather than the scene.
+ */
+export const REFERENCE_P99 = 0.8
+
+/**
+ * Below this p99, a frame has nothing on it and must not be normalised.
+ *
+ * Scaling a near-black frame up to the reference would turn sensor-floor noise
+ * into a composition and give an empty scene confident-looking statistics —
+ * the one failure mode that would make the profiler worse than no profiler.
+ */
+export const EMPTY_P99 = 0.004
+
+/**
+ * Scale factor bringing this frame's 99th percentile to {@link REFERENCE_P99}.
+ *
+ * Returns **0** for a frame that is effectively empty — a distinct signal, not
+ * a scale — so the caller can report it as empty across the board rather than
+ * deriving a composition from sensor-floor noise. Returning 1 was not enough:
+ * `conflict` is energy-weighted and produced a confident 0.26 from a field
+ * whose brightest pixel was 0.0016.
+ *
+ * p99 rather than the maximum: a single stuck bright pixel, a specular hit or a
+ * particle exactly on the camera axis would otherwise set the scale for the
+ * whole frame and normalise everything else into the floor.
+ */
+export function normaliseScale(luma: Float32Array, hist: Uint16Array): number {
+  hist.fill(0)
+  for (let i = 0; i < luma.length; i++) {
+    const v = luma[i]
+    const b = v <= 0 ? 0 : v >= 1 ? HIST_BINS - 1 : (v * (HIST_BINS - 1)) | 0
+    hist[b]++
+  }
+  const target = luma.length * 0.99
+  let seen = 0
+  let bin = HIST_BINS - 1
+  for (let b = 0; b < HIST_BINS; b++) {
+    seen += hist[b]
+    if (seen >= target) {
+      bin = b
+      break
+    }
+  }
+  const p99 = bin / (HIST_BINS - 1)
+  if (p99 < EMPTY_P99) return 0
+  return REFERENCE_P99 / p99
+}
+
 /**
  * The canonical subject a layer has to coexist with.
  *
@@ -140,6 +196,9 @@ function radius(x: number, y: number): number {
  */
 export class ProfileAccumulator {
   private readonly prev = new Float32Array(PROFILE_W * PROFILE_H)
+  /** Normalised copy and histogram bins — allocated once, never in the loop. */
+  private readonly scratch = new Float32Array(PROFILE_W * PROFILE_H)
+  private readonly hist = new Uint16Array(HIST_BINS)
   private hasPrev = false
   private frames = 0
   private sumFill = 0
@@ -169,8 +228,37 @@ export class ProfileAccumulator {
    *
    * `dt` in seconds, so motion is a rate rather than a per-frame delta — a
    * scene must not read as calmer merely because the machine ran faster.
+   *
+   * ## Normalised before anything is measured
+   *
+   * The field is scaled so its 99th percentile lands on {@link REFERENCE_P99}
+   * and every statistic below is taken from the scaled copy — except
+   * `meanLuma`, which is kept raw precisely so absolute brightness is still
+   * visible somewhere.
+   *
+   * This fixes an incoherence that showed up the first time the profiler was
+   * run against the roster: `fill` was thresholded and `conflict` was
+   * energy-weighted, so `ribbons` reported `fill 0.000` (nothing above the lit
+   * threshold) and `conflict 1.40` (strongly centred) in the same breath. Both
+   * were internally correct and together they were nonsense.
+   *
+   * Normalising is also the right answer rather than merely a consistent one.
+   * The profile is meant to describe **composition**, and brightness is the
+   * engine's job — the exposure servo and the slot gains own level, and a scene
+   * is authored to look right at 1.0. A dim scene and a bright scene with the
+   * same composition should profile identically, because they will look the
+   * same by the time a viewer sees them.
    */
   push(luma: Float32Array, dt: number): void {
+    const scale = normaliseScale(luma, this.hist)
+    const norm = this.scratch
+    // scale 0 means "nothing on this frame". Zeroing the field is what makes an
+    // empty scene report as empty in every statistic rather than only in `fill`.
+    for (let i = 0; i < luma.length; i++) norm[i] = Math.min(1, luma[i] * scale)
+    this.pushNormalised(luma, norm, dt)
+  }
+
+  private pushNormalised(raw: Float32Array, luma: Float32Array, dt: number): void {
     let lit = 0
     let sum = 0
     let eCentre = 0
@@ -185,7 +273,9 @@ export class ProfileAccumulator {
       for (let x = 0; x < PROFILE_W; x++) {
         const i = y * PROFILE_W + x
         const v = luma[i]
-        sum += v
+        // Raw, deliberately: this is the one field that still reports absolute
+        // brightness, so it survives the normalisation the rest go through.
+        sum += raw[i]
         if (v > LIT_THRESHOLD) lit++
 
         const r = radius(x, y)
@@ -202,8 +292,14 @@ export class ProfileAccumulator {
         conflictDen += v
         if (v + ref > 1) blown++
 
-        if (this.hasPrev) motion += Math.abs(v - this.prev[i])
-        this.prev[i] = v
+        // Motion from the RAW field, like `meanLuma` and unlike everything
+        // else here. A scene that pulses in brightness without changing shape
+        // IS moving, and normalising every frame to the same level made it read
+        // as perfectly still — which is exactly wrong for the question motion
+        // is asked for: whether this can sit under a composition for a whole
+        // section without pulling the eye.
+        if (this.hasPrev) motion += Math.abs(raw[i] - this.prev[i])
+        this.prev[i] = raw[i]
       }
     }
 
