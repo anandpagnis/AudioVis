@@ -750,6 +750,14 @@
     height: auto;
     min-height: 100vh;
   }
+  /* `.console` growing past 100vh here is the point — but `.app-control`
+     (its fixed, inset:0 parent) was still `overflow: hidden` unconditionally,
+     so the extra height had nowhere to go: clipped by the parent with no
+     scrollbar anywhere, `.console`'s own `overflow: auto` never even reached
+     by content since its box grows to fit rather than clipping itself. */
+  .app-control {
+    overflow-y: auto;
+  }
 }
 
 /* ---------- diagnostics ---------- */

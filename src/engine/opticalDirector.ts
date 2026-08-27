@@ -233,10 +233,12 @@ export function lensForSection(mood: MoodState, seed: number): number {
   // amount it is a 22-bead lattice, which is coarse enough to read as a lens.
   const options = pool[mood] ?? []
   if (options.length === 0) return -1
-  // Two sections in three. More often than the kaleidoscope, which is a whole
-  // reframing of the picture; a lens material is a surface treatment and can
-  // carry a longer stretch without becoming wallpaper.
-  if (seed % 3 === 2) return -1
+  // One section in three. Was two in three — "off for most sections" above
+  // described the intent, but this ratio did the opposite of that, so the
+  // lens read as a fixture rather than a choice. A material is a lighter
+  // touch than the kaleidoscope, so it doesn't need to be off as often as the
+  // mirror's one-in-four, but it still needs "normal" to be the common case.
+  if (seed % 3 !== 0) return -1
   return options[seed % options.length] % LENS_STYLES.length
 }
 

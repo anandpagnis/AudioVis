@@ -451,6 +451,8 @@ function BigSlider({
         step={0.01}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
+        // Blurs rather than doing nothing — see FxSlider's onWheel comment.
+        onWheel={(e) => e.currentTarget.blur()}
       />
     </label>
   )
@@ -607,6 +609,13 @@ function PostFx() {
 /**
  * A compact slider. Same idea as {@link BigSlider} — the number is always
  * visible — at a density that fits fourteen of them in a column.
+ *
+ * `onWheel` blurs rather than doing nothing: Safari changes a FOCUSED range
+ * input's value on mouse-wheel/trackpad scroll instead of letting the scroll
+ * reach the section underneath, and the console's densest columns (Colour,
+ * Post FX) are exactly where a slider sits under the cursor while scrolling
+ * that column. Blurring on the first wheel tick over it hands that and every
+ * later tick back to the scrollable section.
  */
 function FxSlider({
   label,
@@ -633,6 +642,7 @@ function FxSlider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
+        onWheel={(e) => e.currentTarget.blur()}
       />
       <span className="fx-value">{step >= 1 ? value.toFixed(0) : value.toFixed(2)}</span>
     </label>
