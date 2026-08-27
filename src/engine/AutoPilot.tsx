@@ -12,36 +12,52 @@ import { useStore } from '../store'
 /**
  * Palettes each mood may draw from, in preference order.
  *
- * ## Widened for the hot moods (F117)
+ * ## Every palette in the file is reachable from here (F125)
  *
- * `peak` was `[ember, solar, violet]` and `aggressive` was
- * `[ember, solar, mono]`. Both LEAD with the same two warm palettes, and
- * `pickPalette` excludes whatever is already showing — so an energetic track
- * just alternated ember and solar for its whole duration. A 77-second session
- * recording (F115) spent 53 s in peak+aggressive and every frame of its
- * contact sheet came out the same orange; reported, correctly, as "it is not
- * using the entire colour palette available".
+ * It was not. `palettes.ts` defines **30** palettes across five families, and
+ * this table named **six** of them — the `signature` set — so 24 of them, 80%
+ * of the work in that file, could never be selected by the running show at all.
+ * They were reachable only by a human clicking one, which on an auto-piloted
+ * set means never.
  *
- * The bias was not a taste decision so much as an unnoticed consequence of
- * ordering: warm reads as "hot" one palette at a time, but a set that never
- * leaves one hue family for minutes reads as broken rather than as intense.
- * Every mood now reaches at least four of the six, and the hot moods keep a
- * cool option so a peak can arrive as a COLOUR CHANGE rather than as more of
- * the same orange.
+ * That is also why F117 could only do so little. Widening `peak` and
+ * `aggressive` away from their shared warm pair was a real fix, but it was
+ * redistributing six palettes when thirty existed.
  *
- * Order still carries the intent — the first entry is what the mood wants
- * most — so this widens the reachable set without flattening the moods into
- * each other.
+ * **The test is the actual fix.** `paletteCoverage.test.ts` asserts that every
+ * entry in `PALETTES` appears in at least one mood pool, so palette 31 cannot
+ * be added and quietly stranded the way these 24 were. A table like this drifts
+ * from the file it indexes unless something checks.
+ *
+ * ## How they are assigned
+ *
+ * By temperature and energy, which is what a mood actually names. Cold and
+ * neutral palettes sit in `ambient`; the muted earths in `mellow` and
+ * `building`; the multi-hue `rainbow` family only in `peak`, `groove` and
+ * `aggressive`, since a palette spanning distant hues reads as busy and would
+ * fight a quiet passage.
+ *
+ * Order still carries intent — the first entry is what the mood wants most, and
+ * the `signature` palettes deliberately keep those seats because they are the
+ * show's identity. The rest widen it rather than replace it.
  */
-const MOOD_PALETTES: Record<MoodState, string[]> = {
+export const MOOD_PALETTES: Record<MoodState, string[]> = {
   silence: [],
-  ambient: ['ocean', 'aurora', 'mono', 'violet'],
-  mellow: ['aurora', 'violet', 'ocean', 'mono'],
-  groove: ['aurora', 'violet', 'solar', 'ocean'],
-  building: ['solar', 'aurora', 'ember', 'violet'],
-  peak: ['ember', 'violet', 'solar', 'aurora'],
-  aggressive: ['ember', 'mono', 'solar', 'violet'],
+  // Quiet, cold, spacious. The neutrals and the single-hue colds live here.
+  ambient: ['ocean', 'glacial', 'aurora', 'nocturne', 'pearl', 'moss', 'sage', 'mono'],
+  // Soft and mid — cool bodies with one warm note, plus the muted earths.
+  mellow: ['aurora', 'violet', 'nocturne', 'orchid', 'reef', 'glacial', 'umber', 'sage', 'ocean'],
+  // Mid energy and properly coloured: two lit hues that are not neighbours.
+  groove: ['aurora', 'violet', 'cobalt', 'reef', 'vapor', 'orchid', 'tropic', 'candy', 'solar'],
+  // Rising warmth. Everything here moves toward amber/rust as the phrase lifts.
+  building: ['solar', 'sodium', 'mirage', 'cobalt', 'oxide', 'canyon', 'adobe', 'velvet', 'ember'],
+  // Maximum saturation. The rainbows earn their place here and nowhere quieter.
+  peak: ['ember', 'neon', 'vapor', 'velvet', 'auroraBold', 'prism', 'carnival', 'violet', 'solar'],
+  // Hard: either very hot or starkly graphic. `mono` is here for the same
+  // reason `acid` is — at full tilt, no colour at all reads as aggressive.
+  aggressive: ['ember', 'acid', 'neon', 'emberGlass', 'oxide', 'mirage', 'carnival', 'mono'],
 }
+
 
 const MANUAL_HOLD_SEC = 45 // back off after the DJ touches anything
 

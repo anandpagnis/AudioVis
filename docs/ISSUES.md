@@ -3302,11 +3302,35 @@ denominated in milliseconds on this side.
       frame index rather than stamped, so they are good to about a second -
       enough to line a hitch up against the event list, which is what it is for.
 
+- [x] **F125 - 24 of the 30 palettes were unreachable by the running show** -
+      `src/engine/AutoPilot.tsx` *(fixed 2026-08-28)*
+      `palettes.ts` defines **30** palettes across five families. `MOOD_PALETTES`,
+      the table the auto-pilot picks from, named **six** of them - the
+      `signature` set. The other 24, 80% of that file, could only ever be
+      reached by a human clicking one, which on an auto-piloted set means never.
+      Nothing failed and nothing warned; the show simply drew from a fifth of
+      the colour it had.
+      This is also the ceiling F117 kept hitting. Widening `peak` and
+      `aggressive` off their shared warm pair was a real fix, but it was
+      redistributing six palettes when thirty existed.
+      All 30 are now assigned by temperature and energy - colds and neutrals in
+      `ambient`, muted earths in `mellow`/`building`, the `rainbow` family only
+      in `groove`/`peak`/`aggressive` since lit slots spanning distant hues read
+      as busy and would fight a quiet passage. Signature palettes keep the first
+      seat in each pool; the rest widen the pool rather than replace it.
+      Simulated over 600 picks against the real `pickPalette`: **all 30 appear**,
+      the key anchor holds ~17% and everything else lands at 5-7%. Against the
+      64% single-palette domination in the session log that is the whole point.
+      **The test is the actual fix.** `paletteCoverage.test.ts` asserts every
+      `PALETTES` id appears in some mood pool, so palette 31 cannot be stranded
+      the way these 24 were. A table that indexes another file drifts from it
+      unless something checks - that is how this happened in the first place.
+
 ---
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **760 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **764 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
