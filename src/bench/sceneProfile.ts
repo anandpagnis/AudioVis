@@ -21,13 +21,25 @@ export const PROFILE_W = 64
 export const PROFILE_H = 36
 
 /**
- * Luminance above which a pixel counts as lit.
+ * Fraction of a scene's OWN bright content below which a pixel is glow, not
+ * structure.
  *
- * In 0..1 output space. Low, because this roster is deliberately a bright
- * subject on true black and the interesting structure lives well below mid
- * grey — a threshold at 0.5 would call most scenes empty.
+ * Relative, and it has to be. The field is range-normalised before this is
+ * applied, so an absolute threshold is measuring against a scale that no longer
+ * exists — the same category error that made the first normalisation attempt
+ * worse than no fix. At 0.06 absolute (7.5% of the normalised range) `orbs`
+ * reported `fill 0.878`: a scene of three small orbs, reading as covering
+ * seven eighths of the frame, because bloom's halo is a smooth falloff and most
+ * of it clears 7.5%.
+ *
+ * A bloom halo IS what a viewer sees, which is why the post chain belongs in
+ * the profile. It is not what a layer OCCUPIES, which is what `fill` is asked
+ * about. 20% of the scene's own bright content is the line between the two.
  */
-export const LIT_THRESHOLD = 0.06
+export const LIT_FRACTION = 0.2
+
+/** Absolute lit threshold on the normalised field. Derived, not chosen. */
+export const LIT_THRESHOLD = LIT_FRACTION * 0.8
 
 /** Radii, as a fraction of the half-diagonal, splitting centre / mid / edge. */
 const CENTRE_R = 0.34
@@ -252,10 +264,10 @@ export class ProfileAccumulator {
    *
    * ## Normalised before anything is measured
    *
-   * The field is scaled so its 99th percentile lands on {@link REFERENCE_P99}
-   * and every statistic below is taken from the scaled copy — except
-   * `meanLuma`, which is kept raw precisely so absolute brightness is still
-   * visible somewhere.
+   * The field's RANGE — [p5, p99] — is mapped onto [0, {@link REFERENCE_P99}]
+   * and every statistic below is taken from the scaled copy, except `meanLuma`
+   * and `motion`, which stay raw. See {@link normaliseRange} for why the floor
+   * has to come off before anything is amplified.
    *
    * This fixes an incoherence that showed up the first time the profiler was
    * run against the roster: `fill` was thresholded and `conflict` was

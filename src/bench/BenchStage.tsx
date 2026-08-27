@@ -154,11 +154,26 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       appliedTier.current = cell.tier
       appliedScene.current = cell.sceneId
       quality.pinTier(cell.tier)
-      renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
-      renderScale.setSceneBudget(getScenePixelBudget(cell.sceneId))
-      const scale = renderScale.solve()
-      renderScale.applied = scale
-      setDpr(renderScale.baseDpr * scale)
+      // The pixel-budget solve is a COST concern, and the profile pass skips it.
+      //
+      // Two reasons, one of them fatal. The profile measures composition, not
+      // resolution, and holding one DPR across every cell means every scene is
+      // sampled identically — which is what makes the numbers comparable.
+      //
+      // The fatal one: `setDpr` resizes the canvas, `EffectComposer`
+      // subscribes to size internally, and a resize therefore re-renders it and
+      // re-runs its `JSON.stringify(props)` memo over children whose refs carry
+      // R3F's circular `__r3f` graph. That throws, and it killed this sweep at
+      // cell 8 even with the composer wrapped in `memo` — the wrapper stops the
+      // PARENT re-rendering it and cannot stop the composer re-rendering
+      // itself. Same root cause as F48, third appearance.
+      if (!PROFILE_PASS) {
+        renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
+        renderScale.setSceneBudget(getScenePixelBudget(cell.sceneId))
+        const scale = renderScale.solve()
+        renderScale.applied = scale
+        setDpr(renderScale.baseDpr * scale)
+      }
       // Particle scenes scale through `performanceState.particleDensity`, which
       // is normally written by PerformanceStateBridge — and the bench does not
       // mount it (it is a decide-band director that reads audio and writes a

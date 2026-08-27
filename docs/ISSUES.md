@@ -2350,7 +2350,39 @@ thing gets built later against a replaced roster with no ground truth.
 Declaration is intent; measurement is a safety check. Same posture
 `trusted: false` already takes on cost claims.
 
-### Step 3 result — validated against the sixteen (2026-08-27)
+### Step 3 result, after both fixes — 13/16 (2026-08-27)
+
+Five sweeps. The final numbers, and what each disagreement means:
+
+  scene      fill   centre  conflict   declared          verdict
+  ribbons   0.026    0.74      1.27    accent,overlay    VETOED on conflict
+  plasma    0.116    0.57      1.10    accent,overlay    VETOED on conflict
+  orbs      0.632    0.18      0.48    accent,bg,overlay VETOED on fill
+
+**`conflict` is the statistic that works.** It orders the whole roster cleanly —
+`ribbons` 1.27 at the centred end down to `juliawings` 0.27 at the peripheral
+end — and that ordering matches what the scenes look like.
+
+Its two vetoes are the interesting result of this whole exercise. It says
+`ribbons` and `plasma` fight a centred subject. **Issue 3 in this ledger is a
+human complaint that `ribbons` is "too aggressive and overused" as a layer**, and
+the profiler reached that from pixels without being told. It may be disagreeing
+with the DECLARATION while agreeing with the REPORT — which would make it right
+and the roster stale. Somebody should look at those two as layers and decide who
+is wrong before step 4 ships.
+
+**`orbs` is the profiler still being wrong**, and the reason is known rather than
+mysterious: the thresholds in `T` were calibrated against pre-post-chain profiles
+and now sit on a completely different distribution. Every scene's `fill` moved
+once bloom entered the measurement. Re-deriving them is legitimate, but it has to
+be done against more than sixteen points or it is just overfitting with extra
+steps — which is exactly what two of these five sweeps taught.
+
+**Step 4 remains unstarted, deliberately.** Not because the tool is bad — it is
+useful as a submission report today — but because a veto needs to be right about
+`orbs`, and it currently is not.
+
+### Step 3 result — first attempt, before either fix (2026-08-27)
 
 Steps 1 and 2 are done: `docs/10_Scene_Roles.md` is the contract,
 `src/bench/sceneProfile.ts` is the implementation, and `/bench?profile` sweeps

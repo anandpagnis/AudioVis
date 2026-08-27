@@ -46,12 +46,34 @@ at something a renderer can measure, and when a marketplace scene is mis-roled,
 Measured per scene per tier, from frames the scene actually rendered, in
 isolation, framed on its own `cameraAnchor`.
 
+All four are taken from a **range-normalised** copy of the frame: the field's
+[p5, p99] is mapped onto a fixed reference before anything is measured. Two
+exceptions stay raw, and both are deliberate — `meanLuma` and `motion`.
+
+Normalising is what lets composition be compared across scenes at all.
+Brightness is the engine's job: the exposure servo and the slot gains own level,
+and a scene is authored to look right at 1.0. Two scenes with the same shape
+should profile the same, because that is how they will be seen.
+
+The **floor** has to come off before the field is amplified, and that is not a
+detail. Measured: normalising to p99 alone, with the post chain mounted, took
+`orbs` from `fill 0.021` to `fill 0.963` and every scene in the roster above
+0.83 — the statistic stopped discriminating entirely. With bloom and the fog
+veil there is no true black left to normalise against, so scaling from the top
+amplifies the lifted floor straight past the lit threshold.
+
 ### 1. Fill — how much of the frame is lit
 
-Fraction of pixels above a luminance threshold. Separates a bright subject on
-black from a wash that covers everything.
+Fraction of pixels above a threshold, on the normalised field. Separates a
+bright subject on black from a wash that covers everything.
 
 A subject may fill the frame. A layer that fills the frame has nowhere to sit.
+
+**A flat field has no range**, so it reports no structure — which is true, and
+opens a hole this statistic cannot close on its own: judged on shape alone a
+mid-grey wash looks like an empty frame. The layer veto therefore also consults
+absolute `meanLuma`. It is the one place level is still checked, and a wash is
+precisely the case where level *is* the composition.
 
 ### 2. Centrality — where the light is
 
@@ -64,7 +86,12 @@ a frame, not a subject.
 
 ### 3. Motion — how fast it changes
 
-Frame-to-frame luminance change, averaged over the measured window.
+Frame-to-frame luminance change, averaged over the measured window, on the
+**raw** field.
+
+Raw because a scene that pulses in brightness without changing shape *is*
+moving. Normalising every frame to the same level made exactly that scene read
+as perfectly still, which is the opposite of what motion is asked for here.
 
 A background that changes per beat is a second subject; the recompose cadence
 already encodes that belief (*"a ground that changes every 16 beats is just a
@@ -133,9 +160,16 @@ Recorded before the work rather than after, so it is clear which parts are
 expected to survive contact.
 
 - **Palette dependence.** Conflict is measured in luminance, and a dark palette
-  produces less of it than a bright one for the same geometry. Either the
-  profile is measured on a fixed reference palette, or it has to be measured
-  across several and the worst case taken. Not yet decided.
+  produces less of it than a bright one for the same geometry. Range
+  normalisation absorbs some of this — a uniformly darker palette normalises
+  back — but not a palette that changes the DISTRIBUTION of light. Either the
+  profile is measured on a fixed reference palette, or across several with the
+  worst case taken. Not yet decided.
+- **The post chain is now part of the measurement**, which was the point of
+  fixing defect 1, and it means the profile depends on the exposure servo's gain
+  and on whatever the bloom threshold is set to. A scene that only reads through
+  bloom is a scene that only reads through bloom — but if the post chain is
+  retuned, every profile is stale.
 - **Camera dependence.** The bench frames each scene on its declared
   `cameraAnchor`, held still. `CameraDirector` moves. A scene can be
   well-behaved at its anchor and centred everywhere else in its orbit.
