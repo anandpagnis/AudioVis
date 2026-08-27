@@ -55,8 +55,9 @@ describe('the effect slot exit contract', () => {
 })
 
 describe('the registered effect scenes', () => {
-  it('include one that can actually be reached on a drop', () => {
-    const onDrop = getEffectScenes().filter((s) => s.metadata.effect!.triggers.includes('drop'))
-    expect(onDrop.length).toBeGreaterThan(0)
+  it('are none, until a licensed scene claims the role', () => {
+    // See F105. The envelope contract above is still pinned — it is what the
+    // NEXT effect scene has to satisfy, and it outlives any particular scene.
+    expect(getEffectScenes().length).toBe(0)
   })
 })

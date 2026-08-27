@@ -55,8 +55,12 @@ const advance = (over: Partial<Parameters<typeof advanceEffects>[0]>) =>
  * the role unclaimed is the one a future effect scene will also forget.
  */
 describe('the effect roster', () => {
-  it('has at least one scene, so the slot is no longer inert', () => {
-    expect(getEffectScenes().length).toBeGreaterThan(0)
+  it('is empty again after the licence sweep', () => {
+    // `orbs` was the only effect scene (F20) and F105 quarantined it as
+    // unverified Shadertoy provenance. The slot is finished, tested and once
+    // more has nothing to fire — recorded rather than demanded, so this flips
+    // back the moment a licensed scene claims the role.
+    expect(getEffectScenes().length).toBe(0)
   })
 
   it('gives every effect scene a trigger and a finite lifetime', () => {

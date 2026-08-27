@@ -22,8 +22,12 @@ const FIXED = POST_CHAIN_MS + FEEDBACK_MS
 const sceneBudget = (tier: number) => TIER_BUDGET_MS[tier] - FIXED
 
 /** Two ends of the measured roster, used throughout. */
-const EXPENSIVE = 'synthgrid' // 22.35 ms at tier 0 — dearest scene registered
-const CHEAP = 'orbs' // 0.06 ms at every tier
+// Both must be scenes still in the LIVE roster: the licence sweep (F105) took
+// `synthgrid` and `orbs` out, and an unregistered id prices from the pessimistic
+// fallback rather than from its measurement, which quietly changes what these
+// tests are testing.
+const EXPENSIVE = 'ribbons' // 13.11 ms at tier 0 — dearest licensed scene
+const CHEAP = 'dissolve' // 0.11 ms, down to 0.04 at the survival tier
 
 describe('slotCostMs', () => {
   it('charges the measured cost in the primary slot', () => {
@@ -36,7 +40,7 @@ describe('slotCostMs', () => {
     // `medium` and `pointcloud` is declared `high`, so the old ladder charged
     // pointcloud TWICE what synthgrid cost. Measured, synthgrid is ~190x
     // dearer. A budget cannot mean anything on top of that.
-    expect(slotCostMs('synthgrid', 0, 'primary')).toBeGreaterThan(
+    expect(slotCostMs('ribbons', 0, 'primary')).toBeGreaterThan(
       slotCostMs('pointcloud', 0, 'primary') * 100,
     )
   })
@@ -209,10 +213,19 @@ describe('canFundOverlap', () => {
  * machinery was therefore a visual no-op. That was an accurate record of the
  * state, and the state changed on purpose.
  */
+/**
+ * The background slot survived the licence sweep, and did it the right way.
+ *
+ * `orbs` held the role (F18) and F105 quarantined it as unverified Shadertoy
+ * provenance — but `malachite`, one of the port's own original scenes, declares
+ * `background` too. So the slot went from being filled by a scene that could
+ * not be sold to being filled by one that can, without passing through empty.
+ */
 describe('composition with the background slot filled', () => {
-  it('registers at least one background scene', () => {
+  it('registers at least one background scene, and a licensed one', () => {
     const bg = SCENES.filter((s) => s.metadata.roles.includes('background'))
     expect(bg.length).toBeGreaterThan(0)
+    for (const s of bg) expect(s.metadata.license, s.id).not.toBe('noncommercial')
   })
 
   it('fills the background under a cheap primary', () => {

@@ -16,13 +16,74 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
 
 ## Blockers
 
-- [ ] **F01 · Absent licence defaults to "shippable"** — `src/scenes/index.ts`
+- [~] **F01 · Absent licence defaults to "shippable"** — `src/scenes/index.ts`
       `nonCommercialSceneIds()` treats a missing `license` field as `original`, so 15
       scenes with no declared provenance pass the commercial filter. The type's own
       doc comment says the opposite: *"anything not marked original or attribution
       should be assumed unshippable."* Invert the default, trace every ported scene to
       its source, and add a build-time gate.
       **Today only 3 scenes are provably safe to sell.**
+      Partly done, see F46: every scene traced to its source and correctly marked
+      (`original` / `attribution` / `noncommercial` / `unverified`), and everything
+      that wasn't provably `original` or `attribution` moved OUT of `SCENES` into
+      `DISABLED_SCENES` — so it cannot ship OR run, not merely fail a filter someone
+      forgot to call. Still open: the default itself is unchanged (`?? 'original'` in
+      `nonCommercialSceneIds()`), so a NEW scene added later with no `license` field
+      still passes the filter silently. Inverting that default is a separate,
+      deliberately-not-bundled change: it requires every one of the 6 still-live,
+      genuinely original scenes to gain an explicit `license: 'original'` field first
+      (right now their safety is real but implicit), and it rewrites a test
+      (`sceneLicensing.test.ts`) that currently asserts the opposite philosophy on
+      purpose. Both are mechanical; neither is done here.
+
+- [x] **F105 · Pre-commercial licence sweep: 12 scenes moved to `DISABLED_SCENES`** —
+      `src/scenes/index.ts`. Direct follow-up to F01, run because the product is
+      moving toward a commercial launch and every scene of unconfirmed or
+      non-commercial provenance needed to be unreachable, not just excluded from
+      one filter function.
+      Audited every registered scene's own header comment against its declared
+      `metadata.license` and found the two had drifted apart for 10 of them —
+      the header knew the scene was a Shadertoy port or explicitly NC-licensed,
+      but the metadata field was simply absent, which the codebase's OWN
+      documented policy (see F01) says should never be trusted as safe.
+      Moved out of `SCENES` into `DISABLED_SCENES`, not deleted — files, lazy
+      loaders and components all stay live and typecheck/build, so re-enabling
+      one later is moving its entry back:
+        - **Confirmed non-commercial** (`license: 'noncommercial'`): `network`
+          (header states CC BY-NC-SA 3.0 by name), `synthgrid` (same, was
+          already marked but still sitting in the live roster), `panic`
+          (already disabled for an unrelated reason, now also correctly marked).
+        - **Unverified / presumptive non-commercial** (`license: 'unverified'`):
+          `inversion`, `foldpath`, `torusfold`, `juliawings`, `orbs`, `kaleido`,
+          `trail` — all Shadertoy-derived with no licence attached to the
+          source. Shadertoy's own default for an unmarked upload is CC
+          BY-NC-SA 3.0, so these are treated as blocked until someone actually
+          confirms otherwise with the original author. `tunnel` (already
+          disabled) got the same marking for the same reason, independent of
+          why it was already out of the roster.
+        - **Genuinely licensed, held out anyway** (`license: 'attribution'`):
+          `heap` — CC BY 4.0 actually permits commercial use conditioned on
+          crediting the author, so this one is NOT in the same bucket as the
+          rest. Pulled on request as a product decision pending where that
+          credit would live, not because permission is missing.
+      `network` added to `KNOWN_NC_SOURCE_IDS` (confirmed-NC tracking,
+      independent of roster membership — see that constant's own doc comment).
+      **Renumbered from F46 on merge** — that number was already taken on the
+      engine side by the `scene.fog` finding, and two entries under one id is a
+      ledger nobody can cite from.
+      Live roster after the merge is 11 scenes: `wireframe`, `plasma`,
+      `dissolve`, `chrome`, `ribbons`, `pointcloud`, `malachite`, `matrix`,
+      `kifs`, `maze`, `wingfold` — the branch's own text predated its second
+      commit, which added `wingfold` and renamed `ink` to `malachite`. Two pieces of
+      fallout fixed alongside: `ink`/`matrix` had `compatibleWith` entries
+      referencing now-disabled ids (`registry.test.ts` catches this — the fix
+      is trimming the list, not weakening the test), and one `slotBudget.test.ts`
+      fixture pinned to `getScene('orbs')`, which now silently degrades to
+      `SCENES[0]` (`wireframe`) per the documented fallback — swapped for
+      `matrix`, which is both `low`-cost like `orbs` was AND genuinely
+      layer-role-eligible, so the fixture is honest again rather than just
+      numerically lucky.
+      `npm run check`: 41 files, 459 tests, clean build.
 
 - [x] **F02 · The "AI" tier depended on the customer's own localhost** —
       *resolved 2026-08-26 by deleting the feature*
@@ -45,7 +106,6 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       `GENERATIVE_UNITS`. The frame budget's fixed cost drops from 4 units to 2
       at rest — see the F84 note, where that unit is what decides whether a
       crossfade can carry two primaries.
-
 - [ ] **F03 · No account, entitlement or billing surface exists** — `wrangler.jsonc`
       Cloudflare static assets with SPA fallback: no Worker routes, no auth, no
       licence check, no payments. Everything persists to `localStorage`. There is
@@ -219,7 +279,21 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       authored layer-only scenes, not more role declarations — most of the
       roster is documented as correctly primary-only, with reasons.
 
-- [x] **F20 · The effect slot is fully built and completely empty** — *fixed
+- [~] **F20 · The effect slot is fully built and completely empty** — *fixed
+      2026-08-27, then reopened the same day by the licence sweep*
+      **Reopened.** `orbs` was the scene that claimed the role, and F105
+      quarantined it as unverified Shadertoy provenance. `getEffectScenes()`
+      returns nothing again and the slot is inert.
+      Nothing about the fix was wrong and none of it was lost: the
+      `effectEnvelope` contract, its tests, and the `slotProgress` exit rule all
+      stand and are what the next effect scene has to satisfy. What is missing is
+      a LICENSED scene willing to claim the role. `malachite` did exactly this
+      for `background` (F18 stayed closed because a licensed scene picked the
+      role up), so the pattern is available.
+
+      Original entry:
+
+- [x] **F20 (original) · The effect slot is fully built and completely empty** — *fixed
       2026-08-27; the slot has now fired for the first time*
       `src/scenes/OrbitGlowScene.tsx`, `src/scenes/index.ts`
       `orbs` claims the role with `triggers: ['drop']`, a 4.2 s lifetime (just
@@ -459,6 +533,11 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       the show entirely at tier 2 and below. Verified arithmetically neutral: the
       composition budget is unchanged at every tier, while the previously-blind
       claimants now see the whole frame.
+      *(Update, F02: `GenerativeLayer` and its `GENERATIVE_UNITS` reservation were
+      later deleted outright — the feature had never been used. `frameLoad.fixed`
+      is back down to just `POST_CHAIN_UNITS`; the ladder was left at its rebased
+      values rather than re-shrunk, which leaves scenes with one extra unit of real
+      headroom per tier.)*
 
 - [x] **F45 · The budget was checked at decision time, never before drawing** —
       `src/engine/SceneManager.tsx`
@@ -483,15 +562,17 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       Skips rather than breaks, so a cheap overlay still fits where an expensive
       accent did not — shedding more than the frame needs is its own failure.
 
-- [ ] **F44 · The two fixed costs are estimates, not measurements** — *open*
-      `POST_CHAIN_UNITS = 2` and `GENERATIVE_UNITS = 1` are reasoned (a bloom mip
-      chain is roughly a fullscreen pass and a half; the generative overlay is one
-      fullscreen fbm quad) but **not measured**. `/bench` deliberately excludes the
-      post chain so scene costs compare cleanly, which means the one cost present in
-      every single frame is the one number never measured.
-      Add a bench mode that measures an empty scene with and without the post chain
-      (and with and without the generative overlay); the difference is the fixed
-      cost. Then set these two constants from data and re-check the ladder rebase.
+- [ ] **F44 · The fixed cost is an estimate, not a measurement** — *open*
+      `POST_CHAIN_UNITS = 2` is reasoned (a bloom mip chain is roughly a
+      fullscreen pass and a half) but **not measured**. `/bench` deliberately
+      excludes the post chain so scene costs compare cleanly, which means the
+      one cost present in every single frame is the one number never measured.
+      (`GENERATIVE_UNITS`, the other fixed cost this issue originally covered,
+      no longer exists — the AI-texture overlay it accounted for was deleted
+      outright; see F02.)
+      Add a bench mode that measures an empty scene with and without the post
+      chain; the difference is the fixed cost. Then set this constant from data
+      and re-check the ladder rebase.
 
 - [x] **F41 · The overlap budget ignored the layers** — `src/engine/slotBudget.ts`,
       `src/engine/SceneManager.tsx`
@@ -2535,6 +2616,53 @@ before building a second bench pass for it.
 - Whether `effect` can be profiled at all. It is a *contract* (drive yourself to
   visual zero by `slotProgress` 1), not a property, so it probably has to stay
   declared-and-verified rather than inferred.
+
+---
+
+## Merging the lilim scene port into main (2026-08-27)
+
+The branch diverged at PR #9 and carried 2 commits; main carried 28. The
+instruction was to keep main's engine and take the branch's scenes, and that is
+what the merge does — but the two sides had independently built **three
+parallel designs for the same things**, which is where all the real work went.
+
+| both branches built | main's form | lilim's form | kept |
+|---|---|---|---|
+| per-scene params + modes | `contract: { version, params, modes, paramLabels }` | flat `params` / `modes` / `paramLabels` | **main's** — the versioned envelope exists for exactly the third-party case |
+| five palette slots | named `slots.bg/shadow/mid/accent/glow` | `PaletteRamp` 5-tuple + `resolveRamp` | **main's** — nothing in production used the tuple form |
+| the params resolver | `scenes/contract.ts` | `engine/sceneParams.ts` | **both**, repointed: lilim's resolver now reads the envelope |
+
+Lilim's six parameter keys are a subset of main's seven, so the transformation
+was lossless — only the nesting changed.
+
+**What the merge deliberately did NOT take:** lilim's edits to `frameLoad.ts`,
+`slotBudget.ts`, `SceneManager`, `Stage`, `PerformanceDirector`, `EffectDirector`
+and their tests. Every one was a comment-only change removing the AI-texture
+overlay, which main had already done *and* then rewritten past — those files are
+denominated in milliseconds on this side.
+
+**Two things went wrong and were caught by tests rather than by review:**
+
+  - Taking lilim's SCENES array wholesale replaced the metadata of scenes BOTH
+    branches carry, silently dropping main's Scene Contracts from `wireframe`,
+    `chrome`, `orbs` and `kaleido`. `wireframe` lost its three modes outright.
+    The `pickVariedMode` tests caught it; all four are restored, including the
+    two now quarantined — a disabled scene keeps its metadata precisely so
+    re-enabling is moving one entry back.
+  - `slotBudget.test.ts` used `synthgrid` and `orbs` as its cost fixtures, and
+    both left the live roster. An unregistered id prices from the pessimistic
+    fallback rather than its measurement, which quietly changes what the test is
+    testing. Repointed at `ribbons` and `dissolve`.
+
+- [ ] **F106 · Five scenes in the live roster have never been benched** —
+      `src/engine/sceneCost.ts`
+      `malachite`, `matrix`, `kifs`, `maze` and `wingfold` arrived with the port
+      and price from `FALLBACK_COST_MS` — pessimistically, which is the safe
+      direction, but pessimistic is not measured. Meanwhile ten measured scenes
+      left the roster, so the cost table is now about half stale in one
+      direction and half absent in the other.
+      Run `/bench` and regenerate. `sceneCost.test.ts` names the five
+      explicitly; that list reaching empty is the definition of done.
 
 ---
 

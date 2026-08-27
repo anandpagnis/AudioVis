@@ -426,6 +426,17 @@ body,
   opacity: 0.55;
 }
 
+/* The same idea in the scene-params panel, which arrived from the lilim port
+   with its own name and its own margins. Both are kept: `SceneParamsPanel` is
+   laid out on a different grid from the menu sections, so sharing one rule
+   would mean one of the two carrying spacing that suits the other. */
+.param-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.55;
+}
+
 .quality-row {
   display: flex;
   gap: 6px;

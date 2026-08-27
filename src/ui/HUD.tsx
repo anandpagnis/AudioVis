@@ -24,6 +24,7 @@ import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
 import { FpsMeter } from './FpsMeter'
 import { AnalyticsPanel } from './AnalyticsPanel'
+import { SceneParamsPanel } from './SceneParamsPanel'
 import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
 import { LENS_STYLES } from '../engine/opticalRack'
 import { TRANSITION_STYLES, isStyleSelectable } from '../engine/transitions'
@@ -527,6 +528,8 @@ export function HUD() {
                   </button>
                 </div>,
               )}
+
+              {section('scene', 'Scene', <SceneParamsPanel />)}
 
               {section(
                 'look',

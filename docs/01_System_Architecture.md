@@ -336,7 +336,6 @@ user manual action
 | Mood commit | Event-driven (hysteresis-gated) |
 | Scene crossfade | ~2 beats duration |
 | Quality tier change | Min 2 s settle; 4 s climb hold |
-| AI texture fetch | Async; seconds to ~minute |
 
 ---
 

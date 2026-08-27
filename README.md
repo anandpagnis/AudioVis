@@ -42,7 +42,7 @@ commits one of seven states with hysteresis: **silence · ambient · mellow · g
 building · peak · aggressive**. It also predicts where the song is heading — a build-up
 projects its energy slope to estimate *beats until the peak*.
 
-Three switches (all on by default, all in the tune panel):
+Two switches (both on by default, both in the tune panel):
 
 - **Autopilot (`A`)** — the auto-VJ. On confident mood changes it requests the
   best-fitting scene and palette through the normal pipeline, so switches still land on
@@ -63,9 +63,9 @@ sustained headroom. Fixed low/medium/high pins are available in the tune panel (
 drops the chromatic-aberration pass). The debug panel (`D`) shows live fps, render scale,
 and GPU telemetry (draw calls, triangles, geometry/texture/program counts). All scenes
 dispose their GPU resources on switch; heavy scenes are single draw calls (30k-star
-galaxy, 48-ribbon field) or instanced meshes. The app is code-split: each scene and the
-AI layer load as their own chunks (prefetched when you request them), with three.js/react
-in long-cacheable vendor chunks.
+galaxy, 48-ribbon field) or instanced meshes. The app is code-split: each scene loads as
+its own chunk (prefetched when you request it), with three.js/react in long-cacheable
+vendor chunks.
 
 ## Response shaping & band routing (tune panel)
 

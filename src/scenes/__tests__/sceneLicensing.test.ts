@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   commerciallyShippableScenes,
   DISABLED_SCENES,
+  isNonCommercial,
   KNOWN_NC_SOURCE_IDS,
   nonCommercialSceneIds,
   SCENES,
@@ -47,12 +48,36 @@ describe('scene licensing', () => {
     }
   })
 
+  it('exercises the real predicate against known-restricted scenes', () => {
+    // NOT asserted against the live SCENES roster: a commercial-launch pass
+    // moved every non-original/non-attribution scene out of it into
+    // DISABLED_SCENES, so the live roster can legitimately contain zero
+    // restricted scenes — that is the intended end state, not a gap to guard
+    // against. DISABLED_SCENES exists specifically to hold restricted-licence
+    // scenes, so it is guaranteed non-empty and is what proves the predicate
+    // itself still correctly identifies them.
+    const restricted = DISABLED_SCENES.filter(isNonCommercial)
+    expect(restricted.length).toBeGreaterThan(0)
+    for (const s of restricted) {
+      expect(s.metadata.license, s.id).not.toBe('original')
+      expect(s.metadata.license, s.id).not.toBe('attribution')
+    }
+  })
+
   it('excludes every restricted scene from the shippable set', () => {
     const blocked = new Set(nonCommercialSceneIds())
-    expect(blocked.size).toBeGreaterThan(0)
     for (const s of commerciallyShippableScenes()) {
       expect(blocked, `${s.id} must not be shippable`).not.toContain(s.id)
     }
+  })
+
+  it('reports the live roster as fully shippable once every restricted scene is quarantined', () => {
+    // Currently true and worth pinning: if this regresses, either a restricted
+    // scene was moved back into SCENES without clearing its licence, or a
+    // newly-added scene shipped with no licence declaration at all (which
+    // defaults to `original` — see the opt-IN test below, and F01 in
+    // docs/ISSUES.md for why that default is a known open risk).
+    expect(commerciallyShippableScenes().length).toBe(SCENES.length)
   })
 
   it('treats an unmarked scene as unrestricted, so marking is opt-IN', () => {

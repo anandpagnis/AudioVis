@@ -116,8 +116,7 @@ The long-term product is a modular visual instrument:
 
 7. **Visual framework**
    - Palette blending, mood-driven parameter multipliers, shared camera/light rigs, beat-reactive
-     post effects, optional local AI texture overlay, adaptive quality scaling, and disposal
-     helpers are in place.
+     post effects, adaptive quality scaling, and disposal helpers are in place.
    - The 17 pre-pivot legacy scenes were deleted outright (in git history if ever
      wanted); `docs/09_Rendering_Engine.md` explains the cull and why the
      "small roster" constraint has since been lifted.
@@ -163,9 +162,9 @@ The long-term product is a modular visual instrument:
      applied inside `getEffectiveParams()` so every scene and the post chain respond.
    - Response shaping: band attack/release multipliers and beat-subdivision control
      (½×/1×/2×/4× pulses per grid beat) via `audioEngine.tuning`, editable in the tune panel.
-   - Code-splitting: each built-in scene and the AI texture layer are lazy chunks
-     (`preloadScene()` fires on request, so chunks arrive before the downbeat commit);
-     three.js/react/postprocessing ship as separate long-cacheable vendor chunks.
+   - Code-splitting: each built-in scene is a lazy chunk (`preloadScene()` fires on
+     request, so chunks arrive before the downbeat commit); three.js/react/postprocessing
+     ship as separate long-cacheable vendor chunks.
    - GPU telemetry in the debug panel: draw calls, triangles, geometry/texture counts, and
      shader program count from `renderer.info`, alongside fps and render scale.
 
@@ -414,7 +413,6 @@ parameters, and dispose manually-created GPU resources.
 | `R` | Start/stop recording the canvas + audio to .webm |
 | `S` | Save a PNG screenshot |
 | `M` | Toggle mood multipliers over user parameters |
-| `G` | Toggle the optional local AI texture layer |
 | `P` | Cycle palette |
 | `B` | Open presets and composition layers |
 | `T` | Open visual tuning controls |
