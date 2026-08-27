@@ -39,6 +39,33 @@ const P95_INTERVAL_SEC = 0.25
  */
 const RENDER_SCALE_HOLD_SEC = 3
 
+/**
+ * Frame time, as a multiple of the refresh interval, past which the hold above
+ * is abandoned and the scale applies on the spot.
+ *
+ * ## Why the hold needed an escape hatch
+ *
+ * `RENDER_SCALE_HOLD_SEC` is justified by an argument that is true at the
+ * margin and false in a crisis: a resize reallocates the post chain, so it
+ * should not be paid for a tier change that might reverse. But the hold is per
+ * STEP, and the ladder has five rungs — so a machine that needs to fall all the
+ * way to the bottom waits out `SETTLE_SEC + 3` five times over, on the order of
+ * twenty seconds, while rendering at a resolution it has already been told it
+ * cannot afford.
+ *
+ * The comment on the apply path makes that survivable by asserting the frame is
+ * "getting cheaper this instant either way, since scenes read the complexity
+ * knobs live". **That is false for six of the eleven live scenes** (F111): four
+ * of them read no quality knob at all, so between the tier changing and the
+ * resize landing, absolutely nothing happens. Twenty seconds of an unchanged
+ * frame, reported as "it looks great but lags".
+ *
+ * 3x the refresh interval is 50 ms at 60 Hz — three dropped frames in a row,
+ * which no amount of hysteresis should sit through. At that point one
+ * reallocation is unarguably cheaper than what the frame is already paying.
+ */
+const SCALE_EMERGENCY_RATIO = 3
+
 /** Live render stats, readable from anywhere (debug panel, fps meter). */
 export const perf = {
   fps: 60,
@@ -231,7 +258,13 @@ export function PerfMonitor() {
     if (renderScale.pairKey !== appliedPair.current) {
       applyRenderScale()
     } else if (quality.tier !== appliedTier.current) {
-      if (quality.tier !== heldTier.current) {
+      // A frame this late has stopped being a candidate for hysteresis — see
+      // SCALE_EMERGENCY_RATIO. Measured off the p95 rather than the EMA because
+      // the EMA is smoothed over seconds and this is the case where seconds are
+      // the whole problem.
+      if (p95.current > quality.refreshIntervalMs * SCALE_EMERGENCY_RATIO) {
+        applyRenderScale()
+      } else if (quality.tier !== heldTier.current) {
         heldTier.current = quality.tier
         heldSince.current = clock.elapsedTime
       } else if (clock.elapsedTime - heldSince.current >= RENDER_SCALE_HOLD_SEC) {

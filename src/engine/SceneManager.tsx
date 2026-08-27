@@ -16,6 +16,7 @@ import { quality } from './quality'
 import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
 import {
   applyFrameLoad,
+  fillScale,
   feedbackMsFor,
   frameLoad,
   lensRackMs,
@@ -871,10 +872,15 @@ export function SceneManager() {
           ),
         }
       }),
-      POST_CHAIN_MS +
+      // All four are fullscreen draws, so all four are linear in the frame's
+      // pixel count and none of them may be reserved as a flat number — see
+      // fillScale (F110). `renderScale.applied` is this frame's truth: PerfMonitor
+      // writes it before `setDpr`, and this component runs at priority -100.
+      (POST_CHAIN_MS +
         feedbackMsFor(performanceState.trails) +
         mirrorRackMs(performanceState.mirror) +
-        lensRackMs(performanceState.lens),
+        lensRackMs(performanceState.lens)) *
+        fillScale(renderScale.internalMP(renderScale.applied)),
     )
     // Everything on screen shares one framebuffer at one internal resolution, so
     // the budgets combine rather than compete — see combinePixelBudgets. Set at

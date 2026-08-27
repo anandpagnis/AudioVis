@@ -59,6 +59,48 @@ import { isFeedbackActive } from './feedbackParams'
 export const POST_CHAIN_MS = 2
 
 /**
+ * Internal megapixels every fixed-cost constant in this file is quoted at.
+ *
+ * 2.07 MP is a 1080p frame, which is the resolution `POST_CHAIN_MS = 2` was
+ * reasoned about even though it never said so — see {@link fillScale} for why
+ * that omission mattered.
+ */
+export const FILL_REFERENCE_MP = 2.07
+
+/**
+ * Scale a fullscreen-pass reservation from the reference frame to the frame
+ * actually being drawn (F110).
+ *
+ * ## Why the constants could not stay flat
+ *
+ * Every fixed cost in this file — the post chain, the feedback pass, both
+ * optical racks — is a fullscreen draw, and a fullscreen draw costs one unit of
+ * work per pixel. So all four are linear in the internal resolution, and a flat
+ * millisecond reservation is only correct at one resolution.
+ *
+ * That was survivable while the pixel budgets held every display near 1080p. It
+ * stopped being survivable with F107: a 4K panel at the top tier now renders
+ * 8.29 MP, four times the frame these numbers were reasoned about, so the chain
+ * reserved 2 ms for something costing nearer 8. The budget then cheerfully
+ * admitted layers into a frame that was already over, which is the precise
+ * failure `remainingMs` exists to prevent.
+ *
+ * It is still an ESTIMATE — `/bench` excludes the post chain, so the one cost in
+ * every frame remains the one never measured (F43, F90). But an estimate with
+ * the right SHAPE degrades correctly at both ends: it charges a 4K frame four
+ * times what it charges a 1080p one, and it gets cheaper the moment the tier
+ * ladder takes resolution away, which is exactly when the budget needs to
+ * loosen again.
+ *
+ * Total, and safe on a frame with no resolution yet: returns 1 rather than 0, so
+ * an uninitialised solver reserves the reference cost instead of nothing.
+ */
+export function fillScale(internalMP: number): number {
+  if (!isFinite(internalMP) || internalMP <= 0) return 1
+  return internalMP / FILL_REFERENCE_MP
+}
+
+/**
  * `FeedbackPass`, mounted permanently in the post chain (see EffectsDirector).
  *
  * Two fullscreen draws every frame regardless of the `trails` value — the
@@ -155,7 +197,11 @@ export const frameLoad = {
   layers: 0,
   /** Effect scenes currently firing. */
   effects: 0,
-  /** Post chain, plus the feedback pass while trails are actually running. */
+  /**
+   * Post chain, plus the feedback pass while trails are actually running, plus
+   * whichever optical racks are live — all four scaled to the frame's real
+   * internal resolution by {@link fillScale}.
+   */
   fixed: POST_CHAIN_MS + FEEDBACK_MS,
 }
 

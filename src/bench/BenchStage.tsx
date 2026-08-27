@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
+import type { AudioFeatures } from '../audio/types'
 import { updateAnimationSignals } from '../engine/AnimationDirector'
 import { EffectsDirector } from '../engine/EffectsDirector'
 import { memo } from 'react'
@@ -96,6 +97,71 @@ export function BenchStage({ runner, version }: { runner: BenchRunner; version: 
   )
 }
 
+/**
+ * Write a deterministic, musically plausible analysis frame (F112).
+ *
+ * ## Why synthetic rather than a real file
+ *
+ * A benchmark cell has to be comparable to every other cell, and a real track
+ * is not: two scenes swept a minute apart would be measured against different
+ * material, and the difference would land in the numbers as if it were a
+ * property of the scenes. So this is a fixed function of `f.time` — every cell
+ * sees the same signal at the same phase offset from its own start, and a
+ * re-run reproduces a previous run exactly.
+ *
+ * ## Why these values
+ *
+ * Mid-energy groove rather than a peak: the point is to get audio-gated scenes
+ * DRAWING so their profile means something, not to measure them at their
+ * loudest. A sweep pinned at full level would price every scene at its most
+ * expensive state and profile it at its brightest, which is a different
+ * distortion from the one being fixed rather than an absence of one.
+ *
+ * The 2 Hz carrier is 120 BPM. Bands are phase-offset from each other so the
+ * frame never sits at a single global brightness, and the waveforms carry real
+ * harmonic content so a trace scene has a shape to draw rather than a sine.
+ */
+function driveSyntheticAudio(f: AudioFeatures): void {
+  const t = f.time
+  const beat = Math.sin(t * Math.PI * 2 * 2) * 0.5 + 0.5 // 120 BPM
+  const swell = Math.sin(t * Math.PI * 2 * 0.125) * 0.5 + 0.5 // 8 s phrase
+
+  f.rms = 0.22 + beat * 0.1
+  f.energy = 0.45 + swell * 0.2
+  f.sub = 0.3 + beat * 0.25
+  f.bass = 0.4 + beat * 0.3
+  f.mid = 0.35 + swell * 0.2
+  f.presence = 0.3 + (1 - beat) * 0.15
+  f.high = 0.25 + (1 - beat) * 0.2
+  f.vocal = 0.3 + swell * 0.15
+  f.air = 0.2 + (1 - beat) * 0.12
+  f.centroid = 0.4 + swell * 0.15
+  f.spectralFlatness = 0.35
+  f.spectralRolloff = 0.55
+  f.crestFactor = 0.4 + beat * 0.2
+  f.flux = 0.25 + beat * 0.25
+  f.transient = beat > 0.92 ? 1 : 0
+
+  // Harmonic content, not a sine: a trace scene draws the SHAPE of this, and a
+  // single frequency gives it nothing to distinguish itself from a flat line.
+  for (let i = 0; i < f.waveform.length; i++) {
+    const x = (i / f.waveform.length) * Math.PI * 2
+    f.waveform[i] =
+      (Math.sin(x * 3 + t * 2) * 0.5 + Math.sin(x * 7 + t * 1.3) * 0.3 + Math.sin(x * 13 - t) * 0.2) *
+      (0.45 + beat * 0.35)
+  }
+  for (let i = 0; i < f.midWaveform.length; i++) {
+    const x = (i / f.midWaveform.length) * Math.PI * 2
+    f.midWaveform[i] = (Math.sin(x * 5 + t * 1.7) * 0.7 + Math.sin(x * 11 + t) * 0.3) * (0.4 + swell * 0.4)
+  }
+  // Spectrum: a falling tilt with a little motion, which is what most material
+  // actually looks like and what a spectrum-reading scene expects to see.
+  for (let i = 0; i < f.spectrum.length; i++) {
+    const n = i / f.spectrum.length
+    f.spectrum[i] = Math.max(0, (1 - n) ** 1.8 * (0.6 + 0.4 * Math.sin(t * 3 + n * 12)))
+  }
+}
+
 function BenchDriver({ runner, version }: { runner: BenchRunner; version: number }) {
   const gl = useThree((s) => s.gl)
   const setDpr = useThree((s) => s.setDpr)
@@ -130,8 +196,20 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
   // which matters, because a scene whose motion is frozen at t=0 can sit in an
   // unrepresentative state (a raymarch that happens to converge early, a
   // particle field still at its seed positions).
+  //
+  // Advancing the clock is not enough on its own, though (F112). Every OTHER
+  // field stays at zero, and a scene whose visible output is audio-gated then
+  // renders nothing at all — `ribbons` is a waveform trace, and it measured
+  // `fill` at 0.009 / 0.015 / 0.001 / 0 / 0 across the ladder with `centre`,
+  // `mid`, `edge` and `conflict` all exactly 0 at the bottom two. That reads
+  // like a scene going black at tier 3 and it is nothing of the kind: it was
+  // silent at all five, and the tier-to-tier wobble was noise around zero.
+  // Its COST rows were unaffected — it draws the same geometry either way — but
+  // its PROFILE rows were meaningless, and so was any role assignment derived
+  // from them.
   useFrame(() => {
     audioEngine.update()
+    driveSyntheticAudio(audioEngine.features)
     updateAnimationSignals()
   }, -100)
 

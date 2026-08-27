@@ -271,7 +271,11 @@ export function PerformanceDirector() {
       // were previously invisible to it: the post chain and the feedback pass
       // overlay when enabled. Composing against the raw tier budget meant the
       // layers were funded out of money the post chain had already spent.
-      budget: quality.knobs.frameBudgetMs - frameLoad.fixed,
+      // Floored: since F110 made the fixed costs scale with resolution, a 4K
+      // frame at the top tier can reserve more than the whole tier budget. That
+      // is a true statement about the frame and the right answer is to admit
+      // nothing, not to hand a negative number to the slot arithmetic.
+      budget: Math.max(0, quality.knobs.frameBudgetMs - frameLoad.fixed),
       pools: {
         background: backgroundPool,
         [leadRole]: forRole(leadRole),

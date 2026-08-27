@@ -217,6 +217,11 @@ export class QualityGovernor {
    * thresholds somewhere absurd and either pin the tier at 0 forever or walk it
    * to the floor. 4 ms covers 240 Hz; 21 ms covers 48 Hz.
    */
+  /** The display interval the thresholds are ratios of. Read-only to callers. */
+  get refreshIntervalMs(): number {
+    return this.refreshMs
+  }
+
   setRefreshInterval(ms: number): void {
     if (!Number.isFinite(ms)) return
     this.refreshMs = Math.min(21, Math.max(4, ms))

@@ -2774,8 +2774,8 @@ denominated in milliseconds on this side.
       the promise; what must hold is that the ladder has somewhere to go. A new
       test pins 4K native at tier 0 so this cannot regress silently.
 
-- [ ] **F110 - `POST_CHAIN_MS` is a fixed reservation that does not scale with
-      resolution** - `src/engine/frameLoad.ts`
+- [x] **F110 - `POST_CHAIN_MS` is a fixed reservation that does not scale with
+      resolution** - `src/engine/frameLoad.ts` *(fixed 2026-08-27)*
       Direct consequence of F107, logged rather than guessed at. The post chain
       now renders ~2.1x the pixels on a 1080p/1440p panel (0.69 -> 1.00 linear),
       but its frame-budget reservation is a flat `POST_CHAIN_MS = 2` with no
@@ -2788,8 +2788,53 @@ denominated in milliseconds on this side.
       transition budget for work that may not cost that much. The one with a
       safety net is the right side to err on until the chain is actually
       weighed.
-      Real fix is to measure it - same task as F43/F90 - and then make the
-      reservation proportional to `renderScale.internalMP()` rather than flat.
+      **Fixed the same day, because 4K made it urgent rather than academic.**
+      Reported as "4k is lagging a lot, p95 is 66.6 to 80" - 12-15 fps.
+      Every fixed cost in that file is a FULLSCREEN DRAW - the post chain, the
+      feedback pass, and both optical racks - and a fullscreen draw costs one
+      unit of work per pixel. All four are therefore linear in the internal
+      resolution, and a flat millisecond reservation is only ever correct at one
+      resolution. That was survivable while the budgets held every display near
+      1080p; F107 made a 4K panel render 8.29 MP at the top tier, four times the
+      frame these numbers were reasoned about, so the chain reserved 2 ms for
+      something costing nearer 8 - and the budget then admitted layers into a
+      frame that was already over, which is the exact failure `remainingMs`
+      exists to prevent.
+      Added `fillScale(internalMP)` - the ratio to a 1080p reference frame - and
+      multiplied the whole fixed term by it in SceneManager. Still an ESTIMATE
+      (`/bench` excludes the post chain, so F43/F90 stand), but an estimate with
+      the right SHAPE degrades correctly at both ends: it charges a 4K frame
+      four times what it charges a 1080p one, and it gets cheaper the moment the
+      ladder takes resolution away, which is exactly when the budget should
+      loosen again.
+      `PerformanceDirector`'s composition budget is now floored at 0 - a 4K
+      frame at tier 0 can legitimately reserve more than the whole tier budget,
+      and the right response is to admit nothing rather than hand a negative
+      number to the slot arithmetic.
+
+- [x] **F114 - The render-scale hold sat out a crisis for twenty seconds** -
+      `src/engine/PerfMonitor.tsx` *(fixed 2026-08-27)*
+      Found while chasing the 4K lag above, and it is most of why the ladder
+      appeared not to rescue anything.
+      `RENDER_SCALE_HOLD_SEC = 3` delays applying a tier's resolution so a
+      reallocation is not paid for a change that might reverse. Sound at the
+      margin. But the hold is per STEP and the ladder has five rungs, so a
+      machine that has to fall all the way to the bottom waits out
+      `SETTLE_SEC + 3` five times over - on the order of twenty seconds -
+      rendering the whole time at a resolution it has already been told it
+      cannot afford.
+      The apply path's own comment makes that sound harmless: the frame is
+      "getting cheaper this instant either way, since scenes read the complexity
+      knobs live". **That is false for six of the eleven live scenes** (F111),
+      four of which read no quality knob at all. For those, nothing whatsoever
+      happens between the tier changing and the resize landing. Twenty seconds
+      of an unchanged frame - reported, exactly, as "it looks great but lags".
+      Added `SCALE_EMERGENCY_RATIO = 3`: when the p95 is past three times the
+      refresh interval (50 ms at 60 Hz - three dropped frames in a row) the hold
+      is abandoned and the scale applies on the spot. One reallocation is
+      unarguably cheaper than what that frame is already paying. Measured off
+      the p95 rather than the EMA because the EMA is smoothed over seconds and
+      this is the case where seconds are the whole problem.
 
 - [x] **F108 - Mirror tiles and slice retired** -
       `src/engine/opticalDirector.ts` *(done 2026-08-27)*
@@ -2889,8 +2934,8 @@ denominated in milliseconds on this side.
       below the top tier, unexplained. Monotonisation makes the budget safe
       regardless, but see F111.
 
-- [ ] **F111 - The tier ladder cannot shed load on most of the roster** -
-      `src/scenes/*`
+- [~] **F111 - The tier ladder cannot shed load on most of the roster** -
+      `src/scenes/*` *(partly fixed 2026-08-27)*
       Six of eleven live scenes do not get cheaper when the tier drops (F113),
       and four never read `quality.knobs` at all. For those, dropping a tier
       buys nothing except whatever the resolution solve gives - and after F107
@@ -2900,14 +2945,29 @@ denominated in milliseconds on this side.
       the price of full quality on capable hardware: the machines that need
       tiers 1-2 are by definition ones where the frame nearly fits, and a 4K or
       5K panel still gets a smooth resolution descent at every rung.
-      The fix is per-scene rather than architectural - give the six scenes a
-      knob the ladder can actually turn (iteration caps, step counts, instance
-      counts). `wingfold` and `maze` already read `raymarchSteps` and
-      `malachite` reads `noiseOctaves`, so the wiring exists; those three simply
-      do not get measurably cheaper when it moves, which is its own question.
+      **`kifs` fixed.** It is the dearest scene in the roster (2.97 ms) and it
+      already HAD the mechanism - `uIterCount` is a real loop bound its shader
+      breaks on - it was simply driven by the user's complexity slider and
+      nothing else. Now capped by `quality.knobs.raymarchSteps` as well, exactly
+      as WingfoldJuliaScene does it, so the slider still spans its full range
+      and the tier decides where the top of that range sits. The floor of 6
+      folds is where the rose still reads as a rose.
+      **`matrix`, `chrome` and `wireframe` are correctly knob-less**, which was
+      worth establishing rather than assuming. `matrix` has no loop at all - it
+      is a pure fill-bound fragment shader. `chrome` is a MeshPhysicalMaterial,
+      also fill-bound. `wireframe` draws instanced screen-space quads, and
+      cutting the count would make edges literally VANISH, which is the same
+      argument quality.ts already makes about not discounting `particleFraction`
+      through a transition. For all three, resolution IS the correct lever and
+      the absence of a knob is a design decision rather than an omission.
+      **Still open, and the more interesting half:** `wingfold`, `maze` and
+      `malachite` all DO read quality knobs (`raymarchSteps`, `noiseOctaves`)
+      and still show no measurable cost response - `wingfold` is 3x DEARER below
+      tier 0. The wiring exists and does not bite. That needs a targeted
+      measurement, not another knob.
 
-- [ ] **F112 - The bench runs with no audio, so audio-gated scenes profile as
-      empty** - `src/bench/BenchStage.tsx`
+- [x] **F112 - The bench runs with no audio, so audio-gated scenes profile as
+      empty** - `src/bench/BenchStage.tsx` *(fixed 2026-08-27)*
       `ribbons` measures `fill` at 0.009 / 0.015 / 0.001 / 0 / 0 across the five
       tiers, with `centre`, `mid`, `edge` and `conflict` all exactly 0 at the
       bottom two. That reads like a scene going black at tier 3, and it is not:
@@ -2918,10 +2978,24 @@ denominated in milliseconds on this side.
       ~0.7 ms - but its PROFILE rows are meaningless, and so is any role
       assignment derived from them. The same trap waits for every future scene
       that gates on audio.
-      Fix is to drive a synthetic analysis frame during the sweep (a fixed
-      spectrum and level, deterministic so cells stay comparable) rather than
-      letting `audioEngine.update()` idle. Until then, treat a near-zero `fill`
-      as "unmeasured", not as "dark".
+      Fixed with `driveSyntheticAudio` in BenchStage: a deterministic analysis
+      frame written after `audioEngine.update()` each tick. Synthetic rather
+      than a real file because a benchmark cell must be comparable to every
+      other cell, and a real track is not - two scenes swept a minute apart
+      would be measured against different material and the difference would land
+      in the numbers as though it were a property of the scenes. This is a pure
+      function of `f.time`, so a re-run reproduces a previous run exactly.
+      Deliberately a mid-energy groove (120 BPM carrier, 8 s phrase swell) and
+      not a peak: the goal is to get audio-gated scenes DRAWING so their profile
+      means something, not to measure them at their loudest. A sweep pinned at
+      full level would price every scene at its most expensive state and profile
+      it at its brightest - a different distortion, not an absence of one.
+      Waveforms carry real harmonic content rather than a sine so a trace scene
+      has a shape to draw, and the spectrum falls with a tilt because that is
+      what most material actually looks like.
+      **The cost rows from the 2026-08-27 sweep predate this**, so `ribbons` and
+      any other audio-gated scene are priced from a silent frame and should be
+      re-benched.
 
 ---
 
