@@ -2350,7 +2350,39 @@ thing gets built later against a replaced roster with no ground truth.
 Declaration is intent; measurement is a safety check. Same posture
 `trusted: false` already takes on cost claims.
 
-### Step 3 result — validated against the sixteen (2026-08-27)
+### Step 3 result, after both fixes — 13/16 (2026-08-27)
+
+Five sweeps. The final numbers, and what each disagreement means:
+
+  scene      fill   centre  conflict   declared          verdict
+  ribbons   0.026    0.74      1.27    accent,overlay    VETOED on conflict
+  plasma    0.116    0.57      1.10    accent,overlay    VETOED on conflict
+  orbs      0.632    0.18      0.48    accent,bg,overlay VETOED on fill
+
+**`conflict` is the statistic that works.** It orders the whole roster cleanly —
+`ribbons` 1.27 at the centred end down to `juliawings` 0.27 at the peripheral
+end — and that ordering matches what the scenes look like.
+
+Its two vetoes are the interesting result of this whole exercise. It says
+`ribbons` and `plasma` fight a centred subject. **Issue 3 in this ledger is a
+human complaint that `ribbons` is "too aggressive and overused" as a layer**, and
+the profiler reached that from pixels without being told. It may be disagreeing
+with the DECLARATION while agreeing with the REPORT — which would make it right
+and the roster stale. Somebody should look at those two as layers and decide who
+is wrong before step 4 ships.
+
+**`orbs` is the profiler still being wrong**, and the reason is known rather than
+mysterious: the thresholds in `T` were calibrated against pre-post-chain profiles
+and now sit on a completely different distribution. Every scene's `fill` moved
+once bloom entered the measurement. Re-deriving them is legitimate, but it has to
+be done against more than sixteen points or it is just overfitting with extra
+steps — which is exactly what two of these five sweeps taught.
+
+**Step 4 remains unstarted, deliberately.** Not because the tool is bad — it is
+useful as a submission report today — but because a veto needs to be right about
+`orbs`, and it currently is not.
+
+### Step 3 result — first attempt, before either fix (2026-08-27)
 
 Steps 1 and 2 are done: `docs/10_Scene_Roles.md` is the contract,
 `src/bench/sceneProfile.ts` is the implementation, and `/bench?profile` sweeps
@@ -2401,7 +2433,59 @@ This is what step 3 was for. The idea holds in shape — the statistics do
 separate subjects from layers, and they reached several calls independently —
 and it is not yet trustworthy enough to give a veto over anyone's submission.
 
-### The agreed fixes for both defects (2026-08-27, not yet built)
+### Both defects fixed (2026-08-27)
+
+Built as planned below, with three corrections the tests forced.
+
+**Defect 1.** `/bench?profile` now mounts `EffectsDirector`. It also skips
+`BenchDriver`'s own `gl.render` in that mode — the composer draws at priority 1
+too, and two renderers at one priority both run — and moves the readback to
+priority 2, which is the first moment the COMPOSITED frame exists. A readback
+taken alongside the draw would have sampled the frame before bloom, grade and
+gain, which is the exact blind spot the pass exists to remove. Warmup goes
+60 → 240 frames because the exposure servo has a ~2.3 s time constant, and
+profiling a gain that is still travelling makes a scene's profile depend on
+what the previous cell left behind.
+
+**Defect 2.** The field is normalised before any composition statistic is
+taken — but to its **RANGE**, [p5, p99], not to its top.
+
+That correction cost a whole validation run and is the most useful thing this
+work produced. Normalising to p99 alone, with the post chain now mounted, took
+`orbs` from `fill 0.021` to `fill 0.963` and `kaleido` from 0.061 to 0.992.
+Every scene in the roster came out above 0.83 and `fill` stopped discriminating
+at all — agreement fell from 13/16 to 12/16, worse than before either fix.
+
+The two fixes had interacted. With the post chain there is no true black any
+more: bloom's halo and the fog veil lift the floor. Normalising to the top then
+multiplies that lifted floor up, and a threshold calibrated for raw frames
+counts all of it as lit. The tell was `orbs` being vetoed as a background — the
+scene the whole roster agrees is the best one — which is a metric being wrong
+rather than a roster being wrong.
+
+**A flat field has no range**, so range-normalisation reports it as having no
+structure. That is true and it opened a hole: judged on shape alone a mid-grey
+wash looks like an empty frame and would be admitted as a layer, where it would
+destroy everything under it. `canBeLayer` therefore also consults **absolute**
+`meanLuma` — the one place level is still checked, and it has to be.
+
+Three further things the tests changed:
+
+  - `normaliseScale` returns **0**, not 1, for an effectively empty frame. A
+    distinct signal rather than a scale, because returning 1 left `conflict`
+    energy-weighting sensor-floor noise into a confident 0.26 on a field whose
+    brightest pixel was 0.0016. An empty frame now reports empty in every
+    statistic, not only in `fill`.
+  - **Motion is measured on the RAW field**, like `meanLuma` and unlike
+    everything else. Normalising every frame to the same level made a scene that
+    pulses in brightness read as perfectly still — exactly wrong for the
+    question motion is asked for, which is whether something can sit under a
+    composition for a whole section without pulling the eye.
+  - p99 from a 256-bin histogram, so the scale is quantised; equality
+    assertions between a dim and a bright version of the same field had to
+    become a tolerance.
+
+### The plan these were built from (2026-08-27)
 
 **Defect 1 — a second pass, not a flag.** Cost and profile want opposite things
 from the same harness and cannot share a run.
