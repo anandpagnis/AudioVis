@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { QualityGovernor } from '../quality'
+import { QualityGovernor , snapToRefreshInterval } from '../quality'
 
 /**
  * The quality governor's two axes.
@@ -318,5 +318,48 @@ describe('quality governor — discount must be imperceptible', () => {
     const first = g.knobs
     g.setTransitionDiscount(0.7)
     expect(g.knobs).toBe(first)
+  })
+})
+
+describe('snapToRefreshInterval', () => {
+  it('rounds a measured 60 Hz panel back onto 16.67, not 15.70', () => {
+    // The number that made F119 real. `PerfMonitor` estimates the display
+    // interval from the 10th percentile of frame times, and a session recording
+    // measured that p10 at 15.70 ms on a locked 60 Hz display — because 13.3%
+    // of frames arrive EARLY (the compositor catching up after a late one), so
+    // the fast tail sits below the interval rather than on it.
+    //
+    // A 6% underestimate is fatal at these gates: it puts the STEADY line at
+    // 16.48 ms, below the vsync interval, so a perfect 60 fps can never be
+    // judged steady and sits a hair under the demote line forever.
+    expect(snapToRefreshInterval(15.7)).toBeCloseTo(1000 / 60, 3)
+  })
+
+  it('snaps high-refresh panels to their own rate, not to 60', () => {
+    expect(snapToRefreshInterval(6.5)).toBeCloseTo(1000 / 144, 3)
+    expect(snapToRefreshInterval(8.0)).toBeCloseTo(1000 / 120, 3)
+    expect(snapToRefreshInterval(4.0)).toBeCloseTo(1000 / 240, 3)
+  })
+
+  it('leaves an exact measurement exactly where it is', () => {
+    expect(snapToRefreshInterval(1000 / 60)).toBeCloseTo(1000 / 60, 6)
+    expect(snapToRefreshInterval(1000 / 144)).toBeCloseTo(1000 / 144, 6)
+  })
+
+  it('passes through anything not near a real display rate', () => {
+    // An unusual panel degrades to the previous behaviour rather than being
+    // snapped onto a rate it is not running at.
+    expect(snapToRefreshInterval(30)).toBe(30)
+    expect(snapToRefreshInterval(0)).toBe(0)
+  })
+
+  it('never lets a perfect 60 fps frame read as overloaded', () => {
+    // The end-to-end statement of the bug, at the governor rather than the
+    // helper: a machine holding vsync exactly must be able to CLIMB.
+    const g = new QualityGovernor()
+    g.setMode('auto')
+    g.setRefreshInterval(15.7) // what the estimator actually reports at 60 Hz
+    for (let t = 0; t < 200; t++) g.tick(1000 / 60, t, 1000 / 60)
+    expect(g.tier).toBe(0)
   })
 })

@@ -187,6 +187,69 @@ const STEP_UP_P95_RATIO = 1.25 // ~20.8 ms at 60 Hz — tail still tight
 const DEFAULT_REFRESH_MS = 1000 / 60
 
 const SETTLE_SEC = 2 // min seconds between any change (avoid oscillation)
+/**
+ * Display intervals a real monitor actually runs at, in milliseconds.
+ *
+ * 240, 165, 144, 120, 90, 75 and 60 Hz. Not exhaustive, and it does not need to
+ * be — {@link snapToRefreshInterval} falls through to the raw estimate for
+ * anything that does not match.
+ */
+const STANDARD_INTERVALS_MS = [1000 / 240, 1000 / 165, 1000 / 144, 1000 / 120, 1000 / 90, 1000 / 75, 1000 / 60]
+
+/** How far a measurement may sit from a standard interval and still snap to it. */
+const SNAP_TOLERANCE = 0.12
+
+/**
+ * Round a measured frame interval to the display rate it is obviously trying to
+ * be (F119).
+ *
+ * ## The measurement runs LOW, and the thresholds are tighter than the error
+ *
+ * `PerfMonitor` estimates the interval from the 10th percentile of frame times,
+ * on the stated reasoning that "rAF is vsync-locked, so a frame can be LATE (a
+ * multiple of the interval) but essentially never early — the fast tail is
+ * therefore the interval".
+ *
+ * **The second half of that is false**, and a session recording measured how
+ * false: on a locked 60 Hz display, 13.3% of frames came in under 16.0 ms, and
+ * 76% of those immediately followed a LATE frame. That is the compositor
+ * catching up — a long frame is followed by a short one, so the fast tail sits
+ * BELOW the interval rather than on it. The p10 came out at 15.70 ms against a
+ * true 16.67.
+ *
+ * A 6% underestimate would not matter if the governor's gates were loose. They
+ * are not: it demotes above `1.1x` and only calls a frame steady below `1.05x`.
+ * At `refreshMs = 15.70` that puts the demote line at 17.27 ms and the STEADY
+ * line at 16.48 — **below the vsync interval itself**. A machine hitting a
+ * flawless 60 fps could therefore never be judged steady, and sat 0.6 ms under
+ * the demote line all night. The same recording shows exactly that: a demotion
+ * at `ema 16.67`, and 69% of the session spent at the survival tier on hardware
+ * that was never once late.
+ *
+ * Snapping fixes the shape of the error rather than the ratios. The p10 is still
+ * the right ESTIMATOR — it is what resists a machine that is dropping most of
+ * its frames, where a median would report the achieved rate instead of the
+ * interval — it just needs rounding to the grid of rates a display can actually
+ * run at. 15.70 snaps to 16.67; a 144 Hz panel's ~6.5 snaps to 6.94.
+ *
+ * Anything not within {@link SNAP_TOLERANCE} of a known rate is passed through
+ * untouched, so an unusual display degrades to the old behaviour rather than
+ * being snapped to a rate it is not running at.
+ */
+export function snapToRefreshInterval(ms: number): number {
+  if (!isFinite(ms) || ms <= 0) return ms
+  let best = ms
+  let bestErr = SNAP_TOLERANCE
+  for (const candidate of STANDARD_INTERVALS_MS) {
+    const err = Math.abs(ms - candidate) / candidate
+    if (err < bestErr) {
+      bestErr = err
+      best = candidate
+    }
+  }
+  return best
+}
+
 const CLIMB_HOLD_SEC = 4 // sustained headroom required before climbing back
 
 /**
@@ -236,6 +299,7 @@ export class QualityGovernor {
   }
 
   setRefreshInterval(ms: number): void {
+    ms = snapToRefreshInterval(ms)
     if (!Number.isFinite(ms)) return
     this.refreshMs = Math.min(21, Math.max(4, ms))
   }

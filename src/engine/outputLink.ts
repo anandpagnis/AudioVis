@@ -294,6 +294,7 @@ export function startLink(): void {
       telemetry = m.d
       lastTeleAt = performance.now()
       adoptCommittedScene(m.d)
+      adoptOutputPalette(m.d)
       adoptOutputStatus(m.d)
     } else if (m.t === 'hello') {
       // The output window has (re)loaded and has nothing. Only the active
@@ -490,6 +491,38 @@ function adoptCommittedScene(d: Telemetry): void {
   const s = useStore.getState()
   if (!d.scene || d.scene === s.sceneId) return
   useStore.setState({ sceneId: d.scene, pendingSceneId: null } as never)
+}
+
+/**
+ * Adopt the palette the OUTPUT window is actually showing (F120).
+ *
+ * ## The loop this closes
+ *
+ * `AutoPilot` runs inside the Canvas, so it runs in the output window, and it
+ * is what picks palettes. The console never learned about those picks — and the
+ * console is the look LEADER, so its `paletteId` is what `snapshotLook`
+ * publishes.
+ *
+ * That made a feedback loop out of `adoptCommittedScene` directly above.
+ * Adopting a committed scene changes the console's `sceneId`, `sceneId` is a
+ * `LOOK_FIELD`, so the change publishes a look — carrying the console's STALE
+ * palette back to the output, which dutifully applies it.
+ *
+ * A session recording caught it exactly: `violet -> ocean` at 107.20 s and
+ * `ocean -> violet` at 107.30 s; `violet -> mono` at 120.26 s and back at
+ * 120.28 s — one frame later, each time immediately after a scene commit. Every
+ * such revert landed on the console's own persisted palette, which is why one
+ * colour held 100 of 155 seconds while the mood pool offered four.
+ *
+ * Adopting here breaks the loop at its source: the console's snapshot stops
+ * being stale, so the look it publishes agrees with what is on screen. Same
+ * shape and same reasoning as `adoptCommittedScene` — the output owns what it
+ * committed, and the controller follows.
+ */
+function adoptOutputPalette(d: Telemetry): void {
+  const s = useStore.getState()
+  if (!d.palette || d.palette === s.paletteId) return
+  useStore.setState({ paletteId: d.palette } as never)
 }
 
 /** Latest telemetry from the output window, or null when it has gone quiet. */

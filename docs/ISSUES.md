@@ -3107,9 +3107,8 @@ denominated in milliseconds on this side.
       than as more of the same orange. Order still carries the intent - first
       entry is what the mood wants most - so the moods stay distinct.
 
-- [~] **F118 - The show held one scene for 38 s at the start, and the recorder
-      could not say why** - `src/engine/sessionLog.ts`
-      *(instrumented 2026-08-27, cause still open)*
+- [x] **F118 - The scene-switch gate was unreachable** -
+      `src/engine/AutoPilot.tsx` *(fixed 2026-08-28)*
       Reported as "it seems to not change the scene for like 15-20 secs upon
       start". The recording confirms it and sharpens it: first scene commit at
       **39.6 s**, then 56.3 s and 72.6 s - so steady state is ~16 s and only the
@@ -3141,11 +3140,105 @@ denominated in milliseconds on this side.
         - `qualityMode` and `autoPilot`, which is what would have made F116
           obvious in one line instead of needing the frame times re-derived.
 
+      **Answered by the next recording, outright.** Across 155 s of real music
+      `confidence` peaked at **0.392** and averaged 0.259, against a gate
+      demanding >= 0.4. **Zero of 600 samples passed.** So this was never a
+      threshold that occasionally held the show back - it was outside the
+      estimator's range entirely, and `AutoPilot` has not once driven a scene
+      change in its life. Every switch in that session came from
+      `PerformanceDirector`'s section boundaries instead, which is exactly why
+      the pacing read as structural rather than musical.
+      Lowered to 0.25, just under the observed mean. The blast radius is already
+      bounded: `MIN_SUBJECT_DWELL_BEATS` (32 beats, ~12.6 s at 152 BPM) throttles
+      the rate and the `pendingSceneId` guard stops a second request evicting a
+      warming one. `MOOD_CHANGE_MAX_AMBIGUITY` deliberately NOT touched in the
+      same change - loosening two gates at once makes the next recording
+      impossible to read.
+      **Left open:** a confidence that never exceeds 0.39 on clearly-structured
+      music suggests the estimator's scale is itself suspect. Re-tuning a
+      threshold is not the same as fixing that. See F121.
+
+- [x] **F119 - The governor demoted a machine holding a perfect 60 fps** -
+      `src/engine/quality.ts` *(fixed 2026-08-28)*
+      Second recording, and the reason the picture still looked soft after F116
+      woke the ladder up. The frame times were excellent - p95 18.6 ms, 59.5
+      effective fps, 0.5% of frames over 33 ms - and the show still spent **69%
+      of the session at tier 4**, rendering 1.33-2.51 MP on an 8.29 MP display.
+      `PerfMonitor` estimates the display interval from the 10th percentile of
+      frame times, on the stated reasoning that "rAF is vsync-locked, so a frame
+      can be LATE but essentially never early - the fast tail is therefore the
+      interval". **The second half is false**, and the recording measures how
+      false: 13.3% of frames came in under 16.0 ms, and 76% of those immediately
+      followed a late one. That is the compositor catching up, so the fast tail
+      sits BELOW the interval rather than on it. Measured p10: **15.70 ms against
+      a true 16.67**.
+      A 6% underestimate is fatal at these gates. `refreshMs = 15.70` puts the
+      demote line at 17.27 ms and the STEADY line at **16.48 - below the vsync
+      interval itself**, so a machine hitting a flawless 60 fps can never be
+      judged steady and sits 0.6 ms under the demote line indefinitely. The
+      recording shows the endpoint of that reasoning: a demotion logged at
+      `ema 16.67`, on hardware that was never once late.
+      Fixed by snapping the estimate onto the grid of rates a display can
+      actually run at (240/165/144/120/90/75/60 Hz), within a 12% tolerance.
+      The p10 is still the right ESTIMATOR - it is what resists a machine
+      dropping most of its frames, where a median would report the achieved rate
+      instead of the interval - it just needed rounding. Anything not near a
+      known rate passes through untouched, so an unusual panel degrades to the
+      old behaviour rather than being snapped to a rate it is not running at.
+
+- [x] **F120 - The console's stale palette clobbered every automatic pick** -
+      `src/engine/outputLink.ts` *(fixed 2026-08-28)*
+      Reported as the palette not using its full range, and the second recording
+      shows the mechanism frame by frame: `violet -> ocean` at 107.20 s and
+      `ocean -> violet` at 107.30 s; `violet -> mono` at 120.26 s and back at
+      120.28 s. One frame later, every time, and every revert landing on the
+      same colour - which is why `violet` held **100 of 155 seconds** while the
+      mood pool offered four.
+      A genuine feedback loop, and `adoptCommittedScene` is one half of it.
+      `AutoPilot` runs inside the Canvas, so it runs in the OUTPUT window, and
+      it is what picks palettes. The console never learned about those picks -
+      but the console is the look LEADER, so its `paletteId` is what
+      `snapshotLook` publishes. Adopting a committed scene changes the console's
+      `sceneId`; `sceneId` is a `LOOK_FIELD`; so the adoption publishes a look
+      carrying the console's stale palette straight back to the output, which
+      applies it.
+      Telemetry already carried `palette` - the console simply never adopted it.
+      Added `adoptOutputPalette`, same shape and same reasoning as
+      `adoptCommittedScene`: the output owns what it committed, the controller
+      follows. The console's snapshot stops being stale, so the look it
+      publishes agrees with what is on screen.
+      Worth noting the class: this is the third bug (F100, F102, now F120) where
+      the control window's belief and the output window's reality diverged. The
+      pattern each time is a field the OUTPUT owns being published by the
+      CONSOLE. Anything auto-driven inside the Canvas is in that category.
+
+- [ ] **F121 - Mood confidence never exceeds 0.39, and BPM flips octave** -
+      `src/audio/*`
+      Two findings from the same recording, both about the audio read rather
+      than the engine.
+      **Confidence.** Across 155 s of clearly-structured music the mood
+      estimator's `confidence` peaked at 0.392 and averaged 0.259, with
+      `ambiguity` averaging 0.555 and touching 0.999. F118 lowered the gate to
+      match the observed range, which unblocks the show, but a confidence that
+      cannot exceed 0.39 on material like this is a statement about the
+      estimator's scale, not about the music. Either it is mis-normalised or the
+      feature set genuinely cannot separate these moods - and those want
+      different fixes.
+      Related: the read sat on `mellow` for **139 of 155 seconds** while energy
+      averaged 0.481 and bass regularly passed 0.8. A mood estimator that
+      answers "mellow" to that is not merely unsure, it is wrong.
+      **BPM octave.** The tempo read flips between ~76 and ~152 within the same
+      track - 8% of samples at the half-tempo reading. Every consumer of `bpm`
+      (transition durations, phrase prediction, the dwell floor in beats)
+      silently doubles or halves with it.
+      Neither is guess-fixable from this data; both need the estimator itself
+      opened up against a known track.
+
 ---
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **751 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **756 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

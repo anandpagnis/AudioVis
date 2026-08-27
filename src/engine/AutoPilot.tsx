@@ -48,7 +48,37 @@ const MANUAL_HOLD_SEC = 45 // back off after the DJ touches anything
 // A committed mood change only drives a scene/palette switch once the read is
 // solid: confident enough, and not a near-tie with the runner-up state.
 // Borderline changes stay pending and fire on a later frame once they clear.
-const MOOD_CHANGE_MIN_CONFIDENCE = 0.4
+/**
+ * Confidence a mood read needs before it may move the SCENE (F118).
+ *
+ * ## 0.4 was outside the estimator's range
+ *
+ * Reported as "it seems to not change the scene for like 15-20 secs upon
+ * start", and the first recording could not explain it because neither this
+ * input nor its sibling was being written down. With both instrumented, the
+ * second recording answered it outright: across 155 seconds of real music,
+ * `confidence` peaked at **0.392** and averaged 0.259. **Zero of 600 samples
+ * cleared 0.4.**
+ *
+ * So this was not a threshold that sometimes held the show back. It was
+ * unreachable, and `AutoPilot` has never once driven a scene change in its
+ * life — every switch in that recording came from `PerformanceDirector`'s
+ * section boundaries instead, which is why the pacing looked structural rather
+ * than musical.
+ *
+ * 0.25 sits just under the observed mean, so a firm read passes and a weak one
+ * still does not. The damage from being wrong is bounded by machinery that
+ * already exists: `MIN_SUBJECT_DWELL_BEATS` (32 beats, ~12.6 s at 152 BPM)
+ * throttles the rate, and the `pendingSceneId` guard stops a second request
+ * evicting a warming one.
+ *
+ * **The deeper question is left open on purpose.** A confidence that never
+ * exceeds 0.39 on clearly-structured music suggests the estimator's scale is
+ * itself suspect, and re-tuning a threshold is not the same as fixing that.
+ * `MOOD_CHANGE_MAX_AMBIGUITY` is deliberately NOT touched in the same change —
+ * loosening two gates at once would make the next recording impossible to read.
+ */
+const MOOD_CHANGE_MIN_CONFIDENCE = 0.25
 const MOOD_CHANGE_MAX_AMBIGUITY = 0.6
 
 /**
