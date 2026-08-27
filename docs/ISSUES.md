@@ -16,13 +16,69 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
 
 ## Blockers
 
-- [ ] **F01 · Absent licence defaults to "shippable"** — `src/scenes/index.ts`
+- [~] **F01 · Absent licence defaults to "shippable"** — `src/scenes/index.ts`
       `nonCommercialSceneIds()` treats a missing `license` field as `original`, so 15
       scenes with no declared provenance pass the commercial filter. The type's own
       doc comment says the opposite: *"anything not marked original or attribution
       should be assumed unshippable."* Invert the default, trace every ported scene to
       its source, and add a build-time gate.
       **Today only 3 scenes are provably safe to sell.**
+      Partly done, see F46: every scene traced to its source and correctly marked
+      (`original` / `attribution` / `noncommercial` / `unverified`), and everything
+      that wasn't provably `original` or `attribution` moved OUT of `SCENES` into
+      `DISABLED_SCENES` — so it cannot ship OR run, not merely fail a filter someone
+      forgot to call. Still open: the default itself is unchanged (`?? 'original'` in
+      `nonCommercialSceneIds()`), so a NEW scene added later with no `license` field
+      still passes the filter silently. Inverting that default is a separate,
+      deliberately-not-bundled change: it requires every one of the 6 still-live,
+      genuinely original scenes to gain an explicit `license: 'original'` field first
+      (right now their safety is real but implicit), and it rewrites a test
+      (`sceneLicensing.test.ts`) that currently asserts the opposite philosophy on
+      purpose. Both are mechanical; neither is done here.
+
+- [x] **F46 · Pre-commercial licence sweep: 12 scenes moved to `DISABLED_SCENES`** —
+      `src/scenes/index.ts`. Direct follow-up to F01, run because the product is
+      moving toward a commercial launch and every scene of unconfirmed or
+      non-commercial provenance needed to be unreachable, not just excluded from
+      one filter function.
+      Audited every registered scene's own header comment against its declared
+      `metadata.license` and found the two had drifted apart for 10 of them —
+      the header knew the scene was a Shadertoy port or explicitly NC-licensed,
+      but the metadata field was simply absent, which the codebase's OWN
+      documented policy (see F01) says should never be trusted as safe.
+      Moved out of `SCENES` into `DISABLED_SCENES`, not deleted — files, lazy
+      loaders and components all stay live and typecheck/build, so re-enabling
+      one later is moving its entry back:
+        - **Confirmed non-commercial** (`license: 'noncommercial'`): `network`
+          (header states CC BY-NC-SA 3.0 by name), `synthgrid` (same, was
+          already marked but still sitting in the live roster), `panic`
+          (already disabled for an unrelated reason, now also correctly marked).
+        - **Unverified / presumptive non-commercial** (`license: 'unverified'`):
+          `inversion`, `foldpath`, `torusfold`, `juliawings`, `orbs`, `kaleido`,
+          `trail` — all Shadertoy-derived with no licence attached to the
+          source. Shadertoy's own default for an unmarked upload is CC
+          BY-NC-SA 3.0, so these are treated as blocked until someone actually
+          confirms otherwise with the original author. `tunnel` (already
+          disabled) got the same marking for the same reason, independent of
+          why it was already out of the roster.
+        - **Genuinely licensed, held out anyway** (`license: 'attribution'`):
+          `heap` — CC BY 4.0 actually permits commercial use conditioned on
+          crediting the author, so this one is NOT in the same bucket as the
+          rest. Pulled on request as a product decision pending where that
+          credit would live, not because permission is missing.
+      `network` added to `KNOWN_NC_SOURCE_IDS` (confirmed-NC tracking,
+      independent of roster membership — see that constant's own doc comment).
+      Live roster is now 10 scenes: `wireframe`, `plasma`, `dissolve`, `chrome`,
+      `ribbons`, `pointcloud`, `ink`, `matrix`, `kifs`, `maze`. Two pieces of
+      fallout fixed alongside: `ink`/`matrix` had `compatibleWith` entries
+      referencing now-disabled ids (`registry.test.ts` catches this — the fix
+      is trimming the list, not weakening the test), and one `slotBudget.test.ts`
+      fixture pinned to `getScene('orbs')`, which now silently degrades to
+      `SCENES[0]` (`wireframe`) per the documented fallback — swapped for
+      `matrix`, which is both `low`-cost like `orbs` was AND genuinely
+      layer-role-eligible, so the fixture is honest again rather than just
+      numerically lucky.
+      `npm run check`: 41 files, 459 tests, clean build.
 
 - [x] **F02 · The "AI" tier depends on the customer's own localhost** —
       `src/engine/textureGenerator.ts` *(deleted)*

@@ -21,7 +21,7 @@ import { drastic } from '../engine/sceneParams'
  *
  * ## No `pixelBudget`
  *
- * Every other fullscreen-shader scene in the roster (see `InkFieldScene`) opts
+ * Every other fullscreen-shader scene in the roster (see `MalachiteScene`) opts
  * into an offscreen render at reduced resolution because a *soft* field reads
  * identically whether it was upscaled or not. Glyphs are the opposite case: they
  * are small hard-edged blocks, and downsampling then upscaling turns crisp
@@ -45,7 +45,7 @@ import { drastic } from '../engine/sceneParams'
 
 /**
  * Exported so the shader can be compiled AND linked outside the app — the
- * roster convention (see InkFieldScene). Full source is
+ * roster convention (see KifsRoseScene). Full source is
  * \`SHADER_SCENE_PRELUDE + FRAG\` (no shared \`include\`; \`hash\`/\`glyph\` are
  * self-contained).
  */

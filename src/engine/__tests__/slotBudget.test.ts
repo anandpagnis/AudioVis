@@ -238,24 +238,32 @@ describe('background slot composition', () => {
 
   it('admits one cheap layer alongside a heavy primary at tier 2', () => {
     // Tier 2's budget (7) less a heavy primary (4) less the fixed cost (2)
-    // leaves exactly 1 spare unit — enough for `orbs` (`low`, 1 unit) and
+    // leaves exactly 1 spare unit — enough for `matrix` (`low`, 1 unit) and
     // nothing costlier. This unit only exists because the AI-texture overlay's
     // GENERATIVE_UNITS reservation was removed outright rather than merely
     // disabled; real GPU headroom is honestly reflected here, not clawed back
     // to preserve a boundary that a phantom cost used to enforce.
     //
-    // Pool pinned to exactly `orbs` rather than the whole roster: with more
+    // Pool pinned to exactly `matrix` rather than the whole roster: with more
     // than one candidate, `pickVariedScene` rolls `Math.random()` and could
     // land on a costlier accent scene the 1 spare unit can't fund, making the
     // assertion flaky through no fault of the budget logic under test.
+    //
+    // Was `orbs` — moved to DISABLED_SCENES in the commercial-licence pass, at
+    // which point `getScene('orbs')` silently degrades to `SCENES[0]`
+    // (`wireframe`, `primary`-only) rather than throwing, and the test passed
+    // a primary-only scene off as an accent candidate without saying so.
+    // `matrix` is `low`-cost like `orbs` was, AND genuinely `overlay`-role
+    // eligible, so the fixture is honest again rather than just numerically
+    // lucky.
     const out = composeLayers({
       primaryCost: 'high',
       budget: sceneBudget(2),
-      pools: { accent: [getScene('orbs')] },
+      pools: { accent: [getScene('matrix')] },
       mood: 'groove',
       recentIds: [],
     })
-    expect(out).toEqual({ background: null, accent: 'orbs', overlay: null })
+    expect(out).toEqual({ background: null, accent: 'matrix', overlay: null })
   })
 
   it('still composes a layer alongside a heavy primary at the top tier', () => {

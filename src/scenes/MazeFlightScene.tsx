@@ -96,7 +96,7 @@ const MAX_AO = 5
 
 /**
  * Exported so the shader can be compiled AND linked outside the app — the
- * roster convention (see InkFieldScene). Full source is
+ * roster convention (see MatrixRainScene). Full source is
  * `SHADER_SCENE_PRELUDE + PALETTE_RAMP_GLSL + FRAG`.
  */
 export const FRAG = /* glsl */ `

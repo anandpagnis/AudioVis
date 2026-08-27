@@ -30,10 +30,12 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   trail: () => import('./TrailLineScene').then((m) => ({ default: m.TrailLineScene })),
   synthgrid: () => import('./SynthGridScene').then((m) => ({ default: m.SynthGridScene })),
   panic: () => import('./KernelPanicScene').then((m) => ({ default: m.KernelPanicScene })),
-  ink: () => import('./InkFieldScene').then((m) => ({ default: m.InkFieldScene })),
+  malachite: () => import('./MalachiteScene').then((m) => ({ default: m.MalachiteScene })),
   matrix: () => import('./MatrixRainScene').then((m) => ({ default: m.MatrixRainScene })),
   kifs: () => import('./KifsRoseScene').then((m) => ({ default: m.KifsRoseScene })),
   maze: () => import('./MazeFlightScene').then((m) => ({ default: m.MazeFlightScene })),
+  wingfold: () => import('./WingfoldJuliaScene').then((m) => ({ default: m.WingfoldJuliaScene })),
+  crystalfold: () => import('./CrystalFoldScene').then((m) => ({ default: m.CrystalFoldScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -83,10 +85,12 @@ const KaleidoPulseScene = lazyScene('kaleido')
 const TrailLineScene = lazyScene('trail')
 const SynthGridScene = lazyScene('synthgrid')
 const KernelPanicScene = lazyScene('panic')
-const InkFieldScene = lazyScene('ink')
+const MalachiteScene = lazyScene('malachite')
 const MatrixRainScene = lazyScene('matrix')
 const KifsRoseScene = lazyScene('kifs')
 const MazeFlightScene = lazyScene('maze')
+const WingfoldJuliaScene = lazyScene('wingfold')
+const CrystalFoldScene = lazyScene('crystalfold')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -387,46 +391,6 @@ export const SCENES: SceneDef[] = [
     },
   },
   {
-    id: 'network',
-    name: 'Network Constellation',
-    component: NetworkConstellationScene,
-    metadata: {
-      // Now primary-capable: a fullscreen procedural network shader, bold
-      // enough to stand alone rather than only composite under/over another
-      // scene.
-      //
-      // Deliberately NOT tagged 'background' despite being a plausible fit.
-      // The background slot exists but has no authored content yet, and this
-      // scene was composed as a subject — letting it default into the new slot
-      // would debut the composition model with a scene never art-directed for
-      // it. Re-add once intentional background scenes exist to compare against.
-      roles: ['accent', 'overlay', 'primary'],
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'medium',
-      // Fullscreen shader, ~36 hash evals/pixel — cheaper than the CPU
-      // O(n^2) link scan it replaced.
-      performanceCost: 'high', // measured 6.26 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'chrome', 'pointcloud'],
-      moodFit: {
-        ambient: 0.90,
-        mellow: 0.84,
-        groove: 0.76,
-        building: 0.70,
-      },
-      // The scene's own rendering ignores these entirely (fullscreen quad,
-      // no ctx.camera read — its motion is audio/autonomous-driven, see
-      // NetworkConstellationScene's header comment). But CameraDirector's
-      // test suite (CameraDirector.test.ts) enforces that every registered
-      // scene — not just primary ones — declares enough camera-mode variety
-      // to be framed meaningfully, since the director doesn't know per-scene
-      // whether the camera matters. Restored rather than left off: found via
-      // a failing `npm run check` I should have run before the first push.
-      cameraAnchor: { target: [0, 0, 0], distance: 14.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
     id: 'pointcloud',
     name: 'PCD LIDAR Scan',
     component: PointCloudScanScene,
@@ -451,376 +415,49 @@ export const SCENES: SceneDef[] = [
     },
   },
   {
-    id: 'inversion',
-    name: 'Inversion Machine',
-    component: InversionMachineScene,
+    id: 'malachite',
+    name: 'Malachite',
+    component: MalachiteScene,
     metadata: {
-      // The first true raymarched-SDF scene in the roster: a sphere-inversion
-      // fractal, dense and alien enough to carry a frame on its own.
-      roles: ['primary'],
-      // Fills a real gap: aggressive was previously only covered by
-      // wireframe/plasma, and nothing else brought lit-surface raymarching.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // ~60-step raymarch + 6 calcNormal() calls/pixel, governed by uMaxSteps.
-      performanceCost: 'medium', // measured 3.06 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        groove: 0.68,
-        building: 0.82,
-        peak: 0.92,
-        aggressive: 0.9,
-      },
-      // The field's own coordinate scale is small (see InversionMachineScene's
-      // ANCHOR_DISTANCE comment) — a much closer anchor than other scenes'
-      // 8-17 range, tuned to the source shader's original ~1.2-unit distance.
-      cameraAnchor: { target: [0, 0, 0], distance: 1.4, height: 0.15 },
-      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
-    },
-  },
-  {
-    id: 'foldpath',
-    name: 'Fold Path',
-    component: FoldPathScene,
-    metadata: {
-      // Dense and glowing enough to carry a frame alone, same reasoning as
-      // pointcloud/inversion.
-      roles: ['primary'],
-      // A hypnotic flythrough rather than a violent one — sits alongside
-      // inversion's aggressive slot instead of doubling up on it.
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // Fixed-step heightfield march, up to 600 steps/pixel plus a 20-step
-      // binary-search refine and 4 normal() samples — the heaviest scene in
-      // the roster; see FoldPathScene's own quality-governor comment.
-      performanceCost: 'high',
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        ambient: 0.72,
-        mellow: 0.8,
-        groove: 0.76,
-        building: 0.7,
-      },
-      // The scene flies its own scripted path() camera rather than reading
-      // the real one (see FoldPathScene's header comment — the flythrough IS
-      // the piece, unlike inversion's orbit-a-static-object case), so these
-      // are inert to its own rendering. Declared anyway: every registered
-      // scene needs enough camera-mode variety for CameraDirector's own
-      // bookkeeping, per CameraDirector.test.ts — same fix as network.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'torusfold',
-    name: 'Torus Fold',
-    component: TorusFoldScene,
-    metadata: {
-      // A fixed, orbitable fold+torus structure — dense enough to carry a
-      // frame alone, same reasoning as the other raymarch scenes.
-      roles: ['primary'],
-      // Hypnotic ring-pulse rather than glitchy or violent — spans a wider
-      // mood range than foldpath since it has real punch at peak too.
-      moods: ['mellow', 'groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // 100-step adaptive SDF march, 6-iteration fold per step — cheaper
-      // than inversion (no per-step normal calc) but still substantial.
-      performanceCost: 'medium', // measured 1.99 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        mellow: 0.7,
-        groove: 0.8,
-        building: 0.78,
-        peak: 0.74,
-      },
-      // Real camera, like inversion: the fold+torus structure sits fixed at
-      // the origin (only its internal fold rotates), so orbiting it is the
-      // natural fit — see TorusFoldScene's header comment for the
-      // camera-vs-self-contained decision this session settled on.
-      cameraAnchor: { target: [0, 0, 0], distance: 3.3, height: 0 },
-      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
-    },
-  },
-  {
-    id: 'juliawings',
-    name: 'Julia Wings',
-    component: JuliaWingsScene,
-    metadata: {
-      // Vivid and dense enough to hold a frame alone — deliberately not
-      // accent/overlay: this one was explicitly tuned brighter than the
-      // roster's usual budget (see JuliaWingsScene's BRIGHTNESS comment),
-      // which would read as too loud composited as a layer over a primary.
-      roles: ['primary'],
-      // Broad range on purpose — a hypnotic, colorful piece rather than a
-      // violent one, versatile enough to hold peak too.
-      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // 64 iterations x up to 3 AA taps/pixel, quality-gated on both axes
-      // (iteration count and whether the extra taps run at all).
-      performanceCost: 'high', // measured 4.69 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        ambient: 0.8,
-        mellow: 0.85,
-        groove: 0.8,
-        building: 0.78,
-        peak: 0.82,
-      },
-      // Pure 2D math, no ray/camera concept at all (unlike inversion/
-      // torusfold) — inert to this scene's own rendering, same as network/
-      // foldpath. Declared anyway for CameraDirector.test.ts's invariant:
-      // every registered scene needs real camera-mode variety.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'heap',
-    name: 'Heap Corruption',
-    component: HeapCorruptionScene,
-    metadata: {
-      // Subject only. It fills the frame with a dense, high-contrast grid, so
-      // compositing anything over it — or it over anything — just fights.
-      roles: ['primary'],
-      // Its whole character is decay under pressure, which needs energy to read
-      // as anything. In `ambient` it would sit near-healthy and inert, so it is
-      // deliberately not offered there.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // Fullscreen, but cheap per pixel: hashes and one value-noise pair, no
-      // march and no fbm. Comparable to `network`, nothing like the raymarchers.
-      performanceCost: 'high', // measured 5.24 ms GPU @ tier 1 (/bench)
-      compatibleWith: [],
-      // Kept in the roster's 0.6-0.9 band on purpose. Strongest at `aggressive`,
-      // where glitch and decay are the point, and weakest at `groove`.
-      moodFit: {
-        groove: 0.74,
-        building: 0.84,
-        peak: 0.88,
-        aggressive: 0.9,
-      },
-      // Pure 2D screen-space math — no ray, no camera concept at all, so these
-      // are inert to its own rendering. Declared because CameraDirector.test.ts
-      // requires every registered scene to offer real framing variety, the same
-      // reason network/foldpath/juliawings declare them.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'orbs',
-    name: 'Orbit Glow',
-    component: OrbitGlowScene,
-    metadata: {
-      // Layer-only, exactly like `ribbons` — three soft orbs on black have
-      // nowhere near enough structure to carry a frame as the subject, but they
-      // composite beautifully over one.
-      //
-      // This is the roster's strongest BACKGROUND and EFFECT candidate: it is
-      // the cheapest scene here by a wide margin, and its per-orb glow gives it
-      // the contrast dynamics a dimmed ground needs to still read as alive.
-      // Neither role is claimed yet because both are inert — nothing selects
-      // `background`, and an `effect` scene must additionally drive itself to
-      // visual zero by `slotProgress` 1, which this does not yet do.
-      roles: ['accent', 'overlay'],
-      // The calm end of the roster. Deliberately stops at `building`: three
-      // drifting orbs have no punch to offer a peak, and pretending otherwise
-      // would just put a soft layer under a loud moment.
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'calm',
-      // Three length() calls and three divides per pixel. No march, no noise,
-      // no loop — comfortably the cheapest scene in the roster, cheaper even
-      // than `network`.
-      performanceCost: 'low',
-      compatibleWith: ['wireframe', 'chrome', 'dissolve', 'pointcloud', 'foldpath', 'juliawings'],
-      // Sits just above `ribbons` at the calm end where it belongs and below it
-      // by `groove`, so the two layer scenes trade places across the range
-      // rather than one always winning. Both are inside the roster's 0.6-0.9
-      // band after `ribbons` showed what a 0.98 outlier does to selection.
-      moodFit: {
-        ambient: 0.78,
-        mellow: 0.75,
-        groove: 0.63,
-        building: 0.58,
-      },
-      // Flat 2D screen-space math, no camera concept at all — inert here, and
-      // declared only for CameraDirector.test.ts's variety invariant.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'kaleido',
-    name: 'Kaleido Pulse',
-    component: KaleidoPulseScene,
-    metadata: {
-      // Subject only. A centred mandala owns the middle of the frame by
-      // construction; composited over another subject the two symmetries fight,
-      // and behind one it is entirely hidden by its own dark centre.
-      roles: ['primary'],
-      // Same territory as `tunnel` — rhythmic and hypnotic — but the silhouette
-      // is radial rather than forward, which is the reason to carry both. The
-      // moodFit peaks differ so they do not simply substitute for each other:
-      // `tunnel` peaks at `building` (flying toward something IS a build), this
-      // one at `peak` (a mandala pulsing on the beat is an arrival).
-      moods: ['groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // Four iterations of fract/length/sin/pow plus a cosine palette each.
-      // No march, no noise field, no hashing — cheaper than `network`'s ~36
-      // hash evaluations per pixel, and an order of magnitude under the
-      // raymarchers. Iteration count is still governed; see uIters.
-      performanceCost: 'medium', // measured 3.15 ms GPU @ tier 1 (/bench)
-      compatibleWith: [],
-      // Inside the roster's 0.6-0.9 band, and deliberately a little under
-      // `tunnel` at `building` so the two trade rather than one shadowing the
-      // other across their shared range.
-      moodFit: {
-        groove: 0.84,
-        building: 0.86,
-        peak: 0.88,
-      },
-      // Flat 2D fractal math — no ray, no camera concept at all, exactly like
-      // `juliawings`. Inert to its own rendering; declared only because
-      // CameraDirector.test.ts requires every registered scene to offer real
-      // framing variety.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'trail',
-    name: 'Trail Line',
-    component: TrailLineScene,
-    metadata: {
-      // Subject only. Sparse enough on paper to make a good accent — one thin
-      // glowing stroke on black — but it is the roster's only scene that pays
-      // for a render-target pair, and spending two extra fullscreen passes on a
-      // decoration is the wrong trade. Revisit if it ever earns its keep.
-      roles: ['primary'],
-      // Gestural and unhurried. The trail is the piece, and a trail needs time
-      // to be read, so this sits at the calmer end and stops before `peak`
-      // rather than pretending a smear can land a drop.
-      moods: ['mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'energy'],
-      intensity: 'medium',
-      // Two fullscreen passes rather than one — the accumulate pass plus the
-      // display pass — and a pair of HalfFloat render targets resident for as
-      // long as it is mounted. The per-pixel work is modest (five sin() from
-      // f()/grad(), one texture fetch), so the tier is driven by the extra pass
-      // and the VRAM, not by shader complexity. This is a different KIND of
-      // cost from the rest of the roster: the budget model counts fragment
-      // work, and nothing in it accounts for render-target memory.
-      performanceCost: 'medium',
-      compatibleWith: [],
-      // Deliberately overlapping `orbs` and `ribbons` at the calm end without
-      // beating them — those are layers, this is a subject, so they coexist
-      // rather than compete. Peaks at `groove` where a drifting stroke has
-      // something to move against.
-      moodFit: {
-        mellow: 0.86,
-        groove: 0.88,
-        building: 0.78,
-      },
-      // Flat 2D screen-space, no camera concept — the `juliawings` pattern.
-      // Declared only for CameraDirector.test.ts's variety invariant.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'synthgrid',
-    name: 'Synth Grid',
-    component: SynthGridScene,
-    metadata: {
-      // ===== NON-COMMERCIAL — see the banner in SynthGridScene.tsx =====
-      // CC BY-NC-SA 3.0. Must not ship in a commercial build, marketplace
-      // listing or paid release without separate permission from the author.
-      // nonCommercialSceneIds() derives the packaging exclusion list from this
-      // field, and sceneLicensing.test.ts fails if it is ever removed.
-      license: 'noncommercial',
-      // Subject only. A full raymarched city with its own post chain owns the
-      // frame completely.
-      roles: ['primary'],
-      // Retro-futurist and propulsive rather than chaotic. Needs energy to
-      // justify the forward travel, and tops out before `aggressive` — the
-      // palette is neon nostalgia, not violence.
-      moods: ['groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'energy'],
-      intensity: 'high',
-      // By a wide margin the most expensive scene in the roster: a 200-step
-      // primary march whose map() evaluates a ground plane, a repeating
-      // skyline and four car fields, a shadow march of up to 110 steps at every
-      // hit, three map() calls per normal, and then a second full pass doing a
-      // 40-tap bloom plus three 14-tap chroma flares. Mitigated by rendering
-      // the buffer at 0.6x and governing every loop, but it is still the
-      // heaviest thing here.
-      performanceCost: 'medium', // measured 2.22 ms GPU @ tier 1 (/bench)
-      compatibleWith: [],
-      // Sits under `tunnel` and `kaleido` in their shared range: it is the most
-      // expensive scene registered, so it should not also be the most likely to
-      // be picked.
-      moodFit: {
-        groove: 0.8,
-        building: 0.86,
-        peak: 0.84,
-      },
-      // The scene flies its own drifting camera and never reads the shared one,
-      // like FoldPath and Tunnel Drift. Declared for CameraDirector.test.ts.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'ink',
-    name: 'Ink Field',
-    component: InkFieldScene,
-    metadata: {
-      // Provenance not yet traced. The shader is a domain-warped fBm built on
-      // Quilez's warping technique with Ashima's MIT simplex noise underneath;
-      // the composition and band routing are this project's. That is very
-      // probably shippable, but "probably" is exactly what F01 in docs/ISSUES.md
-      // is about — `unverified` is the honest marking until someone checks, and
-      // it keeps the scene out of `commerciallyShippableScenes()` meanwhile.
-      license: 'unverified',
-      // **The roster's first background scene.** The slot has been fully wired
-      // with zero content (F18) — no scene declared the role, so the most
-      // structural composition slot was permanently empty. Deliberately
-      // background-ONLY: this was authored as ground, and a scene that can also
-      // be the subject inevitably gets picked as one.
+      // CC0 from glslop, credited in-source to "claude-opus-4-8" (per the
+      // requester, who sourced and supplied it directly). Replaces `ink` —
+      // whose own provenance was never fully confirmed (see git history) — in
+      // the background slot, which strictly improves the roster's licence
+      // posture rather than just swapping the look.
+      license: 'original',
+      // Direct successor to `ink` in the same slot: background-ONLY. Full-
+      // frame, no subject, no hard edges, reads at the background slot's 0.4
+      // gain underneath something else without competing.
       roles: ['background'],
-      // Broad, because ground should be available almost everywhere. Stops
-      // short of `aggressive`: the field convulses on a kick but it has no
-      // hard edge in it, and under an aggressive subject it would read as
-      // haze rather than as ground.
+      // Same broad coverage `ink` had, for the same reason: ground should be
+      // available almost everywhere. Stops short of `aggressive` — the
+      // swirling bands have no hard edge in them, and under an aggressive
+      // subject they would read as haze rather than as ground.
       moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
-      // `SceneBand` has no `sub` — the metadata vocabulary starts at `bass`,
-      // even though the scene itself routes `s.sub` to its warp depth.
+      // `bass` stands in for the kick-onset routing (`s.onKick` drives the
+      // warp churn burst) — the SceneBand vocabulary has no onset-specific
+      // entry, only level bands. Same convention `matrix` uses.
       bands: ['bass', 'mid', 'high', 'energy'],
-      // Ground, not subject — it is composited at the background slot's 0.4
-      // gain and is 100% coverage with no focal point by construction.
+      // Ground, not subject — composited at the background slot's 0.4 gain,
+      // 100% coverage with no focal point by construction.
       intensity: 'calm',
-      // NOT MEASURED. Three fBm calls at up to four octaves is twelve simplex
-      // samples per pixel, which is the heaviest per-pixel shader in the roster,
-      // against a 1.5 MP internal budget that claws most of it back. `medium` is
-      // a placeholder standing in for a `/bench` run, and the file header of
-      // every other scene here records how badly hand-guessed costs went (10 of
-      // 16 wrong). **Run /bench and re-tag before trusting the composition
-      // budget with this.**
-      performanceCost: 'medium',
+      // Measured (Apple M1, ANGLE/Metal, offscreen draw, readPixels-forced
+      // sync -- gl.finish() is a no-op under ANGLE and reports zero): 0.42 ms
+      // at the shipped 1.3 MP budget, and 1.61 ms even fully unbudgeted at
+      // 2560x1600. Five fbm calls (two for `q`, two for `r`, one for `f`) is
+      // MORE calls than `ink`'s three, but this shader's hash-based value
+      // noise is far cheaper per-sample than `ink`'s true simplex noise
+      // (SIMPLEX3D_GLSL, documented there as ~10x a cheap hash-noise sample),
+      // so it nets out well under the roster's own `low` threshold (<2 ms)
+      // even without the budget doing any work. Confirm with /bench in situ.
+      performanceCost: 'low',
       // Ground sits under anything. Listed against the scenes most likely to
       // want it — `getCompatibleScenes` is symmetric, so this reads both ways
-      // and nothing else has to list `ink` back.
-      compatibleWith: ['wireframe', 'chrome', 'inversion', 'torusfold', 'juliawings', 'kaleido'],
-      // Held inside the roster's 0.6-0.9 band. Strongest at the calm end, where
-      // a slow ink field has time to be read, and weakest at `peak`, where it is
-      // barely visible behind whatever is happening in front of it.
+      // and nothing else has to list `malachite` back.
+      compatibleWith: ['wireframe', 'chrome'],
+      // Held inside the roster's 0.6-0.9 band, same shape `ink` used:
+      // strongest at the calm end where a slow field has time to be read,
+      // weakest at `peak` where it is barely visible behind the subject.
       moodFit: {
         ambient: 0.86,
         mellow: 0.84,
@@ -828,22 +465,21 @@ export const SCENES: SceneDef[] = [
         building: 0.68,
         peak: 0.62,
       },
-      // Flat 2D screen-space noise; no ray, no camera concept at all — inert to
-      // this scene's own rendering, exactly like `heap` and `juliawings`.
-      // Declared because CameraDirector.test.ts requires every registered scene
-      // to offer real framing variety, whether or not it samples the camera.
+      // Flat 2D screen-space noise; no ray, no camera concept at all — inert
+      // to this scene's own rendering, exactly like `heap` and `juliawings`.
+      // Declared because CameraDirector.test.ts requires every registered
+      // scene to offer real framing variety, whether or not it samples the
+      // camera.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-      // The canonical vocabulary, at the values the scene was authored at.
-      // Four keys, not seven: `shape`, `density` and `tilt` have nothing to bind
-      // to in a warped noise field, and declaring them would put three dead
-      // sliders in the panel.
-      params: { speed: 0.5, complexity: 0.5, fill: 0.5, contrast: 0.5 },
+      // Five of seven: `shape` and `tilt` have nothing to bind to in a warped
+      // noise field, same reasoning `ink` used.
+      params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, contrast: 0.5 },
       paramLabels: {
-        // The field does not get denser or faster so much as more folded and
-        // more zoomed — worth saying so on the control rather than in a comment
-        // nobody performing will read.
-        '*': { complexity: 'warp', fill: 'zoom' },
+        // The source's own knob names. `contrast` doubles as the source's
+        // `tox` (toxicity/vividness) AND vein hardness — worth saying so
+        // rather than leaving a performer to guess what either means here.
+        '*': { complexity: 'warp', density: 'bands', fill: 'scale', contrast: 'toxicity' },
       },
     },
   },
@@ -867,8 +503,8 @@ export const SCENES: SceneDef[] = [
       // density/speed settings — never the material for a quiet moment.
       moods: ['groove', 'building', 'peak', 'aggressive'],
       // `bass` stands in for the kick-onset routing (`s.onKick`), the same
-      // convention `ink` uses — the SceneBand vocabulary has no onset-specific
-      // entry, only level bands.
+      // convention `malachite` uses — the SceneBand vocabulary has no
+      // onset-specific entry, only level bands.
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
       // NOT MEASURED. Two hash() calls and a sin() per pixel, no loop, no
@@ -879,13 +515,13 @@ export const SCENES: SceneDef[] = [
       performanceCost: 'low',
       // Geometric/formal primaries a hacker-rain overlay complements without
       // fighting for the same visual territory.
-      compatibleWith: ['wireframe', 'chrome', 'kaleido', 'torusfold'],
+      compatibleWith: ['wireframe', 'chrome'],
       // Mid-pack across its range, not maxed — `ribbons`'s history is the
       // warning here: one outlier mood weight gave it a near-monopoly on a
       // slot, and this keeps the same shape other overlay scenes use.
       moodFit: { groove: 0.6, building: 0.72, peak: 0.8, aggressive: 0.76 },
       // Flat 2D screen-space shader, no camera concept — inert here, declared
-      // only for CameraDirector.test.ts's variety invariant, same as `ink`.
+      // only for CameraDirector.test.ts's variety invariant, same as `malachite`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
       // No `shape`/`fill`/`tilt` — there is no silhouette or camera-relative
@@ -987,7 +623,7 @@ export const SCENES: SceneDef[] = [
       moodFit: { groove: 0.66, building: 0.74, peak: 0.82, aggressive: 0.88 },
       // The shader drives its own camera down the corridor; the engine's
       // camera is inert here. Declared only for CameraDirector.test.ts's
-      // variety invariant, same as `ink`/`kifs`.
+      // variety invariant, same as `malachite`/`kifs`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
       // Defaults sit at the source's authored values rather than a uniform
@@ -1023,6 +659,57 @@ export const SCENES: SceneDef[] = [
       },
     },
   },
+  {
+    id: 'wingfold',
+    name: 'Wingfold Julia',
+    component: WingfoldJuliaScene,
+    metadata: {
+      // Written for this project from nothing but the public-domain Julia-set
+      // formula (Gaston Julia, 1918) plus an original fold trick. Started as a
+      // clean-room recreation attempt for `juliawings`; once that scene's real
+      // reference art turned out to be an unrelated technique, this stood on
+      // its own and earned its own slot instead of being discarded.
+      license: 'original',
+      // Subject only — a centred fractal owns the whole frame by
+      // construction, same reasoning as `kifs`.
+      roles: ['primary'],
+      // Built to be "dancy": the zoom breathes on the beat-subdivision pulse
+      // and kicks punch the orbit radius, so it wants a real beat to respond
+      // to rather than a quiet passage. Peaks at `aggressive` rather than
+      // `peak` (where `kifs` peaks) so the two centred fractals trade instead
+      // of substituting for each other.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // Measured (Apple M1, ANGLE/Metal, offscreen draw, readPixels-forced
+      // sync -- gl.finish() is a no-op under ANGLE and reports zero): 0.52 ms
+      // at full 2560x1600, 160-iteration cap. A single escape-time loop --
+      // one complex square-and-add, one bailout check, no march, no
+      // per-pixel normal/AO -- and most pixels escape in a handful of
+      // iterations, not the full cap. An order of magnitude under `kifs`
+      // (~5.4 ms), whose per-iteration KIFS fold does a rotation-matrix
+      // multiply plus three accumulated distance terms. Comfortably inside
+      // the roster's own `low` threshold (<2 ms); confirm with /bench in situ
+      // before fully trusting a standalone offscreen measurement.
+      performanceCost: 'low',
+      // Owns the frame; nothing composites with a full-bleed fractal.
+      compatibleWith: [],
+      moodFit: { groove: 0.76, building: 0.82, peak: 0.86, aggressive: 0.9 },
+      // Flat 2D fractal math, no camera concept — inert here, declared only
+      // for CameraDirector.test.ts's variety invariant, same as `kifs`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      // No `density`/`tilt` — nothing in an iterated escape-time field has a
+      // discrete element count or a camera-relative axis for those to bind to.
+      params: { speed: 0.5, shape: 0.5, complexity: 0.6, fill: 0.5, contrast: 0.5 },
+      paramLabels: {
+        // `shape` controls the c-orbit radius, which is the single biggest
+        // lever on the set's character — worth its own name rather than
+        // leaving a performer to guess what "shape" does here.
+        '*': { shape: 'orbit', complexity: 'detail', fill: 'zoom' },
+      },
+    },
+  },
 ]
 
 /**
@@ -1035,10 +722,23 @@ export const SCENES: SceneDef[] = [
  * only, so a disabled id degrades to the `SCENES[0]` fallback exactly like an
  * unknown one.
  *
- * `tunnel` and `panic` are here on request while their look is still being
- * worked on. Note `panic` is ALSO non-commercial; see KNOWN_NC_SOURCE_IDS,
- * which deliberately tracks licence independently of whether a scene is
- * currently in the roster.
+ * Two different reasons land a scene here, and each entry says which:
+ *
+ *  - `tunnel` is here on request while its look is still being worked on —
+ *    the original reason this array existed.
+ *  - Everything else (`panic`, `network`, `inversion`, `foldpath`,
+ *    `torusfold`, `juliawings`, `heap`, `orbs`, `kaleido`, `trail`,
+ *    `synthgrid`) was pulled in a commercial-launch licensing pass: each is
+ *    either confirmed non-commercial, unverified Shadertoy provenance treated
+ *    as non-commercial until proven otherwise, or (`heap` only) genuinely
+ *    licensed but held out as a product decision pending an attribution
+ *    credit. See each entry's own comment for specifics.
+ *
+ * `panic` and `network` are ALSO tracked in KNOWN_NC_SOURCE_IDS, which
+ * deliberately tracks CONFIRMED non-commercial licences independently of
+ * whether a scene is currently in the roster — `unverified`/`attribution`
+ * scenes are not added there; `nonCommercialSceneIds()` already excludes them
+ * from a commercial build via metadata alone.
  */
 export const DISABLED_SCENES: SceneDef[] = [
   {
@@ -1046,6 +746,11 @@ export const DISABLED_SCENES: SceneDef[] = [
     name: 'Tunnel Drift',
     component: TunnelDriftScene,
     metadata: {
+      // Shadertoy-derived (see TunnelDriftScene.tsx header) with no licence
+      // attached to the source, so — same reasoning as its neighbours below —
+      // treated as non-commercial until confirmed otherwise, independent of
+      // why it is disabled (which is look/quality, not licensing).
+      license: 'unverified',
       // Subject only. A fullscreen flythrough owns the whole frame by
       // construction — there is no ground to sit behind it and nothing sensible
       // to composite over a moving tunnel.
@@ -1119,6 +824,479 @@ export const DISABLED_SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
+  {
+    id: 'network',
+    name: 'Network Constellation',
+    component: NetworkConstellationScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Source states an explicit non-commercial licence. See
+      // KNOWN_NC_SOURCE_IDS and docs/ISSUES.md for the audit this came from.
+      license: 'noncommercial',
+      // Now primary-capable: a fullscreen procedural network shader, bold
+      // enough to stand alone rather than only composite under/over another
+      // scene.
+      //
+      // Deliberately NOT tagged 'background' despite being a plausible fit.
+      // The background slot exists but has no authored content yet, and this
+      // scene was composed as a subject — letting it default into the new slot
+      // would debut the composition model with a scene never art-directed for
+      // it. Re-add once intentional background scenes exist to compare against.
+      roles: ['accent', 'overlay', 'primary'],
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // Fullscreen shader, ~36 hash evals/pixel — cheaper than the CPU
+      // O(n^2) link scan it replaced.
+      performanceCost: 'high', // measured 6.26 ms GPU @ tier 1 (/bench)
+      compatibleWith: ['wireframe', 'chrome', 'pointcloud'],
+      moodFit: {
+        ambient: 0.90,
+        mellow: 0.84,
+        groove: 0.76,
+        building: 0.70,
+      },
+      // The scene's own rendering ignores these entirely (fullscreen quad,
+      // no ctx.camera read — its motion is audio/autonomous-driven, see
+      // NetworkConstellationScene's header comment). But CameraDirector's
+      // test suite (CameraDirector.test.ts) enforces that every registered
+      // scene — not just primary ones — declares enough camera-mode variety
+      // to be framed meaningfully, since the director doesn't know per-scene
+      // whether the camera matters. Restored rather than left off: found via
+      // a failing `npm run check` I should have run before the first push.
+      cameraAnchor: { target: [0, 0, 0], distance: 14.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'inversion',
+    name: 'Inversion Machine',
+    component: InversionMachineScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Shadertoy-derived with no licence attached to the source. Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
+      // is treated as non-commercial until someone actually confirms otherwise
+      // with the original author -- not a neutral "maybe fine".
+      license: 'unverified',
+      // The first true raymarched-SDF scene in the roster: a sphere-inversion
+      // fractal, dense and alien enough to carry a frame on its own.
+      roles: ['primary'],
+      // Fills a real gap: aggressive was previously only covered by
+      // wireframe/plasma, and nothing else brought lit-surface raymarching.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // ~60-step raymarch + 6 calcNormal() calls/pixel, governed by uMaxSteps.
+      performanceCost: 'medium', // measured 3.06 ms GPU @ tier 1 (/bench)
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        groove: 0.68,
+        building: 0.82,
+        peak: 0.92,
+        aggressive: 0.9,
+      },
+      // The field's own coordinate scale is small (see InversionMachineScene's
+      // ANCHOR_DISTANCE comment) — a much closer anchor than other scenes'
+      // 8-17 range, tuned to the source shader's original ~1.2-unit distance.
+      cameraAnchor: { target: [0, 0, 0], distance: 1.4, height: 0.15 },
+      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
+    },
+  },
+  {
+    id: 'foldpath',
+    name: 'Fold Path',
+    component: FoldPathScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Shadertoy-derived with no licence attached to the source. Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
+      // is treated as non-commercial until someone actually confirms otherwise
+      // with the original author -- not a neutral "maybe fine".
+      license: 'unverified',
+      // Dense and glowing enough to carry a frame alone, same reasoning as
+      // pointcloud/inversion.
+      roles: ['primary'],
+      // A hypnotic flythrough rather than a violent one — sits alongside
+      // inversion's aggressive slot instead of doubling up on it.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // Fixed-step heightfield march, up to 600 steps/pixel plus a 20-step
+      // binary-search refine and 4 normal() samples — the heaviest scene in
+      // the roster; see FoldPathScene's own quality-governor comment.
+      performanceCost: 'high',
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        ambient: 0.72,
+        mellow: 0.8,
+        groove: 0.76,
+        building: 0.7,
+      },
+      // The scene flies its own scripted path() camera rather than reading
+      // the real one (see FoldPathScene's header comment — the flythrough IS
+      // the piece, unlike inversion's orbit-a-static-object case), so these
+      // are inert to its own rendering. Declared anyway: every registered
+      // scene needs enough camera-mode variety for CameraDirector's own
+      // bookkeeping, per CameraDirector.test.ts — same fix as network.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'torusfold',
+    name: 'Torus Fold',
+    component: TorusFoldScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Shadertoy-derived with no licence attached to the source. Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
+      // is treated as non-commercial until someone actually confirms otherwise
+      // with the original author -- not a neutral "maybe fine".
+      license: 'unverified',
+      // A fixed, orbitable fold+torus structure — dense enough to carry a
+      // frame alone, same reasoning as the other raymarch scenes.
+      roles: ['primary'],
+      // Hypnotic ring-pulse rather than glitchy or violent — spans a wider
+      // mood range than foldpath since it has real punch at peak too.
+      moods: ['mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // 100-step adaptive SDF march, 6-iteration fold per step — cheaper
+      // than inversion (no per-step normal calc) but still substantial.
+      performanceCost: 'medium', // measured 1.99 ms GPU @ tier 1 (/bench)
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        mellow: 0.7,
+        groove: 0.8,
+        building: 0.78,
+        peak: 0.74,
+      },
+      // Real camera, like inversion: the fold+torus structure sits fixed at
+      // the origin (only its internal fold rotates), so orbiting it is the
+      // natural fit — see TorusFoldScene's header comment for the
+      // camera-vs-self-contained decision this session settled on.
+      cameraAnchor: { target: [0, 0, 0], distance: 3.3, height: 0 },
+      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
+    },
+  },
+  {
+    id: 'juliawings',
+    name: 'Julia Wings',
+    component: JuliaWingsScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Shadertoy-derived with no licence attached to the source. Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
+      // is treated as non-commercial until someone actually confirms otherwise
+      // with the original author -- not a neutral "maybe fine".
+      license: 'unverified',
+      // Vivid and dense enough to hold a frame alone — deliberately not
+      // accent/overlay: this one was explicitly tuned brighter than the
+      // roster's usual budget (see JuliaWingsScene's BRIGHTNESS comment),
+      // which would read as too loud composited as a layer over a primary.
+      roles: ['primary'],
+      // Broad range on purpose — a hypnotic, colorful piece rather than a
+      // violent one, versatile enough to hold peak too.
+      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // 64 iterations x up to 3 AA taps/pixel, quality-gated on both axes
+      // (iteration count and whether the extra taps run at all).
+      performanceCost: 'high', // measured 4.69 ms GPU @ tier 1 (/bench)
+      compatibleWith: ['wireframe', 'network', 'ribbons'],
+      moodFit: {
+        ambient: 0.8,
+        mellow: 0.85,
+        groove: 0.8,
+        building: 0.78,
+        peak: 0.82,
+      },
+      // Pure 2D math, no ray/camera concept at all (unlike inversion/
+      // torusfold) — inert to this scene's own rendering, same as network/
+      // foldpath. Declared anyway for CameraDirector.test.ts's invariant:
+      // every registered scene needs real camera-mode variety.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'heap',
+    name: 'Heap Corruption',
+    component: HeapCorruptionScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch product decision).
+      // Unlike its neighbours here this one genuinely has commercial
+      // permission already: CC BY 4.0 allows commercial use, conditioned on
+      // crediting the author. Held out anyway on request, pending a decision
+      // on where that credit would live (about/credits screen).
+      license: 'attribution',
+      // Subject only. It fills the frame with a dense, high-contrast grid, so
+      // compositing anything over it — or it over anything — just fights.
+      roles: ['primary'],
+      // Its whole character is decay under pressure, which needs energy to read
+      // as anything. In `ambient` it would sit near-healthy and inert, so it is
+      // deliberately not offered there.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // Fullscreen, but cheap per pixel: hashes and one value-noise pair, no
+      // march and no fbm. Comparable to `network`, nothing like the raymarchers.
+      performanceCost: 'high', // measured 5.24 ms GPU @ tier 1 (/bench)
+      compatibleWith: [],
+      // Kept in the roster's 0.6-0.9 band on purpose. Strongest at `aggressive`,
+      // where glitch and decay are the point, and weakest at `groove`.
+      moodFit: {
+        groove: 0.74,
+        building: 0.84,
+        peak: 0.88,
+        aggressive: 0.9,
+      },
+      // Pure 2D screen-space math — no ray, no camera concept at all, so these
+      // are inert to its own rendering. Declared because CameraDirector.test.ts
+      // requires every registered scene to offer real framing variety, the same
+      // reason network/foldpath/juliawings declare them.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'orbs',
+    name: 'Orbit Glow',
+    component: OrbitGlowScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Shadertoy-derived with no licence attached to the source. Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
+      // is treated as non-commercial until someone actually confirms otherwise
+      // with the original author -- not a neutral "maybe fine".
+      license: 'unverified',
+      // Layer-only, exactly like `ribbons` — three soft orbs on black have
+      // nowhere near enough structure to carry a frame as the subject, but they
+      // composite beautifully over one.
+      //
+      // This is the roster's strongest BACKGROUND and EFFECT candidate: it is
+      // the cheapest scene here by a wide margin, and its per-orb glow gives it
+      // the contrast dynamics a dimmed ground needs to still read as alive.
+      // Neither role is claimed yet because both are inert — nothing selects
+      // `background`, and an `effect` scene must additionally drive itself to
+      // visual zero by `slotProgress` 1, which this does not yet do.
+      roles: ['accent', 'overlay'],
+      // The calm end of the roster. Deliberately stops at `building`: three
+      // drifting orbs have no punch to offer a peak, and pretending otherwise
+      // would just put a soft layer under a loud moment.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'calm',
+      // Three length() calls and three divides per pixel. No march, no noise,
+      // no loop — comfortably the cheapest scene in the roster, cheaper even
+      // than `network`.
+      performanceCost: 'low',
+      compatibleWith: ['wireframe', 'chrome', 'dissolve', 'pointcloud', 'foldpath', 'juliawings'],
+      // Sits just above `ribbons` at the calm end where it belongs and below it
+      // by `groove`, so the two layer scenes trade places across the range
+      // rather than one always winning. Both are inside the roster's 0.6-0.9
+      // band after `ribbons` showed what a 0.98 outlier does to selection.
+      moodFit: {
+        ambient: 0.78,
+        mellow: 0.75,
+        groove: 0.63,
+        building: 0.58,
+      },
+      // Flat 2D screen-space math, no camera concept at all — inert here, and
+      // declared only for CameraDirector.test.ts's variety invariant.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'kaleido',
+    name: 'Kaleido Pulse',
+    component: KaleidoPulseScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Shadertoy-derived with no licence attached to the source. Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
+      // is treated as non-commercial until someone actually confirms otherwise
+      // with the original author -- not a neutral "maybe fine".
+      license: 'unverified',
+      // Subject only. A centred mandala owns the middle of the frame by
+      // construction; composited over another subject the two symmetries fight,
+      // and behind one it is entirely hidden by its own dark centre.
+      roles: ['primary'],
+      // Same territory as `tunnel` — rhythmic and hypnotic — but the silhouette
+      // is radial rather than forward, which is the reason to carry both. The
+      // moodFit peaks differ so they do not simply substitute for each other:
+      // `tunnel` peaks at `building` (flying toward something IS a build), this
+      // one at `peak` (a mandala pulsing on the beat is an arrival).
+      moods: ['groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // Four iterations of fract/length/sin/pow plus a cosine palette each.
+      // No march, no noise field, no hashing — cheaper than `network`'s ~36
+      // hash evaluations per pixel, and an order of magnitude under the
+      // raymarchers. Iteration count is still governed; see uIters.
+      performanceCost: 'medium', // measured 3.15 ms GPU @ tier 1 (/bench)
+      compatibleWith: [],
+      // Inside the roster's 0.6-0.9 band, and deliberately a little under
+      // `tunnel` at `building` so the two trade rather than one shadowing the
+      // other across their shared range.
+      moodFit: {
+        groove: 0.84,
+        building: 0.86,
+        peak: 0.88,
+      },
+      // Flat 2D fractal math — no ray, no camera concept at all, exactly like
+      // `juliawings`. Inert to its own rendering; declared only because
+      // CameraDirector.test.ts requires every registered scene to offer real
+      // framing variety.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'trail',
+    name: 'Trail Line',
+    component: TrailLineScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Shadertoy-derived with no licence attached to the source. Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
+      // is treated as non-commercial until someone actually confirms otherwise
+      // with the original author -- not a neutral "maybe fine".
+      license: 'unverified',
+      // Subject only. Sparse enough on paper to make a good accent — one thin
+      // glowing stroke on black — but it is the roster's only scene that pays
+      // for a render-target pair, and spending two extra fullscreen passes on a
+      // decoration is the wrong trade. Revisit if it ever earns its keep.
+      roles: ['primary'],
+      // Gestural and unhurried. The trail is the piece, and a trail needs time
+      // to be read, so this sits at the calmer end and stops before `peak`
+      // rather than pretending a smear can land a drop.
+      moods: ['mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'energy'],
+      intensity: 'medium',
+      // Two fullscreen passes rather than one — the accumulate pass plus the
+      // display pass — and a pair of HalfFloat render targets resident for as
+      // long as it is mounted. The per-pixel work is modest (five sin() from
+      // f()/grad(), one texture fetch), so the tier is driven by the extra pass
+      // and the VRAM, not by shader complexity. This is a different KIND of
+      // cost from the rest of the roster: the budget model counts fragment
+      // work, and nothing in it accounts for render-target memory.
+      performanceCost: 'medium',
+      compatibleWith: [],
+      // Deliberately overlapping `orbs` and `ribbons` at the calm end without
+      // beating them — those are layers, this is a subject, so they coexist
+      // rather than compete. Peaks at `groove` where a drifting stroke has
+      // something to move against.
+      moodFit: {
+        mellow: 0.86,
+        groove: 0.88,
+        building: 0.78,
+      },
+      // Flat 2D screen-space, no camera concept — the `juliawings` pattern.
+      // Declared only for CameraDirector.test.ts's variety invariant.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'synthgrid',
+    name: 'Synth Grid',
+    component: SynthGridScene,
+    metadata: {
+      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
+      // Source states an explicit non-commercial licence. See
+      // KNOWN_NC_SOURCE_IDS and docs/ISSUES.md for the audit this came from.
+      // ===== NON-COMMERCIAL — see the banner in SynthGridScene.tsx =====
+      // CC BY-NC-SA 3.0. Must not ship in a commercial build, marketplace
+      // listing or paid release without separate permission from the author.
+      // nonCommercialSceneIds() derives the packaging exclusion list from this
+      // field, and sceneLicensing.test.ts fails if it is ever removed.
+      license: 'noncommercial',
+      // Subject only. A full raymarched city with its own post chain owns the
+      // frame completely.
+      roles: ['primary'],
+      // Retro-futurist and propulsive rather than chaotic. Needs energy to
+      // justify the forward travel, and tops out before `aggressive` — the
+      // palette is neon nostalgia, not violence.
+      moods: ['groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'energy'],
+      intensity: 'high',
+      // By a wide margin the most expensive scene in the roster: a 200-step
+      // primary march whose map() evaluates a ground plane, a repeating
+      // skyline and four car fields, a shadow march of up to 110 steps at every
+      // hit, three map() calls per normal, and then a second full pass doing a
+      // 40-tap bloom plus three 14-tap chroma flares. Mitigated by rendering
+      // the buffer at 0.6x and governing every loop, but it is still the
+      // heaviest thing here.
+      performanceCost: 'medium', // measured 2.22 ms GPU @ tier 1 (/bench)
+      compatibleWith: [],
+      // Sits under `tunnel` and `kaleido` in their shared range: it is the most
+      // expensive scene registered, so it should not also be the most likely to
+      // be picked.
+      moodFit: {
+        groove: 0.8,
+        building: 0.86,
+        peak: 0.84,
+      },
+      // The scene flies its own drifting camera and never reads the shared one,
+      // like FoldPath and Tunnel Drift. Declared for CameraDirector.test.ts.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'crystalfold',
+    name: 'Crystal Fold',
+    component: CrystalFoldScene,
+    metadata: {
+      // HELD OUT ON ARRIVAL, not moved out — added directly from a pasted,
+      // unattributed Shadertoy-style snippet (`mainImage`/`iTime`/
+      // `iResolution` API, no author or licence comment attached). Shadertoy's
+      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so per
+      // F01/F02 in docs/ISSUES.md this is treated as non-commercial until the
+      // actual source is confirmed original or permissively licensed — not a
+      // neutral "maybe fine". Move this entry into SCENES once that happens.
+      license: 'unverified',
+      // Subject only. An orbiting-camera 3D fractal raymarch owns the frame by
+      // construction, same reasoning as `torusfold`/`inversion`.
+      roles: ['primary'],
+      // A slow, ornate orbit rather than anything violent — closest in spirit
+      // to `torusfold`'s hypnotic ring-pulse, so it shares that range.
+      moods: ['mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT MEASURED. Up to 64 march steps, each evaluating up to 12 fold
+      // iterations of rotate/abs/subtract — cheaper per-iteration than
+      // `kifs`'s fold (no division) but wrapped in an outer march loop `kifs`
+      // doesn't have, and both loops are quality/param-governed. Tagged `high`
+      // on comparison with the roster's other raymarchers rather than
+      // guessed in isolation; confirm with `/bench`.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed 3D fractal.
+      compatibleWith: [],
+      moodFit: {
+        mellow: 0.7,
+        groove: 0.8,
+        building: 0.84,
+        peak: 0.78,
+      },
+      // The shader drives its own orbiting camera internally and never reads
+      // the engine's real one — inert here, declared only for
+      // CameraDirector.test.ts's variety invariant, same as `kifs`/`wingfold`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+      // No `density` — nothing in an iterated box-fold has a discrete element
+      // count for it to bind to, same reasoning as `kifs`/`wingfold`.
+      params: { speed: 0.5, shape: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+      paramLabels: {
+        // The source's own knob names — none of the canonical keys say this
+        // on their own.
+        '*': { shape: 'fold width', complexity: 'iterations', fill: 'zoom', tilt: 'elevation' },
+      },
+    },
+  },
 ]
 
 /**
@@ -1130,7 +1308,21 @@ export const DISABLED_SCENES: SceneDef[] = [
  * licensing test asserts against this list intersected with what is actually
  * registered.
  */
-export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic']
+export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic', 'network']
+
+/**
+ * Does this scene's licence forbid, or fail to confirm permission for,
+ * commercial use? A pure predicate over one scene's metadata — exported (not
+ * just inlined into {@link nonCommercialSceneIds}) so the licensing test can
+ * exercise the real check against `DISABLED_SCENES` entries directly, rather
+ * than duplicating the condition or depending on the live roster happening to
+ * contain a restricted scene, which will not always be true — the whole point
+ * of the roster is to drive that count toward zero.
+ */
+export function isNonCommercial(scene: SceneDef): boolean {
+  const l = scene.metadata.license ?? 'original'
+  return l !== 'original' && l !== 'attribution'
+}
 
 /**
  * Scenes whose source licence forbids, or has not been confirmed to permit,
@@ -1141,10 +1333,7 @@ export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic']
  * declare it.
  */
 export function nonCommercialSceneIds(): string[] {
-  return SCENES.filter((s) => {
-    const l = s.metadata.license ?? 'original'
-    return l !== 'original' && l !== 'attribution'
-  }).map((s) => s.id)
+  return SCENES.filter(isNonCommercial).map((s) => s.id)
 }
 
 /** The complement: scenes safe to include in a commercial build. */
