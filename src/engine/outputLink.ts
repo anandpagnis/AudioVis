@@ -8,6 +8,7 @@ import { keyPaletteTracker } from './keyPalette'
 import { perf, frameTimeWindow } from './PerfMonitor'
 import { performanceState } from './performanceState'
 import { quality } from './quality'
+import { sessionLog } from './sessionLog'
 import { frameSampler } from './frameSampler'
 import { transitionMetrics } from './transitionMetrics'
 import { useStore } from '../store'
@@ -99,6 +100,17 @@ export interface Telemetry {
   status: string
   sourceType: string | null
   recording: boolean
+  /**
+   * Session recorder state, reported by the window that is actually running it.
+   *
+   * On the wire rather than kept in the console for the reason the `Command`
+   * doc above already records the hard way: a console that tracks its own
+   * belief about a remote action shows a lit button for something that never
+   * happened. `logSec` is what makes it unambiguous — a number that is visibly
+   * counting cannot be a stale flag.
+   */
+  logging: boolean
+  logSec: number
   /** AudioContext state in the output window: none / suspended / running. */
   audioState: string
   /** True once a graph has been built, whether or not it is running. */
@@ -136,7 +148,12 @@ export const TELEMETRY_STALE_MS = 1500
  * the console did at first, stopped nothing and recorded nothing while the
  * button lit up as though it had worked.
  */
-export type Command = 'stop' | 'cancel-start' | 'toggle-record' | 'screenshot'
+export type Command =
+  | 'stop'
+  | 'cancel-start'
+  | 'toggle-record'
+  | 'screenshot'
+  | 'toggle-session-log'
 
 /**
  * Everything the operator's diagnostic panels read, in one packet.
@@ -552,6 +569,8 @@ export function publishTelemetry(nowMs = performance.now()): void {
       status: useStore.getState().status,
       sourceType: useStore.getState().sourceType,
       recording: useStore.getState().isRecording,
+      logging: sessionLog.isRecording(),
+      logSec: sessionLog.elapsedSec(),
       audioState: audioEngine.contextState,
       hasSource: audioEngine.running,
     },
@@ -661,6 +680,12 @@ async function runCommand(c: Command): Promise<void> {
   else if (c === 'screenshot') {
     const { saveScreenshot } = await import('./recorder')
     saveScreenshot()
+  } else if (c === 'toggle-session-log') {
+    // Runs HERE, in the render window, because that is where every singleton
+    // it samples actually lives — `perf`, `frameLoad`, `performanceState` and
+    // the canvas itself. The console only owns the button.
+    const { toggleSessionLog } = await import('./recorder')
+    await toggleSessionLog()
   }
 }
 

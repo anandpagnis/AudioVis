@@ -90,6 +90,44 @@ export function stopRecording() {
   recorder = null
 }
 
+/* ------------------------------------------------------------ session log */
+
+/**
+ * Toggle the flight recorder, writing its three artefacts on stop.
+ *
+ * Returns the new recording state, so a caller can drive a toggle from it
+ * without keeping its own copy.
+ *
+ * The summary goes to the clipboard rather than only to a file because it is
+ * the artefact meant to be PASTED — the whole point of the recorder is to stop
+ * a person having to read numbers off a panel and retype them. The clipboard
+ * write is best-effort: it needs a user gesture in some browsers and this can
+ * be reached from a BroadcastChannel command, so a failure is reported rather
+ * than thrown, and the same text is in the .json and the .txt regardless.
+ */
+export async function toggleSessionLog(): Promise<boolean> {
+  const { sessionLog } = await import('./sessionLog')
+  if (!sessionLog.isRecording()) {
+    sessionLog.start()
+    return true
+  }
+  const { summary, json, sheet } = sessionLog.stop()
+  const name = `audiovis-session-${stamp()}`
+  download(new Blob([summary], { type: 'text/plain' }), `${name}.txt`)
+  download(new Blob([json], { type: 'application/json' }), `${name}.json`)
+  if (sheet) {
+    sheet.toBlob((blob) => {
+      if (blob) download(blob, `${name}-frames.png`)
+    }, 'image/png')
+  }
+  try {
+    await navigator.clipboard.writeText(summary)
+  } catch {
+    // Clipboard denied — the .txt is already downloading, which is the fallback.
+  }
+  return false
+}
+
 /**
  * Pending one-shot screenshot request, consumed by {@link captureIfRequested}.
  *

@@ -2997,11 +2997,74 @@ denominated in milliseconds on this side.
       any other audio-gated scene are priced from a silent frame and should be
       re-benched.
 
+- [x] **F115 - No instrument existed for the running show, only for one scene
+      in isolation** - `src/engine/sessionLog.ts` *(added 2026-08-27)*
+      Requested directly, after the 4K lag report (F110/F114) kept being
+      diagnosed through a human relaying two numbers off a panel: "p95 is 66 to
+      80", "I can't see the demotions". Not a fault of the report - a fault of
+      the instrument. `/bench` cannot answer these questions and was never meant
+      to: it sweeps one scene in isolation, with no audio (F112), no
+      transitions, no layering and no director. Everything left unresolved is
+      about the engine RUNNING - a real track, real section changes, real
+      crossfades, real load.
+      A session recorder, toggled from a new button in the console's diagnostics
+      dock (next to Debug / FPS / Analytics). Records nothing until pressed;
+      writes three files and copies a summary to the clipboard when pressed
+      again:
+        - **Every raw frame time**, into a preallocated 120k-entry ring (~33 min
+          at 60Hz) - not just its average. A hitch is a single-frame event, and
+          averaging it away is exactly how a stuttering show reads as a steady
+          60, which is the mistake `perf.p95` was already built to avoid
+          (PerfMonitor.tsx's own header explains it) and this extends across a
+          whole session rather than a 10s window.
+        - **Everything else at 4Hz** - finer than the governor can act on
+          (`SETTLE_SEC` is 2s) - covering frame budget, render scale, audio
+          features, scene/mood/layer state, every post-fx value, and transition
+          progress.
+        - **Events, derived by diffing state rather than by instrumenting call
+          sites** - a tier change, a scale change, a scene change, a transition
+          starting/ending (flagged ABORTED if progress never reached ~1), a
+          layer arriving or leaving, silence starting or ending. Diffing means
+          nothing else in the engine had to be touched, and nothing visible in
+          state can be missed by a call site nobody remembered to update.
+        - **A contact sheet**: periodic canvas thumbnails into a 64-tile PNG grid
+          that halves its own density and doubles its interval every time it
+          fills, so a 3-minute and a 30-minute recording both cover the WHOLE
+          session rather than front-loading. Read in the same tick a frame
+          composited, same constraint `ScreenshotCapture` already documents for
+          `preserveDrawingBuffer: false`.
+      The summary is the part meant to be pasted: frame-time percentiles, time
+      spent at each tier and each render scale with every transition logged,
+      **frame time attributed to whatever scene was actually on screen** (the
+      one thing no other instrument in the codebase can produce, since `/bench`
+      never runs two scenes together and never runs audio), frame-budget
+      overrun rate, transition completion rate, and the worst dozen 4Hz samples
+      with everything that was true at that instant.
+      Runs in the OUTPUT window over the BroadcastChannel command already used
+      for record/screenshot (`toggle-session-log`), because that is where every
+      singleton it samples actually lives (`perf`, `frameLoad`,
+      `performanceState`, the canvas). The console only owns the button; its
+      label and elapsed time come off telemetry from the window doing the
+      recording, not off the button's own belief about it - the same class of
+      bug F100/F102 exist to describe, avoided by construction here rather than
+      re-discovered.
+      14 new tests, run against the real singletons in vitest's `node`
+      environment rather than mocks - `document` is undefined there, which is
+      exactly the condition the thumbnail path's guards exist for, so the test
+      suite doubles as a check that recording never throws headless.
+      **Not yet verified against a real set.** Typechecks, is unit-tested, and
+      was checked statically against the telemetry prune path that has broken
+      twice before (F102, F104) - `logging`/`logSec` ride the flat `Telemetry`
+      packet as a whole-object replace, the same as `bpm`/`mood`, not through
+      `mirrorInto`'s field-by-field merge. No Playwright in this environment to
+      drive an actual browser session, so the next real recording IS the
+      verification.
+
 ---
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **735 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **749 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

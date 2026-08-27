@@ -792,6 +792,15 @@
   color: #fff;
 }
 
+/* Recording state wins over the generic .on blue — red is what "this is
+   writing a file right now" means everywhere else in the console
+   (.btn-huge.recording), and the session log should read the same way. */
+.tool-btn.recording {
+  background: rgba(255, 70, 90, 0.24);
+  border-color: rgba(255, 120, 140, 0.6);
+  color: #fff;
+}
+
 /* DOCKED, not floating. All three panels were authored for the full-screen HUD
    and anchor to `top: 84px` on the same two corners, so on the console they
    landed on top of each other and on top of the transport. Overlaying the

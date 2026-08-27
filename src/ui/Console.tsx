@@ -690,7 +690,16 @@ function PassiveBanner() {
  * at any of it, so the output window sends nothing until asked and stops again
  * the moment the last panel closes.
  */
+/** Seconds as m:ss, so a running recorder reads as a stopwatch. */
+function mmss(sec: number): string {
+  const s = Math.max(0, Math.floor(sec))
+  return `${(s / 60) | 0}:${String(s % 60).padStart(2, '0')}`
+}
+
 function Diagnostics() {
+  const tele = useTelemetry()
+  const logging = tele?.logging ?? false
+  const logSec = tele?.logSec ?? 0
   const debugOpen = useStore((s) => s.debugOpen)
   const fpsMeter = useStore((s) => s.fpsMeter)
   const analyticsOpen = useStore((s) => s.analyticsOpen)
@@ -726,6 +735,18 @@ function Diagnostics() {
         >
           Analytics
           <small>transitions · accuracy</small>
+        </button>
+        {/* The flight recorder. Unlike the three above it changes nothing about
+            what is on screen — it writes down what happened so a diagnosis does
+            not depend on a person reading numbers off a panel mid-set. State
+            and elapsed time come off telemetry, from the window actually doing
+            the recording. */}
+        <button
+          className={`tool-btn ${logging ? 'on recording' : ''}`}
+          onClick={() => sendCommand('toggle-session-log')}
+        >
+          {logging ? `Recording ${mmss(logSec)}` : 'Session log'}
+          <small>{logging ? 'press to stop and save' : 'capture everything'}</small>
         </button>
       </div>
 

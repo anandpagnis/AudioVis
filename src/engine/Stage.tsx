@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { sessionLog } from './sessionLog'
 import { captureIfRequested } from './recorder'
 import { frameSampler } from './frameSampler'
 import { AutoPilot } from './AutoPilot'
@@ -116,6 +117,7 @@ export function Stage() {
       <SceneManager key={`scenes-${glEpoch}`} />
       <PostChain glEpoch={glEpoch} />
       <ScreenshotCapture />
+      <SessionRecorderTap />
       <MirrorPublisher />
     </Canvas>
   )
@@ -225,5 +227,23 @@ function PostChain({ glEpoch }: { glEpoch: number }) {
  */
 function ScreenshotCapture() {
   useFrame(() => captureIfRequested(), 2)
+  return null
+}
+
+/**
+ * Feeds the session recorder, once per frame.
+ *
+ * Priority 2 for the same reason `ScreenshotCapture` uses it, and it is not
+ * optional here either: the recorder copies the live frame into its contact
+ * sheet, and with `preserveDrawingBuffer` off the canvas holds real pixels only
+ * inside the tick that drew them. It also means the frame time this samples is
+ * the whole composited frame rather than a partial one.
+ *
+ * Mounted unconditionally and inert until recording starts — `tick` returns on
+ * its first line when idle, which is cheaper than mounting and unmounting a
+ * component inside the render loop.
+ */
+function SessionRecorderTap() {
+  useFrame((_, delta) => sessionLog.tick(delta), 2)
   return null
 }
