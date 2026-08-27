@@ -41,10 +41,39 @@ describe('quality governor — mean axis', () => {
     expect(g.tier).toBe(3)
   })
 
-  it('does nothing at all while pinned to a fixed quality', () => {
+  it('still sheds load under a fixed quality — the setting is a CEILING', () => {
+    // This test used to assert the opposite ("does nothing at all while pinned
+    // to a fixed quality"), and that assertion was the bug (F116). A fixed mode
+    // set `auto = false`, and `tick` returns on its first line when that is
+    // false — so choosing a quality did not bias the ladder, it deleted it.
+    //
+    // The first real session recording caught it: 77 s at a p95 of 80-96 ms on
+    // a 4K panel with ZERO tier changes, because the store's quality was `high`
+    // and `FIXED_TIER.high` is 0. A 300 ms frame must never be something the
+    // governor is contractually obliged to ignore.
     const g = new QualityGovernor()
     g.setMode('high')
     g.tick(300, T0, 400)
+    expect(g.tier).toBeGreaterThan(0)
+  })
+
+  it('will not climb back above the ceiling a fixed quality sets', () => {
+    // The other half of "ceiling": the setting still means something. `medium`
+    // caps at tier 2, so a machine with headroom to spare stops there instead
+    // of walking up to 0.
+    const g = new QualityGovernor()
+    g.setMode('medium')
+    expect(g.tier).toBe(2)
+    // Sustained headroom, well past CLIMB_HOLD_SEC.
+    for (let t = 0; t < 60; t++) g.tick(8, T0 + t, 9)
+    expect(g.tier).toBe(2)
+  })
+
+  it('lets `auto` climb all the way back to the richest tier', () => {
+    const g = new QualityGovernor()
+    g.setMode('low') // ceiling 4
+    g.setMode('auto') // ceiling cleared
+    for (let t = 0; t < 120; t++) g.tick(8, T0 + t, 9)
     expect(g.tier).toBe(0)
   })
 

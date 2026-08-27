@@ -3060,11 +3060,92 @@ denominated in milliseconds on this side.
       drive an actual browser session, so the next real recording IS the
       verification.
 
+- [x] **F116 - "high" quality silently disabled the entire adaptive governor** -
+      `src/engine/quality.ts` *(fixed 2026-08-27)*
+      **The actual cause of the 4K lag**, and the first thing the session
+      recorder (F115) found on its first run.
+      The recording: 77 s on a 4K panel, p95 80-96 ms, `mean 27.2 / p50 22.1 /
+      p99 96.3 / max 179.3`, 70% of frames over 16.7 ms - and **`tier changes:
+      0`**, tier 0 for the whole session. Computing the governor's own inputs
+      from the recorded frame times gave `refreshMs` = 8.1 ms, so its demote
+      threshold was `ema > 8.9 ms` against a measured ema of 20-45 ms. It was
+      not reacting slowly. It was never consulted.
+      `setMode` set `auto = false` for any fixed quality, and `tick()` returns
+      on its first line when that is false. With `FIXED_TIER.high = 0`, picking
+      "high" meant "pin tier 0 and never adapt again" - which is not what anyone
+      choosing a quality PREFERENCE is asking for, and nothing in the UI said
+      the safety net had been switched off.
+      Fixed by making a fixed mode a **ceiling** rather than a pin: `auto` stays
+      on, the governor keeps measuring and keeps its authority to shed load, and
+      the setting caps only how far back UP it may climb. `high` now means "give
+      me tier 0 when the machine can hold it", which is what it always claimed
+      to mean. A machine that cannot hold it gets rescued.
+      Worth recording plainly: **every earlier theory about this lag was
+      secondary.** The post-chain reservation (F110), the render-scale hold
+      (F114) and the scenes that ignore the quality knobs (F111) are all real
+      defects and all were correctly diagnosed - but none of them could matter
+      while the ladder was inert. Three rounds of reasoning from a relayed p95
+      never got near this; one recording did, immediately.
+      `qualityGovernor.test.ts` had a test named "does nothing at all while
+      pinned to a fixed quality" asserting exactly this behaviour. That
+      assertion WAS the bug, and it is now inverted: a 300 ms frame must never
+      be something the governor is contractually obliged to ignore.
+
+- [x] **F117 - Hot moods could only ever reach the two warm palettes** -
+      `src/engine/AutoPilot.tsx` *(fixed 2026-08-27)*
+      Reported off the recorder's contact sheet as "it is using the entire
+      colour palette available? i dont think it is" - every one of 64 thumbnails
+      came out the same orange.
+      `peak` was `[ember, solar, violet]` and `aggressive` was
+      `[ember, solar, mono]`. Both LEAD with the same two warm palettes, and
+      `pickPalette` excludes whatever is already showing, so an energetic track
+      simply alternated ember and solar. The session spent 53 s of 77 in
+      peak+aggressive: two palettes out of six, for the whole set.
+      Not a taste decision so much as an unnoticed consequence of ordering.
+      Widened so every mood reaches at least four of the six and the hot moods
+      each keep a cool option, so a peak can arrive as a COLOUR CHANGE rather
+      than as more of the same orange. Order still carries the intent - first
+      entry is what the mood wants most - so the moods stay distinct.
+
+- [~] **F118 - The show held one scene for 38 s at the start, and the recorder
+      could not say why** - `src/engine/sessionLog.ts`
+      *(instrumented 2026-08-27, cause still open)*
+      Reported as "it seems to not change the scene for like 15-20 secs upon
+      start". The recording confirms it and sharpens it: first scene commit at
+      **39.6 s**, then 56.3 s and 72.6 s - so steady state is ~16 s and only the
+      opening is wrong.
+      Ruled out from the data rather than guessed at:
+        - **Not the dwell floor.** `lastCommitBeat` starts at `-Infinity`, so
+          `canAutoSwitch` returns true immediately; the 32-beat floor cannot
+          block the first switch.
+        - **Not silence.** Audio resumed at 6.5 s.
+        - **Not a missing mood change.** Mood moved at 7.2 s, 18.5 s and 33.3 s
+          and no scene followed any of them.
+      That leaves the confidence/ambiguity gate in AutoPilot
+      (`MOOD_CHANGE_MIN_CONFIDENCE` 0.4, `MOOD_CHANGE_MAX_AMBIGUITY` 0.6) or the
+      request-to-commit handoff - **and the recorder captured neither**, which
+      is its own finding. A flight recorder that logs a decision's RESULT but
+      not its INPUTS can only ever confirm that something did not happen.
+      Deliberately NOT guess-fixed. Loosening the gate is a one-line change that
+      would trade a static opening for scene thrash on an unsure read, and there
+      is no evidence yet for which is happening.
+      Instrumented instead - the next recording answers it outright:
+        - `confidence`, `ambiguity` and `moodChanges` per sample, plus a summary
+          line giving the % of samples that FAIL the switch gate.
+        - `pendingScene`, and a `requested X` event, so a slow DECISION and a
+          slow request-to-commit HANDOFF stop looking identical (the commit can
+          trail the request by seconds while the shader warms and a downbeat is
+          waited for).
+        - `palette` per sample plus palette-change events (the F117 gap - the
+          first recording could not answer a colour question at all).
+        - `qualityMode` and `autoPilot`, which is what would have made F116
+          obvious in one line instead of needing the frame times re-derived.
+
 ---
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **749 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **751 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

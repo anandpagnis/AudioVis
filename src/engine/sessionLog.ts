@@ -4,6 +4,7 @@ import { performanceState } from './performanceState'
 import { perf } from './PerfMonitor'
 import { quality } from './quality'
 import { renderScale } from './renderScale'
+import { useStore } from '../store'
 
 /**
  * Session recorder — everything the engine knows about itself, over a whole
@@ -108,9 +109,23 @@ export interface SessionSample {
   high: number
   bpm: number
   silence: boolean
+  /**
+   * The mood read itself, not just its output.
+   *
+   * Added after the first real session (F118): the recording showed the show
+   * holding one scene for 38 s and could not say why, because a scene switch is
+   * gated on `confidence`/`ambiguity` inside AutoPilot and neither was being
+   * written down. A recorder that captures a decision's RESULT but not its
+   * INPUTS can only ever confirm that something did not happen.
+   */
+  confidence: number
+  ambiguity: number
+  moodChanges: number
   /** Show state. */
   scene: string
   activeScene: string
+  /** In flight but not yet committed — the gap between a request and a commit. */
+  pendingScene: string | null
   mood: string
   tension: number
   background: string | null
@@ -130,6 +145,18 @@ export interface SessionSample {
   transitionActive: boolean
   transitionStyle: string
   transitionProgress: number
+  /** Palette in force. Colour variety is not visible in any other field. */
+  palette: string
+  /**
+   * The store's quality setting and the ceiling it imposes.
+   *
+   * F116 was invisible in the first recording for want of exactly this: the
+   * ladder showed `tier changes: 0` and nothing said whether that was because
+   * the frame was fine (it was not) or because the governor had been switched
+   * off (it had).
+   */
+  qualityMode: string
+  autoPilot: boolean
 }
 
 export type SessionEventKind =
@@ -140,6 +167,7 @@ export type SessionEventKind =
   | 'transition-end'
   | 'layer'
   | 'mood'
+  | 'palette'
   | 'audio'
   | 'effect'
   | 'note'
@@ -249,6 +277,8 @@ class SessionLog {
     accent: null as string | null,
     overlay: null as string | null,
     effects: 0,
+    pending: '',
+    palette: '',
   }
   private transitionStartedAt = 0
   private transitionStyle = ''
@@ -300,6 +330,8 @@ class SessionLog {
       accent: null,
       overlay: null,
       effects: 0,
+      pending: '',
+      palette: '',
     }
 
     const c = stageCanvas()
@@ -398,6 +430,20 @@ class SessionLog {
       if (this.prev.scene) this.push('scene', `${this.prev.scene} -> ${p.activeScene}`)
       this.prev.scene = p.activeScene
     }
+    // A REQUEST, which is the event AutoPilot actually produces — the commit
+    // above can trail it by seconds while SceneManager warms the shader and
+    // waits for a downbeat. Logging only the commit made a slow decision and a
+    // slow handoff look identical (F118).
+    const pending = useStore.getState().pendingSceneId ?? ''
+    if (pending !== this.prev.pending) {
+      if (pending) this.push('scene', `requested ${pending}`)
+      this.prev.pending = pending
+    }
+    const palette = performanceState.palette
+    if (palette !== this.prev.palette) {
+      if (this.prev.palette) this.push('palette', `${this.prev.palette} -> ${palette}`)
+      this.prev.palette = palette
+    }
     if (p.mood !== this.prev.mood) {
       if (this.prev.mood) this.push('mood', `${this.prev.mood} -> ${p.mood}`)
       this.prev.mood = p.mood
@@ -450,6 +496,7 @@ class SessionLog {
   private takeSample(): void {
     const p = performanceState
     const f = audioEngine.features
+    const store = useStore.getState()
     this.samples.push({
       t: round(this.elapsed, 2),
       fps: round(perf.fps, 1),
@@ -476,8 +523,12 @@ class SessionLog {
       high: round(f.high, 3),
       bpm: round(f.bpm, 1),
       silence: f.silence,
+      confidence: round(f.confidence, 3),
+      ambiguity: round(f.mood.ambiguity ?? 0, 3),
+      moodChanges: f.mood.changeCount ?? 0,
       scene: p.scene,
       activeScene: p.activeScene,
+      pendingScene: store.pendingSceneId ?? null,
       mood: p.mood,
       tension: round(p.visualTension, 3),
       background: p.layers.background,
@@ -496,6 +547,9 @@ class SessionLog {
       transitionActive: p.transition.active,
       transitionStyle: p.transition.style,
       transitionProgress: round(p.transition.progress, 3),
+      palette: p.palette,
+      qualityMode: store.quality,
+      autoPilot: store.autoPilot,
     })
   }
 
@@ -654,6 +708,10 @@ class SessionLog {
 
     // --- the ladder -------------------------------------------------------
     L.push('--- quality ladder ---')
+    // FIRST, because F116 made this the difference between "the governor tried
+    // and could not keep up" and "the governor was never asked".
+    const modes = new Set(this.samples.map((s) => s.qualityMode))
+    L.push(`store quality setting: ${[...modes].join(' -> ') || 'unknown'}`)
     const tierSec = new Map<number, number>()
     for (const s of this.samples) tierSec.set(s.tier, (tierSec.get(s.tier) ?? 0) + SAMPLE_INTERVAL_SEC)
     for (const [t, sec] of [...tierSec.entries()].sort((a, b) => a[0] - b[0])) {
@@ -702,6 +760,16 @@ class SessionLog {
     L.push('')
 
     // --- audio ------------------------------------------------------------
+    L.push('--- palette ---')
+    const palSec = new Map<string, number>()
+    for (const s of this.samples) palSec.set(s.palette, (palSec.get(s.palette) ?? 0) + SAMPLE_INTERVAL_SEC)
+    L.push(
+      [...palSec.entries()].sort((a, b) => b[1] - a[1]).map(([p, sec]) => `${p} ${sec.toFixed(0)}s`).join('  ') ||
+        'none recorded',
+    )
+    L.push(`palette changes: ${this.events.filter((e) => e.kind === 'palette').length}  (of 6 available)`)
+    L.push('')
+
     L.push('--- audio & show ---')
     if (this.samples.length) {
       const silent = this.samples.filter((s) => s.silence).length
@@ -713,6 +781,21 @@ class SessionLog {
       L.push('mood: ' + [...moodSec.entries()].sort((a, b) => b[1] - a[1]).map(([m, sec]) => `${m} ${sec.toFixed(0)}s`).join('  '))
       const e = this.samples.map((s) => s.energy)
       L.push(`energy mean ${(e.reduce((a, b) => a + b, 0) / e.length).toFixed(3)} max ${Math.max(...e).toFixed(3)}`)
+    }
+    // Mood-read quality, because a scene switch is gated on it and a show that
+    // will not move is usually a read that will not firm up (F118).
+    if (this.samples.length) {
+      const conf = this.samples.map((s) => s.confidence)
+      const amb = this.samples.map((s) => s.ambiguity)
+      const avg = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length
+      const gated = this.samples.filter((s) => s.confidence < 0.4 || s.ambiguity > 0.6).length
+      L.push(`mood confidence mean ${avg(conf).toFixed(2)} min ${Math.min(...conf).toFixed(2)}`)
+      L.push(`mood ambiguity  mean ${avg(amb).toFixed(2)} max ${Math.max(...amb).toFixed(2)}`)
+      L.push(
+        `samples FAILING the scene-switch gate (conf<0.4 or amb>0.6): ` +
+          `${((gated / this.samples.length) * 100).toFixed(0)}%`,
+      )
+      L.push(`autoPilot on: ${this.samples[this.samples.length - 1].autoPilot}`)
     }
     L.push(`scene changes: ${this.events.filter((ev) => ev.kind === 'scene').length}`)
     L.push(`layer changes: ${this.events.filter((ev) => ev.kind === 'layer').length}`)

@@ -9,14 +9,38 @@ import { getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../sce
 import { useStore } from '../store'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
+/**
+ * Palettes each mood may draw from, in preference order.
+ *
+ * ## Widened for the hot moods (F117)
+ *
+ * `peak` was `[ember, solar, violet]` and `aggressive` was
+ * `[ember, solar, mono]`. Both LEAD with the same two warm palettes, and
+ * `pickPalette` excludes whatever is already showing — so an energetic track
+ * just alternated ember and solar for its whole duration. A 77-second session
+ * recording (F115) spent 53 s in peak+aggressive and every frame of its
+ * contact sheet came out the same orange; reported, correctly, as "it is not
+ * using the entire colour palette available".
+ *
+ * The bias was not a taste decision so much as an unnoticed consequence of
+ * ordering: warm reads as "hot" one palette at a time, but a set that never
+ * leaves one hue family for minutes reads as broken rather than as intense.
+ * Every mood now reaches at least four of the six, and the hot moods keep a
+ * cool option so a peak can arrive as a COLOUR CHANGE rather than as more of
+ * the same orange.
+ *
+ * Order still carries the intent — the first entry is what the mood wants
+ * most — so this widens the reachable set without flattening the moods into
+ * each other.
+ */
 const MOOD_PALETTES: Record<MoodState, string[]> = {
   silence: [],
-  ambient: ['ocean', 'aurora', 'mono'],
-  mellow: ['aurora', 'violet', 'ocean'],
-  groove: ['aurora', 'violet', 'solar'],
-  building: ['solar', 'aurora', 'ember'],
-  peak: ['ember', 'solar', 'violet'],
-  aggressive: ['ember', 'solar', 'mono'],
+  ambient: ['ocean', 'aurora', 'mono', 'violet'],
+  mellow: ['aurora', 'violet', 'ocean', 'mono'],
+  groove: ['aurora', 'violet', 'solar', 'ocean'],
+  building: ['solar', 'aurora', 'ember', 'violet'],
+  peak: ['ember', 'violet', 'solar', 'aurora'],
+  aggressive: ['ember', 'mono', 'solar', 'violet'],
 }
 
 const MANUAL_HOLD_SEC = 45 // back off after the DJ touches anything

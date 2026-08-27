@@ -115,6 +115,10 @@ const TIERS: QualityKnobs[] = [
 ]
 
 /** Fixed store qualities map onto a pinned tier. */
+/**
+ * The tier a fixed quality setting pins to — now a CEILING rather than a pin.
+ * See {@link QualityGovernor.setMode} for why that distinction was a bug.
+ */
 const FIXED_TIER: Record<'low' | 'medium' | 'high', number> = { low: 4, medium: 2, high: 0 }
 
 /**
@@ -207,6 +211,15 @@ export class QualityGovernor {
   /** Mutated in place while discounting, so the ease allocates nothing. */
   private readonly discounted: QualityKnobs = { ...TIERS[0] }
   /** Measured display refresh interval; thresholds are relative to it. */
+  /**
+   * Richest tier the ladder may climb to, from the store's quality setting.
+   *
+   * 0 means "no ceiling" — which is also tier 0, the richest rung, so `auto`
+   * and `high` differ only in that `high` re-asserts it on selection. The
+   * ceiling never blocks a DEMOTION: shedding load is the governor's job and a
+   * quality preference is not permission to drop frames instead.
+   */
+  private ceiling = 0
   private refreshMs = DEFAULT_REFRESH_MS
 
   /**
@@ -257,14 +270,44 @@ export class QualityGovernor {
     this.setTier(t)
   }
 
-  /** Pin to a fixed store quality, or hand control back to the auto walker. */
+/**
+   * Apply a store quality setting.
+   *
+   * ## `high` used to mean "turn the governor off" (F116)
+   *
+   * A fixed mode set `auto = false`, and `tick()` returns on its first line
+   * when that is false — so choosing a quality did not bias the ladder, it
+   * DELETED it. With `FIXED_TIER.high = 0` that made "high" mean "pin tier 0
+   * and never adapt again", which is not what anyone picking a quality
+   * preference is asking for.
+   *
+   * Caught by the first session recording (F115), and it is the whole
+   * explanation for the 4K lag: 77 seconds at a p95 of 80-96 ms with
+   * **zero tier changes**. The demote threshold was `ema > 8.9 ms` against a
+   * measured ema of 20-45 ms, so the governor was not merely slow to react, it
+   * was never consulted. Every previous theory about that lag — post-chain
+   * cost, the hold in PerfMonitor (F114), scenes that ignore the knobs (F111) —
+   * was real but secondary; none of them mattered while the ladder was inert.
+   *
+   * A fixed mode is now a CEILING. `auto` stays on, the governor keeps
+   * measuring and keeps its authority to shed load, and the setting caps how
+   * far back UP it may climb. `high` therefore means "give me tier 0 when the
+   * machine can hold it", which is what it always claimed to mean, and a
+   * machine that cannot hold it still gets rescued.
+   *
+   * `auto` clears the ceiling entirely.
+   */
   setMode(q: 'auto' | 'low' | 'medium' | 'high'): void {
+    this.auto = true
     if (q === 'auto') {
-      this.auto = true
+      this.ceiling = 0
       return
     }
-    this.auto = false
-    this.setTier(FIXED_TIER[q])
+    this.ceiling = FIXED_TIER[q]
+    // Start AT the ceiling rather than wherever the ladder happens to be: the
+    // setting is an explicit instruction and should look immediate, which is
+    // the same argument PerfMonitor's hold makes for a user-pinned change.
+    if (this.tier < this.ceiling) this.setTier(this.ceiling)
   }
 
   /**
@@ -294,7 +337,7 @@ export class QualityGovernor {
       this.setTier(this.tier + 1)
       this.lastChangeAt = elapsedSec
       this.goodSince = elapsedSec
-    } else if (steady && this.tier > 0) {
+    } else if (steady && this.tier > this.ceiling) {
       if (elapsedSec - this.goodSince > CLIMB_HOLD_SEC) {
         this.setTier(this.tier - 1)
         this.lastChangeAt = elapsedSec
