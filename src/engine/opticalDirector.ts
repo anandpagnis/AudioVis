@@ -78,6 +78,13 @@ export function trailsTarget(mood: MoodState, flux: number, energy: number): num
 }
 
 /** A coherent mirror look. Combining these produces mush, so one is chosen. */
+/**
+ * `wallpaper` (n x n tiling) and `shear` (alternating slice slabs) are RETIRED
+ * as of F108 — kept in the type and in {@link MirrorPass}'s shader, removed
+ * from every pool below and gated to zero in `PerformanceStateBridge` so a
+ * persisted value cannot resurrect them. Re-enabling is putting them back in
+ * the pools and lifting that gate; nothing else was deleted.
+ */
 export type MirrorMode = 'off' | 'kaleido' | 'wallpaper' | 'vortex' | 'shear'
 
 /** Target for the whole mirror rack, as one section's decision. */
@@ -137,9 +144,20 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
   // section is not an effect, it is the look.
   if (seed % 4 === 3) return MIRROR_OFF
 
+  // Three entries, not four, and the count is load-bearing: `seed % 4 === 3`
+  // has already returned above, so `seed % 4` here only ever yields 0, 1 or 2.
+  // A fourth entry is unreachable — which is why retiring `shear` costs the hot
+  // pool nothing at all (it sat at index 2, and the index-3 `kaleido` behind it
+  // had never once been selected) and why the pools are now written at their
+  // real length instead of carrying a slot that cannot be reached.
+  //
+  // With `wallpaper` and `shear` retired the rack is kaleidoscope and vortex.
+  // They still read differently by mood — vortex-leaning when the section is
+  // hot, kaleido-leaning when it is merely warm — so a set does not collapse
+  // into one gesture just because the menu got shorter.
   const modes: MirrorMode[] = hot
-    ? ['kaleido', 'vortex', 'shear', 'kaleido']
-    : ['wallpaper', 'vortex', 'kaleido', 'shear']
+    ? ['vortex', 'kaleido', 'vortex']
+    : ['kaleido', 'vortex', 'kaleido']
   const mode = modes[seed % modes.length]
 
   switch (mode) {
@@ -159,11 +177,11 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
         // as a strobe, which is a different effect and not a better one.
         spin: 0.28 + t * 0.34,
         }
+    // RETIRED (F108) — unreachable from the pools above, kept so re-enabling is
+    // one edit. The tile count stays at 2 and 3 only: at 4 the cells are small
+    // enough that the source scene stops being readable inside them, and a
+    // wallpaper of unreadable cells is texture, not a mirror.
     case 'wallpaper':
-      // Still 2 and 3 only, and deliberately not raised with the rest. This is
-      // a legibility limit rather than timidity: at 4 the cells are small
-      // enough that the source scene stops being readable inside them, and a
-      // wallpaper of unreadable cells is texture, not a mirror.
       return { mode, segments: 0, tiles: 2 + (seed % 2), twist: 0, slice: 0, spin: 0 }
     case 'vortex':
       // Signed, so alternate sections wind the opposite way. Radians at the
@@ -181,6 +199,7 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
         slice: 0,
         spin: 0,
       }
+    // RETIRED (F108) — see `wallpaper`.
     case 'shear':
       return { mode, segments: 0, tiles: 0, twist: 0, slice: 0.55 + t * 0.45, spin: 0 }
     default:
@@ -249,12 +268,37 @@ export function lensForSection(mood: MoodState, seed: number): number {
  * is exactly right. It starts from a FLOOR rather than from zero, because a
  * section that has decided to use a material should show it; tension then
  * swells it through a build, which is the shape the racks were built for.
+ *
+ * ## Turned down (F109)
+ *
+ * Was 0.2 -> 0.4 soft and 0.3 -> 0.62 hard. Those came from a correction in the
+ * other direction — the amount had been driving straight off tension and peaked
+ * at 0.045 across a 90-second run, i.e. invisible — and the correction
+ * overshot. A lens is a MATERIAL the frame is seen through, not an event in it,
+ * and past roughly a third the material stops modifying the image and starts
+ * replacing it: the anamorphic streaks smear the subject away, the melt plumes
+ * detach from what spawned them, and the glitch tears read as a dropped frame
+ * rather than as a choice.
+ *
+ * Cut ~40% at the CEILING and only ~25% at the floor, which is deliberately
+ * asymmetric. The floor cannot follow the ceiling down: an engaged lens below
+ * about 0.15 stops reading at all, and a material that is applied, paid for and
+ * invisible is the exact defect the previous correction was written to fix. So
+ * the loud end comes down and the quiet end stays legible — which is also what
+ * "less sensitive" means for a magnitude that swells with tension, since the
+ * thing being complained about lives at the top of the swell.
+ *
+ * The shape is intact — still a floor rather than zero, still quadratic in
+ * tension, and the hard/soft split still separates a peak from a groove.
+ * Engagement frequency is untouched at one section in three; if the lens should
+ * appear less OFTEN rather than less strongly, the dial for that is the
+ * `seed % 3` in {@link lensForSection}.
  */
 export function lensAmountTarget(mood: MoodState, tension: number, engaged: boolean): number {
   if (!engaged || mood === 'silence') return 0
   const hard = mood === 'peak' || mood === 'aggressive'
-  const floor = hard ? 0.3 : 0.2
-  const ceiling = hard ? 0.62 : 0.4
+  const floor = hard ? 0.2 : 0.15
+  const ceiling = hard ? 0.38 : 0.24
   const t = Math.min(1, Math.max(0, tension))
   return floor + (ceiling - floor) * t * t
 }

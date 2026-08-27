@@ -26,8 +26,32 @@ const sceneBudget = (tier: number) => TIER_BUDGET_MS[tier] - FIXED
 // `synthgrid` and `orbs` out, and an unregistered id prices from the pessimistic
 // fallback rather than from its measurement, which quietly changes what these
 // tests are testing.
-const EXPENSIVE = 'ribbons' // 13.11 ms at tier 0 — dearest licensed scene
-const CHEAP = 'dissolve' // 0.11 ms, down to 0.04 at the survival tier
+//
+// Repointed after the 2026-08-27 sweep. `ribbons` was the dearest scene at
+// 13.11 ms and is now the second CHEAPEST at 0.72 — nearly all of that 13.11
+// was a phantom CPU surcharge read off whole-frame wall clock, which the new
+// sweep finds no trace of (see sceneCost.ts). A fixture that inverted that hard
+// is not a fixture worth keeping pointed at the same name.
+const EXPENSIVE = 'kifs' // 2.97 ms at tier 0 — dearest licensed scene
+const CHEAP = 'maze' // 0.42 ms, and declared `high`, which is its own point
+
+/**
+ * A primary that genuinely cannot fund a layer at any tier.
+ *
+ * Deliberately a QUARANTINED scene, and that is safe here for the one reason
+ * the note above cares about: `synthgrid` still has its measured row in
+ * `SCENE_COST_MS` (a disabled scene keeps its metadata so re-enabling it is
+ * moving one entry back), so it prices from 22.35 ms of measurement rather than
+ * from a label.
+ *
+ * It has to come from outside the live roster because **nothing inside it is
+ * expensive enough any more**. The dearest licensed scene is now 2.97 ms
+ * against an 8 ms tier-0 composition budget, so every live scene can fund a
+ * layer at every tier. That is a real and welcome change, pinned by its own
+ * test below — but it leaves the "budget outranks pool" branch with no live
+ * scene able to exercise it.
+ */
+const OVER_BUDGET = 'synthgrid'
 
 describe('slotCostMs', () => {
   it('charges the measured cost in the primary slot', () => {
@@ -36,13 +60,31 @@ describe('slotCostMs', () => {
   })
 
   it('prices the label out of the decision entirely', () => {
-    // The finding that motivated the whole change. `synthgrid` is declared
-    // `medium` and `pointcloud` is declared `high`, so the old ladder charged
-    // pointcloud TWICE what synthgrid cost. Measured, synthgrid is ~190x
-    // dearer. A budget cannot mean anything on top of that.
-    expect(slotCostMs('ribbons', 0, 'primary')).toBeGreaterThan(
-      slotCostMs('pointcloud', 0, 'primary') * 100,
+    // The finding that motivated the whole change, restated against the
+    // 2026-08-27 sweep. The old evidence (`synthgrid` ~190x dearer than
+    // `pointcloud` while carrying a cheaper label) is gone with the phantom CPU
+    // surcharge, but the inversion it was evidence FOR survives intact and is
+    // now inside the live roster:
+    //
+    //   wingfold  declared `low`   measures 2.54 ms
+    //   maze      declared `high`  measures 0.42 ms
+    //
+    // Same label, 6x apart, and the labels point the wrong way round. A budget
+    // cannot mean anything on top of that.
+    expect(slotCostMs('wingfold', 0, 'primary')).toBeGreaterThan(
+      slotCostMs('maze', 0, 'primary') * 5,
     )
+  })
+
+  it('has no live scene dear enough to forbid a layer', () => {
+    // The headroom the measurement bought, stated as a fact rather than left
+    // implicit in fixtures. Every licensed scene now fits inside a tier-0
+    // composition budget with room to spare for a second one — which is why
+    // OVER_BUDGET above has to reach outside the roster.
+    for (const scene of SCENES) {
+      const solo = slotCostMs(scene.id, 0, 'primary')
+      expect(solo, scene.id).toBeLessThan(sceneBudget(0) / 2)
+    }
   })
 
   it('charges full cost in a secondary slot unless the scene opted in', () => {
@@ -250,7 +292,7 @@ describe('composition with the background slot filled', () => {
     // The budget outranks the pool. `synthgrid` is 22 ms measured; a ground
     // layer under it is not a composition, it is a dropped frame.
     const out = composeLayers({
-      primaryId: EXPENSIVE,
+      primaryId: OVER_BUDGET,
       primaryCost: 'medium',
       budget: sceneBudget(4),
       tier: 4,
@@ -270,7 +312,7 @@ describe('composition with the background slot filled', () => {
     // the ladder, including tier 0.
     for (let tier = 0; tier < TIER_BUDGET_MS.length; tier++) {
       const out = composeLayers({
-        primaryId: EXPENSIVE,
+        primaryId: OVER_BUDGET,
         primaryCost: 'medium', // its declared label, which is part of the point
         budget: sceneBudget(tier),
         tier,
@@ -285,7 +327,8 @@ describe('composition with the background slot filled', () => {
   it('now composes a layer under a primary the label called expensive', () => {
     // The headroom, demonstrated. `pointcloud` is declared `high` — 4 of 11
     // units, which with the fixed costs left almost nothing — and measures
-    // 0.12 ms. At the SURVIVAL tier it can now carry a layer.
+    // 2.03 ms, a quarter of the tier-0 composition budget. At the SURVIVAL tier
+    // it can still carry a layer.
     const out = composeLayers({
       primaryId: 'pointcloud',
       primaryCost: 'high',

@@ -95,17 +95,17 @@ describe('isSceneCostMeasured', () => {
     expect(isSceneCostMeasured('never-benched')).toBe(false)
   })
 
-  it('names exactly the scenes still waiting to be benched', () => {
+  it('leaves no registered scene priced from a fallback', () => {
     // A tripwire, not a threshold. Every registered scene priced from a label
     // is a scene the budget is guessing at, and the whole point of this module
-    // is that the labels do not correlate with cost (F88).
+    // is that the labels do not correlate with cost (F88). Adding a scene
+    // without benching it should fail here.
     //
-    // The five here arrived with the lilim scene port and have never been
-    // through `/bench`, so they price from `FALLBACK_COST_MS` — pessimistically,
-    // which is the safe direction, but pessimistic is not measured. This list
-    // shrinking to empty is the definition of done for F106.
+    // This spent one commit relaxed to an explicit five-name list while the
+    // scenes from the lilim port went unmeasured (F106). They were swept on
+    // 2026-08-27, so it is back to demanding zero.
     const missing = SCENES.filter((s) => !isSceneCostMeasured(s.id)).map((s) => s.id)
-    expect(missing.sort()).toEqual(['kifs', 'malachite', 'matrix', 'maze', 'wingfold'])
+    expect(missing).toEqual([])
   })
 
   it('does not price the disabled scenes it was never asked to', () => {

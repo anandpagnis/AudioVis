@@ -2654,21 +2654,281 @@ denominated in milliseconds on this side.
     fallback rather than its measurement, which quietly changes what the test is
     testing. Repointed at `ribbons` and `dissolve`.
 
-- [ ] **F106 · Five scenes in the live roster have never been benched** —
+- [x] **F106 · Five scenes in the live roster have never been benched** —
       `src/engine/sceneCost.ts`
       `malachite`, `matrix`, `kifs`, `maze` and `wingfold` arrived with the port
       and price from `FALLBACK_COST_MS` — pessimistically, which is the safe
       direction, but pessimistic is not measured. Meanwhile ten measured scenes
       left the roster, so the cost table is now about half stale in one
       direction and half absent in the other.
-      Run `/bench` and regenerate. `sceneCost.test.ts` names the five
-      explicitly; that list reaching empty is the definition of done.
+      *(fixed 2026-08-27)* Swept and regenerated. `sceneCost.test.ts` is back
+      to demanding zero unmeasured scenes rather than naming five.
+      The five came in at: `kifs` 2.97, `wingfold` 2.54, `matrix` 2.05,
+      `malachite` 0.76, `maze` 0.42 ms at tier 0. See F113 for what else the
+      sweep turned up - the table changed by far more than five rows.
+
+- [x] **F107 - Nothing in the roster ever rendered a native pixel, on any
+      display** - `src/engine/renderScale.ts` *(fixed 2026-08-27)*
+      Reported as "why does everything look so low res? the pointcloud looks
+      like cotton balls instead of dots". It was not the scene: `PCD_FRAG` hard
+      discards outside a circle and has no soft falloff, so those dots are
+      exactly as crisp as the shader can make them. They were being drawn at
+      **0.69 linear on a plain 1080p monitor at the BEST quality tier** and
+      bilinearly stretched back over the panel - 47% of the pixels.
+      Tabulated the solve across the whole roster with the real functions
+      before touching anything. Every scene, every display, at tier 0:
+
+          scene                    |   1080p   1440p  4K@1.5    5K@1
+          wireframe          low   |    0.86    0.65    0.43    0.40
+          plasma             high  |    0.69    0.51    0.40    0.40
+          pointcloud         high  |    0.69    0.51    0.40    0.40
+          dissolve/chrome/ribbons  |    0.78    0.58    0.40    0.40
+
+      Not one scene reached 1.00 anywhere. The doc comment in that same file
+      promised "a 1080p display still solves to scale 1 and is untouched"; it
+      was written when `wireframe` declared `fillBound: false`, and nothing in
+      the roster declares that any more, so the promise had quietly become
+      false for all eleven scenes.
+      **Root cause: `POST_CHAIN_PIXEL_BUDGET` was calibrated against a software
+      renderer.** The 2.5 MP figure was justified by a measurement of "512 ms
+      per frame at 5.2 MP" - that is ~28 ms per fullscreen pass across an
+      eighteen-pass chain, which is SwiftShader, not a GPU. The RATIO that
+      paragraph draws from it (4x the pixels, 4x the cost) is sound; the
+      absolute it anchored on was not, and a budget is an absolute. The
+      constant's own comment already said "**ESTIMATE - not measured on real
+      hardware**" and "raise it for a sharper picture".
+      Because `combinePixelBudgets` is a reciprocal sum, and a reciprocal sum is
+      always smaller than its smallest term, a 2.5 MP post chain capped every
+      frame below 2.5 MP no matter what the scene asked for. A `high` scene at
+      1.6 MP landed on 0.98 MP - sub-720p - before the tier ladder multiplied it
+      down again.
+      Fixed by re-anchoring the table on what a scene gets AFTER the combine,
+      which is the only number that ever reaches the canvas:
+        - `POST_CHAIN_PIXEL_BUDGET` 2.5 -> 12
+        - `BUDGET_BY_COST` high 1.6 -> 5.5, medium 2.5 -> 7.0, low 4.0 -> 9.0
+        - `UNTRUSTED_MAX_BUDGET` 4.0 -> 8.0 - it has to move with the table or
+          it stops being a ceiling and becomes a penalty: against the new
+          defaults a 4 MP cap would be lower than every in-repo scene's, making
+          any third-party scene the blurriest thing on the bill regardless of
+          what it actually cost.
+      Every scene now renders **native through 1440p** and starts scaling at 4K,
+      which is the display class the module's own opening paragraphs say the
+      governor was built for. Both load-shedding levers are intact and were
+      re-tabulated to prove it: layering still costs resolution (two `high`
+      scenes plus the chain resolve to 2.24 MP, so a 1440p panel drops to 0.78),
+      and the tier ladder still does (a `high` scene on 1080p runs
+      1.00 / 1.00 / 0.94 / 0.79 / 0.65 across the five tiers).
+      One test had to be repointed rather than renumbered, and it is the reason
+      this shipped green for so long: `registry.test.ts` solved its 5K guarantee
+      from `scenePixelBudget(scene)` **alone**, a budget the renderer never uses
+      because the post chain is always folded in first. It was pinning a
+      quantity that does not exist in the pipeline. Now solves from the combined
+      budget and asserts a FRACTION of the panel (< 40%) rather than an absolute
+      megapixel count - an absolute silently re-tunes its own meaning every time
+      the budget table moves, which is exactly when the test should object.
+      Side benefit for F106: `/bench` solves its DPR from the scene budget alone
+      while production solves from the combined one, so the cost pass used to
+      measure `pointcloud` at 0.88 while the app ran it at 0.69. Under the new
+      constants both are 1.00, so the table F106 regenerates will finally be
+      measured at the resolution the app actually renders at.
+
+      **Second pass, same day: the 1440p anchor was not enough.** Reported
+      immediately - "this is plasma filament, looks so blurry and bad... im
+      currently running it on a 4k monitor, my cofounder on a 1080". The first
+      pass fixed the 1080p machine (1.00) and left the 4K one at 0.67, because
+      the anchor was a 1440p frame.
+      The deeper problem was the SHAPE of the decision, not the constant. The
+      solve is a pure function of (budget, display, tier) with no feedback from
+      measured frame time - the module documents that as a feature - so a static
+      table was deciding up front that a machine could not have full resolution
+      and nothing downstream could revisit it. A 4K user was permanently soft
+      whether or not their GPU had the headroom.
+      Re-anchored on what the top of the ladder MEANS: **tier 0 renders a 4K
+      panel natively**, and the tier ladder - which does measure frame time, and
+      has hysteresis - is what takes resolution away. Predict-then-commit
+      becomes start-high-and-measure.
+        - `POST_CHAIN_PIXEL_BUDGET` 12 -> 24
+        - `BUDGET_BY_COST` high 5.5 -> 12.5, medium 7 -> 16, low 9 -> 20
+        - `NATIVE_PIXEL_BUDGET` 16 -> 32, `MAX_PIXEL_BUDGET` 32 -> 64,
+          `UNTRUSTED_MAX_BUDGET` 8 -> 16. Native has to stay the LARGEST budget
+          in the module or "my cost is not per-pixel" would ask for fewer pixels
+          than `low` does.
+      Verified with the real functions across the whole roster. Every licensed
+      scene now solves to 1.00 on 1080p, 1440p AND 4K at tier 0. The ladder for
+      a `high` scene:
+
+          1080p   1.00 / 1.00 / 1.00 / 1.00 / 0.95
+          1440p   1.00 / 1.00 / 1.00 / 0.87 / 0.72
+          4K      1.00 / 0.84 / 0.70 / 0.58 / 0.48
+          5K      0.75 / 0.63 / 0.52 / 0.44 / 0.40
+
+      Smooth descent on the big panels rather than one cliff, and layering still
+      costs resolution (two `high` scenes on 4K resolve to 0.77).
+      The cost is real and stated rather than hidden: a weak machine on a large
+      panel now spends its first second or two at native before the ladder
+      demotes it, where the old table would have started it soft. A brief wrong
+      guess that corrects itself, instead of a permanent one that cannot. The
+      narrowing of the ladder's range on small displays is F111.
+      `registry.test.ts` moved its 5K guarantee from tier 0 to the SURVIVAL tier
+      for the same reason - a big panel being downscaled at tier 0 is no longer
+      the promise; what must hold is that the ladder has somewhere to go. A new
+      test pins 4K native at tier 0 so this cannot regress silently.
+
+- [ ] **F110 - `POST_CHAIN_MS` is a fixed reservation that does not scale with
+      resolution** - `src/engine/frameLoad.ts`
+      Direct consequence of F107, logged rather than guessed at. The post chain
+      now renders ~2.1x the pixels on a 1080p/1440p panel (0.69 -> 1.00 linear),
+      but its frame-budget reservation is a flat `POST_CHAIN_MS = 2` with no
+      resolution term, so it is now understated by roughly that factor.
+      Deliberately NOT adjusted. Both 2 and any replacement are guesses -
+      `/bench` excludes the post chain, so F106's sweep will not settle it
+      either - and the two failure modes are not symmetric. Under-reserving
+      admits work the frame cannot afford and the tier ladder catches it from
+      measured frame time; over-reserving permanently starves the layer and
+      transition budget for work that may not cost that much. The one with a
+      safety net is the right side to err on until the chain is actually
+      weighed.
+      Real fix is to measure it - same task as F43/F90 - and then make the
+      reservation proportional to `renderScale.internalMP()` rather than flat.
+
+- [x] **F108 - Mirror tiles and slice retired** -
+      `src/engine/opticalDirector.ts` *(done 2026-08-27)*
+      Requested directly: turn both off completely. `tiles` is the `wallpaper`
+      mode (an n x n mirror-repeat) and `slice` is `shear` (alternating shear
+      slabs).
+      Four separate things could turn them on, which is why this is not a
+      one-line change:
+        1. `mirrorForSection`'s mode pools - both removed.
+        2. The `collapse` transition in `transitions.ts`, which set
+           `mirrorTiles: arc > 0.35 ? 2 : 0` alongside its twist. A transition
+           is the one place a retired effect would still have surfaced, two
+           beats at a time and unattributable, so this had to go too.
+        3. The debug/console override path in `PerformanceStateBridge`.
+        4. **The persisted store** - the one that actually needed a gate.
+           `debugPostFx` goes through zustand's `persist`, and store.ts is
+           explicit that "a persisted value always beats a changed default", so
+           anyone who had ever dragged the tiles slider held a non-zero value in
+           localStorage that removing the slider would strand rather than clear.
+      Gated to zero in `PerformanceStateBridge` as the last writer in the decide
+      band, which covers all four. Zeroing there rather than at the pass also
+      keeps `isMirrorActive` and `mirrorRackMs` honest - they read the same
+      state, so a retired mode cannot leave the pass enabled or keep charging
+      the frame budget for a draw that now renders an identity transform.
+      Sliders removed from both control surfaces (`Console.tsx`, `HUD.tsx`): a
+      control that moves and changes nothing reads as a broken renderer rather
+      than as a deliberate absence.
+      Found while doing it: **the mode pools had a permanently unreachable
+      entry.** `mirrorForSection` returns early on `seed % 4 === 3`, so
+      `seed % 4` at the selection line only ever yields 0, 1 or 2 - with
+      four-entry pools, index 3 was dead. `shear` sat at index 2 in the hot pool
+      and the `kaleido` behind it had never once been selected. Pools are now
+      written at their real length of three.
+      Type, switch cases and the shader are all kept, and the `wallpaper`
+      coarseness test is `.skip`ped rather than deleted - left running it would
+      have passed vacuously, which is the worse failure mode. Re-enabling is
+      putting the modes back in the pools and lifting the gate.
+
+- [x] **F109 - Lens rack turned down** - `src/engine/opticalDirector.ts`
+      *(done 2026-08-27)*
+      Requested: reduce the lens sensitivity. `lensAmountTarget` was 0.2 -> 0.4
+      soft and 0.3 -> 0.62 hard. Those came from a correction in the other
+      direction - the amount had been driving straight off tension and peaked at
+      0.045 across a 90-second run, i.e. invisible - and that correction
+      overshot. Past roughly a third the material stops modifying the image and
+      starts replacing it: anamorphic smears the subject away, melt plumes
+      detach from what spawned them, glitch tears read as a dropped frame.
+      Now 0.15 -> 0.24 soft and 0.2 -> 0.38 hard: **~40% off the ceiling, ~25%
+      off the floor.** The asymmetry is the point and the test caught it - the
+      first cut took the floor to 0.12 and `opticalDirector.test.ts` objected
+      that an engaged lens below ~0.15 does not read at all, which would have
+      recreated the exact "not visible, not free" defect the previous correction
+      existed to fix. The loud end comes down, the quiet end stays legible,
+      which is also what "less sensitive" means for a magnitude that swells with
+      tension - the complaint lives at the top of the swell.
+      Engagement frequency untouched at one section in three. If the lens should
+      appear less OFTEN rather than less strongly, that dial is the `seed % 3`
+      in `lensForSection`.
+
+- [x] **F113 - The CPU surcharge in the cost table was a phantom; six scenes do
+      not respond to the tier at all** - `src/engine/sceneCost.ts`
+      *(fixed 2026-08-27)*
+      Found while regenerating for F106. The table carried a flat per-scene CPU
+      term on the evidence that `ribbons` "spent 68 ms per frame on the CPU at
+      tier 0" and `chrome` 43.6 ms, which priced them at 13.11 and 9.25 ms -
+      between them a fifth of a tier-0 budget.
+      **It does not reproduce.** Across all 55 cells of the new sweep the CPU
+      mean is 16.666 ms - vsync, to three decimals, on every single one - with a
+      p95 never above 17.7. There is no overrun to charge. The `js` column,
+      which is the number those figures were reaching for, tops out at 0.13 ms
+      (`malachite`, `maze`).
+      The readings reconcile and the old one was wrong: `/bench`'s CPU column is
+      whole-frame wall clock, so on a vsync-locked run it reports the frame
+      interval whatever the scene costs, and on a stalling run it reports the
+      stall. It was never a measurement of the scene. **F86 and F87 close with
+      it** - both existed to explain a cost that was not there.
+      Consequences, all of them large:
+        - `ribbons` 13.11 -> 0.72 ms. It went from dearest scene in the roster
+          to second cheapest.
+        - `chrome` 9.25 -> 1.58 ms.
+        - **No live scene is expensive enough to forbid a layer any more.** The
+          dearest is `kifs` at 2.97 ms against an 8 ms tier-0 composition
+          budget, so every licensed scene can fund a second one at every tier.
+          Pinned by a new test; `slotBudget.test.ts` had to reach outside the
+          roster (to the still-priced `synthgrid` row) to exercise the "budget
+          outranks pool" branch at all.
+        - The label/cost inversion that justifies this whole module survives and
+          is now *inside* the live roster: `wingfold` is declared `low` and
+          measures 2.54 ms, `maze` is declared `high` and measures 0.42 - same
+          two labels, 6x apart, pointing the wrong way round.
+      **Also found, not fixed:** six of eleven live scenes show no cost response
+      to the quality tier (`chrome`, `malachite`, `matrix`, `maze`, `ribbons`,
+      `wingfold` are flat or inverted), and four read no quality knob whatsoever
+      - `wireframe`, `chrome`, `matrix` and `kifs` never touch `quality.knobs`,
+      so their only tier lever is the resolution solve. `wingfold` measured
+      0.79 / 2.27 / 2.39 / 2.35 / 2.54 across the ladder: three times DEARER
+      below the top tier, unexplained. Monotonisation makes the budget safe
+      regardless, but see F111.
+
+- [ ] **F111 - The tier ladder cannot shed load on most of the roster** -
+      `src/scenes/*`
+      Six of eleven live scenes do not get cheaper when the tier drops (F113),
+      and four never read `quality.knobs` at all. For those, dropping a tier
+      buys nothing except whatever the resolution solve gives - and after F107
+      raised the budgets, resolution now holds at 1.00 through tier 3 on a 1080p
+      panel, so on that display the ladder has nothing left to take.
+      That is a real narrowing of the load-shedding range, accepted knowingly as
+      the price of full quality on capable hardware: the machines that need
+      tiers 1-2 are by definition ones where the frame nearly fits, and a 4K or
+      5K panel still gets a smooth resolution descent at every rung.
+      The fix is per-scene rather than architectural - give the six scenes a
+      knob the ladder can actually turn (iteration caps, step counts, instance
+      counts). `wingfold` and `maze` already read `raymarchSteps` and
+      `malachite` reads `noiseOctaves`, so the wiring exists; those three simply
+      do not get measurably cheaper when it moves, which is its own question.
+
+- [ ] **F112 - The bench runs with no audio, so audio-gated scenes profile as
+      empty** - `src/bench/BenchStage.tsx`
+      `ribbons` measures `fill` at 0.009 / 0.015 / 0.001 / 0 / 0 across the five
+      tiers, with `centre`, `mid`, `edge` and `conflict` all exactly 0 at the
+      bottom two. That reads like a scene going black at tier 3, and it is not:
+      BenchStage never starts an audio source, and `ribbons` is a waveform trace
+      whose visible output is audio-gated. It is sitting on the noise floor at
+      all five tiers, and the tier-to-tier wobble is noise, not degradation.
+      Its COST rows are unaffected - it draws the same geometry either way, at
+      ~0.7 ms - but its PROFILE rows are meaningless, and so is any role
+      assignment derived from them. The same trap waits for every future scene
+      that gates on audio.
+      Fix is to drive a synthetic analysis frame during the sweep (a fixed
+      spectrum and level, deterministic so cells stay comparable) rather than
+      letting `audioEngine.update()` idle. Until then, treat a near-zero `fill`
+      as "unmeasured", not as "dark".
 
 ---
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **659 tests**, build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **735 tests**
+(1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

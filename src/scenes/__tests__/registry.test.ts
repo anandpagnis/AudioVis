@@ -5,6 +5,7 @@ import {
   MAX_PIXEL_BUDGET,
   MIN_PIXEL_BUDGET,
   NATIVE_PIXEL_BUDGET,
+  POST_CHAIN_PIXEL_BUDGET,
   RENDER_SCALE_FLOOR,
   UNTRUSTED_MAX_BUDGET,
   combinePixelBudgets,
@@ -220,20 +221,57 @@ describe('scene registry', () => {
     }
   })
 
-  it('caps every fill-bound scene near a 1080p frame on the largest display', () => {
+  it('still gives up most of a 5K panel at the BOTTOM of the ladder', () => {
     // The half of the guarantee that is about the derivation table rather than
-    // arithmetic: every declared cost class must resolve UNDER native, and by
-    // enough margin that a heavy scene on a 5K panel still lands near 1080p. If
-    // this ever fails, BUDGET_BY_COST has drifted rather than any one scene.
+    // arithmetic: a display genuinely past what a GPU can carry must lose real
+    // pixels. If this fails, BUDGET_BY_COST has drifted rather than any one
+    // scene.
+    //
+    // Three things about this test have changed and each one was a correction.
+    //
+    // 1. It used to solve from `scenePixelBudget(scene)` ALONE — a budget the
+    //    renderer never uses, because `combinePixelBudgets` always folds in the
+    //    post chain's before the scale is solved. It was pinning a quantity
+    //    that does not exist in the pipeline, which is how the roster ended up
+    //    rendering nothing at native on any display with this suite green.
+    // 2. The bar is a FRACTION of the panel, not an absolute megapixel count.
+    //    An absolute silently re-tunes its own meaning every time the budget
+    //    table moves, which is exactly when this test should object.
+    // 3. It now asserts at the BOTTOM tier rather than the top. That is the
+    //    substantive change from F107: tier 0 deliberately means "render this
+    //    panel natively and let the ladder take it back if the frames do not
+    //    hold", so a 5K panel being downscaled at tier 0 is no longer the
+    //    guarantee. What must still hold is that the ladder HAS somewhere to
+    //    go — at the survival tier every scene gives up three quarters of a
+    //    panel that size.
     const fiveK = (5120 * 2880) / 1e6
+    const SURVIVAL_TIER_SCALE = 0.23
     for (const scene of SCENES) {
       const budget = scenePixelBudget(scene)
       if (budget >= NATIVE_PIXEL_BUDGET) continue
-      const scale = solveRenderScale(budget, fiveK)
-      const internal = fiveK * scale * scale
-      expect(internal, `${scene.id} renders ${internal.toFixed(2)} MP on a 5K panel`).toBeLessThan(
-        4.1,
+      const scale = solveRenderScale(
+        combinePixelBudgets([budget, POST_CHAIN_PIXEL_BUDGET]),
+        fiveK,
+        SURVIVAL_TIER_SCALE,
       )
+      const internal = fiveK * scale * scale
+      expect(
+        internal / fiveK,
+        `${scene.id} renders ${internal.toFixed(2)} MP of a ${fiveK.toFixed(1)} MP panel`,
+      ).toBeLessThan(0.25)
+    }
+  })
+
+  it('renders a 4K panel natively at the top of the ladder', () => {
+    // The other side of the same decision, and the one a user actually
+    // reported: before F107 a 4K display resolved to 0.67 linear at the BEST
+    // quality tier and had no way to ever reach native, because the solve takes
+    // no feedback from measured frame time. Every licensed scene must now start
+    // at 1.00 there; the ladder is what walks it back down.
+    const fourK = (3840 * 2160) / 1e6
+    for (const scene of SCENES) {
+      const combined = combinePixelBudgets([scenePixelBudget(scene), POST_CHAIN_PIXEL_BUDGET])
+      expect(solveRenderScale(combined, fourK), scene.id).toBe(1)
     }
   })
 

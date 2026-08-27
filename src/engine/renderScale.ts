@@ -69,16 +69,19 @@ export const RENDER_SCALE_FLOOR = 0.4
  * something the engine can schedule around — see {@link NATIVE_PIXEL_BUDGET}.
  */
 export const MIN_PIXEL_BUDGET = 0.25
-export const MAX_PIXEL_BUDGET = 32
+export const MAX_PIXEL_BUDGET = 64
 
 /**
  * What a scene declares when its cost is NOT per-pixel: line art, a handful of
  * meshes, anything geometry- or CPU-bound.
  *
- * 16 MP is a 5K panel fullscreen (5120x2880 = 14.7 MP), so this resolves to
- * scale 1 on every display anyone will plausibly run a show on — the scene
- * renders pixel-perfect, which is the honest answer for work that downscaling
- * would not make cheaper.
+ * 32 MP is comfortably past a 5K panel fullscreen (5120x2880 = 14.7 MP) even
+ * after the post chain joins the reciprocal sum, so this resolves to scale 1 on
+ * every display anyone will plausibly run a show on — the scene renders
+ * pixel-perfect, which is the honest answer for work that downscaling would not
+ * make cheaper. Raised 16 -> 32 with the rest of the table (F107): it has to
+ * stay the LARGEST budget in the module, or "my cost is not per-pixel" would ask
+ * for fewer pixels than `low` does.
  *
  * It is a real number rather than a sentinel on purpose. A sentinel would mean
  * "exempt", and an exemption is exactly the thing that lets one scene ignore the
@@ -87,7 +90,7 @@ export const MAX_PIXEL_BUDGET = 32
  * layered under two expensive ones contributes its (small) share of the
  * pressure instead of vanishing from the arithmetic.
  */
-export const NATIVE_PIXEL_BUDGET = 16
+export const NATIVE_PIXEL_BUDGET = 32
 
 /**
  * The post chain's OWN pixel budget — `Bloom({ mipmapBlur })` +
@@ -115,15 +118,36 @@ export const NATIVE_PIXEL_BUDGET = 16
  * (2.07 MP) still solves to scale 1 and is untouched, while a high-DPI panel
  * gets scaled down to something its GPU can actually carry.
  *
- * **ESTIMATE — not measured on real hardware.** Same caveat, and the same
- * reasoning, as `POST_CHAIN_UNITS` in frameLoad.ts: `/bench` deliberately
- * excludes the post chain, so the one constant cost in every frame is the one
- * never measured. 2.5 MP is a ~1080p-class internal frame, chosen as the
- * resolution at which an eighteen-pass fullscreen chain is affordable on a
- * mid-range GPU. Raise it for a sharper picture, lower it if the post chain
- * proves heavier than this assumes.
+ * ## Raised 2.5 -> 24 (F107)
+ *
+ * The 2.5 came from the 512 ms / 5.2 MP figure quoted above, and that figure is
+ * SwiftShader. 512 ms across an eighteen-pass chain is ~28 ms per fullscreen
+ * pass at 5.2 MP; a real GPU does that in well under a millisecond. The ratio
+ * the paragraph draws from it (4x for 4x the pixels) is sound — fill cost is
+ * linear in pixels on any rasteriser — but the ABSOLUTE it was calibrated
+ * against was a software renderer's, and a budget is an absolute.
+ *
+ * The consequence was measurable and roster-wide. Because the reciprocal sum is
+ * always smaller than its smallest term, a 2.5 MP post chain capped every frame
+ * below 2.5 MP no matter what the scene asked for, and a `high` scene at 1.6
+ * landed on 0.98 MP — sub-720p. The claim three paragraphs up, that "a 1080p
+ * display still solves to scale 1 and is untouched", was false for all eleven
+ * scenes in the roster: the best any of them scored on a 1080p panel at the top
+ * tier was 0.86, and `pointcloud` and `plasma` got 0.69, which is 47% of the
+ * pixels stretched back over the panel with a bilinear filter.
+ *
+ * 24 MP is chosen so a solo fill-bound scene plus this chain resolves to native
+ * on a **4K panel** at tier 0 — see {@link BUDGET_BY_COST} for why the anchor is
+ * 4K and not 1440p. The chain is still a claimant and still binds: on a 5K panel
+ * it is part of what holds a `high` scene to 0.75 linear, and every tier below
+ * the top scales from here. It just no longer binds on displays whose GPUs were
+ * never the problem.
+ *
+ * Still an ESTIMATE: `/bench` continues to exclude the post chain, so this is
+ * the one cost in every frame that is never measured. The tier ladder is the
+ * safety net, and it measures real frame time.
  */
-export const POST_CHAIN_PIXEL_BUDGET = 2.5
+export const POST_CHAIN_PIXEL_BUDGET = 24
 
 /**
  * Combine the budgets of everything sharing the frame.
@@ -281,12 +305,51 @@ export function bufferScale(applied = renderScale.applied): number {
  * already required, already MEASURED from `/bench`, and already the roster's
  * statement of how expensive a scene is — so the budget follows from it.
  *
- * Anchored on a 1080p internal frame (2.07 MP), which is the resolution a show
- * has to be able to fall back to:
+ * ## What these are anchored on (F107)
  *
- *   high    1.6 MP   below 1080p — a heavy scene must give up real pixels
- *   medium  2.5 MP   a little above 1080p
- *   low     4.0 MP   1440p-class; cheap, but still bounded
+ * The previous table (1.6 / 2.5 / 4.0) was anchored on "a 1080p internal frame
+ * is the fallback a show must be able to reach". The anchor was right and the
+ * arithmetic around it was not: each budget was picked as the resolution at
+ * which that scene ALONE is affordable, and then
+ * {@link combinePixelBudgets} sums it with the post chain's — so the number
+ * that actually reached the canvas was roughly half the one in this table, and
+ * 1080p-as-a-FALLBACK became 720p-as-the-CEILING. Nothing in the roster ever
+ * rendered a native pixel on any display.
+ *
+ * So the table is anchored on what a scene gets AFTER the combine, which is the
+ * only number anyone sees. Paired with a 24 MP post chain:
+ *
+ *   high    12.5 MP ->  8.22 MP combined
+ *   medium  16.0 MP ->  9.60 MP combined
+ *   low     20.0 MP -> 10.91 MP combined
+ *
+ * ## Why the anchor is a 4K frame, and why tier 0 means native
+ *
+ * The first pass at this anchored on 1440p, which fixed a 1080p machine and left
+ * a 4K one at 0.67 — reported immediately, and correctly, as still blurry. The
+ * deeper problem was the shape of the decision rather than the constant: the
+ * solve is a pure function of (budget, display, tier) with NO feedback from
+ * measured frame time, so a static table was deciding up front that a machine
+ * could not have full resolution, and nothing downstream could ever revisit it.
+ * A 4K user was permanently soft whether or not their GPU had the headroom.
+ *
+ * The anchor is therefore what the top of the ladder MEANS: **tier 0 renders a
+ * 4K panel natively**, and the tier ladder — which does measure frame time, and
+ * has hysteresis — is what takes resolution away when the machine cannot hold
+ * it. Predict-then-commit becomes start-high-and-measure. On a 4K panel a
+ * `high` scene now runs 1.00 / 0.84 / 0.70 / 0.58 / 0.48 across the five tiers,
+ * so the descent is smooth rather than a single cliff, and on 1080p it is
+ * 1.00 / 1.00 / 1.00 / 1.00 / 0.96 — native almost all the way down.
+ *
+ * The governor still governs in both directions. Layering pulls resolution down
+ * (two `high` scenes plus the chain resolve to 4.96 MP, so a 4K panel drops to
+ * 0.77), and a display genuinely past what the GPU can carry still gets scaled
+ * hard (a 5K panel runs 0.75 / 0.63 / 0.52 / 0.44 / 0.40).
+ *
+ * The cost of this is real and worth stating: a weak machine on a large panel
+ * now spends its first second or two at native before the ladder demotes it,
+ * where the old table would have started it soft. That is the trade — a brief
+ * wrong guess that corrects itself, instead of a permanent one that cannot.
  *
  * These are the ENGINE's opinion, not any scene's, which is what makes them
  * safe to apply to a scene nobody has looked at. A scene that genuinely knows
@@ -294,9 +357,9 @@ export function bufferScale(applied = renderScale.applied): number {
  * if untrusted, clamped.
  */
 export const BUDGET_BY_COST: Record<ScenePerformanceCost, number> = {
-  low: 4.0,
-  medium: 2.5,
-  high: 1.6,
+  low: 20.0,
+  medium: 16.0,
+  high: 12.5,
 }
 
 /**
@@ -308,18 +371,25 @@ export const BUDGET_BY_COST: Record<ScenePerformanceCost, number> = {
  * `fillBound: false` or `pixelBudget: 16` is exactly what a scene that is about
  * to take down a venue would say, whether it is lying or merely wrong.
  *
- * So an untrusted scene's claim is capped rather than trusted: 4 MP is 1440p
- * class — generous for any scene that is honestly not fill-bound, and bounded
- * to 0.52 linear on a 5K panel for one that is not. Untrusted scenes are not
- * REJECTED for claiming more; a clamp degrades their picture, where a rejection
- * would remove them from the show for being optimistic.
+ * So an untrusted scene's claim is capped rather than trusted: 16 MP is generous
+ * for any scene that is honestly not fill-bound, and bounded for one that is
+ * not. Untrusted scenes are not REJECTED for claiming more; a clamp degrades
+ * their picture, where a rejection would remove them from the show for being
+ * optimistic.
+ *
+ * Raised 4 -> 16 alongside {@link BUDGET_BY_COST} (F107). It has to move with
+ * that table or it stops being a ceiling and becomes a penalty: against the old
+ * 1.6/2.5/4.0 defaults a 4 MP cap was the most generous budget in the engine,
+ * while against the new ones it would have been LOWER than what every in-repo
+ * scene gets by default, so every third-party scene would have been the
+ * blurriest thing on the bill regardless of what it cost.
  *
  * This is the crude version of the guarantee on purpose. The real one measures
  * a scene's GPU time and clamps from what it actually costs rather than from
  * who registered it; until that exists, provenance is the only signal available
  * and a fixed ceiling is the honest way to use it.
  */
-export const UNTRUSTED_MAX_BUDGET = 4.0
+export const UNTRUSTED_MAX_BUDGET = 16.0
 
 /** What {@link resolvePixelBudget} needs from a scene. A subset of `SceneMetadata`. */
 export interface PixelBudgetInputs {

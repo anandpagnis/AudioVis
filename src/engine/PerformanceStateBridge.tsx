@@ -369,6 +369,22 @@ export function PerformanceStateBridge() {
       // moving this mid-fade cannot alter a transition already in flight.
       p.transitionStyle = dbg.transitionStyle
     }
+
+    // --- Retired mirror modes (F108) --------------------------------------
+    // Tiling and slicing are off, and this is where they are switched off
+    // rather than at the pass, because three separate things write them and
+    // two of them are outside this file: the section director above, the debug
+    // override just now, and — the one that actually needs a gate — the
+    // PERSISTED store. `debugPostFx` goes through zustand's `persist`, and
+    // store.ts is explicit that "a persisted value always beats a changed
+    // default", so anyone who ever dragged the tiles slider has a non-zero
+    // value in localStorage that removing the slider would strand rather than
+    // clear. Zeroing here also keeps `isMirrorActive` and `mirrorRackMs`
+    // honest: they read this same state, so a retired mode cannot leave the
+    // pass enabled or keep charging the frame budget for a fullscreen draw
+    // that now renders an identity transform.
+    p.mirror.tiles = 0
+    p.mirror.slice = 0
   }, -95)
 
   return null

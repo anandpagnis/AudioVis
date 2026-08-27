@@ -330,7 +330,11 @@ export function transitionRack(style: TransitionStyle, t: number): TransitionRac
       // unfolds onto the new scene. Tiles only engage past the shader's own
       // `>= 1.5` gate, so the ramp is offset to cross it rather than sitting
       // just under it for most of the transition doing nothing.
-      return { ...NO_RACK, mirrorTwist: arc * 2.2, mirrorTiles: arc > 0.35 ? 2 : 0 }
+      // `mirrorTiles: arc > 0.35 ? 2 : 0` used to ride along with the twist.
+      // Dropped with the rest of the tiling (F108) — a transition is the one
+      // place a retired effect would still have surfaced, two beats at a time,
+      // which is worse than having it than not: unattributable.
+      return { ...NO_RACK, mirrorTwist: arc * 2.2 }
     default:
       return NO_RACK
   }

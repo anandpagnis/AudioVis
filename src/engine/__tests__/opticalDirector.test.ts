@@ -115,16 +115,37 @@ describe('the mirror rack', () => {
     expect(fired.length).toBeGreaterThan(12)
   })
 
-  it('drives all five fields across a set, not just the segment count', () => {
-    // The defect this replaced: `tiles`, `twist` and `slice` were written by
-    // nothing but the debug panel, so three of five controls were dead.
+  it('drives every field it still owns, not just the segment count', () => {
+    // Was "all five fields", guarding the defect where `tiles`, `twist` and
+    // `slice` were written by nothing but the debug panel and three of five
+    // controls were dead in the running show.
+    //
+    // `tiles` and `slice` are retired (F108), so for those two the assertion
+    // inverts: they must now be written by nothing at all. The original guard
+    // survives intact for the fields that are still live — `twist` and `spin`
+    // are driven by the director, which is what the defect was about.
     const all = Array.from({ length: 30 }, (_, i) => mirrorForSection('peak', 0.9, i))
     expect(all.some((t) => t.segments >= 3)).toBe(true)
-    expect(all.some((t) => t.tiles >= 2) || Array.from({ length: 30 }, (_, i) =>
-      mirrorForSection('groove', 0.6, i)).some((t) => t.tiles >= 2)).toBe(true)
     expect(all.some((t) => Math.abs(t.twist) > 0.3)).toBe(true)
-    expect(all.some((t) => t.slice > 0.2)).toBe(true)
     expect(all.some((t) => t.spin > 0)).toBe(true)
+  })
+
+  it('never selects a retired mode, at any mood or tension', () => {
+    // The retirement itself, asserted where it is decided rather than only at
+    // the gate in PerformanceStateBridge. Both layers matter: this one keeps
+    // the director honest, the gate catches a persisted store value that never
+    // came through the director at all.
+    for (const mood of MOODS) {
+      for (let seed = 0; seed < 40; seed++) {
+        for (const t of [0, 0.3, 0.6, 0.9, 1]) {
+          const m = mirrorForSection(mood, t, seed)
+          expect(m.mode, `${mood} t=${t} seed=${seed}`).not.toBe('wallpaper')
+          expect(m.mode, `${mood} t=${t} seed=${seed}`).not.toBe('shear')
+          expect(m.tiles, `${mood} t=${t} seed=${seed}`).toBe(0)
+          expect(m.slice, `${mood} t=${t} seed=${seed}`).toBe(0)
+        }
+      }
+    }
   })
 
   it('never combines two mirror looks in one section', () => {
@@ -146,7 +167,11 @@ describe('the mirror rack', () => {
     }
   })
 
-  it('keeps the wallpaper coarse enough for the scene to survive inside it', () => {
+  it.skip('keeps the wallpaper coarse enough for the scene to survive inside it', () => {
+    // Skipped rather than deleted: `wallpaper` is retired (F108), not removed —
+    // the switch case and the shader are both still there — so this is the
+    // assertion that comes back with it. Left running it would pass vacuously,
+    // which is the worse of the two failure modes.
     for (const mood of MOODS) {
       for (let seed = 0; seed < 30; seed++) {
         const t = mirrorForSection(mood, 0.9, seed)
@@ -210,7 +235,11 @@ describe('the lens rack', () => {
     // The floor is the correction: a section that chose a material should show
     // it, even at zero tension. Below ~0.15 the racks do not read at all.
     for (const mood of ['ambient', 'mellow', 'groove', 'building', 'peak'] as MoodState[]) {
-      expect(lensAmountTarget(mood, 0, true), mood).toBeGreaterThanOrEqual(0.2)
+      // 0.15, not the 0.2 this started at: F109 turned the rack down and the
+      // floor came with it, but only as far as the readability threshold the
+      // comment above names. That threshold is the bar — a lens quieter than
+      // this is one nobody can see attached to a cost everybody pays.
+      expect(lensAmountTarget(mood, 0, true), mood).toBeGreaterThanOrEqual(0.15)
     }
   })
 
@@ -219,8 +248,8 @@ describe('the lens rack', () => {
   })
 
   it('clamps a tension outside 0..1 instead of running away', () => {
-    expect(lensAmountTarget('peak', 4, true)).toBeLessThanOrEqual(0.62)
-    expect(lensAmountTarget('peak', -2, true)).toBe(0.3)
+    expect(lensAmountTarget('peak', 4, true)).toBeLessThanOrEqual(0.38)
+    expect(lensAmountTarget('peak', -2, true)).toBe(0.2)
   })
 })
 

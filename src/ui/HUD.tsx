@@ -613,9 +613,10 @@ export function HUD() {
                       // 0 off, 1 mirror-x, 2 quad, 3+ n-fold kaleidoscope — so
                       // it steps by 1 and shows no decimals.
                       ['mirrorSegments', 'Mirror segments', 0, 12, 1, 0],
-                      ['mirrorTiles', 'Mirror tiles', 0, 6, 1, 0],
+                      // No `mirrorTiles` / `mirrorSlice`: retired (F108) and
+                      // gated to zero in the bridge, so the sliders would move
+                      // without changing the picture.
                       ['mirrorTwist', 'Mirror twist', -3, 3, 0.05, 2],
-                      ['mirrorSlice', 'Mirror slice', 0, 1, 0.01, 2],
                       ['mirrorSpin', 'Mirror spin', -3, 3, 0.05, 2],
                       ['lensAmount', 'Lens amount', 0, 1, 0.01, 2],
                     ] as const

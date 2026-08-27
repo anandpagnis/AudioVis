@@ -533,9 +533,15 @@ function PostFx() {
         <FxSlider label="trails" value={fx.trails} min={0} max={1} onChange={(v) => set({ trails: v })} />
 
         <h3 className="fx-head">mirror</h3>
-        {/* Integers: `segments` is 0 off / 1 mirror-x / 2 quad / >=3 n-fold, and
-            `tiles` is an n x n repeat. A fractional value between two of those
-            is not a half-way look, it is the wrong one. */}
+        {/* `segments` is an integer: 0 off / 1 mirror-x / 2 quad / >=3 n-fold.
+            A fractional value between two of those is not a half-way look, it
+            is the wrong one.
+
+            No `tiles` or `slice` here — both retired (F108). The engine gates
+            them to zero in PerformanceStateBridge, so leaving the sliders would
+            leave two controls that move and do nothing, which is worse than a
+            missing control: it reads as a broken renderer rather than as a
+            deliberate absence. */}
         <FxSlider
           label="segments"
           value={fx.mirrorSegments}
@@ -545,21 +551,12 @@ function PostFx() {
           onChange={(v) => set({ mirrorSegments: v })}
         />
         <FxSlider
-          label="tiles"
-          value={fx.mirrorTiles}
-          min={0}
-          max={6}
-          step={1}
-          onChange={(v) => set({ mirrorTiles: v })}
-        />
-        <FxSlider
           label="twist"
           value={fx.mirrorTwist}
           min={-3.14}
           max={3.14}
           onChange={(v) => set({ mirrorTwist: v })}
         />
-        <FxSlider label="slice" value={fx.mirrorSlice} min={0} max={1} onChange={(v) => set({ mirrorSlice: v })} />
         <FxSlider
           label="spin"
           value={fx.mirrorSpin}

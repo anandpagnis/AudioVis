@@ -27,30 +27,48 @@ import type { ScenePerformanceCost } from '../scenes'
  * A budget cannot mean anything on top of that. So the currency is now
  * milliseconds, and the prices are measurements.
  *
- * ## The two columns, deliberately treated differently
+ * ## What a number here is
  *
- * **GPU time varies with the tier**, because that is precisely what the tier
- * knobs are for, so it is kept per tier — but *monotonised*. The raw sweep is
- * not monotone: `juliawings` measured 12.5 / 5.5 / 7.4 / 8.7 / 7.8 ms across
- * tiers 0-4, so dropping a tier could make a scene *dearer*. A budget with that
- * property is unusable — "shed load to fit" would sometimes add load. Each
- * entry is therefore the running maximum from the bottom of the ladder upward,
- * which is both monotone and pessimistic.
+ * `gpu.meanMs + js.meanMs`, per tier, monotonised. GPU time comes from real
+ * timer queries; `js` is the time the scene's own frame callback holds the main
+ * thread. They are added rather than maxed because the frame budget this feeds
+ * is a serial millisecond allowance, and the JS term is small enough (0.13 ms at
+ * its worst, `malachite` and `maze`) that the choice barely moves a row.
  *
- * **CPU time is modelled as one constant per scene**, not per tier, and this is
- * the more interesting decision. Two scenes are CPU-bound rather than fill
- * bound — `ribbons` spent **68 ms per frame on the CPU at tier 0** while using
- * 0.03 ms of GPU, and `chrome` spent 43.6 ms at tier 4 against 0.06 ms of GPU.
- * Both were invisible to the old budget, which models fill only. But the
- * evidence also says the ladder does not *control* this cost: `chrome` gets
- * roughly 5x WORSE from tier 0 to tier 4. Pretending a tier drop helps would be
- * fiction, so the CPU term is a flat per-scene surcharge and the anomalies are
- * logged as scene bugs (F86, F87) rather than budgeted around.
+ * **Monotonised** — the running maximum from the bottom of the ladder upward.
+ * The raw sweep is not monotone: `wingfold` measured 0.79 / 2.27 / 2.39 / 2.35 /
+ * 2.54 ms across tiers 0-4, so dropping a tier could make a scene *dearer*. A
+ * budget with that property is unusable, because "shed load to fit" would
+ * sometimes add load. Each entry is therefore the worst cost at that tier or any
+ * tier below it, which is both monotone and pessimistic.
  *
- * Only the overrun past vsync is counted, and only when the mean *and* the tail
- * are both elevated. A single 161 ms shader-compile hitch moved `plasma`'s
- * tier-1 mean but not its p95, and charging one stall as a permanent cost would
- * be exactly the kind of invented number this file replaces.
+ * ## The CPU surcharge is gone, and that is a correction
+ *
+ * The previous table carried a flat per-scene CPU term, on the evidence that
+ * `ribbons` "spent 68 ms per frame on the CPU at tier 0" and `chrome` 43.6 ms.
+ * That priced `ribbons` at 13.11 ms and `chrome` at 9.25 ms — between them a
+ * fifth of a tier-0 budget, for work this sweep finds no trace of.
+ *
+ * **It does not reproduce.** Across all 55 cells the CPU mean is 16.666 ms —
+ * vsync, to three decimals, on every single one — with a p95 never above 17.7.
+ * There is no overrun to charge. The `js` column, which is the number those
+ * earlier figures were reaching for, tops out at 0.13 ms.
+ *
+ * The two readings are reconcilable and the old one was wrong: `/bench`'s CPU
+ * column is whole-frame wall clock, so on a vsync-locked run it reports the
+ * frame interval no matter what the scene costs, and on a run that is stalling
+ * for any reason at all it reports the stall. It was never a measurement of the
+ * scene. `ribbons` and `chrome` therefore drop to 0.72 and 1.58 ms, and F86 and
+ * F87 — both of which existed to explain that phantom cost — close with them.
+ *
+ * ## What the ladder can and cannot shed
+ *
+ * Six of the eleven live scenes show no cost response to the tier at all
+ * (`chrome`, `malachite`, `matrix`, `maze`, `ribbons`, `wingfold` are flat or
+ * inverted), and four read no quality knob whatsoever — `wireframe`, `chrome`,
+ * `matrix` and `kifs` never touch `quality.knobs`, so their ONLY tier lever is
+ * the resolution solve. Worth knowing before trusting a tier drop to rescue a
+ * frame: on more than half the roster it will not, and F111 tracks it.
  *
  * ## What this table is NOT
  *
@@ -62,18 +80,20 @@ import type { ScenePerformanceCost } from '../scenes'
  * a substitute for measuring, and it is the reason {@link TIER_BUDGET_MS}
  * still tapers down the ladder at all — see the note there.
  *
- * One known distortion, recorded rather than corrected: the bench frames every
- * scene with the default camera at `[0, 3, 13]` rather than through
- * `CameraDirector` (F34). Scenes that read the real camera — `chrome`,
- * `inversion`, `torusfold` — are therefore measured from an unrepresentative
- * distance. `torusfold`'s anchor is 3.3 units, so at 13 it is mostly empty
- * space and marches out cheaply. **Treat those three rows as a floor**, not as
- * a measurement.
+ * A second distortion, and this one bites the profile metrics harder than the
+ * costs: **the bench runs with no audio source**. For a scene whose visible
+ * output is audio-gated that is not a quiet show, it is a black frame —
+ * `ribbons` measures `fill` at 0.009 / 0.015 / 0.001 / 0 / 0 across the ladder,
+ * which is not a scene degrading with tier but a scene sitting on the noise
+ * floor at all five. Its COST rows are still valid (it draws the same geometry
+ * either way, at ~0.7 ms); its profile rows mean nothing. See F112.
  *
- * Provenance: `/bench` full sweep, 2026-08-26, 120 CPU frames + ~135 GPU
- * samples per cell, with F33's two guards in place (particle density driven
- * from the tier, and no sampling until the scene actually draws). Re-run it and
- * regenerate this table whenever a scene's shader work changes materially.
+ * Provenance: `/bench` full sweep, 2026-08-27, 120 CPU frames + ~135 GPU
+ * samples per cell, 11 live scenes x 5 tiers. Measured BEFORE F107 raised the
+ * pixel budgets, so fill-bound scenes were sampled at a lower internal
+ * resolution than the app now renders them at — these rows are a floor for
+ * those, not a ceiling. Re-run and regenerate whenever a scene's shader work
+ * changes materially.
  */
 
 /** Tiers, richest to survival. Every row in the table has exactly this many entries. */
@@ -85,8 +105,24 @@ export const COST_TIERS = 5
  * Sorted by name rather than by cost so a regenerated table diffs cleanly.
  */
 export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
-  chrome: [9.25, 9.25, 9.25, 9.25, 9.25],
-  dissolve: [0.11, 0.11, 0.1, 0.09, 0.04],
+  // --- Live roster, swept 2026-08-27 --------------------------------------
+  chrome: [1.58, 1.58, 1.58, 1.58, 1.55],
+  dissolve: [1.29, 1.15, 1.04, 1.01, 0.88],
+  kifs: [2.97, 2.73, 2.69, 2.53, 2.35],
+  malachite: [0.76, 0.72, 0.72, 0.72, 0.72],
+  matrix: [2.05, 2.05, 2.05, 2.05, 1.97],
+  maze: [0.42, 0.42, 0.42, 0.42, 0.37],
+  plasma: [1.83, 1.66, 1.36, 1.26, 1.09],
+  pointcloud: [2.03, 1.62, 1.46, 1.22, 1.06],
+  ribbons: [0.72, 0.72, 0.72, 0.72, 0.72],
+  wingfold: [2.54, 2.54, 2.54, 2.54, 2.54],
+  wireframe: [0.78, 0.7, 0.69, 0.67, 0.63],
+
+  // --- Quarantined (F105), swept 2026-08-26 --------------------------------
+  // Different methodology: these rows carry a per-scene CPU surcharge that the
+  // 2026-08-27 sweep found no evidence for (see the note above). Do NOT compare
+  // a number here against one above - `network` at 22.42 and `kifs` at 2.97 were
+  // not measured the same way. Re-bench any scene promoted back into the roster.
   foldpath: [14.09, 13.03, 12.6, 12.6, 11.53],
   heap: [5.94, 5.94, 5.89, 5.89, 0.3],
   inversion: [0.16, 0.16, 0.16, 0.16, 0.16],
@@ -94,21 +130,18 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   kaleido: [0.38, 0.38, 0.38, 0.38, 0.36],
   network: [22.42, 20.75, 20.75, 15.51, 14.05],
   orbs: [0.06, 0.06, 0.06, 0.06, 0.06],
-  plasma: [1.01, 1.01, 0.19, 0.14, 0.06],
-  pointcloud: [0.12, 0.1, 0.08, 0.07, 0.06],
-  ribbons: [13.11, 13.11, 13.11, 13.11, 13.1],
   synthgrid: [22.35, 16.94, 15.46, 12.91, 9.91],
   torusfold: [0.11, 0.1, 0.1, 0.1, 0.1],
   trail: [0.76, 0.76, 0.7, 0.7, 0.69],
-  wireframe: [0.16, 0.16, 0.15, 0.15, 0.06],
 }
 
 /**
  * Price for a scene the sweep never reached.
  *
  * Every scene in `SCENES` is measured today, so nothing in the live roster is
- * priced from here. It is the path for `DISABLED_SCENES` (`tunnel`, `panic`) if
- * either is ever promoted, and for any scene added after the sweep.
+ * priced from here. It is the path for a `DISABLED_SCENES` entry that never got
+ * swept (`tunnel`, `panic`) if either is ever promoted, and for any scene added
+ * after the sweep.
  *
  * Deliberately **pessimistic** relative to the measured medians of each label:
  * an unmeasured scene should have to earn its way into a composition, not be
