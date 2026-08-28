@@ -31,6 +31,18 @@ import { useStore } from '../store'
 const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
 
 /**
+ * Phrases (16-beat windows) a mirror look may hold before it is force-refreshed
+ * even if nothing about the music moved. F134 — reported as the rack "ending
+ * abruptly and too soon": the phrase-edge re-decision below re-rolled on every
+ * 16 beats unconditionally, so a fold that had just committed could be
+ * overwritten (often by MIRROR_OFF) one phrase later regardless of whether the
+ * section, mood or tension had actually changed — a fixed beat-count timer, not
+ * a musical event. 3 phrases (~24s at 125 BPM) is a backstop for a mood/tension
+ * pair that never budges, not the normal exit; see the re-decision guard below.
+ */
+const MIRROR_MAX_PHRASES = 3
+
+/**
  * Resting bloom per mood — the creative decision the old formula's hardcoded
  * 0.65 was standing in for. Quiet moods sit darker so the music has somewhere
  * to go; hype moods start hot and stay there between hits.
@@ -99,6 +111,12 @@ export function PerformanceStateBridge() {
   const mirrorTarget = useRef<MirrorTarget>(MIRROR_OFF)
   /** Phrases seen. Separate from the section counter so the two rotate apart. */
   const mirrorSeed = useRef(0)
+  /** Mood at the mirror's last pick, so a re-roll can tell "the music moved" apart from "16 beats passed." */
+  const mirrorMoodAtPick = useRef<MoodState | null>(null)
+  /** Coarse tension bucket at the last pick — same purpose, for the continuous half of the read. */
+  const mirrorTensionAtPick = useRef(-1)
+  /** Phrases held on the current pick, capped by MIRROR_MAX_PHRASES below. */
+  const mirrorPhrasesHeld = useRef(0)
   /** When the last section boundary fired, for the dip window. */
   const lastSectionAt = useRef(-Infinity)
   /** Previous window state, so the style is re-picked when it closes too. */
@@ -326,11 +344,30 @@ export function PerformanceStateBridge() {
     // glitch rather than as a choice.
     const phraseEdge = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
     if (f.sectionChange || phraseEdge) {
-      // The whole rack, not just the segment count. `tiles`, `twist` and
-      // `slice` were previously written by nothing but the debug panel, so
-      // three of the mirror's five controls were dead in a running show.
-      const mt = mirrorForSection(m.state, p.visualTension, mirrorSeed.current++)
-      mirrorTarget.current = mt
+      // F134: the phrase edge is a chance to re-roll, not a mandate to. A
+      // section boundary always commits — it is the one unambiguous "the music
+      // changed" signal. Off to on always commits too — there's no live look to
+      // cut short. Otherwise a currently-engaged rack holds through the phrase
+      // edge unless the mood changed, the tension moved a real step (not just
+      // beat-to-beat jitter — bucketed to a fifth), or it has already run the
+      // backstop's worth of phrases with neither moving. That is what makes
+      // "ends on a proper change in mood or energy" true instead of aspirational.
+      const tensionBucket = Math.round(p.visualTension * 5)
+      const moodMoved = m.state !== mirrorMoodAtPick.current
+      const tensionMoved = tensionBucket !== mirrorTensionAtPick.current
+      mirrorPhrasesHeld.current++
+      const stale = mirrorPhrasesHeld.current >= MIRROR_MAX_PHRASES
+      const nothingToInterrupt = mirrorTarget.current.mode === 'off'
+      if (f.sectionChange || nothingToInterrupt || moodMoved || tensionMoved || stale) {
+        // The whole rack, not just the segment count. `tiles`, `twist` and
+        // `slice` were previously written by nothing but the debug panel, so
+        // three of the mirror's five controls were dead in a running show.
+        const mt = mirrorForSection(m.state, p.visualTension, mirrorSeed.current++)
+        mirrorTarget.current = mt
+        mirrorMoodAtPick.current = m.state
+        mirrorTensionAtPick.current = tensionBucket
+        mirrorPhrasesHeld.current = 0
+      }
     }
     if (f.sectionChange) {
       const seed = sectionCount.current++

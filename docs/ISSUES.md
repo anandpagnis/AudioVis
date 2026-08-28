@@ -3602,6 +3602,84 @@ denominated in milliseconds on this side.
       misses (versus just reducing them) is unconfirmed - a number picked
       from the profiling table's reasoning, not from re-measuring hit rate.
 
+- [x] **F134 - Mirror rack ended abruptly, on a beat count instead of a
+      musical event** - `src/engine/PerformanceStateBridge.tsx`
+      *(fixed 2026-08-28)*
+      User report: the rack "activate[s] well but it seems to end abruptly and
+      too soon... they should run a bit longer and end on a proper change in
+      song mood or energy." Root cause: the phrase-edge re-decision (added
+      earlier because tying the rack to section boundaries alone left it
+      "live in about one sample in eight") re-rolled
+      `mirrorForSection` on every 16-beat phrase UNCONDITIONALLY - a fixed
+      beat-count timer, not a musical one - so a fold that had just committed
+      could be overwritten (often by `MIRROR_OFF`) exactly one phrase later
+      regardless of whether anything about the music had actually moved.
+      Fixed by gating the re-roll: a section boundary always commits (the one
+      unambiguous "the music changed" signal), off-to-on always commits (no
+      live look to cut short), and otherwise a currently-engaged rack now
+      holds through the phrase edge unless the mood changed, the tension moved
+      a real step (bucketed to a fifth, so beat-to-beat jitter doesn't count),
+      or `MIRROR_MAX_PHRASES` (3, ~24s at 125 BPM) phrases have passed with
+      neither moving - a backstop for a mood/tension pair that never budges,
+      not the normal exit.
+      Verified by `npm run check` (764 tests, clean build); not yet watched
+      live for how the held-longer duration reads against real structure.
+
+- [ ] **F135 - Cold-start scene switching can stall well past what a listener
+      reads as "the song changed"** - `src/engine/AutoPilot.tsx`,
+      `src/audio/MoodEstimator.ts` *(opened 2026-08-28, not fixed)*
+      User report, closely echoing F118's own original report: "doesn't seem
+      to change scenes for like 15-20 secs despite the changes in the song
+      like buildup and such." F118 already lowered `MOOD_CHANGE_MIN_CONFIDENCE`
+      from an unreachable 0.4 to 0.25 for exactly this complaint, and this
+      session's own log shows that fix holding - first scene request at
+      t=8.6s, confidence past 0.25 by t=5s. The mechanism now suspected is
+      different and F118 did not touch it: `AutoPilot` only ever acts on an
+      EDGE - `m.changed` (a one-frame flag `MoodEstimator` sets only when the
+      committed state actually flips) or `f.sectionChange` (a phrase-detected
+      boundary). If a track's classified mood is already correct from early on
+      and never crosses a category line, `m.changed` never fires; if a
+      buildup happens inside the FIRST section, `f.sectionChange` hasn't fired
+      either yet. Both of AutoPilot's triggers can go quiet for the length of
+      an intro even while the music is audibly moving, because "energy is
+      rising" is not itself an edge either function watches for.
+      NOT fixed - `MoodEstimator.ts`'s hysteresis/confidence timing carries
+      explicit prior warnings against re-tuning without a fresh measured
+      recording (see F118's own comment), and the fix this diagnosis points
+      to - a periodic "nothing has changed in N seconds, look again anyway"
+      fallback in `AutoPilot`, independent of the edge triggers - is a new
+      trigger path, not a threshold nudge, and needs the user's confirmation
+      before going into a system this carefully tuned.
+
+- [ ] **F136 - The cold-open scene skips the warm-mount pipeline every other
+      scene switch gets** - `src/engine/SceneManager.tsx`
+      *(opened 2026-08-28, not fixed)*
+      User report: "maze still looks bad in the starting 5 secs and also it
+      still lags to load." F128/F133 already fixed maze's steady-state
+      structure and march-step correctness; this is a different bug, specific
+      to the FIRST scene shown at app launch (`maze` by default). Every
+      subsequent scene switch mounts its incoming scene at `dir: 0`
+      (invisible, "warming") and holds it there until `prewarmShaders`
+      confirms or `WARM_FRAMES` of hidden rendering have passed, only THEN
+      promoting it to visible - the whole point being that shader compile and
+      first-frame cost happens off-screen. `SceneManager`'s lazy initializer
+      mounts the very first scene with `makeEntry(initialId, 'primary', 1)` -
+      `dir: 1`, visible immediately, no warm phase at all. The most expensive
+      scene in the roster (maze, by its own doc comment) pays its full cold
+      compile live, on screen, at the same moment the quality governor is
+      still at its conservative startup tier and render scale is still
+      ramping up from its own initial value - three cold-start costs
+      stacking on the one scene that never gets the warm-mount protection
+      every other transition relies on.
+      NOT fixed - the natural fix (mount the initial entry at `dir: 0` too and
+      let it promote through the same warm-complete path every other switch
+      uses) touches cold-boot invariants I can't verify live: several places
+      read `activeScene`/`sceneId` assuming they agree from the first frame,
+      and a warm-detection path that never resolves at true cold boot (no
+      prior WebGL context to compare against) would trade a laggy first few
+      seconds for a hung black screen, which is worse. Proposed and pending
+      the user's confirmation before touching it.
+
 ---
 
 ## Verification status
