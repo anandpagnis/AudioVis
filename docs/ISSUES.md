@@ -3515,9 +3515,8 @@ denominated in milliseconds on this side.
       Not yet watched live for how the excluded-scene transition reads in
       practice.
 
-- [ ] **F132 - Worst-frame spikes cluster at scene-transition renderScale
-      collisions** - `src/engine/PerfMonitor.tsx` *(opened 2026-08-28, not
-      fixed)*
+- [x] **F132 - Worst-frame spikes cluster at scene-transition renderScale
+      collisions** - `src/engine/PerfMonitor.tsx` *(fixed 2026-08-28)*
       User report: "still lagging a bit." The fresh session log's own "worst
       single frames" table names it precisely - every one of the five worst
       frames (136.3ms/chrome, 129.0ms/wireframe, 116.2ms/pointcloud,
@@ -3539,13 +3538,73 @@ denominated in milliseconds on this side.
       that frame (even a prewarmed one), so several allocations landing in
       the same ~1s window is plausibly exactly where 60-136ms frames come
       from.
-      NOT fixed yet - this is a real trade-off in code with a lot of prior
-      tuning behind exactly this "composition changes apply now, tier changes
-      wait" split (see the block's own comment), and the right fix (coalesce
-      rapid-fire `applyRenderScale()` calls within some short window vs.
-      something else) is a timing decision worth the user's confirmation
-      before touching the render-scale governor. Proposed and pending as of
-      this entry.
+      Confirmed by reading further rather than guessing: `applyRenderScale()`
+      already suspends the FILTERED sampler the tier logic reads
+      (`frameSampler.governorP95`, 30-frame window), so the emergency-ratio
+      escape hatch was not double-firing off its own resize cost - that loop
+      was already closed. The real source is `renderScale.pairKey`
+      (`budgetMP.toFixed(3)|fullMP.toFixed(3)`), which reacts to the
+      COMBINED budget of every currently-drawing layer - and a transition's
+      own layer add/remove events (an overlay swapping in, an accent
+      dropping out, both visible in the same log windows as the worst
+      frames) each change that combined budget, so `pairKey` was capable of
+      differing on nearly every frame of a ~1s crossfade, not just once at
+      commit - and the call site re-checked it every frame with no gate at
+      all.
+      Fixed with `RESIZE_COALESCE_SEC` (0.2s): a floor under the gap between
+      any two actual `applyRenderScale()` calls, applied uniformly to all
+      three trigger paths (composition, tier-emergency, tier-held) rather
+      than only the composition one, since the underlying cost - a
+      render-target reallocation - is identical regardless of which of the
+      three asked for it. Does not change WHEN a resize is judged necessary,
+      only rate-limits how often the expensive part actually runs; a call
+      blocked by the gate is not dropped; it re-checks every subsequent
+      frame and fires as soon as the gate clears, reading whatever is live
+      at that moment (`applyRenderScale()` has no captured/stale state) - so
+      the final resolution a burst settles on is unchanged, only the
+      redundant intermediate reallocations are removed.
+      Verified by `npm run check` (764 tests, clean build); not yet
+      re-measured against a real session log, so the actual before/after
+      worst-frame numbers are unconfirmed.
+
+- [x] **F133 - Maze's deeper fractal levels intermittently render as flat
+      background colour** - `src/scenes/MazeFlightScene.tsx`
+      *(fixed 2026-08-28)*
+      User report, specifically distinguished from a resolution complaint:
+      "not rendering the whole thing sometimes, like it's replacing the
+      deeper fractals with just pure background colour... b4 we implemented
+      the logging and resolution fix, it looked great."
+      "Looked great before" points squarely at F128, and reading the shader
+      confirms the mechanism: a raymarch step that runs out of budget before
+      converging (`i >= uMaxSteps`) reports a miss (`hit = false`), and a
+      missed pixel paints straight fog/background colour - not a blurrier
+      wall, an ABSENT one. `uMaxSteps` was `clamp(steps, 28, 150)`, reusing
+      the same tier proxy `detailCap` reads, and F128 specifically restored
+      the CELL/3 nesting level at tier ~3 (`steps` = 40) without raising
+      that march budget to match it. The file's own profiling header says
+      march-step count barely matters for cost ("96 -> 48: -5%, inside
+      measurement noise") because "almost every ray hits a wall within a few
+      steps" - true of the FLAT tier-~3 geometry that shipped before F128,
+      not of the same tier now carrying a second nested scale, whose tighter
+      recesses need more steps to converge. The two F128 changes were
+      individually reasoned and individually tested; this is the interaction
+      between them that neither one's own measurement would have caught.
+      Fixed by flooring `uMaxSteps` at 64 (not the raw tier value) whenever
+      `detailCap > 0.25`, i.e. whenever any nesting level is switched on;
+      tiers 0-2 already exceed 64 and are unaffected, tier ~4 has nesting off
+      already (flat by design, not a miss) and stays at its 28 floor. Per
+      the profiling note above this should cost close to nothing at the one
+      tier it changes (~3, steps 40 -> 64).
+      No dedicated test - this scene has no test harness, matching the
+      roster's convention for shader-scene components. Verified by
+      `npm run check` (764 tests, clean build); not yet watched live against
+      real music, so whether 64 steps is actually enough to eliminate the
+      misses (versus just reducing them) is unconfirmed - a number picked
+      from the profiling table's reasoning, not from re-measuring hit rate.
+
+---
+
+## Verification status
 
 `npm run check` passes: typecheck, lint (0 errors, 0 warnings), **764 tests**
 (1 skipped, see F108), build.

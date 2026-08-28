@@ -452,7 +452,6 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     // `raymarchSteps` is the tier proxy (96 / 72 / 54 / 40 / 28); the governor
     // does not expose its tier index.
     const steps = quality.knobs.raymarchSteps
-    u.uMaxSteps.value = Math.max(28, Math.min(MAX_STEPS, steps))
     // Each nesting level is six more hashes inside EVERY map() call, so this is
     // the cheapest large saving after resolution.
     // F128: tier ~3 (steps 40) used to land in the same 0.24 bucket as tier
@@ -461,6 +460,23 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     // so tier ~3 keeps one nesting level; only the emergency tier goes flat.
     const detailCap = steps >= 80 ? 1 : steps >= 50 ? 0.7 : steps >= 36 ? 0.5 : 0.24
     u.uDetail.value = Math.min(P.complexity, detailCap)
+    // March steps, floored higher than the raw tier value whenever nested
+    // detail is switched on (F132 fix). F128 kept the CELL/3 level alive at
+    // tier ~3 without raising the march budget to match it: the header's own
+    // profiling ("almost every ray hits a wall within a few steps") was true
+    // of the FLAT tier-~3 geometry that shipped before F128, not of the same
+    // tier now carrying a second nested scale, which needs more steps to
+    // converge in the tighter recesses the extra scale carves. A ray that
+    // runs out of steps before converging reports `hit = false` and the
+    // fragment paints straight fog/background over what should be a wall —
+    // visible as the deeper fractal detail intermittently vanishing into flat
+    // colour, reported after F128 shipped. The profiling table also says step
+    // count itself is nearly free ("march steps 96 -> 48: -5%, inside
+    // measurement noise"), so raising the floor only where nesting is active
+    // costs little next to the correctness bug it fixes; tiers 0-2 already
+    // exceed this floor and are untouched.
+    const marchStepsFloor = detailCap > 0.25 ? 64 : 28
+    u.uMaxSteps.value = Math.max(marchStepsFloor, Math.min(MAX_STEPS, steps))
     u.uAoSteps.value = steps >= 80 ? MAX_AO : 3
     u.uEdgeOn.value = steps >= 50 ? 1 : 0
     // Fog has already swallowed ~90% of the image by t=40, so the far end of

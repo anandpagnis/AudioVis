@@ -66,6 +66,32 @@ const RENDER_SCALE_HOLD_SEC = 3
  */
 const SCALE_EMERGENCY_RATIO = 3
 
+/**
+ * Minimum gap between two actual `applyRenderScale()` calls, regardless of
+ * which of the three inputs asked for the second one (F132).
+ *
+ * The composition-triggered path above is deliberately immediate — a scene
+ * commit hides its resize under the crossfade — but "immediate" was reading
+ * `renderScale.pairKey` fresh on every frame a transition ran, and a
+ * transition's own layer add/remove events (an overlay swapping in, an accent
+ * dropping out) each change the combined pixel budget and therefore the pair
+ * key. A session log showed the actual cost of that: the worst single frames
+ * of a whole set (60-136 ms, several times the 16.7 ms budget) all landed
+ * within about a second of a scene commit, next to 2-4 separate `renderScale`
+ * changes stacked in that same second — each one a full render-target
+ * reallocation, paid on top of the commit's own cost rather than instead of
+ * it.
+ *
+ * This does not change WHEN the hold/emergency logic below decides a resize
+ * is warranted, only how often the expensive part of actually doing it may
+ * run. The first call in a burst still lands immediately (nothing here delays
+ * it), and `applyRenderScale()` always re-reads live state rather than a
+ * captured snapshot, so a call that lands after being coalesced still applies
+ * whatever the composition's CURRENT budget is, not a stale one — no change
+ * is lost, only the redundant intermediate reallocations are.
+ */
+const RESIZE_COALESCE_SEC = 0.2
+
 /** Live render stats, readable from anywhere (debug panel, fps meter). */
 export const perf = {
   fps: 60,
@@ -152,6 +178,8 @@ export function PerfMonitor() {
   const heldSince = useRef(0)
   /** (budget, display) pair the applied scale was solved for. See the hold doc. */
   const appliedPair = useRef('')
+  /** Clock time of the last actual reallocation. See {@link RESIZE_COALESCE_SEC}. */
+  const lastResizeAt = useRef(-Infinity)
 
   /**
    * Push the current tier's render scale to the canvas.
@@ -274,20 +302,30 @@ export function PerfMonitor() {
     // that comes only from the tier trails it: complexity knobs have already
     // taken effect, since scenes read them live, so the frame is getting cheaper
     // this instant either way and only the resize waits.
-    if (renderScale.pairKey !== appliedPair.current) {
+    // Gates every actual reallocation, on top of (not instead of) the
+    // hold/emergency logic below — see RESIZE_COALESCE_SEC. A blocked call
+    // simply leaves its trigger condition true, so the next frame that clears
+    // the cooldown picks it back up against whatever is live by then.
+    const coalesceReady = clock.elapsedTime - lastResizeAt.current >= RESIZE_COALESCE_SEC
+    const applyRenderScaleCoalesced = () => {
+      if (!coalesceReady) return
+      lastResizeAt.current = clock.elapsedTime
       applyRenderScale()
+    }
+    if (renderScale.pairKey !== appliedPair.current) {
+      applyRenderScaleCoalesced()
     } else if (quality.tier !== appliedTier.current) {
       // A frame this late has stopped being a candidate for hysteresis — see
       // SCALE_EMERGENCY_RATIO. Measured off the p95 rather than the EMA because
       // the EMA is smoothed over seconds and this is the case where seconds are
       // the whole problem.
       if (p95.current > quality.refreshIntervalMs * SCALE_EMERGENCY_RATIO) {
-        applyRenderScale()
+        applyRenderScaleCoalesced()
       } else if (quality.tier !== heldTier.current) {
         heldTier.current = quality.tier
         heldSince.current = clock.elapsedTime
       } else if (clock.elapsedTime - heldSince.current >= RENDER_SCALE_HOLD_SEC) {
-        applyRenderScale()
+        applyRenderScaleCoalesced()
       }
     } else {
       heldTier.current = -1
