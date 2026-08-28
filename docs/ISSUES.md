@@ -4016,6 +4016,25 @@ denominated in milliseconds on this side.
       needs a session log with a `layer: +` event landing near a primary
       crossfade or tier change to confirm the stack no longer compounds.
 
+- [x] **F142 - Lens rack hard-disabled by explicit request ("look so
+      horrible")** - `src/engine/LensPass.ts` *(disabled 2026-08-29)*
+      Not a bug - an art-direction kill switch. The lens materials
+      (`opticalDirector.ts`'s `lensForSection`/`lensAmountTarget`) can be
+      engaged from three independent places: the section director, the
+      `melt` transition rack (`transitions.ts`), and the debug panel
+      (`Console.tsx`/`HUD.tsx` writing `lensAmount`/`lensStyle` into the
+      store). Rather than disabling each source separately, added a single
+      `LENS_HARD_DISABLED` flag inside `LensPass.advance()` - the one choke
+      point every source's resolved `LensRackState` flows through right
+      before `this.enabled` is set for the render. With the flag on,
+      `advance()` always sets `enabled = false` regardless of what any
+      caller computed, so the pass costs nothing and never renders. The
+      director/rack functions themselves are untouched (still fully tested
+      by `opticalDirector.test.ts`/`transitions.test.ts`), so this is a
+      one-line revert (`LENS_HARD_DISABLED = false`) whenever the look is
+      revisited - no logic to reconstruct.
+      `npm run check` clean (764 tests, build passes).
+
 ---
 
 ## Verification status

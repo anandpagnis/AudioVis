@@ -232,6 +232,16 @@ const LENS_FRAG = /* glsl */ `
   }
 `
 
+/**
+ * Hard kill switch (F142, explicit user request, 2026-08-29): "TURN OFF LENS
+ * FOR NOW, THEY LOOK SO HORRIBLE." Forces the pass off regardless of what the
+ * director ({@link lensForSection}/{@link lensAmountTarget}), the `melt`
+ * transition rack, or the debug panel would otherwise set — this is the one
+ * choke point every source of `LensRackState` flows through before render.
+ * Flip back to `false` to re-enable once the look is revisited.
+ */
+const LENS_HARD_DISABLED = true
+
 export class LensPass extends Pass {
   private readonly material: THREE.ShaderMaterial
   private readonly fsScene: THREE.Scene
@@ -295,7 +305,7 @@ export class LensPass extends Pass {
     dt: number,
     audio: { kick: number; highs: number; mids: number; onKick: number },
   ): void {
-    const active = isLensActive(l)
+    const active = !LENS_HARD_DISABLED && isLensActive(l)
     this.enabled = active
     if (!active) return
 
