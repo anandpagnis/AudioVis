@@ -49,17 +49,28 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *
  * What that produced:
  *
- * 1. **`pixelBudget: 0.9`.** Cost is linear in pixel count and this scene has
- *    to leave room for the post chain, so it renders at roughly half linear
- *    scale and upscales. Neon-and-fog tolerates that; this is the opposite of
+ * 1. **`pixelBudget` scales with tier, not fixed at 0.9 (F128).** Cost is
+ *    linear in pixel count and this scene has to leave room for the post
+ *    chain, so it already rendered at roughly half linear scale and
+ *    upscaled — Neon-and-fog tolerates that; this is the opposite of
  *    `matrix`, whose hard glyph edges ruled the offscreen path out entirely.
- * 2. **Two nesting levels by default, three opt-in.** The third (CELL/9) level
- *    costs a third of the frame on its own, and at ~0.47 render scale most of
- *    that detail is sub-pixel before it reaches the display — it is paying full
- *    price for something the downsample largely discards. The authored
- *    `complexity` default sits at 2 levels; maxing the slider still reaches 3.
- * 3. **Quality-capped nesting.** The governor caps at 2 levels below tier ~2 and
- *    1 level below tier ~3, regardless of the slider.
+ *    Below tier ~2 the budget drops further still (0.9 -> 0.55), trading
+ *    resolution for nesting depth rather than the other way round: the third
+ *    (CELL/9) level was already documented as mostly sub-pixel at 0.47
+ *    render scale, so losing more of it to a lower buffer costs less than
+ *    losing an entire nesting level costs structurally (see point 2).
+ * 2. **One nesting level survives down to tier ~3, not zero (F128).** The
+ *    third (CELL/9) level costs a third of the frame on its own and stays
+ *    gated off below tier ~2 same as before. But the second (CELL/3) level
+ *    used to drop too at the same boundary, flattening the maze to its bare
+ *    CELL=3 grid — a structural loss (corridors stop looking carved, not
+ *    just blurrier) that reads as far worse than the resolution cut it was
+ *    paired with. The extra ~25% of frame cost that keeps it alive is paid
+ *    for by point 1's lower budget, not by cutting something else. The
+ *    authored `complexity` default sits at 2 levels; maxing the slider still
+ *    reaches 3.
+ * 3. **Quality-capped nesting.** The governor caps at 2 levels below tier ~2
+ *    and 1 level below tier ~4 (was tier ~3 — see point 2).
  * 4. **Dead sinusoid branch deleted.** The source's `pathPos` computed BOTH a
  *    sinusoidal and a value-noise path, then `mix`ed by `randomness`. That knob
  *    is fixed here at its authored 1.0, which selects the noise path outright —
@@ -388,7 +399,12 @@ export const MazeFlightScene = createShaderScene<MazeState>({
   // Measured: 48.7 ms at full res vs 5.4 ms here. Cost is linear in pixel
   // count and this scene must leave room for the post chain, so it renders at
   // roughly half linear scale. Neon-plus-fog upscales gracefully.
-  pixelBudget: 0.9,
+  //
+  // Read every frame (F128): below tier ~2 the budget drops further, paying
+  // for the nesting level `detailCap` keeps alive down to tier ~3 instead of
+  // flattening the maze outright. `quality.knobs.raymarchSteps` is the same
+  // tier proxy `update()` already reads below.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 0.9 : 0.55),
   uniforms: () => ({
     uPhase: { value: 0 },
     uShock: { value: 0 },
@@ -439,7 +455,11 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     u.uMaxSteps.value = Math.max(28, Math.min(MAX_STEPS, steps))
     // Each nesting level is six more hashes inside EVERY map() call, so this is
     // the cheapest large saving after resolution.
-    const detailCap = steps >= 80 ? 1 : steps >= 50 ? 0.7 : 0.24
+    // F128: tier ~3 (steps 40) used to land in the same 0.24 bucket as tier
+    // ~4 (steps 28), flattening the maze to its bare CELL grid two tiers
+    // early. 0.5 clears the CELL/3 threshold (>0.25) but not CELL/9 (>0.75),
+    // so tier ~3 keeps one nesting level; only the emergency tier goes flat.
+    const detailCap = steps >= 80 ? 1 : steps >= 50 ? 0.7 : steps >= 36 ? 0.5 : 0.24
     u.uDetail.value = Math.min(P.complexity, detailCap)
     u.uAoSteps.value = steps >= 80 ? MAX_AO : 3
     u.uEdgeOn.value = steps >= 50 ? 1 : 0

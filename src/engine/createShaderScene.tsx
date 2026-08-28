@@ -121,8 +121,16 @@ export interface ShaderSceneSpec<S = void> {
    * Omit for a scene cheap enough to run at full display resolution: the
    * offscreen path costs an extra fullscreen blit every frame, which is not
    * worth paying to render at scale 1.0.
+   *
+   * A function is read every frame instead of once, for a scene whose own
+   * cost is too tier-sensitive for one fixed number — see `MazeFlightScene`,
+   * which trades resolution for nesting depth at low tiers rather than
+   * flattening its fractal structure outright (F128). The render target only
+   * actually reallocates when the solved size changes, so a function that
+   * returns the same value every frame costs nothing extra over a plain
+   * number.
    */
-  pixelBudget?: number
+  pixelBudget?: number | (() => number)
 }
 
 /**
@@ -290,7 +298,10 @@ const DISPLAY_FRAG = /* glsl */ `
 `
 
 /** Budgeted path: render offscreen at the solved scale, then upscale. */
-function createBudgetedScene<S>(spec: ShaderSceneSpec<S>, pixelBudget: number): ComponentType {
+function createBudgetedScene<S>(
+  spec: ShaderSceneSpec<S>,
+  pixelBudget: number | (() => number),
+): ComponentType {
   function ShaderScene() {
     const gl = useThree((s) => s.gl)
     const size = useThree((s) => s.size)
@@ -330,19 +341,26 @@ function createBudgetedScene<S>(spec: ShaderSceneSpec<S>, pixelBudget: number): 
 
     useDispose(material, displayMaterial, geometry, rt.target)
 
-    useEffect(() => {
-      const scale = solveScale(pixelBudget, size.width, size.height, dpr)
+    // Solved every frame rather than in a resize-only effect, so a function
+    // budget can react to the quality tier changing mid-scene. Cheap either
+    // way — `setSize` on a target already at the target dimensions is a
+    // guarded no-op inside three, but the uniform writes below it are not, so
+    // this still gates on the size actually changing.
+    useSceneFrame((ctx) => {
+      const budget = typeof pixelBudget === 'function' ? pixelBudget() : pixelBudget
+      const scale = solveScale(budget, size.width, size.height, dpr)
       const w = Math.max(1, Math.floor(size.width * dpr * scale))
       const h = Math.max(1, Math.floor(size.height * dpr * scale))
-      rt.target.setSize(w, h)
-      // The shader's idea of resolution is the BUFFER's, not the canvas's — it
-      // drives ray setup and pixel-space maths, so passing the canvas size here
-      // would draw a differently-shaped frame than the one being written into.
-      material.uniforms.uRes.value.set(w, h)
-      material.uniforms.uAspect.value = w / h
-    }, [rt, material, size, dpr])
+      if (w !== rt.target.width || h !== rt.target.height) {
+        rt.target.setSize(w, h)
+        // The shader's idea of resolution is the BUFFER's, not the canvas's —
+        // it drives ray setup and pixel-space maths, so passing the canvas
+        // size here would draw a differently-shaped frame than the one being
+        // written into.
+        material.uniforms.uRes.value.set(w, h)
+        material.uniforms.uAspect.value = w / h
+      }
 
-    useSceneFrame((ctx) => {
       displayMaterial.uniforms.uScene.value = rt.target.texture
       if (!runFrame(ctx)) return
       const prev = gl.getRenderTarget()

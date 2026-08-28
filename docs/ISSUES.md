@@ -2960,11 +2960,15 @@ denominated in milliseconds on this side.
       argument quality.ts already makes about not discounting `particleFraction`
       through a transition. For all three, resolution IS the correct lever and
       the absence of a knob is a design decision rather than an omission.
-      **Still open, and the more interesting half:** `wingfold`, `maze` and
-      `malachite` all DO read quality knobs (`raymarchSteps`, `noiseOctaves`)
-      and still show no measurable cost response - `wingfold` is 3x DEARER below
-      tier 0. The wiring exists and does not bite. That needs a targeted
-      measurement, not another knob.
+      **`maze` fixed by F128** - its `pixelBudget` was a spec-time constant
+      that never varied with tier, which was the entire "does not bite"
+      story for that scene. Still open, and still the more interesting half:
+      `wingfold` and `malachite` also read quality knobs (`raymarchSteps`,
+      `noiseOctaves`) and still show no measurable cost response - `wingfold`
+      is 3x DEARER below tier 0. The wiring exists and does not bite. That
+      needs a targeted measurement, not another knob - and F128's fix does
+      not generalise here automatically, since the cause may not be the same
+      fixed-pixelBudget shape.
 
 - [x] **F112 - The bench runs with no audio, so audio-gated scenes profile as
       empty** - `src/bench/BenchStage.tsx` *(fixed 2026-08-27)*
@@ -3357,6 +3361,46 @@ denominated in milliseconds on this side.
       instead of fixing the underlying compile cost. Needs a repro with the
       devtools performance panel open on a cold `maze` entry before touching
       the backstop value.
+
+- [x] **F128 - Maze traded away structure at t2->t3, not just resolution** -
+      `src/scenes/MazeFlightScene.tsx`, `src/engine/createShaderScene.tsx`
+      *(fixed 2026-08-28)*
+      User report: t2/t3 "reduces the complexity so much it looks bad." Traced
+      to two compounding bugs, one of them the "wiring exists and does not
+      bite" half of F111 that was still open for `maze`.
+      **The nesting cliff.** `detailCap` was `steps >= 50 ? 0.7 : 0.24` - tier
+      ~2 (steps 54) and tier ~3 (steps 40) landed in different buckets, but
+      0.24 clears NEITHER the CELL/3 nor the CELL/9 refinement threshold, so
+      tier ~3 rendered the bare CELL=3 grid with zero nested detail. The maze
+      did not get blurrier at that boundary, it stopped being a fractal - a
+      structural loss, not a resolution one. Added a `steps >= 36 ? 0.5`
+      rung so tier ~3 keeps the CELL/3 level; only the emergency tier (~4)
+      goes flat.
+      **The resolution knob was wired but dead.** `pixelBudget: 0.9` was a
+      spec-time constant - it never varied with tier, which is exactly the
+      "does not bite" complaint F111 recorded for this scene. `pixelBudget`
+      now also accepts a function, resolved every frame in
+      `createBudgetedScene` (a resize only fires when the solved size
+      actually changes, so a same-value function costs nothing extra over the
+      old fixed number). `maze` drops its budget 0.9 -> 0.55 below tier ~2 -
+      paying for the reinstated nesting level with resolution instead of
+      structure, which the scene's own doc comment already argued is the
+      right trade: the third nesting level was measured as "mostly sub-pixel"
+      at the OLD 0.47 render scale, so losing more of it to a smaller buffer
+      costs less than losing a whole level costs structurally. Net: tier ~3
+      should read as noticeably more detailed and cost roughly the same or
+      less, not more - resolution is linear in pixel count per the scene's own
+      profiling, and the reinstated level costs about 25 percentage points
+      against a ~39% pixel-count cut.
+      No dedicated tests - `createShaderScene.tsx` has none today, matching
+      its existing convention (R3F component, no harness). Verified by
+      `npm run check` (764 tests, unaffected) and reasoning through the
+      pixel-math; not yet re-benched against real music.
+      **F111 addendum:** `maze`'s "wiring exists and does not bite" half is
+      fixed by this. `wingfold` and `malachite` are still open and still need
+      the targeted measurement F111 originally asked for - this fix does not
+      generalise to them without checking whether the same fixed-pixelBudget
+      shape is the cause there too.
 
 ---
 
