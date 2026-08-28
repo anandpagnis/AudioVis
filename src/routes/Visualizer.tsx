@@ -3,6 +3,7 @@ import { Stage } from '../engine/Stage'
 import { Console } from '../ui/Console'
 import { audioEngine } from '../audio/AudioEngine'
 import { claimSource, isOutput } from '../engine/outputLink'
+import { preloadAllScenes } from '../scenes'
 import { useStore } from '../store'
 
 /** Idle time before the pointer disappears on the output surface. */
@@ -30,11 +31,42 @@ export function Visualizer() {
 function OutputSurface() {
   useHandedSource()
   useCleanSurface()
+  usePrefetchScenes()
   return (
     <div className="app app-output">
       <Stage />
     </div>
   )
+}
+
+/**
+ * Fetch every scene chunk once this window is idle, so a scene the show has
+ * never shown yet — `maze` in the case this was measured against — is
+ * already in the module cache by the time AutoPilot first requests it.
+ *
+ * F127: a session recording caught a 2.3s frame freeze on a cold `maze`
+ * switch, landing exactly at the beat-locked commit's 2.5s backstop. The
+ * warm gate that backstop protects only covers shader compile time; it
+ * assumes the chunk itself is already in hand, which for a scene never
+ * shown this session it was not. This pays that download cost once, off
+ * the critical path, rather than on whichever scene the show happens to
+ * request first — the same idle-prefetch shape `Landing` already uses for
+ * the `/app` route chunk.
+ *
+ * Deferred to idle, same reason as `Landing`: it must never compete with
+ * the FIRST scene's own load for bandwidth or main thread, or this would
+ * just move the stall earlier instead of removing it.
+ */
+function usePrefetchScenes() {
+  useEffect(() => {
+    const ric = window.requestIdleCallback
+    if (ric) {
+      const handle = ric(() => preloadAllScenes(), { timeout: 8000 })
+      return () => window.cancelIdleCallback?.(handle)
+    }
+    const timer = window.setTimeout(preloadAllScenes, 4000)
+    return () => window.clearTimeout(timer)
+  }, [])
 }
 
 function ControlSurface() {

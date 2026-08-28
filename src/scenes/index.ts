@@ -64,6 +64,22 @@ export function preloadScene(id: string): void {
 }
 
 /**
+ * Kick off every scene chunk's download at once. Idempotent and safe to call
+ * repeatedly — `load()` de-dupes against `loaded`/`lazy`'s own module cache.
+ *
+ * Exists so a scene's cold-load cost (F127: a 2.3s freeze was traced to a
+ * `maze` `import()` still in flight when the beat-locked commit's 2.5s
+ * backstop expired) can be paid once, off the critical path, instead of on
+ * whichever scene the show happens to request first. `requestScene`'s own
+ * per-id `preloadScene` still fires on top of this — usually a no-op by
+ * then, but it costs nothing to keep, and it is what covers a scene that
+ * gets requested before this had a chance to run.
+ */
+export function preloadAllScenes(): void {
+  for (const id of Object.keys(loaders)) preloadScene(id)
+}
+
+/**
  * Has the scene's lazy chunk finished loading? SceneManager only starts a
  * warming scene's compile countdown once this is true, so the warm window is
  * spent actually rendering (compiling the shader) rather than waiting on the
