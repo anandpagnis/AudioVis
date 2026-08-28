@@ -3740,6 +3740,49 @@ denominated in milliseconds on this side.
       is splitting `map()`'s three nested `carveScale()` calls or reducing
       `MAX_AO`/`edgeGlowAt`'s own `map()` fan-out, in that order - both add
       real compile surface on top of the march loop.
+      **Update 2026-08-28, next session's log**: partial. Both `-> maze`
+      transitions in the new session (`audiovis-session-2026-08-28-12-06-20.json`)
+      still spike - 259.8ms at t=44.5s and 264.7ms at t=117.0s - well down
+      from the 1877.8ms this fix was written against, but not gone, and NOT
+      shrinking on the second occurrence within the same session, which a
+      pure compile-cache theory would predict. See F138: the recompile
+      likely was not the only cost, or not the dominant one.
+
+- [ ] **F138 - Every "budgeted" (offscreen-render) scene allocates a fresh
+      GPU render target, scene graph, and second shader from scratch on
+      every mount, uncached** - `src/engine/createShaderScene.tsx`
+      *(opened 2026-08-28, not fixed)*
+      Follows directly from F137: if maze's ~260ms mount-time freeze were
+      purely the raymarch shader recompiling, the SECOND `-> maze` mount in
+      the same session (t=117.0s, same log) should have been fast - three's
+      `WebGLPrograms` cache reuses an already-compiled program for
+      byte-identical shader source, and maze's source doesn't change between
+      mounts. It wasn't faster (264.7ms, if anything slightly worse than the
+      first mount's 259.8ms), which means the shader recompile is not the
+      only expensive thing happening, or not the dominant one.
+      Reading `createBudgetedScene` (the wrapper every `pixelBudget`-declaring
+      scene goes through, maze included) explains why: on every mount it
+      `useMemo`s a SECOND `THREE.ShaderMaterial` (`displayMaterial`, the blit
+      that composites the offscreen buffer onto screen - trivial shader,
+      unlikely to be the cost) AND a `THREE.WebGLRenderTarget` (HalfFloatType,
+      no depth/stencil) plus a nested `THREE.Scene`/`Mesh`/
+      `OrthographicCamera` to render into it. None of this is cached across
+      mounts - a fresh React mount means a fresh `useMemo`, meaning a fresh
+      GPU texture + framebuffer allocation every time, sized to whatever the
+      solved scale resolves to on the first `useSceneFrame` tick. Real texture
+      allocation is known to be capable of synchronous driver-side cost on
+      D3D11/ANGLE, independent of and additional to shader compilation, and
+      unlike a compiled shader program there is no cache making the second
+      allocation cheaper than the first.
+      NOT fixed - `createShaderScene.tsx` is shared infrastructure used by
+      every `pixelBudget`-declaring scene in the roster, not just maze, so a
+      caching strategy here (e.g. keying a render-target pool by scene id +
+      resolution instead of letting `useMemo` re-allocate per mount) changes
+      warm-mount behavior broadly, and getting the cache invalidation wrong
+      (a stale target surviving a WebGL context loss, or leaking one that's
+      never disposed) would be worse than the current cost. Diagnosed and
+      pending the user's confirmation before touching shared engine code this
+      central.
 
 ---
 
