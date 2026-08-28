@@ -51,25 +51,30 @@ const TRAILS_FLUX_CEILING = 0.9
  * nobody would notice was there. Bases roughly doubled, the busy penalty capped
  * at half rather than all, and the energy penalty cut — this is an art-direction
  * call to make trails a visible part of the show rather than a garnish.
+ *
+ * Raised a third time (F131, explicit request): bases up again for the four
+ * moods that were not already at the ceiling, and the busy-mix floor lifted
+ * from 0.6 to 0.68. `ambient`/`mellow` are untouched — they were already at 1.
  */
 export function trailsTarget(mood: MoodState, flux: number, energy: number): number {
   const busy = Math.min(1, Math.max(0, flux) / TRAILS_FLUX_CEILING)
-  // Floors at 0.6 rather than 0: the busiest mix keeps most of its trails. The
-  // penalty exists because history persistence over a dense percussive mix is
-  // mud, and that is still true — but the curve has twice been too shy about it
-  // and the correction each time has been the same direction.
-  const sustained = 1 - busy * 0.4
+  // Floors at 0.68 rather than 0.6: the busiest mix keeps nearly all of its
+  // trails now. The penalty exists because history persistence over a dense
+  // percussive mix is mud, and that is still true — but the curve has three
+  // times now been too shy about it and the correction each time has been the
+  // same direction.
+  const sustained = 1 - busy * 0.32
   const base =
     mood === 'ambient' || mood === 'mellow'
       ? 1
       : mood === 'groove'
-        ? 0.82
+        ? 0.9
         : mood === 'building'
-          ? 0.9
+          ? 0.97
           : mood === 'peak'
-            ? 0.68
+            ? 0.78
             : mood === 'aggressive'
-              ? 0.58
+              ? 0.68
               : 0
   // Still scaled DOWN by energy rather than up — a peak wants a legible frame —
   // but only just, at 0.1. The ordering between moods is what carries the
@@ -140,9 +145,14 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
   // always, `peak` and `aggressive` unconditionally.
   const mellowOk = mood === 'mellow' && t > 0.3
   if (!hot && !(warm && t > 0.08) && !mellowOk && !(t > 0.4)) return MIRROR_OFF
-  // Three sections in four. Still not every one: an effect present in every
-  // section is not an effect, it is the look.
-  if (seed % 4 === 3) return MIRROR_OFF
+  // Five sections in six (raised from three in four, F131 — explicit request
+  // to make the rack show up more). Still not every one: an effect present in
+  // every eligible section is not an effect, it is the look. Per-scene
+  // suppression for the scenes whose own geometry is already kaleidoscopic
+  // (kifs, maze, wingfold) lives in PerformanceStateBridge, downstream of this
+  // function — it stays scene-blind on purpose, same reasoning as the mood
+  // gate above.
+  if (seed % 6 === 5) return MIRROR_OFF
 
   // Three entries, not four, and the count is load-bearing: `seed % 4 === 3`
   // has already returned above, so `seed % 4` here only ever yields 0, 1 or 2.

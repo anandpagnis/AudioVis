@@ -21,6 +21,16 @@ import { quality } from './quality'
 import { useStore } from '../store'
 
 /**
+ * Scenes the mirror rack and trails sit out entirely (F131, explicit
+ * request). All three are already kaleidoscopic or heavily patterned by
+ * their own geometry — `kifs` is a mandala, `maze` a nested fractal grid,
+ * `wingfold` a folded Julia set — so a standing mirror-segment fold or a
+ * history-persistence trail on top of them doubles up on the same gesture
+ * rather than adding one, and reads as noise over the fractal's own detail.
+ */
+const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
+
+/**
  * Resting bloom per mood — the creative decision the old formula's hardcoded
  * 0.65 was standing in for. Quiet moods sit darker so the music has somewhere
  * to go; hype moods start hot and stay there between hits.
@@ -294,7 +304,8 @@ export function PerformanceStateBridge() {
     // choices — 4 segments and 6 segments have nothing meaningful between them,
     // and a material is the look of the frame rather than an amount of it — so
     // they are re-taken only at a section boundary and then held.
-    p.trails = approach(p.trails, trailsTarget(m.state, f.flux, m.level), 0.7, f.delta)
+    const rackSuppressed = MIRROR_TRAILS_EXCLUDED_SCENES.has(p.activeScene)
+    p.trails = approach(p.trails, rackSuppressed ? 0 : trailsTarget(m.state, f.flux, m.level), 0.7, f.delta)
     p.lens.amount = approach(
       p.lens.amount,
       lensAmountTarget(m.state, p.visualTension, lensEngaged.current),
@@ -320,8 +331,6 @@ export function PerformanceStateBridge() {
       // three of the mirror's five controls were dead in a running show.
       const mt = mirrorForSection(m.state, p.visualTension, mirrorSeed.current++)
       mirrorTarget.current = mt
-      p.mirror.segments = mt.segments
-      p.mirror.tiles = mt.tiles
     }
     if (f.sectionChange) {
       const seed = sectionCount.current++
@@ -334,12 +343,19 @@ export function PerformanceStateBridge() {
     // The continuous half of the rack eases toward the section's target, while
     // `segments` and `tiles` snap at the boundary — those two are counts, and
     // 5.5 segments is not a look halfway between 4 and 8, it is neither.
+    //
+    // All five re-read `rackSuppressed` every frame rather than only at the
+    // boundary, so the excluded scenes (F131) drop the rack the instant they
+    // come on screen — mid-section, if that is when the scene change lands —
+    // rather than waiting out whatever the previous scene's section chose.
     const mt = mirrorTarget.current
-    p.mirror.twist = approach(p.mirror.twist, mt.twist, 0.9, f.delta)
-    p.mirror.slice = approach(p.mirror.slice, mt.slice, 0.9, f.delta)
+    p.mirror.segments = rackSuppressed ? 0 : mt.segments
+    p.mirror.tiles = rackSuppressed ? 0 : mt.tiles
+    p.mirror.twist = approach(p.mirror.twist, rackSuppressed ? 0 : mt.twist, 0.9, f.delta)
+    p.mirror.slice = approach(p.mirror.slice, rackSuppressed ? 0 : mt.slice, 0.9, f.delta)
     // Spin scales with level on top of the section's base, so a kaleidoscope
     // breathes with the music rather than turning at a constant rate.
-    p.mirror.spin = mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
+    p.mirror.spin = rackSuppressed ? 0 : mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human drag a value in the debug panel and see it,

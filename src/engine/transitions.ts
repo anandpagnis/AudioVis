@@ -326,15 +326,22 @@ export function transitionRack(style: TransitionStyle, t: number): TransitionRac
     case 'melt':
       return { ...NO_RACK, lensAmount: arc * 0.7, lensStyle: LENS_MELT }
     case 'collapse':
-      // Twist and tiling together: the frame folds inward and multiplies, then
-      // unfolds onto the new scene. Tiles only engage past the shader's own
-      // `>= 1.5` gate, so the ramp is offset to cross it rather than sitting
-      // just under it for most of the transition doing nothing.
-      // `mirrorTiles: arc > 0.35 ? 2 : 0` used to ride along with the twist.
-      // Dropped with the rest of the tiling (F108) — a transition is the one
-      // place a retired effect would still have surfaced, two beats at a time,
-      // which is worse than having it than not: unattributable.
-      return { ...NO_RACK, mirrorTwist: arc * 2.2 }
+      // Twist and tiling together: the frame folds inward and multiplies into
+      // a 2x2 mirror-repeat (four corners), then unfolds back onto the new
+      // scene as the ramp comes down. Tiles only engage past the shader's own
+      // `>= 1.5` gate, so `2` sits comfortably past it rather than riding the
+      // edge.
+      //
+      // This rode along with the twist until F108 dropped it, in step with
+      // retiring the STANDING wallpaper mode everywhere else (mirrorForSection's
+      // pools, the debug panel, the persisted store) — tiles was one dead
+      // control among several. Restored here alone (F130): this is the
+      // transition's own signature look, not the standing mode F108 actually
+      // targeted, and EffectsDirector reads `rack.mirrorTiles` directly into a
+      // scratch mirror state rather than through `performanceState.mirror`, so
+      // it is untouched by F108's `p.mirror.tiles = 0` gate — restoring it here
+      // does not reopen the standing mode.
+      return { ...NO_RACK, mirrorTwist: arc * 2.2, mirrorTiles: arc > 0.35 ? 2 : 0 }
     default:
       return NO_RACK
   }

@@ -3456,9 +3456,96 @@ denominated in milliseconds on this side.
       per `renderScale.ts`'s own math, but that is reasoning, not a
       measurement.
 
----
+- [x] **F130 - The collapse transition lost its four-corner fold** -
+      `src/engine/transitions.ts` *(fixed 2026-08-28)*
+      User report from a fresh session log: collapse "was supposed to like
+      mirror into 4 corners and then join again." Traced to F108: `tiles: arc
+      > 0.35 ? 2 : 0` was one of four places that STANDING wallpaper mode
+      (`mirror.tiles`) got zeroed when that mode was retired, and the
+      transition's own use of it — riding the twist, not a standing mode at
+      all — went with it as collateral rather than being kept.
+      Restored `mirrorTiles: arc > 0.35 ? 2 : 0` in the `collapse` case only.
+      Safe to restore alone because F108's actual gate (`p.mirror.tiles = 0`
+      in `PerformanceStateBridge`) only zeroes the PERSISTED/directed value;
+      `EffectsDirector` reads `transitionRack().mirrorTiles` straight into a
+      local scratch mirror state for the duration of the transition and never
+      round-trips it through `performanceState.mirror`, so the gate was never
+      actually in this code path — F108 removed the VALUE, not a value a gate
+      would have blocked anyway. Restoring the value alone therefore cannot
+      reopen the standing wallpaper mode F108 targeted; that gate, the pool
+      removals, and the debug-panel slider removal are all untouched.
+      `transitions.test.ts`'s "drives mirror tiles past the shader gate or not
+      at all" test already covered this shape (it was passing vacuously with
+      tiles pinned at 0) and needed no changes — it now exercises real values.
+      Verified by `npm run check` (764 tests, clean build); not yet watched
+      live.
 
-## Verification status
+- [x] **F131 - Mirror segments and trails, more often, and not on the
+      already-kaleidoscopic scenes** -
+      `src/engine/opticalDirector.ts`, `src/engine/PerformanceStateBridge.tsx`
+      *(fixed 2026-08-28)*
+      Requested directly: raise how often the mirror rack and trails show up,
+      except on `kifs`, `maze` and `wingfold` — all three are kaleidoscopic or
+      heavily patterned by their own geometry already, so a standing mirror
+      fold or a persistence trail on top of them doubles the same gesture
+      rather than adding one.
+      **Occurrence**, `opticalDirector.ts`:
+        - `mirrorForSection`'s off-gate loosened from one section in four to
+          one in six (`seed % 4 === 3` -> `seed % 6 === 5`).
+        - `trailsTarget`'s per-mood bases raised a third time (groove
+          0.82->0.9, building 0.9->0.97, peak 0.68->0.78, aggressive
+          0.58->0.68; `ambient`/`mellow` untouched, already at the 1.0
+          ceiling) and the busy-mix floor lifted 0.6->0.68.
+      **Exclusion**, `PerformanceStateBridge.tsx`: a new
+      `MIRROR_TRAILS_EXCLUDED_SCENES` set (`kifs`, `maze`, `wingfold`), read
+      against `p.activeScene` (what the viewer can actually see, not the
+      pending request) every frame rather than only at the section boundary —
+      so switching into an excluded scene mid-section drops the rack
+      immediately instead of waiting out whatever the previous scene's
+      section had chosen. `segments`/`tiles` snap to 0 (they were already
+      snap-not-ease values); `twist`/`slice` ease down through the existing
+      `approach()`; `trails`' target goes to 0 and eases down through its own
+      existing `approach()`. The debug-panel override still runs after this
+      and still wins, unchanged from before — a human forcing a value in the
+      panel is not the case this gate is for.
+      Verified by `npm run check` (764 tests, clean build) — the existing
+      `opticalDirector.test.ts` assertions on `mirrorForSection`'s firing rate
+      and `trailsTarget`'s mood ordering are threshold/ordering checks, not
+      values pinned to the old constants, so both held with no test edits.
+      Not yet watched live for how the excluded-scene transition reads in
+      practice.
+
+- [ ] **F132 - Worst-frame spikes cluster at scene-transition renderScale
+      collisions** - `src/engine/PerfMonitor.tsx` *(opened 2026-08-28, not
+      fixed)*
+      User report: "still lagging a bit." The fresh session log's own "worst
+      single frames" table names it precisely - every one of the five worst
+      frames (136.3ms/chrome, 129.0ms/wireframe, 116.2ms/pointcloud,
+      110.1ms/chrome, 84.0ms/wireframe - all 5-8x the 16.7ms budget) lands
+      within about a second of a scene commit, and every one of those windows
+      also shows 2-4 separate `renderScale` changes stacked in the same
+      second in the events log (e.g. t=74.4-74.6s: DEMOTE, then scale
+      0.59->0.72, right as `wireframe -> chrome` commits and its melt
+      transition starts).
+      Traced to `PerfMonitor.tsx`'s scale-decision block: "the scale has three
+      inputs and two urgencies" - a TIER-driven scale change is held for
+      `RENDER_SCALE_HOLD_SEC` (3s) before it resizes anything, but a
+      COMPOSITION-driven change (`renderScale.pairKey` changing, which is
+      exactly what a scene switch does) calls `applyRenderScale()`
+      immediately, every time, with no hold and no coalescing. Each call
+      reallocates render-target textures (the composer's and any per-scene
+      budgeted target, e.g. `createBudgetedScene`'s), which is a real
+      GPU-side allocation cost - and a scene commit already has its own cost
+      that frame (even a prewarmed one), so several allocations landing in
+      the same ~1s window is plausibly exactly where 60-136ms frames come
+      from.
+      NOT fixed yet - this is a real trade-off in code with a lot of prior
+      tuning behind exactly this "composition changes apply now, tier changes
+      wait" split (see the block's own comment), and the right fix (coalesce
+      rapid-fire `applyRenderScale()` calls within some short window vs.
+      something else) is a timing decision worth the user's confirmation
+      before touching the render-scale governor. Proposed and pending as of
+      this entry.
 
 `npm run check` passes: typecheck, lint (0 errors, 0 warnings), **764 tests**
 (1 skipped, see F108), build.
