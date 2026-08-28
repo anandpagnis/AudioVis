@@ -297,6 +297,86 @@ const DISPLAY_FRAG = /* glsl */ `
   void main() { gl_FragColor = texture2D(uScene, vUv); }
 `
 
+/** The GPU-side pieces a budgeted scene needs: real allocations, not just JS state. */
+interface BudgetedRT {
+  target: THREE.WebGLRenderTarget
+  scene: THREE.Scene
+  camera: THREE.OrthographicCamera
+  /** Lives in `scene`; its geometry/material get repointed on every mount. */
+  mesh: THREE.Mesh
+  displayMaterial: THREE.ShaderMaterial
+}
+
+/**
+ * One `WebGLRenderTarget` (+ its offscreen scene/camera/blit material) per
+ * (renderer, scene id), reused across every mount rather than rebuilt inside
+ * a component-scoped `useMemo` (F138).
+ *
+ * A render target is a real GPU texture + framebuffer allocation, and unlike
+ * a compiled shader program three has no cache for it — a second, identical
+ * one costs the same as the first. A live session log showed exactly that: a
+ * scene's SECOND mount in the same session froze the app for as long as its
+ * first (259.8ms, then 264.7ms), which a mount-scoped `useMemo` explains and
+ * a shader-compile-cache theory alone does not.
+ *
+ * Keyed by `gl` in a `WeakMap` rather than invalidated by hand: a WebGL
+ * context loss remounts `SceneManager` under a brand new `WebGLRenderer`, so
+ * the old renderer — and everything cached under it here — simply becomes
+ * unreachable and is garbage collected. Skipping an explicit `.dispose()` on
+ * that path costs nothing real: the lost context already invalidated the
+ * underlying GPU resources before JS ever sees the loss event.
+ *
+ * Never explicitly evicted on the live path either: the budgeted scenes are a
+ * fixed, small set (the roster's raymarch-heavy handful), so one resident
+ * render target per scene type for the renderer's lifetime is the same
+ * "pay once, keep it" trade `SceneManager` already makes for pinned effect
+ * scenes.
+ */
+const budgetedRTCache = new WeakMap<THREE.WebGLRenderer, Map<string, BudgetedRT>>()
+
+function getBudgetedRT(gl: THREE.WebGLRenderer, id: string, blending: THREE.Blending): BudgetedRT {
+  let byId = budgetedRTCache.get(gl)
+  if (!byId) {
+    byId = new Map()
+    budgetedRTCache.set(gl, byId)
+  }
+  const existing = byId.get(id)
+  if (existing) return existing
+
+  const target = new THREE.WebGLRenderTarget(1, 1, {
+    // Half-float, not 8-bit: these scenes composite additively and several
+    // run values above 1.0 before the fade, which an 8-bit buffer clips.
+    type: THREE.HalfFloatType,
+    depthBuffer: false,
+    stencilBuffer: false,
+  })
+  // Linear filtering is what makes the upscale read as soft rather than
+  // blocky — the whole premise of rendering below display resolution.
+  target.texture.minFilter = THREE.LinearFilter
+  target.texture.magFilter = THREE.LinearFilter
+  const scene = new THREE.Scene()
+  const mesh = new THREE.Mesh()
+  scene.add(mesh)
+  const displayMaterial = new THREE.ShaderMaterial({
+    vertexShader: FULLSCREEN_VERT,
+    fragmentShader: DISPLAY_FRAG,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending,
+    uniforms: { uScene: { value: null } },
+  })
+  const created: BudgetedRT = {
+    target,
+    scene,
+    camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
+    mesh,
+    displayMaterial,
+  }
+  byId.set(id, created)
+  return created
+}
+
 /** Budgeted path: render offscreen at the solved scale, then upscale. */
 function createBudgetedScene<S>(
   spec: ShaderSceneSpec<S>,
@@ -308,38 +388,25 @@ function createBudgetedScene<S>(
     const dpr = useThree((s) => s.viewport.dpr)
     const { material, geometry, runFrame } = useShaderCore(spec)
 
-    const displayMaterial = useMemo(
-      () =>
-        new THREE.ShaderMaterial({
-          vertexShader: FULLSCREEN_VERT,
-          fragmentShader: DISPLAY_FRAG,
-          transparent: true,
-          depthWrite: false,
-          depthTest: false,
-          blending: spec.blending ?? THREE.AdditiveBlending,
-          uniforms: { uScene: { value: null } },
-        }),
-      [],
+    const rt = useMemo(
+      () => getBudgetedRT(gl, spec.id, spec.blending ?? THREE.AdditiveBlending),
+      [gl],
     )
+    const displayMaterial = rt.displayMaterial
 
-    const rt = useMemo(() => {
-      const target = new THREE.WebGLRenderTarget(1, 1, {
-        // Half-float, not 8-bit: these scenes composite additively and several
-        // run values above 1.0 before the fade, which an 8-bit buffer clips.
-        type: THREE.HalfFloatType,
-        depthBuffer: false,
-        stencilBuffer: false,
-      })
-      // Linear filtering is what makes the upscale read as soft rather than
-      // blocky — the whole premise of rendering below display resolution.
-      target.texture.minFilter = THREE.LinearFilter
-      target.texture.magFilter = THREE.LinearFilter
-      const scene = new THREE.Scene()
-      scene.add(new THREE.Mesh(geometry, material))
-      return { target, scene, camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1) }
-    }, [geometry, material])
+    // The cached offscreen mesh outlives any one mount, but `material` and
+    // `geometry` don't — they're fresh every mount (and disposed below on
+    // unmount), so the mesh has to be repointed at the current pair each time
+    // rather than only once at cache-creation.
+    useEffect(() => {
+      rt.mesh.geometry = geometry
+      rt.mesh.material = material
+    }, [rt, geometry, material])
 
-    useDispose(material, displayMaterial, geometry, rt.target)
+    // `rt.target`/`rt.scene`/`rt.camera`/`displayMaterial` are cached and
+    // reused (see getBudgetedRT) — only this mount's own material/geometry
+    // are this component's to dispose.
+    useDispose(material, geometry)
 
     // Solved every frame rather than in a resize-only effect, so a function
     // budget can react to the quality tier changing mid-scene. Cheap either

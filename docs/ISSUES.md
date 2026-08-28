@@ -3748,10 +3748,10 @@ denominated in milliseconds on this side.
       pure compile-cache theory would predict. See F138: the recompile
       likely was not the only cost, or not the dominant one.
 
-- [ ] **F138 - Every "budgeted" (offscreen-render) scene allocates a fresh
+- [x] **F138 - Every "budgeted" (offscreen-render) scene allocates a fresh
       GPU render target, scene graph, and second shader from scratch on
       every mount, uncached** - `src/engine/createShaderScene.tsx`
-      *(opened 2026-08-28, not fixed)*
+      *(fixed 2026-08-28, unverified live)*
       Follows directly from F137: if maze's ~260ms mount-time freeze were
       purely the raymarch shader recompiling, the SECOND `-> maze` mount in
       the same session (t=117.0s, same log) should have been fast - three's
@@ -3774,15 +3774,27 @@ denominated in milliseconds on this side.
       D3D11/ANGLE, independent of and additional to shader compilation, and
       unlike a compiled shader program there is no cache making the second
       allocation cheaper than the first.
-      NOT fixed - `createShaderScene.tsx` is shared infrastructure used by
-      every `pixelBudget`-declaring scene in the roster, not just maze, so a
-      caching strategy here (e.g. keying a render-target pool by scene id +
-      resolution instead of letting `useMemo` re-allocate per mount) changes
-      warm-mount behavior broadly, and getting the cache invalidation wrong
-      (a stale target surviving a WebGL context loss, or leaking one that's
-      never disposed) would be worse than the current cost. Diagnosed and
-      pending the user's confirmation before touching shared engine code this
-      central.
+      Fixed by hoisting the render target, its offscreen scene/camera, and
+      the blit `displayMaterial` out of the component's `useMemo` into a
+      module-level `getBudgetedRT(gl, spec.id, blending)`, cached in a
+      `Map` keyed by scene id inside a `WeakMap` keyed by the renderer
+      itself. A mount now looks up (or, once per scene id per renderer,
+      creates) the shared target instead of allocating a new one; the
+      offscreen mesh's `geometry`/`material` are repointed at the current
+      mount's instances every time (those two remain per-mount and are still
+      disposed on unmount via `useDispose`, unchanged). Context loss remounts
+      `SceneManager` under a brand new `WebGLRenderer`, so the old renderer —
+      and everything cached under it — simply becomes unreachable and is
+      garbage collected; no explicit invalidation needed, and skipping
+      `.dispose()` on that path costs nothing real since the lost context
+      already invalidated the GPU resources first. Never evicted on the live
+      path either, matching the existing "pay once, keep it" treatment
+      `SceneManager` already gives pinned effect scenes — the budgeted scenes
+      are a fixed, small set.
+      Verified by `npm run check` (764 tests, clean build) only. UNVERIFIED
+      live: whether this actually removes the repeat freeze needs a fresh
+      session log with a second `-> maze` (or any other budgeted scene)
+      transition to compare against this session's 259.8ms/264.7ms pair.
 
 ---
 
