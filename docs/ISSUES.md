@@ -3326,6 +3326,38 @@ denominated in milliseconds on this side.
       the way these 24 were. A table that indexes another file drifts from it
       unless something checks - that is how this happened in the first place.
 
+- [x] **F126 - The melt transition read as boiling white goop, not liquefying** -
+      `src/engine/LensPass.ts` *(fixed 2026-08-28)*
+      The melt lens material added a `sheen` highlight on top of its runnel
+      noise (`col += sheen * (col + 0.25)`), peaking near `n = 1` at roughly
+      0.6-0.7 additive brightness. Anywhere the noise pattern peaked, the
+      result clipped to white - so the "liquefying" look was a bright white
+      blob boiling across the frame rather than the image running to shadow.
+      Removed the sheen entirely and pushed `shade` darker instead
+      (`0.55 * smoothstep(0.35, 1.0, n) + 0.6 * plume`, was `0.28 *
+      smoothstep(0.55, 1.0, ...)`), so the runnels and kick plumes now read as
+      the frame melting into black rather than glowing.
+
+- [ ] **F127 - A cold scene chunk can freeze the frame for over two seconds** -
+      `src/engine/SceneManager.tsx`, `src/scenes/index.ts`
+      A session log (2026-08-27) caught the worst single frame of the run at
+      **2286.6 ms** - not a hitch, a 2.3-second freeze - landing in the gap
+      between `scene: requested maze` (t=102.72s) and the transition actually
+      starting (t=105.27s). That 2.55s gap matches the `waited > 2.5`
+      backstop F35 added specifically so a cold commit could never deadlock -
+      which means this *is* that backstop firing, on a scene whose cold
+      `import()` + first shader compile took longer than the 2.5s window F35
+      assumed was generous. F35's own description called the failure mode
+      "multi-hundred-ms"; this is an order of magnitude past that.
+      Not yet root-caused - open questions: is `maze` unusually expensive to
+      compile cold (its chunk is 11.05 kB, mid-sized, so probably not the
+      chunk fetch itself), was this a one-off (GC pause, thermal throttle,
+      background tab) or reproducible every cold `maze` load, and would
+      lowering the backstop just turn a 2.3s freeze into a corrupted commit
+      instead of fixing the underlying compile cost. Needs a repro with the
+      devtools performance panel open on a cold `maze` entry before touching
+      the backstop value.
+
 ---
 
 ## Verification status

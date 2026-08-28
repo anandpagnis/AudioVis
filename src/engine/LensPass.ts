@@ -23,7 +23,7 @@ import {
  *
  * The materials: reeded glass (`glass ribs`), the same flutes radiating from
  * bottom centre (`glass fan`), cinema glass with real streak flares
- * (`anamorphic`), a liquefying pane with kick-spawned heat plumes (`melt`),
+ * (`anamorphic`), a liquefying pane with kick-spawned dark plumes (`melt`),
  * horizontal slice tears (`glitch`), an LED-wall mosaic (`pixels`), and a hex
  * lattice of convex lenslets (`fly eye`).
  *
@@ -143,8 +143,15 @@ const LENS_FRAG = /* glsl */ `
       glow = st * fl * 0.22 * vec3(0.8, 0.95, 1.15);
     } else if (uStyle < 3.5) {
       // melt: columnar runnels (anisotropic scrolling noise) drag the image
-      // downward; kicks spawn rising heat plumes (uRip slots) that hard-liquefy
+      // downward; kicks spawn rising dark plumes (uRip slots) that hard-liquefy
       // their region.
+      //
+      // No sheen here (F126) — the natural read of melting is the material
+      // going to shadow as it runs, not lighting up. The old sheen highlight
+      // on top of the runnel noise clipped to a bright white blob wherever the
+      // noise peaked, which read as the frame boiling rather than liquefying.
+      // Shade now does all the work, and pushes darker than before so the
+      // runnels are visibly there.
       vec2 q = vec2(vUv.x * uAspect * 6.0, vUv.y * 2.0 + uTime * 0.12);
       float n = vnoise(q) * 0.65 + vnoise(q * 2.7 + 13.7) * 0.35;
       vec2 p = vec2((vUv.x - 0.5) * uAspect, vUv.y - 0.5);
@@ -153,7 +160,7 @@ const LENS_FRAG = /* glsl */ `
         float age = uTime - uRip[i].z;
         if (uRip[i].w > 0.001 && age > 0.0 && age < 3.0) {
           vec2 d = p - uRip[i].xy;
-          d.y -= age * 0.22; // the hot zone rises as it fades
+          d.y -= age * 0.22; // the dark zone rises as it fades
           plume += exp(-dot(d, d) * 12.0) * exp(-age * 1.1) * uRip[i].w;
         }
       }
@@ -161,8 +168,7 @@ const LENS_FRAG = /* glsl */ `
       float m = uAmt * (0.02 + drip * 0.16 + plume * 0.24);
       off.y = m; // sample above -> the image drags downward
       off.x = (vnoise(q * 3.1 + 51.3) - 0.5) * m * 0.7;
-      shade = 1.0 - 0.28 * uAmt * smoothstep(0.55, 1.0, n + plume * 0.7);
-      sheen = (pow(max(0.0, n - 0.6), 2.0) * 4.0 + plume * 0.2) * uAmt;
+      shade = 1.0 - uAmt * (0.55 * smoothstep(0.35, 1.0, n) + 0.6 * plume);
     } else if (uStyle < 4.5) {
       // glitch: coarse slice tears re-rolled by uSeed, plus fine micro-tears
       // gated on the highs.
