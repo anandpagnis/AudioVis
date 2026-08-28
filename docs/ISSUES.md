@@ -3796,6 +3796,58 @@ denominated in milliseconds on this side.
       session log with a second `-> maze` (or any other budgeted scene)
       transition to compare against this session's 259.8ms/264.7ms pair.
 
+      Update 2026-08-28, still unverified: two rounds of post-fix session
+      logs (`...17-35-06`, `...17-48-50`) still showed ~1.8-1.9s maze
+      freezes, looking like a regression - traced instead to the user
+      testing against stale dev servers left running on ports 5183/5184
+      from earlier in the day (neither had today's commits). Killed both,
+      confirmed only the correct server (5185, `44ecdd7` onward) was left
+      running. A third log (`...18-05-27`), confirmed by the user to be
+      from 5185, is clean of any giant freeze (worst frame 212.6ms all
+      session) - but its scene rotation (wireframe, pointcloud, chrome,
+      plasma, wingfold, dissolve, kifs) never once visited `maze` or
+      `malachite`, the only two scenes that declare `pixelBudget` and
+      therefore the only two this fix touches. `chrome`'s repeat-mount
+      cheapness in that log was initially misread as indirect confirmation
+      - checked against `scenes/index.ts` and `ChromeFormScene.tsx` before
+      writing it up, and chrome has no `pixelBudget`, so it never goes
+      through `createBudgetedScene`/`getBudgetedRT` at all. Its cheap
+      repeats are just three's ordinary compiled-program cache, unrelated
+      to this fix. F137/F138 remain completely unverified either way -
+      still need one live session log that actually lands on maze or
+      malachite after a prior scene has already played.
+
+- [ ] **F139 - Worst frame times cluster on tier-DEMOTE / render-scale-change
+      events on an already-mounted scene, not on scene mounts** -
+      `src/engine/renderScale.ts`, `src/engine/createShaderScene.tsx`
+      *(found 2026-08-28, not fixed)*
+      In the clean `...18-05-27` log (confirmed on the correct 5185 server,
+      no giant freezes), the four worst single frames of the session -
+      212.6ms (t=20.8s, chrome, tier DEMOTE 1->2 mid-`dipToBlack`, scale
+      0.60->0.75), 185.2ms (t=144.3s, dissolve, scale 0.41->0.50, DEMOTE
+      3->4 half a second later), 142.3ms (t=102.3s, wireframe, scale
+      change + DEMOTE 3->4 landing ~0.8s later), 94.3ms (t=153.6s, chrome,
+      scale jump 0.43->0.63 right before a scene-switch request) - all sit
+      next to a render-scale or tier change on a scene that was NOT being
+      freshly mounted. This session also ran `qualityMode: "auto"`, far
+      chattier than the "high" logs seen earlier (49 tier changes / 57
+      scale changes in 195s, vs a handful before), and spent 47% of frames
+      over its own frame-time budget, both notably worse than prior "high"
+      logs (12-16% over budget).
+      Working theory, not yet checked against code: `WebGLRenderTarget`'s
+      `setSize()` likely reallocates the backing texture/framebuffer at the
+      driver level even when the JS object persists (the same class of
+      cost F138 found at mount time, here triggered by every resolution
+      change instead of every mount) - and "auto" mode's aggressiveness
+      means this happens far more often than mounts do. Not confirmed:
+      could instead (or also) be DPR/canvas resize, or something else tied
+      to the demote event specifically rather than the resize itself.
+      Needs: read `renderScale.ts`'s demote/promote path and
+      `createBudgetedScene`'s per-frame resize call to see whether/how
+      often `target.setSize()` actually fires a real reallocation, and
+      whether "auto" mode's tier/scale chatter is itself worth damping
+      before touching the resize cost.
+
 ---
 
 ## Verification status
