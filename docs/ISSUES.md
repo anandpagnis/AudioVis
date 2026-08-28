@@ -3925,6 +3925,63 @@ denominated in milliseconds on this side.
       it, or whether removing the complexity coupling was enough to avoid
       whatever the pixelBudget jump was actually triggering.
 
+      Update 2026-08-29, newest log (`...18-45-39`, captured AFTER both the
+      complexity fix above and F141) - the stall recurred, worse: **1872.4ms**
+      at t=124.8s, `maze t3 x0.57`. So neither fix touched it, as expected
+      (this entry never claimed they would). But this log isolates the cause
+      more precisely than `...18-23-22` did, and the isolation points AWAY
+      from the pixelBudget-cliff-crossing theory above, not toward it:
+        - `chrome -> maze` (`transition-start dissolve (1.04s)`) fires at
+          t=122.87s. Cross-referencing every `scene` event this session:
+          that is maze's ONLY appearance as a primary, start to finish - it
+          was never mounted earlier in these 136s.
+        - The 1872.4ms frame lands at t=124.8s, ~1.9s INTO that dissolve,
+          not on it starting. `tier DEMOTE 2->3` - the event this entry's
+          cliff theory blames - doesn't fire until t=125.06s, ~260ms AFTER
+          the giant frame. Given tier decisions react to recently-observed
+          frame times, the more likely direction is the stall caused the
+          demote, not the other way around - the opposite of what was
+          assumed above.
+        - Raw `frameTimesMs` around the spike (indices 7177-7299,
+          checked directly, not just the summary table): a clean run of
+          ~16.7ms frames, ONE frame at 1872.4ms, then immediate recovery
+          (61.2ms, 6.7ms, 9.2ms, back to ~16-20ms within ten frames). A
+          resize-driven or per-pixel-cost theory predicts sustained
+          elevation at the new budget/resolution, not a single isolated
+          spike with instant recovery - this shape is the signature of a
+          one-shot blocking call (a pipeline/shader compile, a synchronous
+          allocation, or a GC pause), not an ongoing per-frame cost.
+        - Checked whether the complexity fix above made maze's shader more
+          expensive to COMPILE (as opposed to more expensive to run) -
+          it doesn't: `if (uDetail > 0.25)` / `if (uDetail > 0.75)` in the
+          fragment shader are ordinary uniform-gated runtime `if`s, not
+          `#if` preprocessor branches, so both nested-detail code paths
+          were already present in every compiled build of this shader
+          regardless of what `uDetail` holds at runtime. Ruled out.
+      Current best explanation: a cold GPU pipeline compile/link stall on
+      maze's first real, full-resolution, visible draw call this session -
+      plausible on this session's ANGLE/D3D11 backend (`env.gpu`:
+      "ANGLE (NVIDIA... Direct3D11 vs_5_0 ps_5_0, D3D11)"), which is known
+      to sometimes defer real shader compilation past `linkProgram` to the
+      first draw call that actually exercises the program at production
+      settings. If so, `SceneManager`'s warm-mount (F136/F141) isn't fully
+      covering primaries the way it's meant to - either the warm phase
+      renders into a placeholder-sized target that doesn't force the same
+      driver-side compile a full-size draw does, or `WARM_FRAMES` finishes
+      (`isWarmComplete`) before the actual compile has settled. Unconfirmed
+      - this is a hypothesis consistent with the evidence above, not a
+      profiled root cause. No browser-profiling tool is available in this
+      environment (checked: no puppeteer/playwright in `package.json` or
+      `node_modules/.bin`) to capture one directly.
+      Next step, unchanged in kind from before but now sharper: a Chrome
+      DevTools Performance recording spanning one `chrome -> maze` (or any
+      cold-primary) switch, to see whether the 1.8s+ block shows as
+      "Compile Shader" / "Program Link" in the GPU track, a long JS task, or
+      a GC pause - needed before writing any fix, since the three would be
+      fixed in completely different places (driver/compile-ahead scheduling
+      vs. `createShaderScene.tsx`'s resize path vs. allocation pressure
+      somewhere in the scene's own `update()`).
+
 - [ ] **F140 - Worst frame times cluster on tier-DEMOTE / render-scale-change
       events on an already-mounted scene, not on scene mounts** -
       `src/engine/renderScale.ts`, `src/engine/createShaderScene.tsx`
