@@ -3898,6 +3898,33 @@ denominated in milliseconds on this side.
       performance recording) captured while reproducing a maze tier
       2->3 demote before committing to a fix here.
 
+      Update 2026-08-29, partial hard fix (user directive, not a profiled
+      root-cause fix): the user asked that maze's fractal density,
+      complexity, and nesting never degrade under quality load, full stop
+      - independent of whether that's confirmed to be the stall's actual
+      cost driver. Implemented in `MazeFlightScene.tsx`'s `update()`:
+      `uDetail.value` (nesting depth, gated `if (uDetail > 0.25)` /
+      `if (uDetail > 0.75)` in the shader for the CELL/3 and CELL/9
+      levels) now reads straight from `P.complexity`, the user's own dial,
+      with the tier-derived `detailCap` ladder deleted outright.
+      `uDensity` was already untouched by tier (`P.density * 1.5` only),
+      so it needed no change. `marchStepsFloor` still exists (F132's
+      correctness floor, needed whenever nesting is on so rays converge in
+      the tighter recesses a nested scale carves) but now keys off the
+      unconditional `uDetail.value` instead of the deleted `detailCap`.
+      `npm run check` clean (764 tests, build passes).
+      This does NOT touch `pixelBudget` (`src/scenes/MazeFlightScene.tsx:
+      424`) - the tier-50 cutoff that actually fires the resize believed
+      to cause the 2.1s stall is still in place, untouched, out of scope
+      for this pass per the user's explicit request ("implement that as a
+      hard fix first" - complexity/density/fractals first, resolution
+      later if at all). So: maze's GEOMETRY can no longer flatten under
+      load, but the stall itself is still unverified as fixed - the
+      profile this entry called for is still the way to confirm whether
+      resolution alone (now the only degrading axis left) still triggers
+      it, or whether removing the complexity coupling was enough to avoid
+      whatever the pixelBudget jump was actually triggering.
+
 - [ ] **F140 - Worst frame times cluster on tier-DEMOTE / render-scale-change
       events on an already-mounted scene, not on scene mounts** -
       `src/engine/renderScale.ts`, `src/engine/createShaderScene.tsx`

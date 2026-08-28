@@ -59,18 +59,25 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *    (CELL/9) level was already documented as mostly sub-pixel at 0.47
  *    render scale, so losing more of it to a lower buffer costs less than
  *    losing an entire nesting level costs structurally (see point 2).
- * 2. **One nesting level survives down to tier ~3, not zero (F128).** The
- *    third (CELL/9) level costs a third of the frame on its own and stays
- *    gated off below tier ~2 same as before. But the second (CELL/3) level
- *    used to drop too at the same boundary, flattening the maze to its bare
- *    CELL=3 grid — a structural loss (corridors stop looking carved, not
- *    just blurrier) that reads as far worse than the resolution cut it was
- *    paired with. The extra ~25% of frame cost that keeps it alive is paid
- *    for by point 1's lower budget, not by cutting something else. The
- *    authored `complexity` default sits at 2 levels; maxing the slider still
- *    reaches 3.
- * 3. **Quality-capped nesting.** The governor caps at 2 levels below tier ~2
- *    and 1 level below tier ~4 (was tier ~3 — see point 2).
+ * 2. **~~One nesting level survives down to tier ~3, not zero (F128).~~
+ *    Superseded 2026-08-29 (F139 hard fix): nesting depth is no longer
+ *    tier-gated at all — see point 3.** The third (CELL/9) level costs a
+ *    third of the frame on its own; the second (CELL/3) level flattening
+ *    the maze to its bare CELL=3 grid was a structural loss (corridors
+ *    stop looking carved, not just blurrier) that read as far worse than
+ *    any resolution cut. The authored `complexity` default sits at 2
+ *    levels; maxing the slider still reaches 3.
+ * 3. **~~Quality-capped nesting.~~ Removed 2026-08-29 (F139 hard fix):**
+ *    fractal nesting depth (`uDetail`, driven by the `complexity` dial and
+ *    tied to `uDensity`/`uDetail` structurally) must never degrade under
+ *    load — the maze's geometry changing shape as quality drops reads as
+ *    the scene glitching, not as a quality change, and the old
+ *    `detailCap` ladder collided with `pixelBudget`'s tier-50 cutoff to
+ *    produce a 2.1s single-frame stall (see ISSUES.md F139). Only the
+ *    user's `complexity` dial controls nesting now; the governor is
+ *    limited to resolution / march-step / AO / edge-glow below, none of
+ *    which change the maze's structure. Cost at low tiers is higher than
+ *    it used to be as a result — an accepted tradeoff, not an oversight.
  * 4. **Dead sinusoid branch deleted.** The source's `pathPos` computed BOTH a
  *    sinusoidal and a value-noise path, then `mix`ed by `randomness`. That knob
  *    is fixed here at its authored 1.0, which selects the noise path outright —
@@ -469,30 +476,21 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     // `raymarchSteps` is the tier proxy (96 / 72 / 54 / 40 / 28); the governor
     // does not expose its tier index.
     const steps = quality.knobs.raymarchSteps
-    // Each nesting level is six more hashes inside EVERY map() call, so this is
-    // the cheapest large saving after resolution.
-    // F128: tier ~3 (steps 40) used to land in the same 0.24 bucket as tier
-    // ~4 (steps 28), flattening the maze to its bare CELL grid two tiers
-    // early. 0.5 clears the CELL/3 threshold (>0.25) but not CELL/9 (>0.75),
-    // so tier ~3 keeps one nesting level; only the emergency tier goes flat.
-    const detailCap = steps >= 80 ? 1 : steps >= 50 ? 0.7 : steps >= 36 ? 0.5 : 0.24
-    u.uDetail.value = Math.min(P.complexity, detailCap)
-    // March steps, floored higher than the raw tier value whenever nested
-    // detail is switched on (F132 fix). F128 kept the CELL/3 level alive at
-    // tier ~3 without raising the march budget to match it: the header's own
-    // profiling ("almost every ray hits a wall within a few steps") was true
-    // of the FLAT tier-~3 geometry that shipped before F128, not of the same
-    // tier now carrying a second nested scale, which needs more steps to
-    // converge in the tighter recesses the extra scale carves. A ray that
-    // runs out of steps before converging reports `hit = false` and the
-    // fragment paints straight fog/background over what should be a wall —
-    // visible as the deeper fractal detail intermittently vanishing into flat
-    // colour, reported after F128 shipped. The profiling table also says step
-    // count itself is nearly free ("march steps 96 -> 48: -5%, inside
-    // measurement noise"), so raising the floor only where nesting is active
-    // costs little next to the correctness bug it fixes; tiers 0-2 already
-    // exceed this floor and are untouched.
-    const marchStepsFloor = detailCap > 0.25 ? 64 : 28
+    // Fractal nesting depth is NEVER tier-gated (F139 hard fix, 2026-08-29):
+    // only the user's own `complexity` dial decides it, same as `uDensity`
+    // above. See the header comment (point 3) for why — the old `detailCap`
+    // ladder flattened the maze's actual geometry under load and collided
+    // with `pixelBudget`'s tier-50 cutoff to produce a 2.1s stall.
+    u.uDetail.value = P.complexity
+    // March steps, floored higher whenever nested detail is switched on
+    // (F132 fix, still needed now that nesting is unconditional): a ray that
+    // runs out of steps before converging in the tighter recesses a nested
+    // scale carves reports `hit = false` and paints flat fog over what
+    // should be a wall — visible as detail intermittently vanishing. Step
+    // count itself is nearly free per the header's profiling table, so
+    // raising the floor only where nesting is active costs little; tiers
+    // 0-2 already exceed this floor and are untouched.
+    const marchStepsFloor = u.uDetail.value > 0.25 ? 64 : 28
     u.uMaxSteps.value = Math.max(marchStepsFloor, Math.min(MAX_STEPS, steps))
     u.uAoSteps.value = steps >= 80 ? MAX_AO : 3
     u.uEdgeOn.value = steps >= 50 ? 1 : 0
