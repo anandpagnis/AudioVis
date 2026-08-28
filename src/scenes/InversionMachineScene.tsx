@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
-import { quality, applyQualityUniforms } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -14,8 +13,9 @@ import { useDispose } from '../engine/useDispose'
  * scene doesn't either, since its distance estimator (de()) is a bespoke
  * sphere-inversion fold rather than a composition of the shared primitives,
  * and its march loop carries extra per-step glow accumulation the shared
- * raymarch() doesn't support). It does reuse the quality governor's uMaxSteps
- * convention (see below), the one piece that generalizes.
+ * raymarch() doesn't support). `uMaxSteps` is pinned at the loop's own cap
+ * (F129) rather than reading the quality governor — see the uniform's own
+ * comment.
  *
  * Unlike NetworkConstellationScene (a flat screen-space effect where an
  * earlier attempt at camera-coupling was removed in favour of pure audio
@@ -87,9 +87,9 @@ export const FRAG = /* glsl */ `
   uniform vec3 uColA;
   uniform vec3 uColB;
   uniform float uFade;
-  // Max march iterations, capped by the quality governor — same convention
-  // as RAYMARCH_GLSL in shaderLib.ts (uMaxSteps early-break), applied here
-  // via applyQualityUniforms() even though the march loop itself is bespoke.
+  // Pinned at the loop's own 60-step cap (F129) — the quality tier no
+  // longer shortens this march. Resolution, not march depth, is the tier's
+  // lever now (engine/renderScale.ts).
   uniform int uMaxSteps;
 
   float rand(vec2 co) {
@@ -238,7 +238,7 @@ export function InversionMachineScene() {
           uColA: { value: new THREE.Color('#ff5c33') },
           uColB: { value: new THREE.Color('#7c4dff') },
           uFade: { value: 0 },
-          uMaxSteps: { value: quality.knobs.raymarchSteps },
+          uMaxSteps: { value: 60 },
         },
       }),
     [],
@@ -285,8 +285,6 @@ export function InversionMachineScene() {
     u.uColA.value.copy(col.a)
     u.uColB.value.copy(col.c)
     u.uFade.value = vis
-
-    applyQualityUniforms(u)
   })
 
   return (

@@ -3415,6 +3415,47 @@ denominated in milliseconds on this side.
       generalise to them without checking whether the same fixed-pixelBudget
       shape is the cause there too.
 
+- [x] **F129 - The quality tier thinned fractal detail on top of resolution,
+      not instead of it** -
+      `src/scenes/KifsRoseScene.tsx`, `WingfoldJuliaScene.tsx`,
+      `CrystalFoldScene.tsx`, `TorusFoldScene.tsx`, `KaleidoPulseScene.tsx`,
+      `JuliaWingsScene.tsx`, `FoldPathScene.tsx`, `InversionMachineScene.tsx`
+      *(fixed 2026-08-28)*
+      User request, direct follow-up to F111/F128: "remove [tier's control
+      of fractals] completely from the demoting list, let it reduce the
+      resolution but it shouldn't touch fractals."
+      All eight raymarched/escape-time fractal scenes tied their fold count,
+      escape-time iteration cap, or march-step budget to
+      `quality.knobs.raymarchSteps` (F111's fix for `kifs`/`wingfold`, and
+      the pre-existing convention every scene ported after them copied). That
+      was one lever too many: `engine/renderScale.ts` already scales every
+      scene's canvas resolution by tier through the `performanceCost`/
+      `pixelBudgetScale` system (confirmed - none of the eight declare a
+      `pixelBudget` override, so they all already ride that global governor).
+      Also thinning the fractal itself at low tiers meant a demoted frame
+      lost structure - fewer KIFS folds, a shallower Julia escape count, a
+      shorter Mandelbox march - on top of the resolution cut the global
+      system was already making, which is what read as scenes "losing
+      petals" rather than just going soft.
+      Fix, applied identically across all eight: the tier-derived cap/scale
+      factor is gone: `uIterCount`/`uMaxIter`/`uMaxSteps`/`uIters` are now
+      pinned at each shader's own maximum (the value tier 0 already produced)
+      and only the performer's own complexity/density dial moves them.
+      `InversionMachineScene` dropped its `applyQualityUniforms(u)` call
+      entirely (its only tier-read uniform was `uMaxSteps`); the other seven
+      each lost a `quality.knobs.raymarchSteps`-or-`noiseOctaves` read.
+      Resolution is untouched by this fix - it was never the thing being
+      changed here, only the second, redundant complexity cut layered on
+      top of it.
+      No dedicated tests for any of the eight (matching the roster's existing
+      convention - none of these R3F/shader-scene components have a test
+      harness). Verified by `npm run check` (764 tests, unaffected, build
+      clean); not yet re-benched against real music, so whether the eight
+      scenes now cost more at low tiers than the ladder's frame budget
+      allows is unconfirmed - the global resolution scaling should absorb it
+      per `renderScale.ts`'s own math, but that is reasoning, not a
+      measurement.
+
 ---
 
 ## Verification status

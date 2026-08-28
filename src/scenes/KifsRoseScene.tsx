@@ -1,5 +1,4 @@
 import { createShaderScene } from '../engine/createShaderScene'
-import { quality } from '../engine/quality'
 import { drastic } from '../engine/sceneParams'
 import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
 
@@ -144,23 +143,15 @@ export const KifsRoseScene = createShaderScene<KifsRoseState>({
     u.uPhase.value = st.phase
     u.uShock.value = st.shock
     u.uSymmetry.value = Math.round(3 + P.shape * 9) // 3..12
-    // Fold count, capped by the quality tier as well as by the slider (F111).
-    //
-    // This scene is the most expensive in the roster (2.97 ms at tier 0) and
-    // was one of four that read no quality knob at all, so the ladder had no
-    // way to make it cheaper — dropping a tier changed nothing but resolution.
-    // The mechanism was already here and simply unwired: `uIterCount` is a
-    // real loop bound the shader breaks on, it was just driven by the user's
-    // complexity slider and nothing else.
-    //
-    // `raymarchSteps` is the tier proxy, exactly as WingfoldJuliaScene uses it
-    // (96 at tier 0 down to 28 at tier 4). The slider still spans the range it
-    // always did; the tier decides where the top of that range sits, so a
-    // performer's setting is respected rather than overridden. The floor of 6
-    // is where the rose still reads as a rose — below that the folds stop
-    // resolving into petals and it is a different scene, not a cheaper one.
-    const tierCap = Math.max(6, Math.round(20 * (quality.knobs.raymarchSteps / 96)))
-    u.uIterCount.value = Math.round(4 + P.complexity * (tierCap - 4)) // 4..20
+    // Fold count no longer reads the quality tier (F129 reverts F111 here):
+    // the tier's job is resolution, via the global pixelBudget/performanceCost
+    // system (engine/renderScale.ts) — it already scales this scene's canvas
+    // resolution with `high` cost. Letting the tier also cap `uIterCount`
+    // doubled up on that and thinned the fractal itself at low tiers, which
+    // reads as the rose losing petals rather than just getting softer.
+    // Complexity's own 4..20 range is unaffected — only the performer's
+    // dial, not the governor, decides how many folds run.
+    u.uIterCount.value = Math.round(4 + P.complexity * 16) // 4..20
     u.uMorph.value = P.tilt * 1.2 // matches source's 0..1.2 range
     u.uFill.value = 0.4 + P.fill * 2.1 // matches source's 0.4..2.5 zoom range
     u.uContrast.value = P.contrast

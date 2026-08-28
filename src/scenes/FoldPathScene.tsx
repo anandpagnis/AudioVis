@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
-import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -36,14 +35,13 @@ import { useDispose } from '../engine/useDispose'
  * speed is audio-driven (bass/energy) instead of raw elapsed time, so the
  * flythrough itself rides the music.
  *
- * Quality governor: this march's absolute step budget (600) is on a totally
- * different scale than shaderLib's adaptive-SDF convention (raymarchSteps
- * tops out at 96) — reusing that value directly here would truncate the
- * march to a tiny fraction of its intended 15-unit range even at the best
- * tier. Instead this scene derives its OWN step cap as the same PROPORTION
- * quality.knobs.raymarchSteps represents of its own max (96), applied to its
- * native 600-step budget — same relative response to load, correct absolute
- * scale. See the component body.
+ * Quality governor: the step budget (600) is now pinned rather than tier-
+ * scaled (F129) — see `RENDER_SCALE` below, which is where this scene's own
+ * measurements showed the actual cost lives. `uMaxSteps` used to derive a
+ * tier-scaled cap from `quality.knobs.raymarchSteps`; the file's own /bench
+ * numbers (quoted at `RENDER_SCALE`) showed that lever moved cost by only
+ * 19% while thinning the fractal texture, so it was removed rather than kept
+ * as a second, weaker resolution knob.
  */
 
 /**
@@ -74,10 +72,10 @@ export const FRAG = /* glsl */ `
   uniform vec3 uColA;
   uniform vec3 uColB;
   uniform float uFade;
-  // Derived from quality.knobs.raymarchSteps as a PROPORTION of this
-  // shader's own 600-step native budget (see the file header comment) — not
-  // the shared raymarchSteps value directly, which is scaled for a
-  // different march style entirely.
+  // Pinned at this shader's own 600-step native budget (F129) — the quality
+  // tier no longer shortens the march (see the file header comment on why
+  // that lever barely moved cost anyway). RENDER_SCALE below, plus the
+  // global render-resolution system, is what actually answers the tier now.
   uniform int uMaxSteps;
 
   float st = 0.025;
@@ -245,11 +243,13 @@ const DISPLAY_FRAG = /* glsl */ `
  * before any layer. It was by a factor of ~2.5 the most expensive thing in the
  * roster and it could not share a frame with anything.
  *
- * The governor had no lever on it either: `uMaxSteps` sweeps 600 → 175 across
- * the five tiers and moves the cost by only 19% (16.0 → 13.0 ms), because the
- * march terminates early long before the cap. What it actually pays for is the
- * per-step work — the 8-iteration fold, the 20-step binary refine, the normal
- * samples — so capping steps was tuning the wrong knob.
+ * The governor had no lever on it either: `uMaxSteps` used to sweep 600 → 175
+ * across the five tiers and moved the cost by only 19% (16.0 → 13.0 ms),
+ * because the march terminates early long before the cap. What it actually
+ * pays for is the per-step work — the 8-iteration fold, the 20-step binary
+ * refine, the normal samples — so capping steps was tuning the wrong knob;
+ * `uMaxSteps` is now pinned at 600 (F129) rather than kept as a second,
+ * weaker resolution lever.
  *
  * Resolution is the knob that works, and it is the same mitigation
  * `SynthGridScene` already uses (that scene renders at 0.6x and measures a
@@ -368,12 +368,6 @@ export function FoldPathScene() {
     u.uColA.value.copy(col.a)
     u.uColB.value.copy(col.c)
     u.uFade.value = vis
-
-    // Proportional, not literal, reuse of the governor's raymarchSteps knob
-    // — see the file header comment on why this shader's own 600-step
-    // native budget can't be driven by that value directly.
-    const qualityFraction = quality.knobs.raymarchSteps / 96
-    u.uMaxSteps.value = Math.max(60, Math.round(600 * qualityFraction))
 
     // --- offscreen march, at RENDER_SCALE of the display resolution ---------
     const prevTarget = gl.getRenderTarget()

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
-import { quality } from '../engine/quality'
 import { SDF_GLSL } from '../engine/shaderLib'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
@@ -64,11 +63,9 @@ export const FRAG = /* glsl */ `
   uniform vec3 uColA;
   uniform vec3 uColB;
   uniform float uFade;
-  // Direct reuse of the quality governor's raymarchSteps knob — this march
-  // is a standard adaptive SDF sphere-trace (td+=d using the real computed
-  // distance), the same style shaderLib's own RAYMARCH_GLSL/uMaxSteps
-  // convention was calibrated for. Unlike FoldPathScene's fixed-step march,
-  // no rescaling is needed here.
+  // Pinned at the loop's own 100-step cap (F129) — the quality tier no
+  // longer shortens this march. Resolution, not march depth, is the tier's
+  // lever now (engine/renderScale.ts).
   uniform int uMaxSteps;
   // The fold's rotation, precomputed on the CPU.
   //
@@ -177,7 +174,7 @@ export function TorusFoldScene() {
           uColA: { value: new THREE.Color('#ffcc33') },
           uColB: { value: new THREE.Color('#ff3d81') },
           uFade: { value: 0 },
-          uMaxSteps: { value: quality.knobs.raymarchSteps },
+          uMaxSteps: { value: 100 },
           // A `mat2` uniform: three has no Matrix2 class, so this is a raw
           // 4-element column-major Float32Array — [c, -s, s, c], matching
           // GLSL's `mat2(c, -s, s, c)` (column 0 = (c, -s), column 1 = (s, c)).
@@ -228,8 +225,6 @@ export function TorusFoldScene() {
     u.uColA.value.copy(col.a)
     u.uColB.value.copy(col.c)
     u.uFade.value = vis
-
-    u.uMaxSteps.value = Math.min(100, quality.knobs.raymarchSteps)
   })
 
   return (

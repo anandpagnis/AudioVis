@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
-import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -68,10 +67,9 @@ export const FRAG = /* glsl */ `
   uniform float uEnergy;
   uniform float uPulse;
   uniform float uFade;
-  // Iteration cap, proportional to the quality governor the same way
-  // FoldPathScene's step count is — 64 isn't on shaderLib's 96-max scale,
-  // so this scales AS a fraction of that knob rather than reusing it as a
-  // literal step count.
+  // Pinned at the loop's own 64-iteration cap (F129) — the quality tier no
+  // longer shortens the escape-time count. Resolution, not iteration depth,
+  // is the tier's lever now (engine/renderScale.ts).
   uniform int uMaxIter;
 
   vec3 juliaFractal(vec2 c, vec2 c2, float animparam, float anim2) {
@@ -196,9 +194,6 @@ export function JuliaWingsScene() {
     u.uEnergy.value = b.energy
     u.uPulse.value = b.pulse
     u.uFade.value = vis
-
-    const qualityFraction = quality.knobs.raymarchSteps / 96
-    u.uMaxIter.value = Math.max(24, Math.round(64 * qualityFraction))
   })
 
   return (

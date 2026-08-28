@@ -1,5 +1,4 @@
 import { createShaderScene } from '../engine/createShaderScene'
-import { quality } from '../engine/quality'
 import { drastic } from '../engine/sceneParams'
 import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
 
@@ -168,11 +167,11 @@ export const WingfoldJuliaScene = createShaderScene<WingfoldState>({
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
 
-    // Quality-governed detail: `raymarchSteps` is the tier proxy (96 at tier 0
-    // down to 28 at tier 4), reused here the same way `maze` reuses it -- the
-    // governor doesn't expose its tier index directly.
-    const tierFrac = quality.knobs.raymarchSteps / 96
-    const cap = Math.round(MAX_ITER_CAP * tierFrac)
-    u.uMaxIter.value = Math.max(30, Math.min(MAX_ITER_CAP, Math.round(30 + P.complexity * (cap - 30))))
+    // No quality-tier coupling (F129): the tier's job is resolution, via the
+    // global pixelBudget/performanceCost system (engine/renderScale.ts), not
+    // escape-time detail. Cutting `uMaxIter` at low tiers left the interior
+    // set visibly under-resolved -- only the complexity dial spans the range
+    // now.
+    u.uMaxIter.value = Math.max(30, Math.round(30 + P.complexity * (MAX_ITER_CAP - 30)))
   },
 })

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
-import { quality } from '../engine/quality'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { bipolar, drastic, steps } from './contract'
 import { useDispose } from '../engine/useDispose'
@@ -101,7 +100,7 @@ export const FRAG = /* glsl */ `
   /** Ring contrast exponent; rises briefly on a transient. */
   uniform float uSharp;
   uniform float uFade;
-  /** Fractal iterations, from the quality governor. */
+  /** Fractal iterations — ring layers, from the complexity dial only. */
   uniform int uIters;
 
   // Inigo Quilez's cosine palette, unchanged.
@@ -220,19 +219,12 @@ export function KaleidoPulseScene() {
 
     u.uFade.value = vis
 
-    // `noiseOctaves` rather than `raymarchSteps`: this is an octave-style
-    // accumulation loop, and the governor's octave ladder (4/4/3/3/2) maps onto
-    // a 4-iteration fractal exactly. Dropping an iteration removes the finest
-    // ring layer, which is the least missed.
-    //
-    // The dial asks for a ceiling; the governor still owns the floor. `min` of
-    // the two rather than an average, because a user asking for fewer layers
-    // and a governor demanding fewer layers both want the same thing, and
-    // neither may be overruled by the other into MORE work than it allowed.
-    u.uIters.value = Math.min(
-      steps(p.complexity, 1, 4),
-      Math.max(2, Math.min(4, quality.knobs.noiseOctaves)),
-    )
+    // No quality-tier floor (F129): the tier's job is resolution, via the
+    // global pixelBudget/performanceCost system (engine/renderScale.ts).
+    // Dropping a ring layer at low tiers thinned the fractal itself, which
+    // is exactly the demotion the tier should no longer make — only the
+    // complexity dial decides the layer count now.
+    u.uIters.value = steps(p.complexity, 1, 4)
   })
 
   return (

@@ -1,5 +1,4 @@
 import { createShaderScene } from '../engine/createShaderScene'
-import { quality } from '../engine/quality'
 import { drastic } from '../engine/sceneParams'
 import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
 
@@ -40,12 +39,12 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *    scaled by `drastic(P.speed)`. `onKick` gives the fractal a decaying
  *    "breath" — the Mandelbox `Scale` widens briefly and the glow punches
  *    brighter.
- * 3. **Both loops are quality/param-governed with an early break**: GLSL ES
- *    1.00 needs a constant loop bound, so each loop runs to a `const` cap and
+ * 3. **Both loops run to a `const` cap with an early break**: GLSL ES 1.00
+ *    needs a constant loop bound, so each loop runs to a `const` cap and
  *    exits early once a uniform int counter is reached, the same idiom
  *    `kifs`/`wingfold`/`maze` use. Fold count is `complexity`; march steps
- *    reuse the shared `quality.knobs.raymarchSteps` tier proxy like `maze`/
- *    `torusfold` do.
+ *    are pinned at `MAX_STEPS_CAP` (F129) — the quality tier no longer
+ *    shortens the march, only the global render resolution responds to it.
  * 4. A vignette and a contrast-driven tone curve give `contrast` something to
  *    bind to, the roster's standard treatment for the parameter.
  *
@@ -226,8 +225,10 @@ export const CrystalFoldScene = createShaderScene<CrystalFoldState>({
     u.uHighs.value = s.highs
     u.uIter.value = Math.round(4 + P.complexity * 8) // 4..12
 
-    // Quality-governed march depth: `raymarchSteps` is the tier proxy (96 at
-    // tier 0 down to 28 at tier 4), same idiom `maze`/`torusfold` use.
-    u.uMaxSteps.value = Math.max(24, Math.min(MAX_STEPS_CAP, quality.knobs.raymarchSteps))
+    // March depth no longer reads the quality tier (F129): the tier's job is
+    // resolution, via the global pixelBudget/performanceCost system
+    // (engine/renderScale.ts). Pinned at the shader's own cap so a low tier
+    // never shortens the march and thins the fractal's filaments.
+    u.uMaxSteps.value = MAX_STEPS_CAP
   },
 })
