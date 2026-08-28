@@ -3963,6 +3963,59 @@ denominated in milliseconds on this side.
       theory that motivated this entry doesn't apply to these particular
       frames.
 
+- [x] **F141 - Composition layers (background/accent/overlay) skip the
+      warm-mount system entirely and compile their shader live, on whatever
+      frame the director happens to request them - which is usually the
+      same frame as a primary crossfade and/or a tier change, stacking a
+      cold compile on top of both** - `src/engine/SceneManager.tsx`
+      *(fixed 2026-08-29)*
+      Found by reading `SceneManager.tsx` end-to-end after a fifth session
+      log (`...18-35-09`, post-F139-complexity-fix) showed its two worst
+      frames - 276.8ms and 270.5ms, both worse than anything F139 predicted
+      - landing on `chrome` and `maze`, neither a budgeted (`pixelBudget`)
+      scene and neither near a maze tier-2/3 boundary. F139's fix (density/
+      complexity locked to the user dial) is confirmed working - maze's
+      worst frame all session was 43.1ms - but these two frames prove
+      something else, bigger, was still there.
+      Traced the 276.8ms frame to its events: `maze -> chrome` primary
+      crossfade starts, `background: + malachite` fires 10ms later,
+      `background: - malachite` fires 190ms after THAT (the director
+      changed its mind almost immediately), and a `tier DEMOTE 2->3` lands
+      in the same window - four unrelated systems' costs landing on the
+      same handful of frames. The `270.5ms` frame is the same shape:
+      `chrome -> pointcloud -> maze` (a transition re-targeted before the
+      first one settled) plus a tier demote, all inside 400ms.
+      Root cause: every OTHER mount in this file - the primary scene
+      switch, at minimum - goes through a warm-then-promote handoff
+      (`EntryGroup`/`WARM_FRAMES`/`prewarmShaders`, all keyed on
+      `isWarmComplete`): mount invisibly, let the shader compile over a few
+      frames, only then make it visible. `resolveLayerIds`'s caller pushed
+      new background/accent/overlay entries straight in at `dir: 1` -
+      immediately visible, first frame it exists, whatever frame that
+      happens to be. That is exactly the failure mode F136's header
+      comment describes for primaries ("a multi-hundred-millisecond
+      freeze, landing exactly on the beat") - just never fixed for layers,
+      because `resolveLayerIds`/`composeLayers` react to musical moments
+      (mood/phrase changes) the same way tier changes and primary switches
+      do, so a cold layer compile lands stacked on other real work far more
+      often than chance would predict.
+      Fixed by giving layers the identical warm-then-promote step
+      primaries get (not the streamer bookkeeping - `sceneStreamer` stays
+      primary-only, per the existing comment on why): a newly-wanted layer
+      now mounts at `dir: 0`, and the loop that used to unconditionally
+      push it at `dir: 1` instead waits for `isWarmComplete` before
+      promoting it (fading in, retiring whatever currently holds the
+      role). A stale warming candidate - the director changed the desired
+      layer again before the old one finished compiling - is dropped
+      outright, since it was never visible. No new machinery: `EntryGroup`
+      already renders any `dir: 0` entry invisibly regardless of role, and
+      the per-frame `warmFrames`/`sceneStreamer.noteLoaded` tick already
+      runs over every `dir: 0` entry (idle pinned effects already relied on
+      this) - the bug was purely that layers never entered that state.
+      `npm run check` clean (764 tests, build passes). UNVERIFIED live:
+      needs a session log with a `layer: +` event landing near a primary
+      crossfade or tier change to confirm the stack no longer compounds.
+
 ---
 
 ## Verification status

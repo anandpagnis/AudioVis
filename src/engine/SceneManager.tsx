@@ -836,18 +836,63 @@ export function SceneManager() {
         },
       },
     )
+    // Layers deliberately skip the primary streamer's pending/promote
+    // lifecycle — they have their own independent fade and never participate
+    // in the beat-locked commit above, so there is no warm SLOT to arbitrate
+    // over the way `pendingSceneId` does for the primary.
+    //
+    // They used to skip the warm-mount STEP too, jumping straight to dir 1 —
+    // immediately visible, on the very first frame it exists. `EntryGroup`
+    // renders any dir-0 entry (regardless of role) invisibly to force its
+    // shader to compile, and every OTHER mount in this file goes through that
+    // gate; a layer never did, so its first-ever compile happened live, on
+    // whatever frame the director happened to request it. That frame usually
+    // already carries a primary crossfade and/or a tier change (composition
+    // decisions and quality decisions both react to the same musical
+    // moments), so the compile stall landed stacked on top of them rather
+    // than in an otherwise-idle frame — see the F139 update in
+    // docs/ISSUES.md for a live 130-280ms case of exactly this on a
+    // `background: + malachite` layer.
+    //
+    // Fixed by giving layers the same warm-then-promote handoff primaries
+    // get, minus the streamer bookkeeping they never had: a newly-wanted
+    // layer mounts at dir 0 (invisible, compiling) and is promoted to dir 1
+    // — fading in, retiring whatever currently holds the role — only once
+    // `isWarmComplete`. A stale warming candidate (the director changed its
+    // mind about this role before the old one finished compiling) is
+    // dropped outright; it never became visible, so there is nothing to fade.
     for (const role of LAYER_ROLES) {
       const wanted = wantedLayers[role]
       const current = entriesRef.current.find((e) => e.role === role && e.dir === 1)
-      if ((current?.id ?? null) === wanted) continue
-      if (current) current.dir = -1
-      if (wanted) {
-        // Layers deliberately skip the streamer's lifecycle: they have their
-        // own independent fade and never participate in the beat-locked primary
-        // commit, so there is no warm slot to arbitrate over.
-        entriesRef.current.push(makeEntry(wanted, role, 1))
-        force((n) => n + 1)
+      const warming = entriesRef.current.find((e) => e.role === role && e.dir === 0)
+
+      if ((current?.id ?? null) === wanted) {
+        if (warming) {
+          entriesRef.current = entriesRef.current.filter((e) => e !== warming)
+          force((n) => n + 1)
+        }
+        continue
       }
+
+      if (wanted === null) {
+        if (current) current.dir = -1
+        if (warming) entriesRef.current = entriesRef.current.filter((e) => e !== warming)
+        force((n) => n + 1)
+        continue
+      }
+
+      if (warming?.id === wanted) {
+        if (isWarmComplete(warming)) {
+          if (current) current.dir = -1
+          warming.dir = 1
+          force((n) => n + 1)
+        }
+        continue
+      }
+
+      if (warming) entriesRef.current = entriesRef.current.filter((e) => e !== warming)
+      entriesRef.current.push(makeEntry(wanted, role, 0))
+      force((n) => n + 1)
     }
 
     // Effects: pinned entries whose ACTIVE firing is owned by EffectDirector.
