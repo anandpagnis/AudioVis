@@ -3625,60 +3625,121 @@ denominated in milliseconds on this side.
       Verified by `npm run check` (764 tests, clean build); not yet watched
       live for how the held-longer duration reads against real structure.
 
-- [ ] **F135 - Cold-start scene switching can stall well past what a listener
-      reads as "the song changed"** - `src/engine/AutoPilot.tsx`,
-      `src/audio/MoodEstimator.ts` *(opened 2026-08-28, not fixed)*
+- [x] **F135 - Cold-start scene switching can stall well past what a listener
+      reads as "the song changed"** - `src/engine/AutoPilot.tsx`
+      *(fixed 2026-08-28)*
       User report, closely echoing F118's own original report: "doesn't seem
       to change scenes for like 15-20 secs despite the changes in the song
       like buildup and such." F118 already lowered `MOOD_CHANGE_MIN_CONFIDENCE`
-      from an unreachable 0.4 to 0.25 for exactly this complaint, and this
-      session's own log shows that fix holding - first scene request at
-      t=8.6s, confidence past 0.25 by t=5s. The mechanism now suspected is
-      different and F118 did not touch it: `AutoPilot` only ever acts on an
-      EDGE - `m.changed` (a one-frame flag `MoodEstimator` sets only when the
-      committed state actually flips) or `f.sectionChange` (a phrase-detected
-      boundary). If a track's classified mood is already correct from early on
-      and never crosses a category line, `m.changed` never fires; if a
-      buildup happens inside the FIRST section, `f.sectionChange` hasn't fired
-      either yet. Both of AutoPilot's triggers can go quiet for the length of
-      an intro even while the music is audibly moving, because "energy is
-      rising" is not itself an edge either function watches for.
-      NOT fixed - `MoodEstimator.ts`'s hysteresis/confidence timing carries
-      explicit prior warnings against re-tuning without a fresh measured
-      recording (see F118's own comment), and the fix this diagnosis points
-      to - a periodic "nothing has changed in N seconds, look again anyway"
-      fallback in `AutoPilot`, independent of the edge triggers - is a new
-      trigger path, not a threshold nudge, and needs the user's confirmation
-      before going into a system this carefully tuned.
+      from an unreachable 0.4 to 0.25 for exactly this complaint, and a prior
+      session log showed that fix holding on its own terms. The mechanism
+      diagnosed here is different and F118 did not touch it: `AutoPilot` only
+      ever acts on an EDGE - `m.changed` (a one-frame flag `MoodEstimator`
+      sets only when the committed state actually flips) or `f.sectionChange`
+      (a phrase-detected boundary). If a track's classified mood is already
+      correct from early on and never crosses a category line, `m.changed`
+      never fires; if a buildup happens inside the FIRST section,
+      `f.sectionChange` hasn't fired either yet. Both triggers can go quiet
+      for the length of an intro even while the music is audibly moving,
+      because "energy is rising" is not itself an edge either function
+      watches for.
+      Fixed with `STALE_TARGET_SEC` (25s): a third path in the same
+      if/else-if chain as the drop and mood-changed triggers, aiming at
+      whatever mood is currently committed (`m.state`) - not a guess, just
+      the estimator's own best read - the moment 25s pass with neither of the
+      other two firing. Deliberately above the 15-20s that read as broken, so
+      a track where the edges fire normally never trips it at all; every
+      downstream guard (`MIN_SUBJECT_DWELL_BEATS`, the `pendingSceneId`
+      single-flight lock) still applies exactly as it does for any other
+      trigger.
+      Verified by `npm run check` (764 tests, clean build). NOT yet confirmed
+      live: `MoodEstimator.ts`'s hysteresis/confidence timing carries explicit
+      prior warnings against re-tuning without a fresh measured recording
+      (see F118's own comment), which is why this is a new trigger path
+      rather than a threshold nudge - but the one live session log gathered
+      since (`audiovis-session-2026-08-28-11-54-47.json`, confidence mean
+      0.18, ambiguity mean 0.72 - a genuinely hard-to-classify track) never
+      went 25s between scene changes (max gap ~17.5s, likely carried by
+      `PerformanceDirector`'s section-boundary path instead), so this
+      fallback has not yet been observed actually firing.
 
-- [ ] **F136 - The cold-open scene skips the warm-mount pipeline every other
-      scene switch gets** - `src/engine/SceneManager.tsx`
-      *(opened 2026-08-28, not fixed)*
+- [x] **F136 - The cold-open scene skips the warm-mount pipeline every other
+      scene switch gets** - `src/engine/SceneManager.tsx` *(fixed 2026-08-28)*
       User report: "maze still looks bad in the starting 5 secs and also it
       still lags to load." F128/F133 already fixed maze's steady-state
       structure and march-step correctness; this is a different bug, specific
-      to the FIRST scene shown at app launch (`maze` by default). Every
-      subsequent scene switch mounts its incoming scene at `dir: 0`
-      (invisible, "warming") and holds it there until `prewarmShaders`
-      confirms or `WARM_FRAMES` of hidden rendering have passed, only THEN
-      promoting it to visible - the whole point being that shader compile and
-      first-frame cost happens off-screen. `SceneManager`'s lazy initializer
-      mounts the very first scene with `makeEntry(initialId, 'primary', 1)` -
-      `dir: 1`, visible immediately, no warm phase at all. The most expensive
-      scene in the roster (maze, by its own doc comment) pays its full cold
-      compile live, on screen, at the same moment the quality governor is
-      still at its conservative startup tier and render scale is still
-      ramping up from its own initial value - three cold-start costs
-      stacking on the one scene that never gets the warm-mount protection
-      every other transition relies on.
-      NOT fixed - the natural fix (mount the initial entry at `dir: 0` too and
-      let it promote through the same warm-complete path every other switch
-      uses) touches cold-boot invariants I can't verify live: several places
-      read `activeScene`/`sceneId` assuming they agree from the first frame,
-      and a warm-detection path that never resolves at true cold boot (no
-      prior WebGL context to compare against) would trade a laggy first few
-      seconds for a hung black screen, which is worse. Proposed and pending
-      the user's confirmation before touching it.
+      to the FIRST scene shown at app launch. Every subsequent scene switch
+      mounts its incoming scene at `dir: 0` (invisible, "warming") and holds
+      it there until `prewarmShaders` confirms or `WARM_FRAMES` of hidden
+      rendering have passed, only THEN promoting it to visible - the whole
+      point being that shader compile and first-frame cost happens
+      off-screen. `SceneManager`'s lazy initializer mounted the very first
+      scene with `makeEntry(initialId, 'primary', 1)` - `dir: 1`, visible
+      immediately, no warm phase at all - so the cold-open scene paid its
+      full first compile live, on screen, at the same moment the quality
+      governor was still at its conservative startup tier and render scale
+      was still ramping up: three cold-start costs stacking on the one scene
+      that never got the warm-mount protection every other transition relies
+      on.
+      Fixed by mounting the initial entry at `dir: 0` like any other warming
+      candidate and adding a one-shot promotion (`coldBootPromoted` ref) that
+      flips it to `dir: 1` the instant `isWarmComplete` is true - the same
+      signal every later switch already uses, just with no outgoing scene to
+      cross-fade from, so it fades in from black via the fade-easing loop's
+      existing plain-`smoothstep` branch (taken whenever no `outgoingPrimary`
+      is present) rather than needing new transition machinery. Confirmed
+      safe: `performanceState.activeScene` is written directly from
+      `s.sceneId` in `PerformanceStateBridge`, not derived from the entries'
+      `dir`, so nothing downstream that reads `activeScene` was affected by
+      the mount-timing change.
+      Verified by `npm run check` (764 tests, clean build) AND live: the user
+      ran the app and supplied a fresh session log
+      (`audiovis-session-2026-08-28-11-54-47.json`) whose cold-open scene
+      (`wingfold`, not `maze` this run - the boot scene is whatever
+      `sceneId` resolves to, not hardcoded) shows a clean fade-in with no
+      freeze in its first several seconds of `frameTimesMs`. See F137 below
+      for a real, severe compile stall this same log surfaced on a LATER,
+      ordinary scene switch into `maze` - a different bug from this one.
+
+- [x] **F137 - Maze's shader compile itself can freeze the whole app for
+      nearly 2 seconds, on an ordinary (non-cold-open) scene switch** -
+      `src/scenes/MazeFlightScene.tsx` *(fixed 2026-08-28, unverified)*
+      Surfaced by the user's live session log
+      (`audiovis-session-2026-08-28-11-54-47.json`) taken right after F136
+      shipped: `frameTimesMs` contains a single 1877.8ms frame landing exactly
+      on `kifs -> maze`'s commit (t=29.98s in the events log), with the
+      transition's own tracker separately reporting "completed in 2.58s,
+      worst frame 109.7ms" - two different measurements of the same event,
+      neither telling the whole story on its own.
+      This is NOT the warm-mount scheduling bug F136 fixed - `maze` was not
+      the cold-open scene this run (`wingfold` was, and its own boot was
+      clean) - and it is not a bug in `shaderPrewarm.ts` either: that file
+      already refuses to trust `WebGLProgram.isReady()` on exactly this
+      user's driver stack (ANGLE/D3D11, no `KHR_parallel_shader_compile`) and
+      correctly falls back to the visible-warm-frame path rather than lying
+      about readiness. The real problem is one level down: the warm-frame
+      path forces the ACTUAL synchronous `compileShader`/`linkProgram` call
+      to happen during the hidden warm window - and because that call is
+      genuinely synchronous and single-threaded, if the compile itself takes
+      ~1.8s, the ENTIRE app (including the already-visible outgoing scene)
+      freezes for that long regardless of which scene's contribution is
+      hidden. No amount of mount-timing or warm-frame-count tuning can hide a
+      stall that blocking - only a faster compile can.
+      Fixed (attempted): `MAX_STEPS`, the shader's static march-loop bound,
+      lowered from 150 to 96. `uMaxSteps` is clamped to
+      `quality.knobs.raymarchSteps`, whose highest real value is 96 (tier 0) -
+      the loop's compile-time bound had never been reached by any runtime
+      value since being set to 150, so this is a zero-runtime-effect change
+      (every tier's actual step count is unchanged) on the chance that a
+      smaller static loop bound gives ANGLE's D3D11 backend less to compile
+      or optimize.
+      Verified by `npm run check` (764 tests, clean build) only - the
+      *runtime* behavior is provably unchanged, but whether this actually
+      cuts D3D11 compile time is UNVERIFIED without a fresh live session log
+      re-triggering a `-> maze` switch. If it does not help, the next lever
+      is splitting `map()`'s three nested `carveScale()` calls or reducing
+      `MAX_AO`/`edgeGlowAt`'s own `map()` fan-out, in that order - both add
+      real compile surface on top of the march loop.
 
 ---
 

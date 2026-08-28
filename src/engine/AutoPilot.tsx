@@ -98,6 +98,30 @@ const MOOD_CHANGE_MIN_CONFIDENCE = 0.25
 const MOOD_CHANGE_MAX_AMBIGUITY = 0.6
 
 /**
+ * Worst-case gap, in seconds, before AutoPilot looks for a scene change even
+ * without one of its three edge triggers firing (F135).
+ *
+ * All three triggers below are edges: a drop, a predicted transition going
+ * imminent, or `m.changed` — MoodEstimator's one-frame flag for the committed
+ * state actually flipping. None of them fire for "the music is audibly
+ * building but hasn't crossed a mood category line yet," and none fire for "a
+ * buildup is happening inside the first section," because a section boundary
+ * is itself an edge that hasn't happened yet either. Reported as "doesn't seem
+ * to change scenes for like 15-20 secs despite the changes in the song like
+ * buildup and such" — the same shape of complaint F118 fixed once already,
+ * but that fix was a threshold on the CHANGE edge; this is the case where no
+ * edge is available to threshold in the first place.
+ *
+ * 25s is deliberately above the 15-20s that read as broken: on a track where
+ * the edges fire normally this never trips at all, so it is a backstop for
+ * the stuck case, not a substitute for musically-timed switching. It only
+ * asks for a look — every downstream guard (`MIN_SUBJECT_DWELL_BEATS`, the
+ * `pendingSceneId` single-flight lock) still applies, the same as any other
+ * trigger here.
+ */
+const STALE_TARGET_SEC = 25
+
+/**
  * Floor between automatic palette changes.
  *
  * PhraseDetector's own cooldown is 8 beats — 4s at 120 BPM — which is a fine
@@ -157,6 +181,8 @@ export function AutoPilot() {
   const prevDrop = useRef(false)
   const lastPaletteAt = useRef(-Infinity)
   const lastPalettePick = useRef('')
+  /** Last time any trigger below set a target — see STALE_TARGET_SEC. */
+  const lastAutoTriggerAt = useRef(-Infinity)
   /** Deterministic cycle position — not random, so a recorded set repeats. */
   const paletteRotation = useRef(0)
   /** The same idea for modes, on its own counter: sharing the palette's would
@@ -182,10 +208,15 @@ export function AutoPilot() {
       lastPaletteAt.current = -Infinity
       lastPalettePick.current = ''
     }
+    if (f.time < lastAutoTriggerAt.current) lastAutoTriggerAt.current = -Infinity
 
     if (!s.autoPilot || s.status !== 'running' || f.silence) return
     if (cueState.governed) return // authored cues own the journey
     if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
+    // Baseline the stale clock the first time automation is actually live,
+    // rather than at component mount (which can be well before playback
+    // starts) or leaving it at -Infinity (which would fire on frame one).
+    if (lastAutoTriggerAt.current === -Infinity) lastAutoTriggerAt.current = f.time
 
     // Decide what mood to aim visuals at, in priority order:
     //   1) a drop — cut to a high-energy scene the instant it lands;
@@ -217,8 +248,16 @@ export function AutoPilot() {
         handledChange.current = pendingChange.current
         target = m.state
         prefetchedFor.current = null
+      } else if (f.time - lastAutoTriggerAt.current >= STALE_TARGET_SEC) {
+        // F135: no edge has fired in a while even though playback is live and
+        // unmuted. Aim at whatever is currently committed — not a guess, it's
+        // MoodEstimator's own best read, just one that never crossed a
+        // category line cleanly enough to flip `m.changed`.
+        target = m.state
+        prefetchedFor.current = null
       }
     }
+    if (target !== null) lastAutoTriggerAt.current = f.time
     // --- Palette: a deliberately WIDER trigger than the scene switch below ---
     //
     // Colour is the cheapest way to mark structure, and section boundaries

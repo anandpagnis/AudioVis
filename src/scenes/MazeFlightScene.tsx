@@ -101,8 +101,25 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *   highs   → circuit and window shimmer
  */
 
-/** Loop ceilings. GLSL ES 1.00 needs constant bounds; uniforms early-break. */
-const MAX_STEPS = 150
+/**
+ * Loop ceilings. GLSL ES 1.00 needs constant bounds; uniforms early-break.
+ *
+ * MAX_STEPS lowered from 150 (F137). A live session log showed a single
+ * 1877.8ms frame land exactly on this scene's first commit — not a warm-mount
+ * scheduling bug (`shaderPrewarm.ts` already refuses to trust `isReady()` on
+ * this exact driver stack, ANGLE/D3D11, and correctly falls back to the
+ * visible-warm-frame path), but the underlying compile itself taking that
+ * long. `uMaxSteps` is clamped to `quality.knobs.raymarchSteps`, whose
+ * highest real value is 96 (tier 0) — the constant loop bound below has
+ * never been reached by any runtime value since it was set to 150, so this
+ * is a compile-time-only ceiling with a large, unused margin. 96 matches that
+ * real ceiling exactly: zero runtime/visual change (uMaxSteps was already
+ * clamped below it at every tier), on the chance that a smaller static bound
+ * gives ANGLE's D3D11 backend less to unroll or optimize. Unverified without
+ * a live re-test — this is the most defensible lever to try first (it can't
+ * regress anything), not a confirmed fix.
+ */
+const MAX_STEPS = 96
 const MAX_AO = 5
 
 /**

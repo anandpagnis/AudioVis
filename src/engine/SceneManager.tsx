@@ -521,8 +521,18 @@ export function SceneManager() {
     // trigger. An effect that had to compile when fired would stall on exactly
     // the musical event it exists to punctuate. Empty until effect scenes are
     // authored, so this costs nothing today.
+    // Mounted at dir 0, not 1 (F136): every LATER scene switch warms invisibly
+    // (compiling for real, contributing nothing to the frame via a fade pinned
+    // at zero — see EntryGroup and the fade-easing loop below) and only
+    // becomes visible once its shader is confirmed ready. The cold-open
+    // primary used to skip straight to dir 1, so the roster's most expensive
+    // scene paid its first compile stall live, on screen, while the quality
+    // governor and render scale were also both still at their conservative
+    // startup values — reported as "looks bad in the starting 5 secs" and
+    // "still lags to load." The promotion this now needs (nothing to
+    // crossfade FROM, unlike a normal switch) happens once, just below.
     return [
-      makeEntry(initialId, 'primary', 1),
+      makeEntry(initialId, 'primary', 0),
       ...getEffectScenes().map((s) => makeEntry(s.id, 'effect', 0)),
     ]
   })
@@ -532,6 +542,8 @@ export function SceneManager() {
   const pendingSince = useRef(-1)
   /** Eased 0..1 transition discount — see the call to setTransitionDiscount. */
   const discount = useRef(0)
+  /** One-shot: has the cold-open primary been promoted out of its warm mount? */
+  const coldBootPromoted = useRef(false)
 
   useFrame(({ clock }) => {
     // Audio feature pipeline runs once per frame, before any scene reads it.
@@ -553,6 +565,25 @@ export function SceneManager() {
       sceneStreamer.noteLoaded(e.id)
       e.warmFrames++
       if (isWarmComplete(e)) sceneStreamer.noteReady(e.id)
+    }
+
+    // F136: the cold-open primary has no outgoing scene to cross from and
+    // never goes through `pendingSceneId`, so nothing in the commit block
+    // below will ever flip it out of its warm mount. Promote it here, on the
+    // exact same `isWarmComplete` signal that drives every later switch — the
+    // only difference is there is no partner to fade against, so it just
+    // fades in from black (see the fade-easing loop: a fresh `dir: 1` primary
+    // with no `outgoingPrimary` present takes the plain `smoothstep` branch).
+    // Guarded by the ref rather than by re-deriving "is this the boot entry"
+    // each frame, because after the flip this is meant to be permanently inert
+    // — a later warming primary reaching dir 0 (an ordinary scene switch) must
+    // never be swept up by this.
+    if (!coldBootPromoted.current) {
+      const bootEntry = entriesRef.current.find((e) => e.role === 'primary')
+      if (bootEntry && bootEntry.dir === 0 && isWarmComplete(bootEntry)) {
+        bootEntry.dir = 1
+        coldBootPromoted.current = true
+      }
     }
 
     const state = useStore.getState()
