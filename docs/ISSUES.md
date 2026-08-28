@@ -3817,7 +3817,88 @@ denominated in milliseconds on this side.
       still need one live session log that actually lands on maze or
       malachite after a prior scene has already played.
 
-- [ ] **F139 - Worst frame times cluster on tier-DEMOTE / render-scale-change
+      Update 2026-08-28, mount-time freeze CONFIRMED FIXED: a fourth log
+      (`...18-23-22`, confirmed 5185) finally lands a `matrix -> maze`
+      transition at t=131.66s. The mount itself is clean - the very next
+      sample (t=131.81s) reads 16.57ms, no spike at all. That is the
+      direct, live confirmation this fix was waiting on. See F139 below,
+      though, for a second and much worse freeze that hits the same scene
+      about 2.3s later, unrelated to the mount.
+
+- [ ] **F139 - `MazeFlightScene`'s hard `raymarchSteps >= 50` pixelBudget
+      threshold sits exactly on a tier boundary, so a normal DEMOTE snaps
+      its render target through a discontinuous cut in one frame - lands
+      on a confirmed 2.1s stall, worse than the original bug, though the
+      full mechanism behind that magnitude is still unverified** -
+      `src/scenes/MazeFlightScene.tsx:424`, `src/engine/quality.ts`,
+      `src/engine/createShaderScene.tsx:416-429`
+      *(found 2026-08-28, correlation confirmed, not fixed)*
+      Originally opened as a vaguer "worst frames cluster on tier/scale
+      changes" observation with no maze data. The `...18-23-22` log
+      (confirmed 5185) supplies the maze case directly, and it's the worst
+      single frame recorded in ANY session this whole investigation:
+      **2102.6ms** at t=133.5s (raw `frameTimesMs`, not the sampled
+      tracker - the tracker only caught the *next* 4Hz sample at 120.9ms,
+      a 17x undercount). It lands exactly on the `tier DEMOTE 2->3` event
+      at t=133.95s, which fires `scale: 0.57 -> 0.42` in the same tick.
+      The scene's own transition tracker confirms real main-thread
+      blocking, not just a slow composite: the `matrix -> maze` `smear`
+      transition, targeted for 1.05s, is logged as `transition-end ...
+      completed in 3.03s` - something froze the frame loop itself for
+      roughly two seconds.
+      Root cause, found by reading `quality.ts` next to
+      `MazeFlightScene.tsx`: the five tiers' `raymarchSteps` are
+      `[96, 72, 54, 40, 28]` (tier 0..4), and tier transitions interpolate
+      it continuously (`d.raymarchSteps = Math.round(mix(base, cheaper))`
+      in `quality.ts`). But maze's `pixelBudget` spec reads that knob
+      through a hard cutoff: `() => (quality.knobs.raymarchSteps >= 50 ?
+      0.9 : 0.55)`. Tier 2 (54) sits just above the cutoff, tier 3 (40)
+      just below it - so the ONE demote that everyone else's smooth
+      `mix()` interpolates gently, maze turns into a discontinuous ~1.6x
+      cut to internal megapixels (0.9 -> 0.55 budget) delivered as a
+      single `target.setSize()` call, exactly on that tick. That resize -
+      landing on a scene that also has `background: malachite` /
+      `accent: ribbons` layers active and is mid-cross-fade with the
+      previous scene - is what's taking upwards of two seconds, though
+      the exact mechanism inside that (driver-level texture reallocation,
+      a synchronous shader step, or a GC pause from the resulting
+      garbage) hasn't been isolated yet; that's the next thing to check
+      if a fix here doesn't fully resolve it.
+      Two smaller corroborating maze stalls same session: 130.8ms at
+      t=138.8s (near the following `promote 3->2`, recrossing the same
+      50-step boundary the other direction) and 67.5ms at t=144.4s (near
+      a `DEMOTE 1->2` + scale change while still in maze).
+      Not fixed yet. Caveat found while drafting the obvious fix (replacing
+      the hard `>= 50` cutoff with a lerp over the tier 2/3 `raymarchSteps`
+      range, 40..54): checked `quality.ts`'s `applyKnobs()` and that
+      `mix()` interpolation only runs while `this.discount > 0` (an
+      active crossfade). A bare `setTier()` - which is what `DEMOTE 2->3`
+      actually is here - sets `this.knobs = base` directly, so
+      `raymarchSteps` jumps straight from 54 to 40 in one synchronous
+      step with no intermediate frames outside a crossfade. A lerp over
+      that range would map both endpoints to the exact same 0.9/0.55
+      values as today and change nothing for this specific event - it
+      would only help the crossfade-blended case, which isn't the one
+      that stalled here. `pixelBudget()` itself is also read fresh every
+      frame with no smoothing anywhere in `createShaderScene.tsx`
+      (confirmed: `budget = pixelBudget()` then an immediate
+      `rt.target.setSize()` the instant width/height changes), so a real
+      fix needs to smooth the OUTPUT budget over wall-clock time (e.g. a
+      per-mount ref that lerps toward the target, rate-capped per
+      second) rather than the raymarchSteps input, decoupling resize rate
+      from how discretely the tier itself changes.
+      That still wouldn't explain why the resize costs ~2s in the first
+      place, though - `WebGLRenderTarget.setSize()` plus a lazy
+      `texImage2D` reallocation on next render should cost low
+      milliseconds even at several megapixels, not seconds. Smoothing the
+      jump would likely mask the symptom by spreading it across more,
+      smaller frames, but the actual expensive operation underneath
+      (driver-level reallocation, a synchronous shader step, or a GC
+      pause) hasn't been isolated. Needs a real profile (Chrome
+      performance recording) captured while reproducing a maze tier
+      2->3 demote before committing to a fix here.
+
+- [ ] **F140 - Worst frame times cluster on tier-DEMOTE / render-scale-change
       events on an already-mounted scene, not on scene mounts** -
       `src/engine/renderScale.ts`, `src/engine/createShaderScene.tsx`
       *(found 2026-08-28, not fixed)*
@@ -3834,19 +3915,26 @@ denominated in milliseconds on this side.
       scale changes in 195s, vs a handful before), and spent 47% of frames
       over its own frame-time budget, both notably worse than prior "high"
       logs (12-16% over budget).
-      Working theory, not yet checked against code: `WebGLRenderTarget`'s
-      `setSize()` likely reallocates the backing texture/framebuffer at the
-      driver level even when the JS object persists (the same class of
-      cost F138 found at mount time, here triggered by every resolution
-      change instead of every mount) - and "auto" mode's aggressiveness
-      means this happens far more often than mounts do. Not confirmed:
-      could instead (or also) be DPR/canvas resize, or something else tied
-      to the demote event specifically rather than the resize itself.
-      Needs: read `renderScale.ts`'s demote/promote path and
-      `createBudgetedScene`'s per-frame resize call to see whether/how
-      often `target.setSize()` actually fires a real reallocation, and
-      whether "auto" mode's tier/scale chatter is itself worth damping
-      before touching the resize cost.
+      Originally guessed this was `WebGLRenderTarget.setSize()` cost, the
+      same class of allocation F138 found at mount time - but checked
+      against `scenes/index.ts`: chrome, dissolve, and wireframe are NOT
+      `pixelBudget` scenes (only maze and malachite are, per the earlier
+      correction in the F138 update above), so none of these four frames
+      go through `createBudgetedScene`'s offscreen render target at all.
+      Whatever is costing 100-200ms here on plain (non-budgeted) scenes at
+      a tier/scale change must be something shared by every scene instead
+      - the main canvas resize / DPR change, or a cost generic to the
+      tier-demote step itself (e.g. a uniform/branch change forcing a
+      shader recompile on affected scenes). Separately, F139 below found
+      and confirmed the budgeted-scene case directly, with a much larger
+      (2.1s) stall and a concrete root cause specific to `pixelBudget`
+      scenes - this entry's four frames are NOT explained by that fix and
+      remain a distinct, smaller, still-open question about plain scenes.
+      Needs: profile a tier-demote on a non-budgeted scene (e.g. chrome)
+      directly to see what's actually expensive - canvas resize, DPR
+      change, or something tier-change-specific - since the render-target
+      theory that motivated this entry doesn't apply to these particular
+      frames.
 
 ---
 
