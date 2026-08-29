@@ -6,7 +6,6 @@ import { createLilimState, updateLilimState, type LilimAudioState } from './lili
 import type { PaletteBlender } from './palettes'
 import { useSceneFrame, type SceneFrame } from './sceneFrame'
 import { useSceneParams, type ResolvedSceneParams } from './sceneParams'
-import { useDispose } from './useDispose'
 
 /**
  * GLSL the factory injects ahead of every scene's fragment source.
@@ -159,43 +158,98 @@ function solveScale(pixelBudget: number, width: number, height: number, dpr: num
   return Math.min(1, Math.max(MIN_RENDER_SCALE, Math.sqrt(pixelBudget / fullMP)))
 }
 
+/** A scene's compiled material + its (trivial, shared-shape) geometry. */
+interface CachedSceneMaterial {
+  material: THREE.ShaderMaterial
+  geometry: THREE.PlaneGeometry
+}
+
+/**
+ * One compiled `ShaderMaterial` (+ geometry) per (renderer, scene id), reused
+ * across every mount rather than rebuilt and disposed each time (F144).
+ *
+ * `useDispose` used to call `material.dispose()` on every unmount — correct
+ * per its own doc comment (avoid leaking GPU resources), but disposal fires
+ * three's `onMaterialDispose` listener, which calls
+ * `WebGLPrograms.releaseProgram()`. That decrements the compiled program's
+ * refcount, and since a scene's material is normally the program's only
+ * user, the count hits zero and three calls `program.destroy()` — actually
+ * deleting the compiled `WebGLProgram`. The NEXT mount builds a new
+ * `ShaderMaterial` with byte-identical shader source, but there is nothing
+ * left in the cache for `acquireProgram` to match, so it compiles from
+ * scratch: a genuine `compileShader`/`linkProgram` pair, every single time a
+ * scene is switched away from and back to, regardless of anything the
+ * warm-mount system does — that system can only front-load a compile that's
+ * about to happen anyway, it can't stop a live one from being deleted and
+ * repeated on every switch.
+ *
+ * For a cheap shader this was invisible (a few ms, easily lost in the warm
+ * window). For maze's raymarching shader it is the ~2s stall F137 first
+ * measured and F144 traced past every render-target/resolution theory back
+ * to this: `git log` shows the shader's own source unchanged since F137's
+ * partial mitigation, yet the full-magnitude stall kept recurring — because
+ * nothing was ever caching the compiled PROGRAM itself, only (post-F138) the
+ * render target it draws into.
+ *
+ * Same trade F138 already made for render targets applies here: one
+ * resident material per scene type for the renderer's lifetime, invalidated
+ * naturally by a context-loss remount (new `WebGLRenderer`, new `WeakMap`
+ * entry) rather than disposed by hand. Reusing uniform VALUES across mounts
+ * is safe — every one here is either overwritten every frame in `update()`
+ * or explicitly re-bound on mount via `bound` below, which is a per-mount
+ * `useRef` and stays correct regardless of whether the material itself is
+ * fresh or cached.
+ */
+const sceneMaterialCache = new WeakMap<THREE.WebGLRenderer, Map<string, CachedSceneMaterial>>()
+
+function getSceneMaterial<S>(gl: THREE.WebGLRenderer, spec: ShaderSceneSpec<S>): CachedSceneMaterial {
+  let byId = sceneMaterialCache.get(gl)
+  if (!byId) {
+    byId = new Map()
+    sceneMaterialCache.set(gl, byId)
+  }
+  const existing = byId.get(spec.id)
+  if (existing) return existing
+
+  const material = new THREE.ShaderMaterial({
+    vertexShader: FULLSCREEN_VERT,
+    fragmentShader: SHADER_SCENE_PRELUDE + (spec.include ?? '') + spec.frag,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: spec.blending ?? THREE.AdditiveBlending,
+    uniforms: {
+      uRes: { value: new THREE.Vector2(1, 1) },
+      uAspect: { value: 1 },
+      uFade: { value: 0 },
+      uTime: { value: 0 },
+      uMode: { value: 0 },
+      // Left null until the first frame, where they are pointed at the
+      // blender's live Colors. They cannot be bound here: the blender is
+      // owned by useSceneFrame and only reachable through its context.
+      uBg: { value: new THREE.Color() },
+      uShadow: { value: new THREE.Color() },
+      uMid: { value: new THREE.Color() },
+      uAccent: { value: new THREE.Color() },
+      uGlow: { value: new THREE.Color() },
+      ...spec.uniforms?.(),
+    },
+  })
+  const geometry = new THREE.PlaneGeometry(2, 2)
+  const created: CachedSceneMaterial = { material, geometry }
+  byId.set(spec.id, created)
+  return created
+}
+
 /** Shared setup: material, geometry, audio state, parameters, frame driver. */
 function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
+  const gl = useThree((s) => s.gl)
   const P = useSceneParams(spec.id)
 
-  const material = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        vertexShader: FULLSCREEN_VERT,
-        fragmentShader: SHADER_SCENE_PRELUDE + (spec.include ?? '') + spec.frag,
-        transparent: true,
-        depthWrite: false,
-        depthTest: false,
-        blending: spec.blending ?? THREE.AdditiveBlending,
-        uniforms: {
-          uRes: { value: new THREE.Vector2(1, 1) },
-          uAspect: { value: 1 },
-          uFade: { value: 0 },
-          uTime: { value: 0 },
-          uMode: { value: 0 },
-          // Left null until the first frame, where they are pointed at the
-          // blender's live Colors. They cannot be bound here: the blender is
-          // owned by useSceneFrame and only reachable through its context.
-          uBg: { value: new THREE.Color() },
-          uShadow: { value: new THREE.Color() },
-          uMid: { value: new THREE.Color() },
-          uAccent: { value: new THREE.Color() },
-          uGlow: { value: new THREE.Color() },
-          ...spec.uniforms?.(),
-        },
-      }),
-    // Every field read here is fixed for the life of the module — a spec is a
-    // static declaration, not state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  )
+  // Cached across mounts (see getSceneMaterial) — no useDispose for these two;
+  // they outlive any one mount by design.
+  const { material, geometry } = useMemo(() => getSceneMaterial(gl, spec), [gl, spec])
 
-  const geometry = useMemo(() => new THREE.PlaneGeometry(2, 2), [])
   const audio = useMemo(() => createLilimState(), [])
   // `as S` covers the `S = void` default, where a scene declares no state and
   // never reads `st`.
@@ -266,8 +320,7 @@ function createDirectScene<S>(spec: ShaderSceneSpec<S>): ComponentType {
     const size = useThree((s) => s.size)
     const dpr = useThree((s) => s.viewport.dpr)
     const { material, geometry, runFrame } = useShaderCore(spec)
-
-    useDispose(material, geometry)
+    // No useDispose(material, geometry) — cached across mounts, see getSceneMaterial.
 
     useEffect(() => {
       const w = Math.max(1, Math.floor(size.width * dpr))
@@ -427,19 +480,18 @@ function createBudgetedScene<S>(
     )
     const displayMaterial = rt.displayMaterial
 
-    // The cached offscreen mesh outlives any one mount, but `material` and
-    // `geometry` don't — they're fresh every mount (and disposed below on
-    // unmount), so the mesh has to be repointed at the current pair each time
-    // rather than only once at cache-creation.
+    // `material`/`geometry` are cached per scene id too now (see
+    // getSceneMaterial, F144), same as `rt` — this just keeps the offscreen
+    // mesh pointed at the current pair; idempotent after the first mount of
+    // a given scene id, since both sides are the same cached objects from
+    // then on.
     useEffect(() => {
       rt.mesh.geometry = geometry
       rt.mesh.material = material
     }, [rt, geometry, material])
 
-    // `rt.target`/`rt.scene`/`rt.camera`/`displayMaterial` are cached and
-    // reused (see getBudgetedRT) — only this mount's own material/geometry
-    // are this component's to dispose.
-    useDispose(material, geometry)
+    // Nothing left for this component to dispose: `rt.*` (getBudgetedRT) and
+    // `material`/`geometry` (getSceneMaterial) are both session-cached.
 
     // Tracks the last ACTIVE (budgeted) resolution this mount wrote, so the
     // uniform writes below — cheap individually, but there's no reason to

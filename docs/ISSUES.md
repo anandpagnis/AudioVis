@@ -4162,12 +4162,12 @@ denominated in milliseconds on this side.
       three.js API usage was verified by reading the library source, not
       by exercising it in a browser.
 
-- [ ] **F144 - F143 confirmed NOT the cause of the recurring ~2s maze
-      freeze - it's back to F137's original magnitude, with F137's own
-      mitigation apparently not the fix either. Root cause is very likely
-      raw GPU shader compile time, no code lever found yet that reliably
-      cuts it** - `src/scenes/MazeFlightScene.tsx`
-      *(found 2026-08-29, not fixed - needs a decision, see below)*
+- [x] **F144 - Every scene's compiled shader PROGRAM was destroyed on every
+      unmount and rebuilt from scratch on every remount - invisible for
+      cheap shaders, the actual ~2s maze freeze once the trail led past
+      F143's resize theory (disproven) and F137's compile-time theory
+      (right diagnosis, no working fix yet)** - `src/engine/createShaderScene.tsx`
+      *(fixed 2026-08-29)*
       A brand-new log (`...07-01-02`, captured well after F143 landed)
       still shows the full-magnitude stall: **1893.7ms** at t=77.6s,
       `kifs -> maze`. Checked the raw `frameTimesMs` directly: the
@@ -4220,21 +4220,67 @@ denominated in milliseconds on this side.
       a clean profile (or `chrome://gpu` cache clear) immediately before
       a repro to tell a real fix from a warm cache, and no tool for that
       is available in this environment.
-      **What this means going forward:** relying on a compile finishing
-      fast is not a fix, because the true cold-compile cost - whatever it
-      actually is on a clean cache - appears to sit around 1.9-2.1s
-      regardless of the 150 -> 96 loop-bound change already tried. Cutting
-      it for real means reducing what the compiler actually has to
-      process: fewer/shallower branches, fewer `carveScale()` calls in
-      `map()`, a smaller `MAX_AO`, or splitting the shader into simpler
-      variants selected by `#define` rather than runtime `if`s (moving
-      cost OUT of every compile rather than just bounding a loop inside
-      one). Any of those is a real trade against the fractal density/
-      nesting the user explicitly required stay uncapped (F139) - this
-      is an actual complexity-vs-freeze trade-off on THIS scene, on THIS
-      user's hardware, not a bug with a free fix, and needs the user's
-      call before touching the shader's structure rather than its
-      constants. Asked in chat; not yet decided.
+      The above (everything through the disk-cache paragraph) was where this
+      entry stood when it was presented to the user as a shader-complexity
+      trade-off decision. The user pushed back with a sharp, correct
+      question: maze worked without this freeze before "the res" work
+      started, so why treat "reduce complexity" as the only lever. That
+      pushback was right - re-reading the data instead of re-asserting the
+      conclusion surfaced the actual bug.
+
+      **The real mechanism, found by reading `useDispose` next to three's own
+      source (`node_modules/three/src/renderers/webgl/WebGLPrograms.js` and
+      `WebGLRenderer.js`), not by guessing:** `useDispose(material, geometry)`
+      called `material.dispose()` on every unmount, correctly per its own doc
+      comment (avoid leaking GPU resources). But disposing a material fires
+      three's `onMaterialDispose` listener, which calls
+      `WebGLPrograms.releaseProgram()` - and that function is explicit in its
+      own source: `if (--program.usedTimes === 0) { ... program.destroy() }`.
+      A scene's material is normally the ONLY user of its compiled program,
+      so every unmount drops `usedTimes` to zero and three actually calls
+      `gl.deleteProgram()` on the compiled shader. The next mount builds a
+      brand-new `ShaderMaterial` with byte-identical source, but
+      `acquireProgram`'s cache lookup (a linear scan for a matching
+      `cacheKey` over the small resident `programs` array) finds nothing -
+      the matching entry was just deleted - so it compiles from scratch:
+      a genuine `compileShader`/`linkProgram` pair, on EVERY switch away
+      from and back to a scene, for the life of the session, regardless of
+      anything the warm-mount system does. Warm-mounting can only front-load
+      a compile that's about to happen anyway; it cannot stop a live,
+      already-compiled program from being deleted and rebuilt on every
+      single switch. This is a general bug affecting every scene in the
+      roster - it was only ever VISIBLE on maze because maze's raymarching
+      shader is the one complex enough for a from-scratch compile to run
+      into whole seconds; other scenes pay the same tax in a few
+      milliseconds and nobody could see it.
+      This also explains why F137's `MAX_STEPS` 150 -> 96 mitigation looked
+      like an 85% win in one log and then evaporated with no further code
+      change (the disk-cache paragraph above): it was never disproven, it
+      was irrelevant - the dominant cost was always "delete and rebuild the
+      whole program every switch," which a smaller loop bound inside that
+      same program can shrink a little but can't remove, and whose
+      MAGNITUDE was always going to look inconsistent run to run for
+      reasons entirely outside this codebase (system load, NVIDIA's own
+      separate driver-level shader cache, etc.) - not because the fix was
+      or wasn't working.
+      **Fixed** by giving materials the exact same treatment F138 already
+      gave render targets: `getSceneMaterial()` caches the compiled
+      `ShaderMaterial` + `PlaneGeometry` per (renderer, scene id) in a
+      `WeakMap`, created once and never disposed until the renderer itself
+      is torn down (a context-loss remount). `useShaderCore` now pulls
+      from that cache instead of calling `useMemo(() => new
+      THREE.ShaderMaterial(...), [])` fresh every mount, and the
+      `useDispose(material, geometry)` calls in both `createDirectScene`
+      and `createBudgetedScene` are gone - there is nothing left for a
+      mount to own and dispose. Per-mount state (`elapsed`, `bound`,
+      `audio`, `sceneState`) is untouched and still resets on every mount
+      as before; only the GPU-expensive, content-addressable-by-scene-id
+      objects are shared. Zero shader/GLSL changes, zero effect on maze's
+      fractal density or nesting - this was never a complexity problem.
+      `npm run check` clean (764 tests, build passes). UNVERIFIED live:
+      needs a session log with a repeat `-> maze` switch within one
+      session to confirm the freeze is gone on every occurrence, not just
+      smaller.
 
 ---
 
