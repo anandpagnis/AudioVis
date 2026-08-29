@@ -3982,6 +3982,13 @@ denominated in milliseconds on this side.
       vs. `createShaderScene.tsx`'s resize path vs. allocation pressure
       somewhere in the scene's own `update()`).
 
+      Update 2026-08-29: the "compile stall" branch of this guess is now the
+      confirmed one. F143 shipped the resize fix this entry's other branch
+      called for, and a fresh log still shows the full ~1.9s stall landing
+      BEFORE any resize event under F143's code - the resize-cliff theory
+      this entry originally centered on is disproven, not just superseded.
+      Full trace, and what's actually left to do about it, is in F144.
+
 - [ ] **F140 - Worst frame times cluster on tier-DEMOTE / render-scale-change
       events on an already-mounted scene, not on scene mounts** -
       `src/engine/renderScale.ts`, `src/engine/createShaderScene.tsx`
@@ -4154,6 +4161,80 @@ denominated in milliseconds on this side.
       tier/scale change to confirm the multi-second stall is gone; the
       three.js API usage was verified by reading the library source, not
       by exercising it in a browser.
+
+- [ ] **F144 - F143 confirmed NOT the cause of the recurring ~2s maze
+      freeze - it's back to F137's original magnitude, with F137's own
+      mitigation apparently not the fix either. Root cause is very likely
+      raw GPU shader compile time, no code lever found yet that reliably
+      cuts it** - `src/scenes/MazeFlightScene.tsx`
+      *(found 2026-08-29, not fixed - needs a decision, see below)*
+      A brand-new log (`...07-01-02`, captured well after F143 landed)
+      still shows the full-magnitude stall: **1893.7ms** at t=77.6s,
+      `kifs -> maze`. Checked the raw `frameTimesMs` directly: the
+      blocking frame STARTS at t=76.114s (14ms after the `kifs -> maze`
+      scene-switch event) and doesn't return until t=78.007s. The first
+      `scale` event of this switch doesn't fire until t=78.06s - AFTER
+      the stall has already resolved. Under F143's fix, no `pixelBudget`
+      change resizes anything, so there is nothing left for that fix to
+      have caught here even in principle - this single log both confirms
+      F143 works as designed AND proves it was never going to fix this
+      particular freeze.
+      This sent the investigation back to F137, which turns out to have
+      already diagnosed the actual mechanism correctly, in detail:
+      `shaderPrewarm.ts` already refuses to trust `WebGLProgram.isReady()`
+      on this exact driver (ANGLE/D3D11, no working
+      `KHR_parallel_shader_compile`), so the warm-mount window forces a
+      REAL synchronous `compileShader`/`linkProgram` call - and because
+      that call is genuinely synchronous and single-threaded, a multi-
+      second compile freezes the entire app (including whatever was
+      already on screen) no matter which scene's shader is compiling or
+      how the mount is scheduled. F137's own log evidence: the original
+      1877.8ms stall, `MAX_STEPS` lowered 150 -> 96 as "the most
+      defensible lever to try first" (explicitly flagged unverified), and
+      a follow-up log did show a big drop - 259.8ms and 264.7ms, ~85%
+      down from 1877.8ms.
+      What's new here: that improvement did not last, and the shader
+      source hasn't structurally changed since. `git log` on this file
+      shows nothing between `eb764ba` (F137's fix, 2026-08-28 17:30) and
+      `0454b22` (F139's complexity fix, 2026-08-29 00:03) except that one
+      complexity commit - and that commit only changes what VALUE
+      `uDetail` is assigned in `update()`, not the GLSL template string;
+      both nesting branches (`if (uDetail > 0.25)` / `if (uDetail >
+      0.75)`) were already compiled in either case (confirmed when writing
+      F139's update above). So the shader `WebGLPrograms` would compile
+      from has been byte-identical since F137 shipped - yet this session
+      measured ~1900ms, not ~260ms. A code regression can be ruled out.
+      Best remaining explanation, consistent with everything observed:
+      Chromium/ANGLE keep a DISK-persisted shader compile cache alongside
+      the in-memory one three.js manages. F137's "next session" log that
+      measured ~260ms was very plausibly a warm-cache hit - the developer
+      reloading the page repeatedly during that dev session, with the
+      first cold compile of the day already paid before the log started
+      recording - while a log capturing a genuinely fresh compile (cache
+      evicted, a different profile, cache cleared, whatever the actual
+      trigger) hits the true ~1.9-2.1s cold cost every time. This would
+      explain both F137's real-looking 85% improvement AND its total
+      disappearance without any further code change - and it would mean
+      `MAX_STEPS` 150 -> 96 was never actually the fix; the "next session"
+      log just happened to run warm. Not confirmed - would need to force
+      a clean profile (or `chrome://gpu` cache clear) immediately before
+      a repro to tell a real fix from a warm cache, and no tool for that
+      is available in this environment.
+      **What this means going forward:** relying on a compile finishing
+      fast is not a fix, because the true cold-compile cost - whatever it
+      actually is on a clean cache - appears to sit around 1.9-2.1s
+      regardless of the 150 -> 96 loop-bound change already tried. Cutting
+      it for real means reducing what the compiler actually has to
+      process: fewer/shallower branches, fewer `carveScale()` calls in
+      `map()`, a smaller `MAX_AO`, or splitting the shader into simpler
+      variants selected by `#define` rather than runtime `if`s (moving
+      cost OUT of every compile rather than just bounding a loop inside
+      one). Any of those is a real trade against the fractal density/
+      nesting the user explicitly required stay uncapped (F139) - this
+      is an actual complexity-vs-freeze trade-off on THIS scene, on THIS
+      user's hardware, not a bug with a free fix, and needs the user's
+      call before touching the shader's structure rather than its
+      constants. Asked in chat; not yet decided.
 
 ---
 
