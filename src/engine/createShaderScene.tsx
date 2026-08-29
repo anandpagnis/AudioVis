@@ -516,11 +516,33 @@ function createBudgetedScene<S>(
       // resets `target.viewport`/`.scissor` to the full new size, which is
       // why the active-viewport block below runs unconditionally after this
       // rather than being folded into the same guard.
-      const fullW = Math.max(1, Math.round(size.width * dpr))
-      const fullH = Math.max(1, Math.round(size.height * dpr))
-      if (fullW !== rt.target.width || fullH !== rt.target.height) {
-        rt.target.setSize(fullW, fullH)
+      //
+      // GROWS only, never shrinks (F147). `RenderTarget.setSize()` — verified
+      // directly in three's source — calls `.dispose()` whenever the size
+      // actually changes, which is a real GPU framebuffer/texture teardown
+      // and reallocation: the exact stall F139/F143 already measured at "a
+      // single isolated frame over a second long." Before F146, a scene under
+      // load got relief from the governor's free complexity-knob tier first,
+      // and only paid this cost on a genuine, comparatively rare canvas/DPR
+      // change. F146 removed that relief for maze specifically — DPR/
+      // pixelBudget is now its only lever — so this reallocation started
+      // firing on nearly every governor step instead, which is what the
+      // window-resize-shaped symptom the user hit today actually was: not a
+      // resize bug, this path reallocating every time DPR eased back down.
+      // The target only ever needs to be big enough to hold the active
+      // rect — that is already exactly what viewport/scissor/`uUvMax` render
+      // into and sample below — so once it has grown to a given size this
+      // session there is no reason to ever shrink it back down again; doing
+      // so only re-pays the stall the next time DPR climbs back up. Same
+      // "pay once, keep it" trade F138/F144 already made for the cache these
+      // targets and materials live in.
+      const neededW = Math.max(1, Math.round(size.width * dpr))
+      const neededH = Math.max(1, Math.round(size.height * dpr))
+      if (neededW > rt.target.width || neededH > rt.target.height) {
+        rt.target.setSize(Math.max(neededW, rt.target.width), Math.max(neededH, rt.target.height))
       }
+      const fullW = rt.target.width
+      const fullH = rt.target.height
 
       if (w !== activeSize.current.w || h !== activeSize.current.h) {
         activeSize.current.w = w

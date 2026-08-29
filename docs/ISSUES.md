@@ -4377,6 +4377,60 @@ denominated in milliseconds on this side.
       passes). Visual/perf confirmation against a live session log with a
       tier-demote event on maze is still outstanding.
 
+- [x] **F147 - Maze's budgeted render target reallocated (a real GPU
+      teardown-and-recreate) on every DPR/render-scale step, not just on a
+      genuine window resize - visible as a brief corner-anchored frame with
+      black bezels, automatic and self-clearing, right after F146**
+      - `src/engine/createShaderScene.tsx` *(fixed 2026-08-29)*
+
+      Reported by the user directly, with a screenshot: content confined to
+      a smaller rect at one corner with black filling the rest, happening
+      on its own (not a manual window resize) and clearing after a moment.
+      Coming right after F146 in the same session, "recent only, triggered
+      by some change done today."
+
+      Read `RenderTarget.setSize()` in three's own source
+      (`node_modules/three/src/core/RenderTarget.js`) to confirm rather than
+      guess: it unconditionally resets `.viewport`/`.scissor` to the FULL
+      new size and calls `.dispose()` - a real framebuffer/texture
+      teardown, lazily reallocated on the next `setRenderTarget()` + render
+      - whenever width or height actually changes. `createBudgetedScene`'s
+      own `useSceneFrame` calls this every time `fullW`/`fullH`
+      (`size.width/height * dpr`) differ from the target's current size.
+
+      Before F146, a scene under load got relief from the governor's free
+      complexity-knob tier first (raymarch steps, AO taps, etc. - no GPU
+      work, scenes just read them live), and only paid this reallocation on
+      a genuine, comparatively rare canvas/DPR change - exactly the
+      "well-known GPU stall hazard...confirmed here...a single isolated
+      frame over a second long" F139/F143 already measured and designed
+      around. F146 removed that free relief for maze specifically - DPR/
+      pixelBudget became its only lever - so the governor now reaches for
+      this reallocating path on nearly every step instead of rarely. This
+      wasn't a resize bug at all: it was this already-known stall firing
+      far more often, as a direct and foreseeable consequence of maxing
+      maze's complexity knobs the way the user asked for in F146.
+
+      **Fixed** by making the target's allocation grow-only: it now resizes
+      up when the live canvas needs more room than it currently has, and
+      simply stays at its largest-ever size otherwise - never shrinks back
+      down and never reallocates on a DPR *decrease*, which is precisely
+      the governor's main move for maze now. The active viewport/scissor
+      and `uUvMax` blit (see the `DISPLAY_FRAG` header comment above) already
+      render into and sample only a sub-rect of the target, so an
+      oversized allocation costs a bounded amount of GPU memory for the
+      session, not a stall - the same "pay once, keep it" trade F138/F144
+      already made for this cache. `uUvMax`'s denominator switched from the
+      freshly-computed `fullW`/`fullH` to the target's actual (now
+      possibly-larger, sticky) `rt.target.width`/`.height`, so the blit
+      stays correct regardless of whether this frame grew the allocation.
+      Zero change to any complexity/quality knob or visual output - this is
+      an allocation-lifecycle fix only. `npm run check` clean (764 tests, 0
+      lint errors/warnings, build passes). Diagnosed from three's source and
+      this codebase's own F139/F143 precedent, not from a live repro (no
+      browser automation available in this environment) - awaiting the
+      user's confirmation that the corner/black-bezel flash is gone.
+
 ---
 
 ## Verification status
