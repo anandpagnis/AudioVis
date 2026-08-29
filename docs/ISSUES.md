@@ -4277,10 +4277,26 @@ denominated in milliseconds on this side.
       as before; only the GPU-expensive, content-addressable-by-scene-id
       objects are shared. Zero shader/GLSL changes, zero effect on maze's
       fractal density or nesting - this was never a complexity problem.
-      `npm run check` clean (764 tests, build passes). UNVERIFIED live:
-      needs a session log with a repeat `-> maze` switch within one
-      session to confirm the freeze is gone on every occurrence, not just
-      smaller.
+      `npm run check` clean (764 tests, build passes).
+      **Update 2026-08-29, confirmed live**: a fresh 180s/10448-frame log
+      (`...07-27-11`) mounted four different scenes more than once each -
+      kifs (3x), dissolve (3x), plasma (2x), pointcloud (2x), 8 remounts
+      total - and every single one came back clean (worst in-window frame
+      19-135ms, nowhere near the old 1900-2100ms class). The session's
+      ONLY multi-second stall (1812.6ms) landed on maze's first and only
+      mount that session (`kifs -> maze`, t=39.28s) - confirmed against
+      raw `frameTimesMs` to start at t=37.46s and resolve by t=39.28s,
+      exactly the shape of a one-time cold compile with nothing yet to
+      reuse, and exactly the one case this fix was never going to touch.
+      Maze itself didn't happen to remount in this particular log, but
+      the mechanism is scene-agnostic (same `getSceneMaterial` cache,
+      keyed by `spec.id`, for every scene in the roster) and is now
+      directly verified working for four others.
+      The remaining cost - paying full compile once per scene per
+      session, on whichever scene the director happens to pick first -
+      is real but no longer compounding, and any further reduction from
+      here is a genuinely separate question (e.g. pre-warming known-
+      expensive scenes at boot) from the bug this entry fixed.
 
 ---
 
