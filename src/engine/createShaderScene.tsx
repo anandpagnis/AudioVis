@@ -289,12 +289,21 @@ function createDirectScene<S>(spec: ShaderSceneSpec<S>): ComponentType {
   return ShaderScene
 }
 
-/** Blit the offscreen buffer, honouring the scene's blending choice. */
+/**
+ * Blit the offscreen buffer, honouring the scene's blending choice.
+ *
+ * The source texture is allocated at the FULL canvas size (see `BudgetedRT`
+ * below) but only the bottom-left `uUvMax` fraction of it holds this frame's
+ * actual render — the rest is stale/uninitialised from whatever the target
+ * held before. `uUvMax` is already inset half a texel short of the true
+ * boundary so linear filtering can't sample across into that stale region.
+ */
 const DISPLAY_FRAG = /* glsl */ `
   precision highp float;
   varying vec2 vUv;
   uniform sampler2D uScene;
-  void main() { gl_FragColor = texture2D(uScene, vUv); }
+  uniform vec2 uUvMax;
+  void main() { gl_FragColor = texture2D(uScene, vUv * uUvMax); }
 `
 
 /** The GPU-side pieces a budgeted scene needs: real allocations, not just JS state. */
@@ -331,6 +340,30 @@ interface BudgetedRT {
  * render target per scene type for the renderer's lifetime is the same
  * "pay once, keep it" trade `SceneManager` already makes for pinned effect
  * scenes.
+ *
+ * ## Fixed to the full canvas size, not the budgeted one (F139/F143)
+ *
+ * `target.setSize()` is only ever called here for a real canvas/DPR change —
+ * a rare, user-driven event. The quality governor's own resolution changes
+ * (a tier demote, a render-scale step — dozens of times a minute) do NOT
+ * resize this target at all; they move `target.viewport`/`target.scissor`
+ * instead, which `WebGLRenderer.setRenderTarget()` reads directly with no
+ * texture/framebuffer work.
+ *
+ * This replaces the previous behaviour, which called `setSize()` on
+ * whatever budget the quality governor produced that frame. That used to be
+ * safe because F138 didn't exist yet: every mount got a BRAND NEW target
+ * already allocated at the right size, so nothing already resident on the
+ * GPU ever actually changed dimensions. F138 (caching the target across
+ * mounts, to stop a second mount from paying a fresh allocation) turned that
+ * same call into a resize of an existing, previously-rendered-into target —
+ * and a live-resized render target is a well-known GPU stall hazard
+ * (texture/framebuffer teardown-and-recreate, with an implicit sync point on
+ * some drivers/backends), confirmed here by two session logs showing a
+ * single isolated frame over a SECOND long landing exactly on a maze
+ * tier-demote, with instant recovery the very next frame — the signature of
+ * a one-shot blocking call, not a sustained per-pixel cost. See F139/F143 in
+ * `docs/ISSUES.md` for the full trace.
  */
 const budgetedRTCache = new WeakMap<THREE.WebGLRenderer, Map<string, BudgetedRT>>()
 
@@ -364,7 +397,7 @@ function getBudgetedRT(gl: THREE.WebGLRenderer, id: string, blending: THREE.Blen
     depthWrite: false,
     depthTest: false,
     blending,
-    uniforms: { uScene: { value: null } },
+    uniforms: { uScene: { value: null }, uUvMax: { value: new THREE.Vector2(1, 1) } },
   })
   const created: BudgetedRT = {
     target,
@@ -408,25 +441,52 @@ function createBudgetedScene<S>(
     // are this component's to dispose.
     useDispose(material, geometry)
 
+    // Tracks the last ACTIVE (budgeted) resolution this mount wrote, so the
+    // uniform writes below — cheap individually, but there's no reason to
+    // repeat them every frame — only happen when the solved size actually
+    // changes. This is intentionally separate from `rt.target`'s own size:
+    // the target is fixed to the full canvas (see `getBudgetedRT`'s F139/
+    // F143 doc comment) and essentially never changes, while this tracks the
+    // viewport sub-rect the quality governor moves dozens of times a minute.
+    const activeSize = useRef({ w: 0, h: 0 })
+
     // Solved every frame rather than in a resize-only effect, so a function
-    // budget can react to the quality tier changing mid-scene. Cheap either
-    // way — `setSize` on a target already at the target dimensions is a
-    // guarded no-op inside three, but the uniform writes below it are not, so
-    // this still gates on the size actually changing.
+    // budget can react to the quality tier changing mid-scene — cheap, since
+    // it's pure arithmetic with no GPU work unless the active size changed.
     useSceneFrame((ctx) => {
       const budget = typeof pixelBudget === 'function' ? pixelBudget() : pixelBudget
       const scale = solveScale(budget, size.width, size.height, dpr)
       const w = Math.max(1, Math.floor(size.width * dpr * scale))
       const h = Math.max(1, Math.floor(size.height * dpr * scale))
-      if (w !== rt.target.width || h !== rt.target.height) {
-        rt.target.setSize(w, h)
-        // The shader's idea of resolution is the BUFFER's, not the canvas's —
-        // it drives ray setup and pixel-space maths, so passing the canvas
-        // size here would draw a differently-shaped frame than the one being
-        // written into.
+
+      // Real canvas/DPR change only — NOT a budget/tier change. `setSize()`
+      // resets `target.viewport`/`.scissor` to the full new size, which is
+      // why the active-viewport block below runs unconditionally after this
+      // rather than being folded into the same guard.
+      const fullW = Math.max(1, Math.round(size.width * dpr))
+      const fullH = Math.max(1, Math.round(size.height * dpr))
+      if (fullW !== rt.target.width || fullH !== rt.target.height) {
+        rt.target.setSize(fullW, fullH)
+      }
+
+      if (w !== activeSize.current.w || h !== activeSize.current.h) {
+        activeSize.current.w = w
+        activeSize.current.h = h
+        // The shader's idea of resolution is the ACTIVE viewport's, not the
+        // allocated target's — it drives ray setup and pixel-space maths, so
+        // passing the full target size here would draw a differently-shaped
+        // frame than the one actually being written into.
         material.uniforms.uRes.value.set(w, h)
         material.uniforms.uAspect.value = w / h
+        // Half-texel inset so the blit's bilinear filtering can't sample
+        // across into the stale region outside this frame's active rect.
+        displayMaterial.uniforms.uUvMax.value.set(w / fullW - 0.5 / fullW, h / fullH - 0.5 / fullH)
       }
+      // Cheap Vector4 writes, not a GPU resize — `setRenderTarget()` below
+      // reads these directly (three's own dynamic-resolution mechanism).
+      rt.target.viewport.set(0, 0, w, h)
+      rt.target.scissor.set(0, 0, w, h)
+      rt.target.scissorTest = true
 
       displayMaterial.uniforms.uScene.value = rt.target.texture
       if (!runFrame(ctx)) return

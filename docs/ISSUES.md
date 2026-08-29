@@ -4092,6 +4092,69 @@ denominated in milliseconds on this side.
       revisited - no logic to reconstruct.
       `npm run check` clean (764 tests, build passes).
 
+- [x] **F143 - `pixelBudget` resolution changes were resizing a LIVE,
+      cached WebGLRenderTarget every tier/scale change - the actual cause
+      of F139's multi-second maze stalls, and a regression from F138** -
+      `src/engine/createShaderScene.tsx` *(fixed 2026-08-29)*
+      Root cause, found by reading F138's own diff after the user pointed
+      out the stalls only started once "the res" changed and weren't there
+      before: before F138, every scene mount created a BRAND NEW
+      `WebGLRenderTarget`, always at `(1,1)` then immediately `setSize()`'d
+      to the right dimensions on its first frame - so nothing already
+      resident on the GPU ever changed size; a "resize" was really a fresh,
+      correctly-sized allocation every time. F138 (committed 2026-08-28
+      18:17, to fix a DIFFERENT bug - a second mount of the same scene
+      paying full allocation cost again) cached that render target per
+      scene id and reused it across mounts. That's the right fix for
+      re-mount cost, but it means the SAME `setSize()` call - still fired
+      on every `pixelBudget`-driven tier/render-scale change, of which
+      there are dozens a minute per the session logs - now resizes an
+      existing, previously-rendered-into target instead of allocating a
+      fresh one. Resizing a live WebGLRenderTarget forces the driver to
+      tear down and recreate its backing texture/framebuffer, and on some
+      backends that carries an implicit sync point - a well-documented
+      class of WebGL hitch, and exactly the shape of what F139 found: one
+      isolated 1000ms+ frame with instant recovery next frame, not a
+      sustained per-pixel cost. This session runs ANGLE/D3D11
+      (`env.gpu`), which is specifically called out in WebGL performance
+      literature as prone to exactly this on framebuffer/texture
+      recreation.
+      Confirmed against the `...18-45-39` log's raw evidence (see F139's
+      last update): the 1872.4ms frame is a single spike with instant
+      recovery, and it lands on `chrome -> maze`'s dissolve, which is also
+      maze's only mount all session - consistent with the FIRST tier/scale
+      change maze sees after (re)acquiring its cached, differently-sized
+      target from a previous browser-session mount.
+      Fixed using the standard real-time-graphics technique for dynamic
+      resolution scaling (confirmed against WebGL/three.js/Unity sources -
+      see chat for citations): stop resizing the render target for budget
+      changes at all. `getBudgetedRT`'s target is now sized to the FULL
+      canvas (`size.width * dpr`, `size.height * dpr`) and only ever
+      `setSize()`'d on a genuine canvas/DPR change - a rare, user-driven
+      event, not a quality-governor one. A `pixelBudget` change instead
+      writes `target.viewport`/`target.scissor` (both `Vector4`s three
+      ships on every `RenderTarget` for exactly this) to the smaller
+      active rectangle - `WebGLRenderer.setRenderTarget()` reads these
+      directly with no texture/framebuffer work at all, confirmed by
+      reading `RenderTarget.js`/`WebGLRenderer.js` in `node_modules/three`
+      (v0.178.0) directly rather than assuming the API. The display/blit
+      pass (`DISPLAY_FRAG`) gained a `uUvMax` uniform so it samples only
+      the written sub-rectangle of the now-oversized texture, inset half a
+      texel so linear filtering can't bleed into the stale remainder.
+      Also found, NOT fixed (out of scope for this pass, flagged for
+      follow-up): `FoldPathScene.tsx` and `SynthGridScene.tsx` each carry
+      their own independent copy of a render-target-plus-`setSize()`
+      pattern, outside `createShaderScene.tsx` entirely - grep for
+      `rt.target.setSize` turns up both. Neither has been implicated in a
+      logged stall yet, but they're the same shape of hazard and should
+      get the same fixed-target-plus-viewport treatment if either shows up
+      in a future log.
+      `npm run check` clean (764 tests, build passes). UNVERIFIED live:
+      needs a session log spanning a maze (or any pixelBudget scene)
+      tier/scale change to confirm the multi-second stall is gone; the
+      three.js API usage was verified by reading the library source, not
+      by exercising it in a browser.
+
 ---
 
 ## Verification status
