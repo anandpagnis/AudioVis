@@ -4298,6 +4298,85 @@ denominated in milliseconds on this side.
       here is a genuinely separate question (e.g. pre-warming known-
       expensive scenes at boot) from the bug this entry fixed.
 
+- [x] **F145 - The remaining cost F144 called out (first-ever compile of a
+      heavy scene lands on whichever live frame the director first picks
+      it) is now paid at boot instead** - `src/engine/createShaderScene.tsx`,
+      `src/engine/SceneManager.tsx` *(fixed 2026-08-29)*
+
+      F144 fixed the repeat-mount recompile but was explicit that a scene's
+      very first compile that session is a separate, unavoidable cost that
+      caching cannot remove - it can only be moved. For maze specifically
+      that first compile is the one stall still visible in the F144
+      confirmation log (1812.6ms, `kifs -> maze` at t=39.28s). Requested by
+      the user directly: pre-warm maze at boot instead of eating it live the
+      first time the director picks it.
+
+      `createShaderScene()` now returns a `PrewarmableScene`: the same
+      component as before, plus a `.prewarm(gl)` method that pulls the
+      scene's material/geometry through the existing F144
+      `getSceneMaterial()` cache (creating it if this is the first call for
+      this renderer) and runs it through the same `prewarmShaders()` /
+      `gl.compileAsync()` path `EntryGroup` already uses for warm-mounting a
+      scene that's about to become visible. Calling `.prewarm()` more than
+      once is cheap and safe - the second call just issues `compileAsync`
+      against an already-linked program, which resolves immediately.
+
+      `SceneManager` calls `.prewarm()` once per id in a small hand-picked
+      `BOOT_PREWARM_IDS` list (currently just `['maze']`) in a `useEffect`
+      that fires once on mount, entirely outside the Entry/slot/crossfade
+      system - these scenes never actually mount as part of this effect,
+      visibly or otherwise, so there's no fade/transition bookkeeping to
+      collide with. Skips the prewarm if the id is already the cold-open
+      primary scene (it's compiling anyway as the real first mount).
+      Considered and rejected two designs that stayed inside the entry
+      system - reusing `role: 'effect'` for a fake boot-entry, and adding a
+      new `SlotName` variant - both worked out to real risk (semantic
+      confusion, or several easy-to-miss touch points including a
+      `layerFx[role].blend` lookup that throws on an unrecognized role) for
+      no benefit over a mechanism that just bypasses the system outright.
+
+      Zero effect on what renders or how any scene looks; only changes when
+      maze's first compile happens (boot, off to the side, instead of
+      mid-show on the director's first pick). `npm run check` clean (764
+      tests, 0 lint errors/warnings, build passes). Not yet confirmed via a
+      live session log with the prewarm actually in place - next log
+      capture should show maze's first pick landing clean instead of at
+      ~1.8s.
+
+- [x] **F146 - Maze's march-step / AO-tap / edge-glow / far-plane knobs were
+      tier-gated (reduced under load) despite the scene's own profiling
+      table saying that costs almost nothing - resolution is now the only
+      knob the quality governor moves for this scene** -
+      `src/scenes/MazeFlightScene.tsx` *(fixed 2026-08-29)*
+
+      Same spirit as F139 (fractal nesting/density is never tier-gated,
+      only the user's own `complexity` dial moves it) extended to the rest
+      of the raymarch quality knobs, on explicit user request after seeing
+      the tier ladder in the code: "steps and complexity were very less...
+      max them, we'll only reduce res." The scene's own header comment
+      already had the profiling data to justify it (Apple M1, ANGLE/Metal):
+      march steps 96->48 costs ~5% (in measurement noise), AO taps 5->3
+      costs ~6%, far-plane (`uTMax`) change costs ~0%, and only
+      edge-glow-off is a real cost at ~14% - all small next to nesting
+      depth (33-58% per level) and resolution (linear in pixel count). The
+      table's own stated conclusion was "go after nesting levels and
+      resolution, not the march."
+
+      Replaced the tier-gated block in `update()` -
+      `uMaxSteps`/`uAoSteps`/`uEdgeOn`/`uTMax` all previously scaled off
+      `quality.knobs.raymarchSteps` - with fixed maximums: `uMaxSteps =
+      MAX_STEPS` (96), `uAoSteps = MAX_AO` (5), `uEdgeOn = 1`, `uTMax = 48`
+      (the value the old ladder only used above tier threshold 80).
+      `pixelBudget` (`quality.knobs.raymarchSteps >= 50 ? 0.9 : 0.55`) is
+      untouched and is now the *only* thing the quality governor still
+      moves for this scene - per the user's "we'll only reduce res," cost
+      scaling tier-to-tier now rides entirely on pixel count, which the
+      header table already confirms is the honestly-linear lever anyway.
+      Zero change to fractal density/nesting (already hard-fixed in F139).
+      `npm run check` clean (764 tests, 0 lint errors/warnings, build
+      passes). Visual/perf confirmation against a live session log with a
+      tier-demote event on maze is still outstanding.
+
 ---
 
 ## Verification status

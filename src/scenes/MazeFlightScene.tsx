@@ -473,29 +473,24 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     u.uGlowAmt.value = 0.2 + P.contrast * 1.6
 
     // --- quality governance -------------------------------------------------
-    // `raymarchSteps` is the tier proxy (96 / 72 / 54 / 40 / 28); the governor
-    // does not expose its tier index.
-    const steps = quality.knobs.raymarchSteps
     // Fractal nesting depth is NEVER tier-gated (F139 hard fix, 2026-08-29):
     // only the user's own `complexity` dial decides it, same as `uDensity`
     // above. See the header comment (point 3) for why — the old `detailCap`
     // ladder flattened the maze's actual geometry under load and collided
     // with `pixelBudget`'s tier-50 cutoff to produce a 2.1s stall.
     u.uDetail.value = P.complexity
-    // March steps, floored higher whenever nested detail is switched on
-    // (F132 fix, still needed now that nesting is unconditional): a ray that
-    // runs out of steps before converging in the tighter recesses a nested
-    // scale carves reports `hit = false` and paints flat fog over what
-    // should be a wall — visible as detail intermittently vanishing. Step
-    // count itself is nearly free per the header's profiling table, so
-    // raising the floor only where nesting is active costs little; tiers
-    // 0-2 already exceed this floor and are untouched.
-    const marchStepsFloor = u.uDetail.value > 0.25 ? 64 : 28
-    u.uMaxSteps.value = Math.max(marchStepsFloor, Math.min(MAX_STEPS, steps))
-    u.uAoSteps.value = steps >= 80 ? MAX_AO : 3
-    u.uEdgeOn.value = steps >= 50 ? 1 : 0
-    // Fog has already swallowed ~90% of the image by t=40, so the far end of
-    // the march buys almost nothing once the budget is tight.
-    u.uTMax.value = steps >= 80 ? 48 : 34
+    // March steps / AO taps / edge glow / far plane are NEVER tier-gated
+    // either, as of the same request that drove F139: the header's own
+    // profiling table says these are nearly free (march 96->48 ~5%, AO
+    // 5->3 ~6%, TMAX ~0%; only edge-glow-off is real at ~14%) next to
+    // nesting depth and resolution, which is why the table's own verdict is
+    // "go after nesting levels and resolution, not the march." `pixelBudget`
+    // above is the ONLY knob the quality governor still moves for this
+    // scene — cost is linear in pixel count, so it carries the actual
+    // tier-to-tier scaling on its own.
+    u.uMaxSteps.value = MAX_STEPS
+    u.uAoSteps.value = MAX_AO
+    u.uEdgeOn.value = 1
+    u.uTMax.value = 48
   },
 })

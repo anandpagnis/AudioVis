@@ -6,6 +6,7 @@ import { createLilimState, updateLilimState, type LilimAudioState } from './lili
 import type { PaletteBlender } from './palettes'
 import { useSceneFrame, type SceneFrame } from './sceneFrame'
 import { useSceneParams, type ResolvedSceneParams } from './sceneParams'
+import { prewarmShaders } from './streaming/shaderPrewarm'
 
 /**
  * GLSL the factory injects ahead of every scene's fragment source.
@@ -587,8 +588,44 @@ function createBudgetedScene<S>(
  * choice is made here rather than inside a component so each variant has a
  * fixed hook order.
  */
-export function createShaderScene<S = void>(spec: ShaderSceneSpec<S>): ComponentType {
-  return spec.pixelBudget !== undefined
-    ? createBudgetedScene(spec, spec.pixelBudget)
-    : createDirectScene(spec)
+export function createShaderScene<S = void>(spec: ShaderSceneSpec<S>): PrewarmableScene {
+  const Component = (
+    spec.pixelBudget !== undefined
+      ? createBudgetedScene(spec, spec.pixelBudget)
+      : createDirectScene(spec)
+  ) as PrewarmableScene
+  Component.prewarm = (gl) => {
+    const { material, geometry } = getSceneMaterial(gl, spec)
+    const scene = new THREE.Scene()
+    scene.add(new THREE.Mesh(geometry, material))
+    void prewarmShaders(gl, scene, PREWARM_CAMERA)
+  }
+  return Component
 }
+
+/** A shader-scene component that can also force its own compile ahead of any mount. */
+export type PrewarmableScene = ComponentType & {
+  /**
+   * Forces this scene's material to exist (creating and caching it via
+   * `getSceneMaterial` if this is the first call for this renderer) and
+   * issues a real `compileShader`/`linkProgram` for it through the same
+   * `compileAsync` path `EntryGroup`'s warm-mount uses — off the critical
+   * path, before any mount ever asks for this scene.
+   *
+   * For a scene heavy enough that its first-ever compile this session runs
+   * into whole seconds (see F144 in ISSUES.md), this is what lets that cost
+   * land at boot instead of on whatever moment the director first picks it
+   * mid-show. Cheap and safe to call more than once: `getSceneMaterial`
+   * hands back the same cached object every time, so a second call issues a
+   * `compileAsync` against an already-compiled program, which resolves
+   * immediately.
+   */
+  prewarm: (gl: THREE.WebGLRenderer) => void
+}
+
+/**
+ * Shared throwaway camera for `.prewarm()` calls — `compileAsync` needs
+ * *some* camera to traverse against, but does not read its parameters, so
+ * one instance serves every scene's prewarm call for the life of the page.
+ */
+const PREWARM_CAMERA = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)

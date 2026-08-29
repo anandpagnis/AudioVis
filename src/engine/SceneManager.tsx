@@ -1,9 +1,10 @@
-import { Suspense, createContext, useRef, useState, type ReactNode } from 'react'
+import { Suspense, createContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { audioEngine } from '../audio/AudioEngine'
 import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store'
 import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded, scenePixelBudget } from '../scenes'
+import type { PrewarmableScene } from './createShaderScene'
 import { approach, performanceState, type ActiveEffect } from './performanceState'
 import {
   fadeDurationFor,
@@ -145,6 +146,24 @@ interface Entry {
  * alongside the current one (a double-heavy frame-time spike).
  */
 const WARM_FRAMES = 4
+
+/**
+ * Scenes compiled once, up front, before the director ever asks for them —
+ * because their first-ever compile this session can genuinely run into whole
+ * seconds (a real, measured cost, not a scheduling bug — see F144 in
+ * ISSUES.md). Nothing in this codebase can make that first compile cheaper
+ * or hide it once it's landed on a live frame; the only lever left is
+ * choosing WHEN it lands. This makes it land at boot, off to the side,
+ * instead of on whatever moment the director first happens to pick the
+ * scene mid-show.
+ *
+ * Hand-picked, not automatic: every id here is one the roster's own
+ * profiling comments already call out as the heaviest to compile (see
+ * MazeFlightScene's header). Nothing about this list changes what renders —
+ * a scene not listed here still compiles exactly as before, on its own
+ * first mount.
+ */
+const BOOT_PREWARM_IDS: readonly string[] = ['maze']
 
 /** How fast the transition complexity discount eases in and out, per second. */
 const DISCOUNT_EASE_RATE = 7
@@ -537,6 +556,21 @@ export function SceneManager() {
     ]
   })
   const entriesRef = useRef<Entry[]>(initialEntries)
+
+  // BOOT_PREWARM_IDS: fire once, off the entry/slot system entirely — these
+  // scenes never mount here, visibly or otherwise, so there is no crossfade
+  // bookkeeping to conflict with. `.prewarm()` just gets the same cached
+  // material `getSceneMaterial` (F144) will hand the real mount later and
+  // issues a real `compileAsync` against it, so the (possibly multi-second)
+  // first compile is already paid by the time anything actually needs it.
+  const bootPrewarmGl = useThree((s) => s.gl)
+  useEffect(() => {
+    for (const id of BOOT_PREWARM_IDS) {
+      if (id === useStore.getState().sceneId) continue // already warming as the cold-open primary
+      const scene = getScene(id).component as PrewarmableScene
+      scene.prewarm?.(bootPrewarmGl)
+    }
+  }, [bootPrewarmGl])
 
   const [, force] = useState(0)
   const pendingSince = useRef(-1)
