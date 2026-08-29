@@ -76,6 +76,30 @@ export interface PerformanceState {
     overlay: string | null
     effects: ActiveEffect[]
   }
+  /**
+   * What is actually ON SCREEN in each layer role, as opposed to what the
+   * director asked for (F150).
+   *
+   * `layers` above is a DESIRE: the store's `layerSceneIds`, mirrored by
+   * PerformanceStateBridge. Between that desire and a visible layer sit two
+   * gates — `resolveLayerIds` can refuse a layer that no longer fits the frame
+   * budget, and a layer that is admitted still mounts invisibly at `dir: 0`
+   * until its shader finishes compiling. So a desire can appear and be
+   * withdrawn without anything ever being drawn.
+   *
+   * That distinction was not observable. A session recording showed 12 of 22
+   * layer desires lasting 20-90 ms and being withdrawn, always on a scene
+   * commit, and the report had no way to say whether the viewer saw a flicker
+   * or whether the composition simply changed its mind before anything
+   * rendered. This field is the second half of that pair: SceneManager writes
+   * the `dir === 1` entry per role, so the two event streams in the session log
+   * can be compared directly.
+   */
+  mountedLayers: {
+    background: string | null
+    accent: string | null
+    overlay: string | null
+  }
   /** Palette id. */
   palette: string
   /** The mood this state was composed for — context for downstream easing. */
@@ -272,6 +296,7 @@ export const performanceState: PerformanceState = {
   scene: 'wireframe',
   activeScene: 'wireframe',
   layers: { background: null, accent: null, overlay: null, effects: [] },
+  mountedLayers: { background: null, accent: null, overlay: null },
   palette: 'aurora',
   mood: 'silence',
 

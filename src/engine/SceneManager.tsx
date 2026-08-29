@@ -3,8 +3,14 @@ import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { audioEngine } from '../audio/AudioEngine'
 import { LAYER_ROLES, useStore, type LayerBlend, type LayerRole } from '../store'
-import { getEffectScenes, getResolvedManifest, getScene, isSceneLoaded, scenePixelBudget } from '../scenes'
-import type { PrewarmableScene } from './createShaderScene'
+import {
+  getEffectScenes,
+  getResolvedManifest,
+  getScene,
+  isSceneLoaded,
+  prewarmScene,
+  scenePixelBudget,
+} from '../scenes'
 import { approach, performanceState, type ActiveEffect } from './performanceState'
 import {
   fadeDurationFor,
@@ -157,13 +163,35 @@ const WARM_FRAMES = 4
  * instead of on whatever moment the director first happens to pick the
  * scene mid-show.
  *
- * Hand-picked, not automatic: every id here is one the roster's own
- * profiling comments already call out as the heaviest to compile (see
- * MazeFlightScene's header). Nothing about this list changes what renders —
- * a scene not listed here still compiles exactly as before, on its own
- * first mount.
+ * ## Widened from `['maze']` to the whole primary roster
+ *
+ * `maze` alone was the hand-picked "heaviest to compile" entry, but a session
+ * recording showed the same multi-hundred-ms first-mount stall on `kifs`,
+ * `wingfold` and `chrome` too — every autopilot switch is a chance for the
+ * incoming primary's cold compile to land on the beat, and the recording's
+ * worst single frame (250 ms) was exactly that on `maze` *despite* it being
+ * listed here (the old call path was a silent no-op — see the effect below).
+ * Any scene that can be the target of a switch belongs here; the cost is a
+ * staggered burst of compiles at boot, behind the loading screen.
  */
-const BOOT_PREWARM_IDS: readonly string[] = ['maze']
+const BOOT_PREWARM_IDS: readonly string[] = [
+  'wireframe',
+  'dissolve',
+  'chrome',
+  'pointcloud',
+  'plasma',
+  'kifs',
+  'maze',
+  'wingfold',
+]
+
+/**
+ * Gap between successive boot prewarms. Each `prewarmScene` does a synchronous
+ * `compileShader`/`linkProgram` plus a 1x1 draw; firing all of {@link
+ * BOOT_PREWARM_IDS} on one macrotask would freeze the first ~second of boot as
+ * a single block. Spreading them lets the loading screen keep painting.
+ */
+const PREWARM_STAGGER_MS = 150
 
 /** How fast the transition complexity discount eases in and out, per second. */
 const DISCOUNT_EASE_RATE = 7
@@ -559,17 +587,34 @@ export function SceneManager() {
 
   // BOOT_PREWARM_IDS: fire once, off the entry/slot system entirely — these
   // scenes never mount here, visibly or otherwise, so there is no crossfade
-  // bookkeeping to conflict with. `.prewarm()` just gets the same cached
-  // material `getSceneMaterial` (F144) will hand the real mount later and
-  // issues a real `compileAsync` against it, so the (possibly multi-second)
+  // bookkeeping to conflict with. `prewarmScene` downloads the chunk (it is
+  // not loaded at boot) and then runs the same cached material
+  // `getSceneMaterial` (F144) will hand the real mount, issuing a real
+  // `compileAsync` + 1x1 draw against it — so the (possibly multi-second)
   // first compile is already paid by the time anything actually needs it.
+  //
+  // The previous version called `getScene(id).component.prewarm?.()` directly,
+  // which was a SILENT NO-OP: `.component` is the `React.lazy` wrapper and does
+  // not carry the `.prewarm` static, and the chunk was not downloaded yet
+  // anyway. That is why a session recording still caught `maze` — the sole
+  // entry — stalling 250 ms on its first mount. Now it goes through `load()`.
+  //
+  // Staggered so eight synchronous compile+draw calls don't land on one
+  // macrotask and freeze the first second of boot; the cleanup cancels a
+  // pending pump if the component unmounts (a WebGL context loss remount).
   const bootPrewarmGl = useThree((s) => s.gl)
   useEffect(() => {
-    for (const id of BOOT_PREWARM_IDS) {
-      if (id === useStore.getState().sceneId) continue // already warming as the cold-open primary
-      const scene = getScene(id).component as PrewarmableScene
-      scene.prewarm?.(bootPrewarmGl)
+    const gl = bootPrewarmGl
+    const ids = BOOT_PREWARM_IDS.filter((id) => id !== useStore.getState().sceneId)
+    let idx = 0
+    let timer = 0
+    const pump = () => {
+      if (idx >= ids.length) return
+      prewarmScene(ids[idx++], gl)
+      timer = window.setTimeout(pump, PREWARM_STAGGER_MS)
     }
+    timer = window.setTimeout(pump, 0)
+    return () => window.clearTimeout(timer)
   }, [bootPrewarmGl])
 
   const [, force] = useState(0)
@@ -933,6 +978,18 @@ export function SceneManager() {
       if (warming) entriesRef.current = entriesRef.current.filter((e) => e !== warming)
       entriesRef.current.push(makeEntry(wanted, role, 0))
       force((n) => n + 1)
+    }
+
+    // Publish what is VISIBLE per role, not what was wanted (F150). The desire
+    // lives in performanceState.layers (mirrored from the store); this is the
+    // dir-1 entry, i.e. the one actually being drawn. A layer that is admitted
+    // and then withdrawn before its warm mount completes never appears here,
+    // which is exactly the distinction the session log could not previously
+    // make between "the composition changed its mind" and "the viewer saw a
+    // layer flicker".
+    for (const role of LAYER_ROLES) {
+      const visible = entriesRef.current.find((e) => e.role === role && e.dir === 1)
+      performanceState.mountedLayers[role] = visible?.id ?? null
     }
 
     // Effects: pinned entries whose ACTIVE firing is owned by EffectDirector.

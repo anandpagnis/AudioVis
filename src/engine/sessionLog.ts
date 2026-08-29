@@ -1,5 +1,6 @@
 import { audioEngine } from '../audio/AudioEngine'
 import { frameLoad } from './frameLoad'
+import { PALETTES } from './palettes'
 import { performanceState } from './performanceState'
 import { perf } from './PerfMonitor'
 import { quality } from './quality'
@@ -166,6 +167,12 @@ export type SessionEventKind =
   | 'transition-start'
   | 'transition-end'
   | 'layer'
+  /**
+   * A layer that actually became VISIBLE, as opposed to one the director merely
+   * asked for (F150). See performanceState.mountedLayers for why the two are
+   * different and why the difference was worth recording.
+   */
+  | 'layer-visible'
   | 'mood'
   | 'palette'
   | 'audio'
@@ -259,6 +266,41 @@ class SessionLog {
   /** Raw per-frame times, preallocated. Wraps; `frameCount` is the true total. */
   private frames = new Float32Array(FRAME_CAPACITY)
   private frameWrite = 0
+  /**
+   * Frames that span an interval where the tab was hidden (F152).
+   *
+   * Parallel to {@link frames}: 1 marks a frame whose `delta` is mostly time
+   * the page was not rendering at all, because `requestAnimationFrame` is
+   * throttled or stopped entirely while `document.hidden`.
+   *
+   * ## Why the report needs this and the live governor does not
+   *
+   * `PerfMonitor` deliberately puts no ceiling on a frame time, and is right to:
+   * a genuine 150-300 ms frame is exactly what it exists to catch, and a
+   * backgrounding transient ages out of its rolling windows within a second or
+   * two on its own.
+   *
+   * The session report is a different consumer with a different lifetime. It
+   * keeps every frame forever, so one alt-tab lands at the top of "worst single
+   * frames" and drags `max` and `p99` with it — and those are precisely the
+   * numbers this project has been citing session-over-session to track a real
+   * stall (F144/F145). `audiovis-session-2026-08-29-16-15-09` reports
+   * `max 24295.4 ms` for a frame with no scene, tier or scale event anywhere
+   * near it, immediately followed by `audio resumed`: the window was simply not
+   * in front for 24 seconds.
+   *
+   * Marked rather than dropped, and then handled differently by each consumer:
+   * the JSON keeps every frame so the timeline stays whole, the distribution
+   * stats skip the marked ones because a throttled frame is not a measurement
+   * of anything the renderer did, and the worst-frames list still prints them
+   * with a label so nothing disappears silently. Deleting the frame outright
+   * would be the mistake `PerfMonitor`'s no-ceiling comment warns about.
+   */
+  private hiddenFrames = new Uint8Array(FRAME_CAPACITY)
+  /** Set by the visibilitychange listener; consumed by the next tick. */
+  private sawHidden = false
+  private onVisibility: (() => void) | null = null
+
   private frameCount = 0
 
   private samples: SessionSample[] = []
@@ -276,6 +318,9 @@ class SessionLog {
     background: null as string | null,
     accent: null as string | null,
     overlay: null as string | null,
+    mountedBackground: null as string | null,
+    mountedAccent: null as string | null,
+    mountedOverlay: null as string | null,
     effects: 0,
     pending: '',
     palette: '',
@@ -313,6 +358,18 @@ class SessionLog {
     this.elapsed = 0
     this.frameWrite = 0
     this.frameCount = 0
+    this.hiddenFrames.fill(0)
+    this.sawHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    if (typeof document !== 'undefined' && !this.onVisibility) {
+      // Latched rather than sampled in tick(): by the time rAF resumes the page
+      // is already visible again, so asking document.hidden from inside the
+      // frame would always answer "no" and never catch the frame that spans the
+      // gap. The listener fires on the way OUT, and the next tick consumes it.
+      this.onVisibility = () => {
+        if (document.visibilityState === 'hidden') this.sawHidden = true
+      }
+      document.addEventListener('visibilitychange', this.onVisibility)
+    }
     this.samples = []
     this.events = []
     this.nextSampleAt = 0
@@ -329,6 +386,9 @@ class SessionLog {
       background: null,
       accent: null,
       overlay: null,
+      mountedBackground: null,
+      mountedAccent: null,
+      mountedOverlay: null,
       effects: 0,
       pending: '',
       palette: '',
@@ -386,6 +446,8 @@ class SessionLog {
     // Every frame: the raw time. A hitch is a single frame and an average
     // cannot represent one.
     this.frames[this.frameWrite] = delta * 1000
+    this.hiddenFrames[this.frameWrite] = this.sawHidden ? 1 : 0
+    this.sawHidden = false
     this.frameWrite = (this.frameWrite + 1) % FRAME_CAPACITY
     this.frameCount++
 
@@ -481,6 +543,21 @@ class SessionLog {
       if (now !== this.prev[role]) {
         this.push('layer', now ? `${role}: + ${now}` : `${role}: - ${this.prev[role]}`)
         this.prev[role] = now
+      }
+    }
+    // The same three roles again, but from what is being DRAWN. A desire that
+    // is withdrawn before its warm mount completes produces a 'layer' pair with
+    // no 'layer-visible' pair between them, which is the whole point.
+    const m = p.mountedLayers
+    for (const role of ['background', 'accent', 'overlay'] as const) {
+      const key = ('mounted' + role[0].toUpperCase() + role.slice(1)) as
+        | 'mountedBackground'
+        | 'mountedAccent'
+        | 'mountedOverlay'
+      const now = m[role]
+      if (now !== this.prev[key]) {
+        this.push('layer-visible', now ? `${role}: + ${now}` : `${role}: - ${this.prev[key]}`)
+        this.prev[key] = now
       }
     }
     if (l.effects.length !== this.prev.effects) {
@@ -623,6 +700,19 @@ class SessionLog {
     return readRing(this.frames, this.frameWrite, this.frameCount)
   }
 
+  /**
+   * Per-frame "the tab was hidden across this frame" flags, aligned index-for-
+   * index with {@link frameTimes} (F152).
+   */
+  private hiddenFlags(): boolean[] {
+    const cap = this.hiddenFrames.length
+    const n = Math.min(this.frameCount, cap)
+    const start = this.frameCount > cap ? this.frameWrite : 0
+    const out: boolean[] = new Array(n)
+    for (let i = 0; i < n; i++) out[i] = this.hiddenFrames[(start + i) % cap] === 1
+    return out
+  }
+
   /** Derived events, for tests and for anything that wants the timeline raw. */
   eventLog(): readonly SessionEvent[] {
     return this.events
@@ -630,6 +720,10 @@ class SessionLog {
 
   stop(): { summary: string; json: string; sheet: HTMLCanvasElement | null } {
     this.active = false
+    if (this.onVisibility && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibility)
+      this.onVisibility = null
+    }
     this.push('note', 'recording stopped')
     const summary = this.buildSummary()
     const json = JSON.stringify({
@@ -655,6 +749,7 @@ class SessionLog {
    */
   private buildSummary(): string {
     const ft = this.frameTimes()
+    const hidden = this.hiddenFlags()
     const L: string[] = []
     const dur = this.elapsed
 
@@ -667,13 +762,23 @@ class SessionLog {
 
     // --- frame time -------------------------------------------------------
     L.push('--- frame time (ms) ---')
-    if (ft.length === 0) {
+    // Frames spanning a hidden tab are excluded from the DISTRIBUTION (F152):
+    // rAF is throttled or stopped while the page is backgrounded, so the delta
+    // measures how long the user was elsewhere, not how long a frame took. One
+    // alt-tab otherwise owns max and p99 for the whole session. They are still
+    // printed, labelled, in the worst-frames list below.
+    const rendered = ft.filter((_, i) => !hidden[i])
+    if (rendered.length === 0) {
       L.push('no frames recorded')
     } else {
-      const st = frameStats(ft)
+      const st = frameStats(rendered)
       L.push(`mean ${st.mean.toFixed(1)}  p50 ${st.p50.toFixed(1)}  p95 ${st.p95.toFixed(1)}  p99 ${st.p99.toFixed(1)}  max ${st.max.toFixed(1)}`)
       L.push(`effective fps ${(1000 / st.mean).toFixed(1)}`)
       L.push(`over 16.7ms ${st.over(16.7).toFixed(1)}%   over 33.3ms ${st.over(33.3).toFixed(1)}%   over 50ms ${st.over(50).toFixed(1)}%`)
+      const skipped = ft.length - rendered.length
+      if (skipped > 0) {
+        L.push(`excluded ${skipped} frame${skipped === 1 ? '' : 's'} spanning a hidden tab`)
+      }
     }
     L.push('')
 
@@ -767,7 +872,13 @@ class SessionLog {
       [...palSec.entries()].sort((a, b) => b[1] - a[1]).map(([p, sec]) => `${p} ${sec.toFixed(0)}s`).join('  ') ||
         'none recorded',
     )
-    L.push(`palette changes: ${this.events.filter((e) => e.kind === 'palette').length}  (of 6 available)`)
+    // Counted from the registry rather than written out (F149's session had
+    // 13 palettes in use against a literal that still said 6). The number is
+    // here to answer whether the show is exercising the pool or circling a
+    // corner of it, which a stale denominator gets exactly backwards.
+    L.push(
+      `palette changes: ${this.events.filter((e) => e.kind === 'palette').length}  (of ${PALETTES.length} available)`,
+    )
     L.push('')
 
     L.push('--- audio & show ---')
@@ -798,7 +909,29 @@ class SessionLog {
       L.push(`autoPilot on: ${this.samples[this.samples.length - 1].autoPilot}`)
     }
     L.push(`scene changes: ${this.events.filter((ev) => ev.kind === 'scene').length}`)
-    L.push(`layer changes: ${this.events.filter((ev) => ev.kind === 'layer').length}`)
+    // Two counts, because they answer different questions (F150). The first is
+    // how often the DIRECTOR changed its mind; the second is how often the
+    // viewer saw a layer appear or disappear. A large gap means desires are
+    // being raised and withdrawn before anything renders — churn in the
+    // composition logic that costs a warm mount but is not a visible flicker.
+    const layerWanted = this.events.filter((ev) => ev.kind === 'layer').length
+    const layerShown = this.events.filter((ev) => ev.kind === 'layer-visible').length
+    L.push(`layer changes: ${layerWanted} wanted, ${layerShown} actually shown`)
+    // Desires withdrawn inside a second, per role — the shape that showed up as
+    // 12 of 22 mounts in audiovis-session-2026-08-29-16-29-40.
+    const shortLived: string[] = []
+    const layerEvents = this.events.filter((ev) => ev.kind === 'layer')
+    for (let i = 0; i < layerEvents.length; i++) {
+      const a = layerEvents[i]
+      const plus = a.detail.indexOf(': + ')
+      if (plus < 0) continue
+      const off = a.detail.slice(0, plus) + ': - ' + a.detail.slice(plus + 4)
+      const b = layerEvents.find((e) => e.t >= a.t && e.t < a.t + 1 && e.detail === off)
+      if (b) shortLived.push(`${a.detail.slice(plus + 4)} ${((b.t - a.t) * 1000) | 0}ms @ ${a.t.toFixed(1)}s`)
+    }
+    if (shortLived.length > 0) {
+      L.push(`layer desires withdrawn within 1s: ${shortLived.length}  (${shortLived.join(', ')})`)
+    }
     L.push(`effects fired: ${this.events.filter((ev) => ev.kind === 'effect').length}`)
     L.push('')
 
@@ -812,7 +945,7 @@ class SessionLog {
     // whose entire job is to find them.
     L.push('--- worst single frames (every frame, not sampled) ---')
     const worstFrames = ft
-      .map((ms, i) => ({ ms, t: (i / Math.max(1, ft.length)) * dur }))
+      .map((ms, i) => ({ ms, t: (i / Math.max(1, ft.length)) * dur, hidden: hidden[i] }))
       .sort((a, b) => b.ms - a.ms)
       .slice(0, 10)
     for (const f of worstFrames) {
@@ -825,7 +958,8 @@ class SessionLog {
       )
       L.push(
         `~${f.t.toFixed(1).padStart(7)}s  ${f.ms.toFixed(1).padStart(7)} ms   ` +
-          `${near ? `${near.activeScene} t${near.tier} x${near.renderScale.toFixed(2)}` : ''}`,
+          `${near ? `${near.activeScene} t${near.tier} x${near.renderScale.toFixed(2)}` : ''}` +
+          (f.hidden ? '  (tab hidden - not a stall)' : ''),
       )
     }
     L.push('')

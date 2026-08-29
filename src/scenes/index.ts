@@ -1,4 +1,5 @@
 import { lazy, type ComponentType } from 'react'
+import type * as THREE from 'three'
 import type { MoodState } from '../audio/types'
 import type { CameraAnchor } from '../engine/CameraDirector'
 import type { CameraMode } from '../engine/performanceState'
@@ -77,6 +78,31 @@ export function preloadScene(id: string): void {
  */
 export function preloadAllScenes(): void {
   for (const id of Object.keys(loaders)) preloadScene(id)
+}
+
+/**
+ * Load a scene's chunk (if it isn't already) and then force its shaders to
+ * compile + link + first-draw NOW, off the critical path — so the scene's first
+ * real mount mid-show doesn't stall on a cold compile (F144: multi-second on
+ * the roster's heaviest scenes).
+ *
+ * This has to go through `load()` rather than `getScene(id).component.prewarm`:
+ * `component` is the `React.lazy` wrapper, which does NOT forward the `.prewarm`
+ * static that `createShaderScene` puts on the real component, and at boot the
+ * chunk hasn't been downloaded at all. The resolved module's `default` is the
+ * prewarmable component.
+ *
+ * Fire-and-forget. A scene whose default has no `.prewarm` (a non-shader scene,
+ * a future stock-material scene) is a silent no-op.
+ */
+export function prewarmScene(id: string, gl: THREE.WebGLRenderer): void {
+  if (!loaders[id]) return
+  void load(id)
+    .then((m) => {
+      const comp = m.default as { prewarm?: (gl: THREE.WebGLRenderer) => void }
+      comp.prewarm?.(gl)
+    })
+    .catch(() => {})
 }
 
 /**

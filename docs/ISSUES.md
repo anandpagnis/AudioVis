@@ -4401,6 +4401,71 @@ denominated in milliseconds on this side.
       with access to a real browser and a profiler - the mechanism is now
       fully understood; what's missing is verification, not diagnosis.
 
+      **Update 2026-08-30: confirmed at 100%, and the missing number is now
+      measured - it is 105 of 105.** Session
+      `audiovis-session-2026-08-29-16-29-40` (320s, 18732 frames, quality
+      setting `high`, same RTX 4060 / ANGLE-D3D11 machine): of the **213
+      frames over 33ms, every single one - 213/213 - lands within 2s of a
+      tier, render-scale or scene-commit event.** Nearest-event attribution
+      is 134 tier changes, 60 scale changes, 19 scene commits. There is not
+      one slow frame anywhere else in the session.
+
+      The other half of the same measurement is what makes it decisive: in
+      every window more than 1.5s away from any such event, frame time is a
+      flat **16.66-16.70ms mean, p95 16.67-16.76** - vsync-locked 60fps -
+      at every internal resolution from 1.3 MP to 7.8 MP. So on this
+      hardware the roster does not have a steady-state cost problem at all.
+      Everything the HUD shows as amber is this entry's reallocation storm
+      and the governor's reaction to it.
+
+      **The open question this entry ended on - what fraction of scale
+      changes land on the same integer buffer dimensions and are therefore
+      cheap no-ops - is zero.** All 105 scale changes in the session
+      reallocate. `solveRenderScale()` quantises to 0.01 of LINEAR scale;
+      on this 2560x1440 display at `baseDpr` 1.5 one such step is
+      `2560 * 0.01 * 1.5 = 38px` of drawing-buffer width, so no two adjacent
+      rungs can ever round to the same integer size. 27 distinct DPR values
+      were applied over the session. The renderScale.ts doc comment's own
+      justification for the 1/100 quantum - "a display measured one CSS
+      pixel differently must not buy that [a full reallocation]" - holds for
+      measurement wobble but does nothing for governor wobble, which is
+      where all 105 of these came from.
+
+      **A quantisation fix looked available here. It was measured, and it is
+      not worth shipping** *(2026-08-30, same pass)*. The idea was to quantise
+      the render scale to the DRAWING BUFFER's integer dimensions rather than
+      to 0.01 of linear scale - snap the width to a multiple of 64 or 128px -
+      so the governor's small oscillations became genuine no-ops through the
+      whole `EffectComposer.setSize()` chain, without touching the
+      third-party library. One pure function, existing test file.
+
+      Replaying the session's own 105 scale changes through each candidate
+      quantum says it barely does anything:
+
+        quantum    1px (today)   105 reallocations
+        quantum   32px           105
+        quantum   64px           105
+        quantum   96px           104
+        quantum  128px           103
+        quantum  192px           100
+        quantum  256px            91
+
+      Because the governor's moves are not small. They are 0.84 -> 1.00,
+      1.00 -> 0.91, 0.91 -> 0.75 - deliberate tier steps, each one far wider
+      than any quantum worth having. A 256px quantum on this display is 6.7%
+      of linear scale, a visible resolution step, and it still only removes
+      13% of the reallocations. The premise that these were rounding wobbles
+      was wrong.
+
+      **What the churn actually is: 97 of the 105 scale changes follow a TIER
+      change within 3.6s** (the remaining 8 follow a scene commit or a layer
+      change). `RENDER_SCALE_HOLD_SEC` is 3, so a tier change and the resize it
+      causes are up to three seconds apart, which is why a naive co-occurrence
+      window misses the link. The render-scale ladder is not an independent
+      source of reallocations at all - it is the tier ladder's output. Cutting
+      the count means making fewer TIER decisions, which is **F149**, and that
+      is where this entry's frequency problem is now filed.
+
 - [x] **F141 - Composition layers (background/accent/overlay) skip the
       warm-mount system entirely and compile their shader live, on whatever
       frame the director happens to request them - which is usually the
@@ -4672,7 +4737,7 @@ denominated in milliseconds on this side.
       here is a genuinely separate question (e.g. pre-warming known-
       expensive scenes at boot) from the bug this entry fixed.
 
-- [~] **F145 - The remaining cost F144 called out (first-ever compile of a
+- [x] **F145 - The remaining cost F144 called out (first-ever compile of a
       heavy scene lands on whichever live frame the director first picks
       it) is now paid at boot instead** - `src/engine/createShaderScene.tsx`,
       `src/engine/SceneManager.tsx` *(first attempt 2026-08-29, confirmed
@@ -4753,6 +4818,30 @@ denominated in milliseconds on this side.
       viewport is itself sidestepping whatever the driver keys the deferred
       compile on (unlikely, but the honest next branch if this doesn't
       settle it).
+
+      **Verified live 2026-08-30 - closed.** Two fresh session logs on the
+      same machine and backend (`audiovis-session-2026-08-29-16-18-36`,
+      165s, and `...-16-29-40`, 320s) both mount maze and neither stalls.
+      Worst single frame of each whole session: **64.6ms** and **75.4ms**.
+      In the 320s log maze is picked twice - `pointcloud -> maze` at
+      t=132.55s and `wingfold -> maze` at t=182.00s - and both transitions
+      complete with worst frames of 19.3ms and 16.7ms. Zero frames over
+      100ms in 18732 frames.
+
+      The comparison across all 21 captured sessions is unambiguous. Every
+      earlier session that mounted maze paid the stall: 2286.6, 2102.6,
+      1931.0, 1893.7, 1877.8, 1872.4, 1846.2, 1812.6 and 1778.7ms, then
+      250.3ms once F148's roster-wide prewarm landed. The only two maze
+      sessions without it are the two captured after `.prewarm()` began
+      issuing a real draw call. Maze is now the CHEAPEST row in the
+      by-scene frame-time table (mean 16.7-16.8ms, p95 16.7-17.4ms over 20s
+      on screen), below every other scene in the roster.
+
+      So the hypothesis this entry landed on - ANGLE/D3D11 defers the real
+      HLSL compile-and-link past `linkProgram` to the first draw call that
+      exercises the program with a concrete vertex layout - is confirmed by
+      the fix working, and the 1x1 throwaway viewport was NOT sidestepping
+      whatever the driver keys the deferred compile on.
 
 - [x] **F146 - Maze's march-step / AO-tap / edge-glow / far-plane knobs were
       tier-gated (reduced under load) despite the scene's own profiling
@@ -4844,9 +4933,426 @@ denominated in milliseconds on this side.
 
 ---
 
+## p95 goes amber on transitions and the controller chases it (2026-08-29)
+
+- [~] **F148 - p95 amber is transition spikes plus the adaptive controller's
+      reaction to them, not steady-state load** -
+      `src/engine/SceneManager.tsx`, `src/engine/PerfMonitor.tsx`,
+      `src/scenes/index.ts`
+      Session recording `audiovis-session-2026-08-29-13-48-35`: steady state is
+      green (nearly every `+layers` scene row sits at p95 16.7-17.1 ms), but the
+      HUD p95 spends long stretches amber (>22 ms) and touches 24.9 ms. Sources,
+      in order of size:
+        1. **Cold shader compile on scene commit.** Worst single frame 250.3 ms
+           at 55.8 s (`maze` transition-in), plus a cluster of 50-67 ms frames
+           all landing within ~1 s of a commit; `programs` climbs 12 -> 26 over
+           the session as each new scene links on screen.
+        2. **Render-scale / tier thrash.** 22 tier changes and 30 scale changes
+           in 132 s. F132's own note: 2-4 reallocations stack within a second of
+           a commit. One 250 ms frame then keeps the 10 s display-window p95
+           elevated for a full ten seconds - that is the "amber a lot".
+        3. **Climb overshoot.** 124.5 s: render scale jumps `0.75 -> 1.00`
+           (8.29 MP) in one frame when `wingfold` drops its layers, immediately
+           cannot hold it, and demote-cascades tier 0 -> 4 with p95 -> 24.9.
+        4. Autopilot switches scenes ~every 8 s (17 in 132 s), 94% of samples
+           failing the `conf<0.4 / amb>0.6` gate - most switches are structural
+           cadence, not confident reads, so much of the churn (and its spikes)
+           is avoidable. This is the engine-side consequence of **F121**.
+        5. Fixed per-frame cost is 8.14 ms of a ~10 ms budget (`frameLoad`
+           "fixed" = the post chain + exposure sampler), so p95 has no room to
+           absorb anything: 56% of frames already sit over 16.7 ms.
+
+      **Done (2026-08-29):**
+        - `SceneManager` `BOOT_PREWARM_IDS` **was a silent no-op.**
+          `getScene(id).component` is the `React.lazy` wrapper and does not
+          forward the `.prewarm` static `createShaderScene` sets on the real
+          component, and at boot the chunk is not downloaded yet - so
+          `scene.prewarm?.()` was always `undefined?.()`. That is why the sole
+          listed scene (`maze`) still stalled 250 ms. New `prewarmScene(id, gl)`
+          in `scenes/index.ts` goes through `load()` and reaches the resolved
+          module default; list widened from `['maze']` to the whole primary
+          roster (wireframe, dissolve, chrome, pointcloud, plasma, kifs, maze,
+          wingfold), staggered `PREWARM_STAGGER_MS` apart so eight compiles
+          don't block one boot macrotask. Once `entry.prewarmed` is set this
+          also short-circuits the `WARM_FRAMES = 4` double-res warm render, so
+          the 24-28 ms transition frames go too.
+        - `PerfMonitor`: tier-driven resizes are now **frozen while
+          `performanceState.transition.active`** (the hold timer keeps
+          restarting for the length of the crossfade); the `pairKey` path and
+          the `SCALE_EMERGENCY_RATIO` path are unaffected. `RESIZE_COALESCE_SEC`
+          0.2 -> 0.5. New `MAX_RENDER_SCALE_STEP_UP = 1.25` ratchets upward
+          resizes in `applyRenderScale` (downward never capped), with a
+          convergence walk in the frame loop so a clamped climb finishes on the
+          coalesce cadence. `npm run check` clean (764 tests, lint, build).
+
+      **Open:**
+        - **Autopilot churn / dwell floor.** Until **F121** is fixed the show
+          paces off section boundaries, so raise `MIN_SUBJECT_DWELL_BEATS`
+          (~32 -> ~48-64) so a scene holds through a spike-and-recover cycle.
+          Interim mitigation only; the real fix is the mood estimator.
+        - **Fixed per-frame cost (8.14 ms of a ~10 ms budget).** `MirrorPass` /
+          `LensPass` are already skipped at rest (they set `enabled` from
+          `isMirrorActive` / `isLensActive`), so the cost is elsewhere: Bloom's
+          ~18-pass `mipmapBlur` pyramid (always on, "the single most fill-bound
+          thing in the frame" per renderScale.ts), `FeedbackPass` (a full-frame
+          read+write every frame `trails > 0`, and the session ran trails
+          0.77-0.89 for long stretches), `GradePass` + CAS, and the
+          `ExposureSampler` readback. The real fix is **F122's deferred half** -
+          decouple post-chain resolution from scene resolution (bloom / vignette
+          / CA / fog are low-frequency and identical at half res; points/edges
+          want native). `/bench` still excludes the whole post chain, so step
+          one is a GPU-timer path (`src/bench/gpuTimer.ts`) that measures it.
+          Separately: **the mirror/lens racks are also starved** - `visualTension`
+          only rises on `m.isBuilding` / predicted-peak / `f.drop`, so a session
+          that never reaches `building` mood (F121) sits at tension ~0 and
+          `mirrorForSection`'s gate never opens; and `tensionMoved` in
+          `PerformanceStateBridge` re-picks (and usually tears down) an engaged
+          mirror when the drop's tension spike decays. Broadening the tension
+          floor and adding a min-hold before a downward re-pick is the fix
+          there. See the notes handed to the user 2026-08-29.
+
+
+      **Measured 2026-08-30 against `audiovis-session-2026-08-29-16-29-40`
+      (320s, same machine, quality `high`):**
+
+      *The shipped half worked.* Worst frame during any of the session's 30
+      transitions is **24.8ms**, and 27 of the 30 are at or under 19.3ms -
+      against 250.3ms in the log this entry was written from. The
+      `programs` counter no longer climbs across the session (23-31, flat)
+      instead of walking 12 -> 26, so the roster-wide `prewarmScene()` is
+      reaching the real module default as intended. Source (1), cold shader
+      compile on commit, is closed: there is not one frame over 100ms in
+      18732 frames. Freezing tier-driven resizes while a crossfade is in
+      flight also holds - scene commits are now the SMALLEST of the three
+      slow-frame populations (19 of 213 frames over 33ms, against 134 for
+      tier changes and 60 for scale changes).
+
+      *Source (2), render-scale and tier thrash, is now the whole problem
+      and it got worse, not better.* Normalised per minute against the
+      132s log this entry cites: tier changes 10.0/min -> **15.8/min**,
+      scale changes 13.6/min -> **19.7/min**, scene changes 7.7/min ->
+      **11.4/min**. The transition-window freeze removed the spikes AT
+      commits without reducing how often the ladder moves, because what
+      moves it is not the commits - see **F149**, which found the actual
+      driver: the ladder's top rung cannot be held on this hardware and the
+      governor has no memory of that, so it re-attempts it 13 times in
+      320s. Source (3), climb overshoot, is the same finding seen from the
+      other end; `MAX_RENDER_SCALE_STEP_UP = 1.25` did not prevent it
+      because the fatal step is only 0.91 -> 1.00, a ratio of 1.10.
+
+      *Source (5) is wrong, at least on this machine, and this changes the
+      priority order.* The claim was that fixed per-frame cost leaves p95
+      no room. But in every window more than 1.5s from a tier/scale/scene
+      event, frame time is a flat 16.66-16.70ms mean at every internal
+      resolution up to 7.8 MP - vsync-locked, with headroom to spare. The
+      8.14ms "fixed" figure is `frameLoad`'s own RESERVATION (`POST_CHAIN_MS`
+      + `FEEDBACK_MS` scaled by `fillScale`), not a measurement, and the
+      hardware plainly is not paying it: `/bench` still excludes the post
+      chain, so that number remains the estimate F43/F90 flagged. **F122's
+      deferred half is therefore not the bottleneck here** and should drop
+      below F149 and F140 in priority - though it stays worth doing for
+      weaker GPUs, and the GPU-timer path (`src/bench/gpuTimer.ts`) is still
+      the only way to turn the estimate into a fact.
+
+      *Source (4), autopilot churn, also got worse and is still F121.* The
+      scene-switch gate now fails on **99%** of samples (was 94%), mood
+      confidence mean fell 0.32 -> 0.18, and the show committed 30 scene
+      changes in 320s. Different track, so this is not a clean A/B - but it
+      is the same direction, and `effects fired: 0` again across the whole
+      session, so the mirror/lens starvation described below is unchanged.
+      Newly visible at this cadence: **F150**, layer mounts that live 20-90ms
+      and are torn down on the same commit that created them.
+
+      Not verified against real music - same standing caveat as the whole
+      "Frame-time control loop" section.
+
+---
+
+## The quality ladder's top rung is unreachable, and the governor keeps trying it (2026-08-30)
+
+Everything below comes from `audiovis-session-2026-08-29-16-29-40` - 320s,
+18732 frames, store quality `high`, autopilot on, RTX 4060 laptop /
+ANGLE-D3D11, 2560x1440 at `baseDpr` 1.5. It is the longest clean capture so
+far and the first with no cold-compile stall anywhere in it (see F145, now
+closed), which is exactly what makes the rest readable: with the 1.8s spikes
+gone, what remains is visible for the first time.
+
+- [~] **F149 - Render scale 1.00 (8.29 MP) is the one rung this machine cannot
+      hold; the quality governor has no memory that it just failed, so it
+      climbs back into it every ~25s for the whole session - 13 attempts, 13
+      demotes, 0 successes** - `src/engine/quality.ts`,
+      `src/engine/renderScale.ts` *(found 2026-08-30, not fixed)*
+
+      **The cliff is real, and it is a cliff rather than a curve.** Frame time
+      by internal resolution, all samples:
+
+        6.87 MP   n=110   mean 17.08   p50 16.67   p95 19.55    17% of samples > 16.9ms
+        7.33 MP   n=  4   mean 16.95   p50 17.18   p95 17.19    50%
+        7.80 MP   n= 69   mean 17.45   p50 16.80   p95 20.65    38%
+        8.29 MP   n=106   mean 20.78   p50 20.88   p95 23.96    95%
+
+      A 6% increase in pixels (7.80 -> 8.29 MP) costs 24% of frame time, and
+      the p50 moves from 16.80 to 20.88ms - which is 16.67 x 1.25, i.e. the
+      frame has stopped riding vsync and settled into dropping one in four.
+      That is a threshold, not fill-rate scaling. Below it the machine is
+      genuinely idle: at tier 0, with every complexity knob at maximum, mean
+      frame time is 16.67-16.97ms at 3.95, 4.30, 4.67, 5.44, 6.42 and 7.33 MP
+      alike, and only 8.29 MP breaks it.
+
+      **The complexity half of the ladder buys nothing here.** Holding
+      resolution fixed at 4-5 MP and varying only the tier: tier 0 mean
+      16.69ms (n=12), tier 1 16.67ms (n=36), tier 2 16.75ms (n=228). Three
+      tiers of raymarch steps, noise octaves and particle counts are
+      indistinguishable inside measurement noise. Every millisecond the
+      governor has ever bought on this machine it bought with resolution -
+      the same conclusion F146 reached for maze specifically, now apparently
+      true for the whole roster - which means four of the five tiers are
+      currently paying a reallocation (F140) for a knob change worth nothing.
+
+      **The governor cannot learn this, by construction.** `QualityGovernor.tick()`
+      climbs whenever `steady` has held for `CLIMB_HOLD_SEC = 4` and
+      `tier > ceiling`; `FIXED_TIER.high = 0`, so the ceiling is 0 and the
+      climb target is always the rung that just failed. Nothing in the class
+      records that a rung was tried and lost. The result is a textbook limit
+      cycle, and the log is one period repeated 13 times:
+
+        entered tier 0 at   22.0s, held 3.2s      202.0s, held 3.2s
+                            38.4s, held 3.3s      212.2s, held 3.2s
+                            57.7s, held 6.9s      231.5s, held 2.0s
+                            91.2s, held 3.7s      262.5s, held 3.2s
+                           105.0s, held 2.0s      290.4s, held 3.2s
+                           131.9s, held 8.0s      297.6s, held 3.2s
+                           153.0s, held 3.3s
+
+      Every one ends in `DEMOTE 0 -> 1`. Independently, all **13 of 13**
+      render-scale climbs to 1.00 are followed by a tier demote within
+      0.16-1.47s (median ~0.2s). The session spent 47s (15%) at tier 0 and
+      every second of it was overloaded.
+
+      **This is where the churn comes from.** 84 tier changes and 105 scale
+      changes in 320s - one structural change every 3.8s and 3.0s
+      respectively - and per F140 above, all 105 scale changes are real
+      `EffectComposer` reallocations. There are 18 clusters of frames over
+      40ms; 13 of the 18 contain a `scale -> 1.00` event and the rest sit at
+      0.88-0.97. They are not single spikes either: the clusters at
+      64.7-69.6s and 156.3-159.9s run 27 and 21 slow frames across 3-5
+      seconds, because the demote cascade reallocates on the way back down
+      too. A single 10s HUD p95 window covers all of that, which is the
+      "amber a lot" F148 set out to explain.
+
+      **Fix shape** (none of it done):
+        1. **Failed-rung memory.** When a climb to rung N is followed by a
+           demote within some window, latch N as unavailable - for the
+           session, or with exponential back-off (retry after 30s, 60s,
+           120s...). The standard AIMD answer, contained to `quality.ts`, and
+           on this evidence it alone removes 12 of the 13 cycles.
+        2. **Cap the top rung below the cliff.** `solveRenderScale` clamps to
+           `Math.min(1, ...)`; the evidence puts the useful ceiling on this
+           display at ~0.97 linear / 7.8 MP. A ceiling MEASURED per session is
+           better than a new constant, since the cliff is a property of the
+           (GPU, panel, post-chain) triple and not of the code.
+        3. **Stop moving the complexity knobs at all** where they measure
+           free, and let the tier ladder be a resolution ladder. Follows from
+           the 4-5 MP table and from F146's precedent, but wants confirmation
+           on a second, weaker GPU before it is generalised - on an
+           integrated part those knobs may well earn their keep, and this
+           session cannot say.
+        4. Pairs with F140's newly-available quantisation fix: coarser rungs
+           mean fewer reallocations per cycle even before the cycles stop.
+
+      **Fix 1 shipped 2026-08-30** - `src/engine/quality.ts`. The governor now
+      remembers, per rung, that a climb into it failed:
+
+        - New `RUNG_PROOF_SEC = 10`. A demote that lands within that window of
+          climbing INTO a rung is the rung failing a probe; a demote later than
+          that is the workload changing, and is not held against it. Chosen
+          against the observed data rather than in the abstract - all 13 of this
+          session's tier-0 tenancies ended inside 8.0s.
+        - A failed probe blocks re-entry to that rung for
+          `RUNG_BACKOFF_SEC = 20`, doubling per consecutive failure to
+          `MAX_RUNG_BACKOFF_SEC = 240`. Back-off rather than a permanent latch,
+          because "unaffordable" is a claim about a moment: a smaller window or
+          a cheaper scene moves the cliff, and a latch would be wrong forever
+          when it was wrong. A rung that survives its probe window has its
+          failure count cleared.
+        - Blocking is per-rung and applies ONLY to climbing. Demotion stays
+          unconditional, which is the same contract the quality ceiling has.
+        - `setMode` and `pinTier` clear the memory. `PerfMonitor` re-runs
+          `setMode` in the same effect that calls `renderScale.setDisplay`, so
+          resizing the window or dragging it to another monitor already forgets
+          a record that was only ever true for the old pixel count - no new call
+          site needed.
+
+        Replayed against this session's timeline the attempts land at roughly
+        t, +20, +60, +140, +300 instead of every ~25s: 4 or 5 probes over 320s
+        against 13, and 12 of the 13 demote cascades never happen. 7 new tests
+        in `qualityGovernor.test.ts` cover the block, the re-probe, the
+        doubling, the forgiveness, that demotion is never blocked, that one bad
+        rung does not block the rest of the ladder, and that a mode/display
+        change clears it. `npm run check` clean (773 tests, 0 lint, build).
+
+      **Fix 2 deliberately not done.** A measured ceiling on `solveRenderScale`
+      would be a second mechanism doing fix 1's job less generally: the rung
+      memory already learns where the cliff is, wherever it sits, including for
+      rungs that are not the top one. Two controllers competing over the same
+      decision is how this file got its hardest bugs.
+
+      **Fix 3 deliberately not done.** Retiring the complexity knobs needs a
+      second, weaker GPU first, as noted below - on an integrated part they may
+      well earn their keep, and one machine cannot say.
+
+      **Fix 4 withdrawn - the premise was wrong.** See the correction in F140
+      above: replaying the session's 105 scale changes through every candidate
+      quantum removes at most 13 of them, and only at a quantum coarse enough
+      to be a visible resolution step. The governor's moves are large
+      deliberate steps, not rounding wobble. 97 of the 105 follow a tier change,
+      so fix 1 is also the fix for F140's frequency problem.
+
+      **Not verified live.** No browser automation in this environment, and this
+      is a controller change whose whole point is what it does over minutes of a
+      real show. The next session log should show tier changes well under this
+      one's 84, scale changes under 105, and - the specific thing to look for -
+      tier-0 tenancies that either hold or stop being attempted.
+
+      **Caveat, and it matters:** every number here is one machine, one
+      panel, one track. 8.29 MP is exactly what `baseDpr` 1.5 produces on a
+      2560x1440 panel - a 4K internal frame, which is what F107 deliberately
+      made tier 0 mean - so a different panel moves the cliff. Fixes 1 and 4
+      are safe regardless, because they are about the controller's behaviour
+      rather than about where the cliff sits; fix 2 has to measure rather
+      than hardcode.
+
+- [ ] **F150 - 12 of the session's 22 composition-layer mounts live for 20-90ms
+      and are then torn down - always on a scene commit** -
+      `src/engine/SceneManager.tsx`, `src/engine/slotBudget.ts`
+      *(found 2026-08-30, not fixed)*
+
+      44 layer events in the session, of which these 12 are add/remove pairs
+      where the remove follows the add within a frame or two:
+
+        t=13.93  -> 14.02   (90ms)   accent: + ribbons
+        t=81.00  -> 81.05   (50ms)   accent: + ribbons
+        t=118.13 -> 118.18  (50ms)   accent: + ribbons
+        t=126.40 -> 126.46  (60ms)   accent: + ribbons
+        t=148.95 -> 148.97  (20ms)   accent: + ribbons  AND  overlay: + plasma
+        t=196.50 -> 196.58  (80ms)   background: + malachite  AND  accent: + ribbons
+        t=218.00 -> 218.07  (70ms)   accent: + ribbons
+        t=275.16 -> 275.23  (70ms)   accent: + ribbons
+        t=278.91 -> 278.99  (80ms)   background: + malachite
+        t=304.28 -> 304.37  (90ms)   accent: + ribbons
+
+      Every one of those timestamps is a scene-commit timestamp. So the layer
+      set is being computed against the outgoing composition, applied, then
+      recomputed and reverted the moment the new primary lands - most likely
+      the slot budget admits the accent while the outgoing scene's cheap
+      mid-fade cost is still what is on the books, and evicts it once the
+      incoming scene's real cost registers.
+
+      **Correction 2026-08-30, same pass: "visibly flickers" was wrong, and the
+      log could not have told me either way.** `sessionLog` reads these events
+      from `performanceState.layers`, which `PerformanceStateBridge` mirrors
+      straight from the store's `layerSceneIds` - it is the director's DESIRE,
+      not what is mounted, and certainly not what is drawn. Two gates sit
+      between them: `resolveLayerIds` can refuse a layer that no longer fits the
+      frame budget, and (since F141) an admitted layer mounts invisibly at
+      `dir: 0` and is promoted to `dir: 1` only once `isWarmComplete`. A desire
+      raised and withdrawn inside 20-90ms - one to five frames - most likely
+      never reached `dir: 1` at all, so there was probably nothing on screen to
+      see. The mount/unmount cost is real; the flicker was an assumption.
+
+      **Instrumented rather than fixed** (`src/engine/performanceState.ts`,
+      `src/engine/SceneManager.tsx`, `src/engine/sessionLog.ts`). New
+      `performanceState.mountedLayers`, written by SceneManager from the
+      `dir === 1` entry per role - what is actually being drawn - alongside the
+      existing desire. The session log now emits a separate `layer-visible`
+      event stream and the summary prints both counts
+      (`layer changes: N wanted, M actually shown`) plus an explicit list of
+      desires withdrawn within a second. The next capture answers the question
+      this entry is actually asking, in one line, instead of leaving it to be
+      inferred from timestamps.
+
+      **Root cause still open.** Reading the code did not settle it either.
+      `PerformanceDirector` already guards the obvious version of this - it
+      composes against `s.pendingSceneId ?? s.sceneId`, and only aims at a new
+      pick when `requestScene` actually ACCEPTED it, with a comment naming this
+      exact failure ("A layer chosen and immediately dropped is exactly the
+      flicker that looks like a failed transition"). Its own re-entry guard
+      (`lastSwitchBeat`) should also make two composition passes 90ms apart
+      impossible at 134 BPM, where a beat is 448ms. So the second write is
+      coming from somewhere not yet found, and `store.setLayer`'s
+      `if (id === get().sceneId) id = null` coercion - which fires against the
+      CURRENT primary, not the pending one - is the best remaining suspect.
+      Deliberately not guessed at further: this is a four-way interaction
+      between the director, the store, the slot budget and the warm-mount
+      lifecycle, `npm run check` cannot tell whether a change to it looks right
+      on screen, and the instrumentation above costs one session to settle it
+      properly.
+
+- [x] **F151 - The session report hardcodes "(of 6 available)" for the palette
+      pool; there are 13, and this session used 13** -
+      `src/engine/sessionLog.ts` *(found 2026-08-30, not fixed)*
+
+      The count in that line is a string literal, while `PALETTES` in
+      `src/engine/palettes.ts` is well past 6 - the session's own palette
+      table lists 13 distinct ids in use (nocturne, glacial, ember, orchid,
+      umber, violet, reef, mono, carnival, solar, aurora, sage, ocean). So
+      the report reads "palette changes: 18  (of 6 available)", which is not
+      just stale but actively misleading about the one thing the line exists
+      to answer: whether the show is exercising the palette pool or circling
+      a corner of it.
+
+      **Fixed 2026-08-30**: the denominator is `PALETTES.length`, read from the
+      registry, so it cannot drift again.
+
+- [x] **F152 - A backgrounded tab is recorded as a multi-second stall and
+      lands at the top of "worst single frames"** - `src/engine/sessionLog.ts`
+      *(found 2026-08-30, not fixed)*
+
+      `audiovis-session-2026-08-29-16-15-09` reports `max 24295.4 ms`. That
+      frame is at t=24.3s, has no scene/tier/scale event anywhere near it,
+      and is immediately followed by `audio resumed` at t=24.7s with no
+      events at all before it - the window was unfocused (rAF throttled)
+      while the user set something up, then came back. It is not a stall.
+
+      `PerfMonitor`'s deliberate no-ceiling policy is right for the live
+      governor and says so in a comment: a genuine 150-300ms frame is exactly
+      what the monitor exists to catch, and a backgrounding transient ages out
+      of its windows on its own. But the session REPORT is a different
+      consumer with a different lifetime - it keeps that frame forever, puts
+      it at the top of "worst single frames", and poisons `max` and `p99`,
+      which are the exact numbers this ledger has been citing session over
+      session to track the maze stall (F144/F145). One alt-tab makes a
+      capture unreadable.
+
+      **Fixed 2026-08-30**, marking rather than dropping, and then treating
+      the mark differently per consumer:
+
+        - `SessionLog` keeps a `visibilitychange` listener for the life of a
+          recording and latches a flag when the page goes hidden; the next
+          `tick()` stamps that frame in a `hiddenFrames` ring parallel to the
+          frame-time ring. Latched on the way OUT rather than sampled inside the
+          frame, because by the time rAF resumes the page is visible again and
+          an in-frame check would always answer "no".
+        - The JSON keeps every frame, so the timeline stays whole.
+        - The distribution (`mean/p50/p95/p99/max`, the over-16.7/33.3/50ms
+          percentages) skips flagged frames and prints
+          `excluded N frames spanning a hidden tab` when it did so - a throttled
+          frame is not a measurement of anything the renderer did.
+        - "Worst single frames" still prints them, labelled
+          `(tab hidden - not a stall)`, so nothing disappears silently. That is
+          the half that matters: deleting the frame outright is exactly the
+          mistake `PerfMonitor`'s no-ceiling comment warns about.
+
+      Two tests in `sessionLog.test.ts`, driven through a stubbed `document` so
+      they exercise the real listener wiring rather than a hand-set flag: one
+      that a 20s absence is kept in the JSON, excluded from `max`, and labelled;
+      one that a genuine 200ms stall in a visible tab is untouched.
+
+---
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **764 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **773 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

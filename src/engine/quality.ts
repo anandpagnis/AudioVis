@@ -253,6 +253,71 @@ export function snapToRefreshInterval(ms: number): number {
 const CLIMB_HOLD_SEC = 4 // sustained headroom required before climbing back
 
 /**
+ * How long a rung must survive after a climb before the climb counts as a
+ * SUCCESS rather than a failed probe (F149).
+ *
+ * ## The governor had no memory, and one machine's ladder had no top
+ *
+ * `tick()` climbs whenever the frame has been steady for {@link CLIMB_HOLD_SEC}
+ * and the tier is above the ceiling. Nothing recorded that a rung had already
+ * been tried and lost, so on hardware that cannot hold its top rung the
+ * controller has no fixed point: it climbs, overloads, demotes, waits out the
+ * hold, and climbs into the identical failure again, forever.
+ *
+ * Session `audiovis-session-2026-08-29-16-29-40` is 320 s of exactly that.
+ * Store quality `high`, so `FIXED_TIER.high = 0` puts the ceiling at the top
+ * rung; the machine (RTX 4060 laptop, ANGLE/D3D11, 2560x1440 at `baseDpr` 1.5)
+ * cannot hold tier 0, because tier 0 there means a 4K internal frame:
+ *
+ *     7.80 MP   p50 16.80 ms   38% of samples over 16.9 ms
+ *     8.29 MP   p50 20.88 ms   95% of samples over 16.9 ms
+ *
+ * 20.88 is 16.67 x 1.25 — the frame has stopped riding vsync and settled into
+ * dropping one in four. The governor climbed into it **13 times**, held it
+ * 2.0-8.0 s each time, and was demoted out of it 13 times. 0 successes.
+ *
+ * The cost is not the wasted rung. It is that every one of those 26 tier moves
+ * forces a render-scale change, and a render-scale change reallocates the whole
+ * `EffectComposer` (F140): 97 of the session's 105 scale changes follow a tier
+ * change within 3.6 s, and 100% of its 213 frames over 33 ms land within 2 s of
+ * a tier/scale/scene event. Away from those events the same session holds a
+ * flat 16.66-16.70 ms at every resolution up to 7.8 MP. The controller was the
+ * entire load.
+ *
+ * ## Why a probe window rather than "demoted at all"
+ *
+ * A demote shortly after a climb is evidence the rung is unaffordable. A demote
+ * a minute later is evidence the WORKLOAD changed — a heavier scene, a layer
+ * admitted, a window resized — and blaming the rung for that would ratchet the
+ * ladder down over a long show and never let it back up.
+ *
+ * 10 s is chosen against the observed failures rather than in the abstract: all
+ * 13 of that session's tier-0 tenancies ended inside 8.0 s, and the shortest
+ * legitimate reason to demote from a rung that genuinely fits is a scene change,
+ * which `SETTLE_SEC` and the transition discount already absorb.
+ */
+const RUNG_PROOF_SEC = 10
+
+/**
+ * First back-off after a rung fails its probe, in seconds, doubling per
+ * consecutive failure up to {@link MAX_RUNG_BACKOFF_SEC}.
+ *
+ * Back-off rather than a permanent latch, because "this rung is unaffordable"
+ * is a statement about a moment, not about the machine: the cliff moves when the
+ * window is resized, when a cheap scene replaces an expensive one, when layers
+ * are shed. A latch would be right more often than the old behaviour and wrong
+ * forever when it was wrong. Doubling keeps the cost of being wrong bounded —
+ * a rung that really is affordable is re-probed within 20 s and then held, and
+ * its failure count resets the moment it survives.
+ *
+ * Against the session above: attempts land at roughly t, +20, +60, +140, +300
+ * instead of every ~25 s — 4 or 5 probes over 320 s instead of 13, and 12 of the
+ * 13 demote cascades never happen.
+ */
+const RUNG_BACKOFF_SEC = 20
+const MAX_RUNG_BACKOFF_SEC = 240
+
+/**
  * Exported for tests only — production code uses the {@link quality} singleton.
  *
  * The governor is deliberately stateful (two hysteresis timers and a tier), so
@@ -284,6 +349,23 @@ export class QualityGovernor {
    */
   private ceiling = 0
   private refreshMs = DEFAULT_REFRESH_MS
+
+  /**
+   * Per-rung probe state for {@link RUNG_PROOF_SEC} (F149).
+   *
+   * `blockedUntil[t]` is the elapsed time before which the ladder may not climb
+   * INTO tier `t`; `failures[t]` is the consecutive-failure count that sets the
+   * back-off. Indexed by tier, so the memory is per-rung rather than global — a
+   * machine that cannot hold tier 0 can still climb freely to tier 1.
+   *
+   * Demotion is never blocked. This gates the climb only; shedding load stays
+   * unconditional, which is the same contract the quality ceiling has.
+   */
+  private readonly blockedUntil = new Array<number>(TIERS.length).fill(0)
+  private readonly failures = new Array<number>(TIERS.length).fill(0)
+  /** Rung the last climb entered, and when — the probe being timed. */
+  private probeTier = -1
+  private probeAt = 0
 
   /**
    * Tell the governor the display's actual refresh interval in milliseconds.
@@ -331,6 +413,7 @@ export class QualityGovernor {
    */
   pinTier(t: number): void {
     this.auto = false
+    this.clearRungMemory()
     this.setTier(t)
   }
 
@@ -363,6 +446,7 @@ export class QualityGovernor {
    */
   setMode(q: 'auto' | 'low' | 'medium' | 'high'): void {
     this.auto = true
+    this.clearRungMemory()
     if (q === 'auto') {
       this.ceiling = 0
       return
@@ -393,23 +477,67 @@ export class QualityGovernor {
     // as much as a uniformly slow one, and only the p95 can see it.
     const overloaded = emaMs > r * STEP_DOWN_MEAN_RATIO || p95Ms > r * STEP_DOWN_P95_RATIO
 
+    // A rung that has survived {@link RUNG_PROOF_SEC} is affordable after all:
+    // forgive its failure history rather than letting one bad minute compound
+    // into a back-off it no longer deserves. Checked before the SETTLE gate and
+    // before the blocked-climb return below, so it runs on every tick whatever
+    // the ladder does next.
+    if (this.probeTier === this.tier && elapsedSec - this.probeAt >= RUNG_PROOF_SEC) {
+      this.failures[this.tier] = 0
+      this.probeTier = -1
+    }
     if (elapsedSec - this.lastChangeAt < SETTLE_SEC) {
       if (steady) this.goodSince = Math.max(this.goodSince, this.lastChangeAt)
       return
     }
     if (overloaded && this.tier < TIERS.length - 1) {
+      // A demote soon after climbing INTO this rung is the rung failing its
+      // probe, not the workload changing — record it and back off (F149).
+      if (this.probeTier === this.tier && elapsedSec - this.probeAt < RUNG_PROOF_SEC) {
+        const n = (this.failures[this.tier] += 1)
+        const wait = Math.min(MAX_RUNG_BACKOFF_SEC, RUNG_BACKOFF_SEC * Math.pow(2, n - 1))
+        this.blockedUntil[this.tier] = elapsedSec + wait
+      }
+      this.probeTier = -1
       this.setTier(this.tier + 1)
       this.lastChangeAt = elapsedSec
       this.goodSince = elapsedSec
     } else if (steady && this.tier > this.ceiling) {
       if (elapsedSec - this.goodSince > CLIMB_HOLD_SEC) {
-        this.setTier(this.tier - 1)
+        const target = this.tier - 1
+        if (elapsedSec < this.blockedUntil[target]) {
+          // Rung is serving a back-off. Hold here and keep the steady credit,
+          // so the climb happens on the frame the block expires rather than
+          // CLIMB_HOLD_SEC after it.
+          return
+        }
+        this.probeTier = target
+        this.probeAt = elapsedSec
+        this.setTier(target)
         this.lastChangeAt = elapsedSec
         this.goodSince = elapsedSec
       }
     } else {
       this.goodSince = elapsedSec
     }
+  }
+
+  /**
+   * Forget which rungs have failed their probe (F149).
+   *
+   * Called from {@link setMode} and {@link pinTier}, which between them cover
+   * both events that invalidate the memory: a change of quality preference, and
+   * a change of DISPLAY — `PerfMonitor` re-runs `setMode` in the same effect
+   * that calls `renderScale.setDisplay`, so resizing the window or dragging it
+   * to another monitor clears the record. That matters because "this rung is
+   * unaffordable" is a claim about a pixel count: shrink the window and the top
+   * rung may become affordable, and waiting out a 240 s back-off to discover
+   * that would be its own bug.
+   */
+  private clearRungMemory(): void {
+    this.blockedUntil.fill(0)
+    this.failures.fill(0)
+    this.probeTier = -1
   }
 
   private setTier(t: number): void {

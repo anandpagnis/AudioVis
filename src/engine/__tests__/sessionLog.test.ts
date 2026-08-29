@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { frameStats, readRing, sessionLog } from '../sessionLog'
 import { performanceState } from '../performanceState'
 import { quality } from '../quality'
@@ -136,5 +136,91 @@ describe('SessionLog', () => {
       for (let f = 0; f < 60 * 2; f++) sessionLog.tick(1 / 60)
     }
     expect(() => sessionLog.stop()).not.toThrow()
+  })
+})
+
+/**
+ * A backgrounded tab is not a stall (F152).
+ *
+ * `audiovis-session-2026-08-29-16-15-09` reported `max 24295.4 ms` for a frame
+ * with no scene, tier or scale event anywhere near it — the window had simply
+ * been in the background for 24 seconds. That frame sat at the top of "worst
+ * single frames" and owned `max` and `p99`, which are the two numbers this
+ * project reads session-over-session to decide whether a real stall is fixed.
+ *
+ * The node test environment has no `document`, which is also the guard path
+ * `start()` takes in a worker. Stubbing one exercises the listener wiring
+ * itself rather than a flag set by hand.
+ */
+describe('SessionLog — hidden-tab frames', () => {
+  function stubDocument() {
+    const listeners: Record<string, (() => void)[]> = {}
+    const doc = {
+      visibilityState: 'visible' as 'visible' | 'hidden',
+      // The recorder also reaches for the stage canvas to grab contact-sheet
+      // tiles; there is no DOM here, and null is the same answer the real guard
+      // gives in a worker.
+      querySelector: () => null,
+      // Same for the contact sheet: a bare object with no 2d context, which the
+      // recorder already handles (it null-checks getContext).
+      createElement: () => ({ width: 0, height: 0, getContext: () => null }),
+      addEventListener: (k: string, fn: () => void) => {
+        ;(listeners[k] ??= []).push(fn)
+      },
+      removeEventListener: (k: string, fn: () => void) => {
+        listeners[k] = (listeners[k] ?? []).filter((f) => f !== fn)
+      },
+      fire: (k: string) => (listeners[k] ?? []).forEach((f) => f()),
+    }
+    vi.stubGlobal('document', doc)
+    return doc
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the frame but excludes it from the distribution, and labels it', () => {
+    const doc = stubDocument()
+    sessionLog.start()
+    for (let i = 0; i < 60; i++) sessionLog.tick(1 / 60)
+
+    // The user alt-tabs away and comes back 20s later: rAF stops, so the next
+    // frame's delta is the whole absence.
+    doc.visibilityState = 'hidden'
+    doc.fire('visibilitychange')
+    doc.visibilityState = 'visible'
+    doc.fire('visibilitychange')
+    sessionLog.tick(20)
+
+    for (let i = 0; i < 60; i++) sessionLog.tick(1 / 60)
+    const { summary, json } = sessionLog.stop()
+
+    // Still in the raw timeline — nothing is silently deleted.
+    const parsed = JSON.parse(json) as { frameCount: number; frameTimesMs: number[] }
+    expect(parsed.frameCount).toBe(121)
+    expect(Math.max(...parsed.frameTimesMs)).toBeGreaterThan(19_000)
+
+    // But out of the stats: max must be a real rendered frame, not the absence.
+    const maxLine = summary.split('\n').find((l) => l.startsWith('mean '))
+    expect(maxLine).toBeDefined()
+    const max = Number(/max ([\d.]+)/.exec(maxLine as string)?.[1])
+    expect(max).toBeLessThan(100)
+
+    expect(summary).toContain('excluded 1 frame spanning a hidden tab')
+    expect(summary).toContain('(tab hidden - not a stall)')
+  })
+
+  it('does not touch a session where the tab stayed visible', () => {
+    stubDocument()
+    sessionLog.start()
+    for (let i = 0; i < 60; i++) sessionLog.tick(1 / 60)
+    sessionLog.tick(0.2) // a real 200ms stall, and it must survive
+    const { summary } = sessionLog.stop()
+
+    expect(summary).not.toContain('spanning a hidden tab')
+    const maxLine = summary.split('\n').find((l) => l.startsWith('mean '))
+    const max = Number(/max ([\d.]+)/.exec(maxLine as string)?.[1])
+    expect(max).toBeGreaterThan(190)
   })
 })

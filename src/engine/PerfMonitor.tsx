@@ -98,8 +98,32 @@ const SCALE_EMERGENCY_RATIO = 3
  * captured snapshot, so a call that lands after being coalesced still applies
  * whatever the composition's CURRENT budget is, not a stale one — no change
  * is lost, only the redundant intermediate reallocations are.
+ *
+ * Raised 0.2 -> 0.5: a crossfade's own layer add/drop events fire several
+ * `pairKey` changes across the ~1 s it runs, and at 0.2 the session logs still
+ * showed 2-3 stacked reallocations landing inside one commit. 0.5 keeps the
+ * first one immediate and folds the rest into a single later apply against
+ * whatever budget the composition settled on. The tier-driven path is
+ * additionally frozen outright while a transition runs — see the frame loop.
  */
-const RESIZE_COALESCE_SEC = 0.2
+const RESIZE_COALESCE_SEC = 0.5
+
+/**
+ * Largest upward jump in render scale one resize may make, as a multiple of the
+ * scale currently on the canvas.
+ *
+ * `renderScale.solve()` has no memory — it is a pure function of (budget,
+ * display, tier) — so when the combined pixel budget rises sharply (layers
+ * dropping out, a cheap scene committing) it returns the new target in full and
+ * `applyRenderScale` would leap straight there in one reallocation. On a
+ * machine that cannot actually hold that target the tier ladder then demotes,
+ * the solve climbs again on the next budget change, and the show cascades — a
+ * session log caught exactly this (`0.75 -> 1.00`, then tier 0 walked to 4
+ * over ~6 s). Capping the per-resize climb at 1.25x lets the ladder catch an
+ * over-reach on the first rung instead of the fifth. Downward is never capped:
+ * shedding load must land the instant it is asked for.
+ */
+const MAX_RENDER_SCALE_STEP_UP = 1.25
 
 /** Live render stats, readable from anywhere (debug panel, fps meter). */
 export const perf = {
@@ -213,7 +237,15 @@ export function PerfMonitor() {
    * that cost is precisely the feedback loop frameSampler.ts describes.
    */
   const applyRenderScale = () => {
-    const scale = renderScale.solve()
+    const solved = renderScale.solve()
+    const prev = renderScale.applied
+    // Ratchet the climb (see MAX_RENDER_SCALE_STEP_UP). A big budget jump can
+    // otherwise leap straight back to native in one resize and overshoot into a
+    // demote cascade; capping the step lets the tier ladder catch it early.
+    // Downward is never clamped. Re-quantised to the 0.01 grid the solve uses so
+    // the convergence walk in the frame loop terminates cleanly.
+    const climbCap = Math.round(prev * MAX_RENDER_SCALE_STEP_UP * 100) / 100
+    const scale = solved > prev ? Math.min(solved, climbCap) : solved
     const dpr = renderScale.baseDpr * scale
     // Published before `setDpr` so a scene that sizes its own offscreen targets
     // from `renderScale.applied` sees the new value on the same frame the canvas
@@ -386,7 +418,13 @@ export function PerfMonitor() {
       lastResizeAt.current = clock.elapsedTime
       applyRenderScale()
     }
+    // One frame stale — SceneManager's compositor writes this at priority 1,
+    // after this component. Irrelevant against a gate that spans a ~1 s fade.
+    const txActive = performanceState.transition.active
     if (renderScale.pairKey !== appliedPair.current) {
+      // The live composition's own budget moved (a commit, a layer add/drop).
+      // Already-committed event, applies now; RESIZE_COALESCE_SEC is what stops
+      // a burst of these inside one transition from each paying a realloc.
       applyRenderScaleCoalesced()
     } else if (quality.tier !== appliedTier.current) {
       // A frame this late has stopped being a candidate for hysteresis — see
@@ -395,7 +433,12 @@ export function PerfMonitor() {
       // the whole problem.
       if (p95.current > quality.refreshIntervalMs * SCALE_EMERGENCY_RATIO) {
         applyRenderScaleCoalesced()
-      } else if (quality.tier !== heldTier.current) {
+      } else if (quality.tier !== heldTier.current || txActive) {
+        // (Re)start the hold. The `|| txActive` keeps restarting it for as long
+        // as a crossfade is in flight, so a tier-driven resize can never stack
+        // its post-chain realloc on top of the commit's own — that pile-up was
+        // the biggest single cluster of 50-250 ms frames in the session logs.
+        // The emergency branch above still overrides.
         heldTier.current = quality.tier
         heldSince.current = clock.elapsedTime
       } else if (clock.elapsedTime - heldSince.current >= RENDER_SCALE_HOLD_SEC) {
@@ -403,6 +446,18 @@ export function PerfMonitor() {
       }
     } else {
       heldTier.current = -1
+      // A ratcheted climb (MAX_RENDER_SCALE_STEP_UP) lands short of what the
+      // live inputs now ask for; walk it the rest of the way on the coalesce
+      // cadence. Only when nothing structural is pending — a tier change and a
+      // crossfade both have their own gates above — and never past the
+      // emergency line.
+      if (
+        !txActive &&
+        renderScale.applied < renderScale.solve() - 0.005 &&
+        p95.current <= quality.refreshIntervalMs * SCALE_EMERGENCY_RATIO
+      ) {
+        applyRenderScaleCoalesced()
+      }
     }
   })
 

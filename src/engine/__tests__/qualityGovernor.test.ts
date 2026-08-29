@@ -363,3 +363,133 @@ describe('snapToRefreshInterval', () => {
     expect(g.tier).toBe(0)
   })
 })
+
+/**
+ * Failed-rung memory (F149).
+ *
+ * The governor used to be memoryless, so on a machine that cannot hold its top
+ * rung it had no fixed point: climb, overload, demote, wait, climb into the
+ * identical failure. A 320 s session recording did that 13 times, and since
+ * every tier move forces a render-scale change and a render-scale change
+ * reallocates the post chain (F140), the controller was the session's entire
+ * source of dropped frames.
+ *
+ * `STEADY` and `BAD` below are expressed against the default 60 Hz interval:
+ * steady needs mean < 17.5 and p95 < 20.8; overloaded needs mean > 18.3 or
+ * p95 > 25.0.
+ */
+describe('quality governor — failed-rung memory', () => {
+  const STEADY = { ms: 16.6, p95: 16.7 }
+  const BAD = { ms: 21, p95: 24 }
+
+  it('does not immediately re-enter a rung that failed its probe', () => {
+    const g = governorAt(1)
+    // Steady long enough to earn the climb (CLIMB_HOLD_SEC = 4).
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    expect(g.tier).toBe(0)
+    // Tier 0 turns out to be unaffordable, well inside RUNG_PROOF_SEC.
+    g.tick(BAD.ms, 13, BAD.p95)
+    expect(g.tier).toBe(1)
+    // Steady again, and past CLIMB_HOLD_SEC — the old governor climbed here.
+    g.tick(STEADY.ms, 20, STEADY.p95)
+    g.tick(STEADY.ms, 26, STEADY.p95)
+    expect(g.tier).toBe(1)
+  })
+
+  it('re-probes the rung once the back-off expires', () => {
+    const g = governorAt(1)
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    expect(g.tier).toBe(0)
+    g.tick(BAD.ms, 13, BAD.p95) // fails at t=13, first back-off is 20s
+    expect(g.tier).toBe(1)
+    g.tick(STEADY.ms, 20, STEADY.p95)
+    g.tick(STEADY.ms, 30, STEADY.p95) // still inside the block (until 33)
+    expect(g.tier).toBe(1)
+    g.tick(STEADY.ms, 40, STEADY.p95) // block expired
+    expect(g.tier).toBe(0)
+  })
+
+  it('doubles the back-off on each consecutive failure', () => {
+    const g = governorAt(1)
+    // Probe 1: climb at 10, fail at 13 -> blocked until 33.
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    g.tick(BAD.ms, 13, BAD.p95)
+    // Probe 2: climb at 40, fail at 43 -> blocked until 43 + 40 = 83.
+    g.tick(STEADY.ms, 30, STEADY.p95)
+    g.tick(STEADY.ms, 40, STEADY.p95)
+    expect(g.tier).toBe(0)
+    g.tick(BAD.ms, 43, BAD.p95)
+    expect(g.tier).toBe(1)
+    // 60s in, the first back-off would have expired but the doubled one has not.
+    g.tick(STEADY.ms, 60, STEADY.p95)
+    g.tick(STEADY.ms, 70, STEADY.p95)
+    expect(g.tier).toBe(1)
+    g.tick(STEADY.ms, 90, STEADY.p95)
+    expect(g.tier).toBe(0)
+  })
+
+  it('forgives a rung that survives its probe window', () => {
+    const g = governorAt(1)
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    expect(g.tier).toBe(0)
+    // Held past RUNG_PROOF_SEC (10s) before anything went wrong, so the later
+    // demote is the workload changing, not the rung failing.
+    g.tick(STEADY.ms, 25, STEADY.p95)
+    g.tick(BAD.ms, 30, BAD.p95)
+    expect(g.tier).toBe(1)
+    // Free to climb straight back on the next steady window.
+    g.tick(STEADY.ms, 34, STEADY.p95)
+    g.tick(STEADY.ms, 40, STEADY.p95)
+    expect(g.tier).toBe(0)
+  })
+
+  it('never blocks a DEMOTION — shedding load stays unconditional', () => {
+    const g = governorAt(1)
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    g.tick(BAD.ms, 13, BAD.p95) // tier 0 now carries a back-off
+    expect(g.tier).toBe(1)
+    // The back-off is recorded against tier 0; tier 1 going bad must still fall.
+    g.tick(BAD.ms, 16, BAD.p95)
+    expect(g.tier).toBe(2)
+    g.tick(BAD.ms, 19, BAD.p95)
+    expect(g.tier).toBe(3)
+  })
+
+  it('blocks only the rung that failed, not the whole ladder', () => {
+    const g = governorAt(2)
+    // Climb 2 -> 1, hold it past the probe window so 1 is proven good.
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    expect(g.tier).toBe(1)
+    // Climb 1 -> 0 and fail it.
+    g.tick(STEADY.ms, 16, STEADY.p95)
+    expect(g.tier).toBe(0)
+    g.tick(BAD.ms, 19, BAD.p95)
+    expect(g.tier).toBe(1)
+    // Now demote for an unrelated reason and climb back: rung 1 is unblocked.
+    g.tick(BAD.ms, 22, BAD.p95)
+    expect(g.tier).toBe(2)
+    g.tick(STEADY.ms, 26, STEADY.p95)
+    g.tick(STEADY.ms, 32, STEADY.p95)
+    expect(g.tier).toBe(1)
+  })
+
+  it('a display or quality change clears the memory', () => {
+    const g = governorAt(1)
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    g.tick(BAD.ms, 13, BAD.p95)
+    expect(g.tier).toBe(1)
+    // PerfMonitor re-runs setMode in the same effect that re-solves the display,
+    // so a window resize arrives here as a mode reassertion.
+    g.setMode('auto')
+    g.tick(STEADY.ms, 20, STEADY.p95)
+    g.tick(STEADY.ms, 26, STEADY.p95)
+    expect(g.tier).toBe(0)
+  })
+})
