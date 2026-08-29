@@ -122,10 +122,3 @@ export class ResourceCache {
 }
 
 export const resourceCache = new ResourceCache()
-
-/** Session-lifetime loader keys — acquired once via `acquireSingleton`, never released. */
-export const LOADER_KEYS = {
-  gltf: 'loader:gltf',
-  draco: 'loader:draco',
-  ktx2: 'loader:ktx2',
-} as const

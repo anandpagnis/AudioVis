@@ -583,7 +583,13 @@ export function SceneManager() {
     // Audio feature pipeline runs once per frame, before any scene reads it.
     audioEngine.update()
     const f = audioEngine.features
-    sampleAnalytics(f)
+    // F12: the panel these windows feed is closed by default, and nothing
+    // outside AnalyticsPanel.tsx ever reads them (grepped) — so sampling
+    // every frame regardless was pure waste most sessions never collect on.
+    // Gated, not removed: the windows just stop advancing while the panel is
+    // closed and pick back up the instant it opens, same trade already made
+    // for the debug/analysis canvases elsewhere in this file.
+    if (useStore.getState().analyticsOpen) sampleAnalytics(f)
     // Animation primitives are derived once, centrally, so N scenes reading
     // them cost the same as one (each scene used to recompute its own).
     updateAnimationSignals()

@@ -4,7 +4,6 @@ import * as THREE from 'three'
 import { getSharedEnvMap, releaseSharedEnvMap } from '../engine/envMap'
 import { useSceneFrame, useSpin } from '../engine/sceneFrame'
 import { bipolar, drastic } from './contract'
-import { useDispose } from '../engine/useDispose'
 
 /**
  * Chrome Form — a polished metal hero, lit for real.
@@ -59,36 +58,75 @@ import { useDispose } from '../engine/useDispose'
  * frame; see engine/sceneFrame.ts.
  */
 
+/** Chrome's geometry + material, cached per renderer rather than per mount (F86). */
+interface CachedChromeAssets {
+  geometry: THREE.TorusKnotGeometry
+  material: THREE.MeshPhysicalMaterial
+}
+
+/**
+ * One resident torus-knot geometry + `MeshPhysicalMaterial` per renderer,
+ * reused across every mount rather than rebuilt inside a component-scoped
+ * `useMemo` — the same trade F144 made for `createShaderScene`'s materials,
+ * applied here because this scene predates that factory and was never
+ * covered by it.
+ *
+ * `MeshPhysicalMaterial` with `clearcoat`/`metalness`/`transparent` compiles
+ * to a genuinely large program (a second specular lobe, a second env-map
+ * sample, the transparency/premultiply paths), and disposing it on every
+ * unmount hits the exact mechanism F144 found and fixed for shader-scene
+ * materials: three's `WebGLPrograms.releaseProgram()` deletes the compiled
+ * program once its last user (this material) is disposed, so the next mount
+ * compiles from scratch — a real, uncached cost, not the "few milliseconds
+ * nobody could see" F144 assumed for everything outside maze. F86's own
+ * numbers (CPU mean 21.3/19.9/16.7/27.8/43.6ms across tiers 0-4, non-
+ * monotone - "fine in the middle, bad on both sides") are exactly the shape
+ * of a per-mount recompile landing unpredictably inside `/bench`'s per-tier
+ * measurement, not a smooth per-fragment cost curve.
+ *
+ * Keyed by `gl` in a `WeakMap` rather than disposed by hand, same as F144:
+ * a context loss remounts under a brand new `WebGLRenderer`, so the old
+ * entry simply becomes unreachable.
+ */
+const chromeAssetCache = new WeakMap<THREE.WebGLRenderer, CachedChromeAssets>()
+
+function getChromeAssets(gl: THREE.WebGLRenderer): CachedChromeAssets {
+  const existing = chromeAssetCache.get(gl)
+  if (existing) return existing
+  const geometry = new THREE.TorusKnotGeometry(1.45, 0.46, 200, 28)
+  const material = new THREE.MeshPhysicalMaterial({
+    // Near-mirror metal. Roughness this low is only legible with a real
+    // environment map behind it — which is the point of the scene.
+    color: '#d8dee6',
+    metalness: 1,
+    roughness: 0.08,
+    clearcoat: 1,
+    clearcoatRoughness: 0.06,
+    envMap: getSharedEnvMap(gl),
+    envMapIntensity: 0.75,
+    transparent: true, // so SceneFade can crossfade it like every other scene
+  })
+  const created: CachedChromeAssets = { geometry, material }
+  chromeAssetCache.set(gl, created)
+  return created
+}
+
 export function ChromeFormScene() {
   const gl = useThree((s) => s.gl)
   const heroRef = useRef<THREE.Mesh>(null)
   const spin = useSpin()
 
-  const heroGeo = useMemo(() => new THREE.TorusKnotGeometry(1.45, 0.46, 200, 28), [])
+  // Cached across mounts (see getChromeAssets) — no useDispose for these two;
+  // they outlive any one mount by design, same as createShaderScene's cache.
+  const { geometry: heroGeo, material: heroMat } = useMemo(() => getChromeAssets(gl), [gl])
 
-  const heroMat = useMemo(
-    () =>
-      new THREE.MeshPhysicalMaterial({
-        // Near-mirror metal. Roughness this low is only legible with a real
-        // environment map behind it — which is the point of the scene.
-        color: '#d8dee6',
-        metalness: 1,
-        roughness: 0.08,
-        clearcoat: 1,
-        clearcoatRoughness: 0.06,
-        envMap: getSharedEnvMap(gl),
-        envMapIntensity: 0.75,
-        transparent: true, // so SceneFade can crossfade it like every other scene
-      }),
-    [gl],
-  )
-
-  // The geometry and material are ours to free outright. The shared
-  // environment texture goes through the resource cache's refcounting
-  // instead — releasing here is now safe even though it's pinned (a pinned
-  // entry just ignores reaching a zero refcount), so this scene no longer
-  // has to special-case excluding it from cleanup.
-  useDispose(heroGeo, heroMat)
+  // `releaseSharedEnvMap` still balances the ORIGINAL `getSharedEnvMap` call
+  // inside `getChromeAssets` (now made once per renderer, not once per mount)
+  // — firing it once per unmount instead is harmless: the entry is pinned, so
+  // `resourceCache.release()` just clamps its refcount at 0 rather than
+  // disposing, identical to never releasing at all (see envMap.ts's own doc
+  // comment). Left as-is rather than rewired to fire once per renderer too,
+  // since there is no observable difference and no reason to touch it.
   useEffect(() => {
     return () => releaseSharedEnvMap()
   }, [])

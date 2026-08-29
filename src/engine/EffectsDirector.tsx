@@ -83,6 +83,8 @@ export function EffectsDirector() {
   const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
   const txLens = useRef<LensRackState>({ amount: 0, style: 0 })
   useDispose(feedbackPass, mirrorPass, lensPass, gradePass)
+  /** F81 guard: warned about a mis-ordered chain at most once per mount. */
+  const warnedChainOrder = useRef(false)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
   // would invalidate every material's shader cache.
   const fog = useRef(new FogExp2(0x000000, 0))
@@ -152,6 +154,32 @@ export function EffectsDirector() {
       appliedScale.current = renderScale.applied
       gl.getSize(sizeVec.current)
       composerRef.current?.setSize(sizeVec.current.width, sizeVec.current.height)
+    }
+
+    // F81: MirrorPass/FeedbackPass/LensPass have no colour-space-conversion
+    // include (`colorspace_fragment` — see GradePass), which is only correct
+    // because they render to intermediate linear buffers and GradePass is
+    // last, doing the one real conversion for the whole chain (F79). Nothing
+    // stops a future reorder — or disabling GradePass — from silently
+    // reintroducing F79's washed-out image with no compile error to catch it.
+    // One O(1) check, on the composer's own resolved pass list rather than
+    // the JSX source, so it catches the actual composed chain regardless of
+    // how a reorder happened. `console.error` rather than a throw: a wrong
+    // chain order is a real bug worth surfacing loudly, not a reason to
+    // black out a running show over — see F48 on why this component treats
+    // "stay up" as more important than "fail fast".
+    if (!warnedChainOrder.current) {
+      const passes = composerRef.current?.passes
+      const last = passes?.[passes.length - 1]
+      if (passes && passes.length > 0 && last !== gradePass) {
+        warnedChainOrder.current = true
+        console.error(
+          '[AudioVis] EffectsDirector: GradePass is no longer the last pass in the ' +
+            'composer chain — the colour-space conversion (F79/F81) may be missing ' +
+            'or running on the wrong buffer. Check the <EffectComposer> children order ' +
+            "in EffectsDirector.tsx; GradePass's own header explains why it must be last.",
+        )
+      }
     }
 
     const p = performanceState

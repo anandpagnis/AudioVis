@@ -2,9 +2,20 @@
 
 ## 0. Start here
 
-Orientation for picking this up cold. Everything below is current as of the
-last session; §2 item numbers are a running history, so read this section first
-and treat it as the summary of record.
+Orientation for picking this up cold. §2 item numbers are a running history,
+so read this section first and treat it as the summary of record.
+
+**Staleness warning (2026-08-29, F21 partial fix):** this file drifted badly
+out of date at some point and was never fully caught up — the roster table
+and test count just below were still describing an August-16-era build (5
+scenes, 61 tests) against an actual 11 scenes and 764 tests. Both are
+corrected here directly from the live source (`src/scenes/index.ts`,
+`docs/ISSUES.md`'s own verification-status footer) rather than guessed. The
+rest of §1-§8 below — architecture prose, the numbered history in §2, the
+checklist in §8 — has NOT been re-audited against current source in this
+pass and may carry the same kind of drift; treat anything below §0 as
+directional, not as a source of truth, until someone does that fuller pass.
+See `docs/ISSUES.md` F21 for the full context.
 
 **What it is.** A browser-based AI VJ engine: it listens to live music,
 interprets structure (tempo, beats, phrases, drops, mood) and performs a
@@ -22,7 +33,9 @@ Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
    dead black. Target exposure is roughly ≤15% of frame lit, mean luma <20, and
    **0% blown to white**. Full rationale in `docs/09_Rendering_Engine.md`.
 
-**Current roster (5, all primary-capable)**
+**Current roster (11, all primary-capable)** — every scene not listed here has
+been moved to `DISABLED_SCENES` pending a licence/provenance sweep; see F01/
+F105 in `docs/ISSUES.md`, not a missing table row.
 
 | id | name | technique |
 |---|---|---|
@@ -31,13 +44,19 @@ Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
 | `dissolve` | Dissolve Cage | particle form scattering inside a wireframe cage |
 | `chrome` | Chrome Form | `MeshPhysicalMaterial` + PMREM env map |
 | `ribbons` | Flow Ribbons | vertex-shader strips that **trace the synth waveform** |
+| `pointcloud` | Point Cloud Scan | 60k-point scanning particle field |
+| `malachite` | Malachite | domain-warped fbm banded into concentric botryoidal veins |
+| `matrix` | Matrix Rain | procedural falling-glyph overlay |
+| `kifs` | Fractal Rose Window | polar-kaleidoscope KIFS mandala, orbit-trap laser lines |
+| `maze` | Maze Flight | first-person flythrough of an infinite fractal maze |
+| `wingfold` | Wingfold Julia | animated, audio-punched Julia-set fractal |
 
 **Architecture in one line.** Audio → `AudioFeatures` → *decide* band writes
 `performanceState` → *execute* band (Camera/Animation/Effects directors +
 scenes) reads it. The decide/execute boundary is the whole design; see §3.
 
-**Before handing off any change:** `npm run check` (typecheck + lint + 61 tests
-+ build) and the checklist in §8.
+**Before handing off any change:** `npm run check` (typecheck + lint + 764
+tests + build) and the checklist in §8.
 
 **Biggest open gap:** almost nothing here has been verified against *real
 music*. Exposure, geometry, band response and frame cost are all measured, but
@@ -86,7 +105,7 @@ The long-term product is a modular visual instrument:
    - Beat, bar, measure, phrase, section-change, drop, and build flags are available to scenes.
 
 3. **Scene registry and metadata**
-   - Five scenes are registered in `src/scenes/index.ts` — see the table in §0.
+   - Eleven scenes are live in `src/scenes/index.ts` — see the table in §0.
      `SCENES[0]` (`wireframe`) is the load-bearing fallback: `getScene()` returns
      it for any unknown id, so a stale persisted `sceneId`, preset, cue, or
      `?scene=` param degrades instead of breaking. Keep it cheap and safe.

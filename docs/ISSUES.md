@@ -197,10 +197,26 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       Covered by 7 new cases in `RollingWindow.test.ts` (wrap ordering, growth, stale
       memo, scratch reuse, the never-advancing-clock guard).
 
-- [ ] **F12 · Analytics sampled every frame whether or not anything reads it** —
-      `src/engine/SceneManager.tsx`, `src/engine/analyticsMetrics.ts`
+- [x] **F12 · Analytics sampled every frame whether or not anything reads it** —
+      *fixed 2026-08-29* `src/engine/SceneManager.tsx`, `src/engine/analyticsMetrics.ts`
       `sampleAnalytics` and `sampleTransitionFrame` run unconditionally; the panels
       they feed are closed by default. Gate on `analyticsOpen`.
+      **Fixed `sampleAnalytics` only.** Grepped every reader of its four
+      `RollingWindow`s (`analytics.bpmAccuracy/moodConfidence/moodAmbiguity/
+      sectionStrength`): `AnalyticsPanel.tsx`, mounted only while
+      `analyticsOpen`, and nothing else — safe to gate outright. Now
+      `if (useStore.getState().analyticsOpen) sampleAnalytics(f)`; the windows
+      simply stop advancing while the panel is closed and pick back up the
+      instant it opens.
+      **Left `sampleTransitionFrame` alone, deliberately.** Read its actual
+      cost: it no-ops immediately unless a transition it's watching is in
+      flight, and even then only does real work (sort/mean/p95) on the ONE
+      frame a fade completes — already negligible, not the "every frame"
+      cost this entry was about. Gating it would also be a regression, not a
+      cleanup: it feeds `transitionMetrics.history`, which a DJ can review
+      AFTER the fact — freezing it while the panel happens to be closed would
+      silently drop transitions from the very history the panel exists to
+      show. `npm run check` clean (764 tests, build passes).
 
 - [x] **F13 · Landing page and visualizer shipped in one chunk** — `src/App.tsx`
       `/app` is now `React.lazy` behind a `Suspense fallback={null}`, with the loader
@@ -235,6 +251,15 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       One owns event-triggered effect *scenes*, the other owns the post-processing
       chain. Both are mounted in `Stage`, one character apart. Rename the post chain
       to `PostChain`.
+      **2026-08-29: the proposed target name is now taken.** `Stage.tsx` grew
+      its own `PostChain` component since this was written (F50, the mount
+      gate that holds `EffectsDirector`/`ExposureSampler` off until the show
+      is `starting`/`running`) — renaming `EffectsDirector` to `PostChain` as
+      literally proposed would collide with it. Left open rather than
+      inventing a replacement name unreviewed; still Low severity (a
+      confusing name, not a bug) and touches enough call sites
+      (`EffectsDirector.tsx` itself, `Stage.tsx`'s import, this file's own
+      cross-references) to want an actual name picked, not improvised here.
 
 - [ ] **F16 · `budgetLedger` is unreached Phase-7 scaffolding** —
       `src/engine/streaming/budgetLedger.ts`
@@ -242,6 +267,27 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       imported only by that test. It is the VRAM-budget mechanism the uncapped render
       targets actually need — wire it up or delete it, but do not leave a tested
       no-op.
+      **2026-08-29: confirmed worse than described, and more relevant, not
+      less.** Grepped `reportByteSize` (the ONE thing that would feed real
+      numbers into this ledger): zero production callers, only its own test
+      exercises it directly — so `resourceCache.totalBytes()` reads 0 in the
+      live app today, meaning the disconnect isn't just "the ledger's verdict
+      is never read", the ledger never has real data to evaluate in the first
+      place. Wiring it up for real needs three separate pieces, not one:
+      (1) computing actual GPU byte sizes at each render-target/texture/
+      geometry creation site and reporting them, (2) mapping `SceneManager`'s
+      simpler Entry/warm-mount state onto `budgetLedger`'s richer
+      `SceneLifecycleStatus` (LOADING/PREWARMING/READY/ACTIVE/BACKGROUND/
+      UNLOADING — none of which the live Entry system currently tracks),
+      and (3) actually acting on `evaluateLedger`'s eviction candidates.
+      That's a genuine multi-file feature, not a wire-up-and-done fix, so
+      left undone here rather than rushed. Newly more worth doing, though:
+      F147 (same day) made maze's own render target grow-only for the
+      session's lifetime specifically to stop a reallocation stall — correct
+      for that stall, but it also means GPU memory for budgeted scenes now
+      only ever grows, never shrinks, for as long as the tab stays open. A
+      real ceiling is exactly what this ledger was built for; it just isn't
+      built out far enough yet to use.
 
 ## Low
 
@@ -249,6 +295,24 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       `CAMERA_MODES`, `DEFAULT_ANCHOR`, `LOADER_KEYS`, `isResident`,
       `resetParallelCompileProbe`. `registerPalette` is a documented extension point
       like `registerScene` and should stay.
+      **2026-08-29: audited all six individually rather than batch-deleting.**
+      `DEFAULT_ANCHOR` is no longer dead — `BenchStage.tsx` now imports and
+      uses it; this finding is simply stale. `CAMERA_MODES` and `isResident`
+      are production-unused but genuinely exercised by real tests
+      (`CameraDirector.test.ts`'s reachability check, `lifecycle.test.ts`'s
+      `isResident`/`isEvictable` pair) — working, correct, documented public
+      API surface for systems that just haven't grown a second caller yet,
+      not the kind of tested no-op F16 above warns against leaving.
+      `resetParallelCompileProbe` is a deliberate test seam (its own doc
+      comment says so) resetting module-level driver-probe state between
+      `shaderPrewarm.test.ts` cases — removing it would break test isolation
+      for no gain. **Fixed:** `LOADER_KEYS` (`src/engine/streaming/
+      resourceCache.ts`) had zero references anywhere, test or production —
+      a hardcoded gltf/draco/ktx2 key map for a resource type nothing in the
+      current shader-only roster (post-F105 licence sweep) loads. Deleted;
+      `acquireSingleton` itself (the general mechanism it would have used)
+      stays, since it's real, tested, general infra any future scene can
+      call with its own key. `npm run check` clean.
 
 - [x] **F18 · The background slot has no content** — *fixed 2026-08-27*
       `src/scenes/index.ts`
@@ -313,10 +377,26 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       Observed live: two firings in a 120 s set, 85 s apart, both retiring
       cleanly.
 
-- [ ] **F21 · Docs regressed in the force-push**
+- [~] **F21 · Docs regressed in the force-push** — *partial fix 2026-08-29*
       Overwriting `main` dropped `9e6fd90`, so `docs/HANDOFF.md` still describes a
       five-scene roster and 61 tests against an actual 18 and 314. Recover with
       `git cherry-pick 9e6fd90` from `backup/main-20260820`.
+      **The prescribed recovery no longer works.** `9e6fd90` is itself from
+      2026-08-16 (`222 tests`, a mid-merge roster) — cherry-picking it now
+      would swap one stale snapshot for a different, still-stale one; the
+      real target has moved twice since this entry was written (today: 11
+      live scenes post-F105, 764 tests). Fixed the two actively-misleading
+      numbers directly from live source instead: `docs/HANDOFF.md` §0's
+      roster table (now all 11 current ids, each with a one-line description
+      pulled from that scene's own header comment) and its `61 tests`
+      reference (now `764`), plus the one echo of the old count in §2 item 3.
+      A staleness banner in §0 flags that everything below it (§1-§8 prose,
+      the numbered history, the checklist) has NOT been re-audited in this
+      pass and may carry the same drift — a full pass through five docs is
+      real content work distinct from this fix, not attempted here.
+      `docs/00_Vision.md`, `01_System_Architecture.md`,
+      `02_Music_Intelligence.md`, `04_Visual_Knowledge_Base.md` (the other
+      four `9e6fd90` touched) not checked at all this pass.
 
 ---
 
@@ -870,8 +950,9 @@ configurations*, never as anyone's real frame rate.
       whether the intent ("the frame tightens through a build") wants a different
       mechanism.
 
-- [ ] **F48 · `EffectsDirector` crashes the whole Canvas if it ever re-renders** —
-      *trigger removed, hazard still latent*
+- [x] **F48 · `EffectsDirector` crashes the whole Canvas if it ever re-renders** —
+      *fixed 2026-08-29 by upgrading past the hazard — trigger removed, root
+      cause now removed too*
       `src/engine/EffectsDirector.tsx`
       `@react-three/postprocessing` memoises each wrapped effect's constructor args
       on `JSON.stringify(props)`. Under **React 19 `ref` is an ordinary prop**, so
@@ -890,6 +971,30 @@ configurations*, never as anyone's real frame rate.
       that subtree in an error boundary that remounts the composer. Until one of
       those lands, any future `useThree`/`useStore` selector, `useState`, or changing
       prop in that component is a black screen.
+      **Took the first durable option.** Confirmed by downloading and reading
+      the actual source (`npm pack @react-three/postprocessing@3.1.1`) rather
+      than trusting the changelog: `JSON.stringify` is gone from the whole
+      package (`grep` for it comes back empty), replaced by
+      `createEffectComponent`, which registers each effect as a real R3F
+      intrinsic (`extend({key: EffectClass})`) and lets R3F's own reconciler
+      own construction/prop-application/disposal — the same machinery
+      `<mesh>`/`<meshStandardMaterial>` already use safely with a `ref` prop
+      every day. `ref` is destructured out before anything gets memoised, so
+      it can never reach a stringify call again, circular or not. Verified
+      every effect this codebase actually uses still fits the new shape
+      before upgrading, by reading each wrapper's source directly:
+      `Bloom`/`ChromaticAberration`/`Vignette` (all via `createEffectComponent`,
+      matching this codebase's exact prop usage — `intensity`, `mipmapBlur`,
+      `radius`, `offset`, `eskil`, `darkness`) and `EffectComposer` itself
+      (`ref`/`multisampling`/imperative `.setSize()` all still present,
+      confirmed against source, not assumed from the type declarations alone).
+      Bumped `@react-three/postprocessing` `^3.0.4` → `^3.1.1` and its now-
+      required peer `@react-three/fiber` `^9.2.0` → `^9.7.0` (both semver-
+      compatible with what this repo already declares). `npm run check`
+      clean (764 tests, 0 lint errors/warnings, build passes) — the
+      strongest evidence available without a live browser in this
+      environment; not re-verified by actually forcing a fullscreen-toggle
+      re-render live.
 
 - [ ] **F49 · Intermittent `isReady` crash out of three's `compileAsync`** —
       *pre-existing, unattributed*
@@ -904,6 +1009,26 @@ configurations*, never as anyone's real frame rate.
       artificially low frame rate, then either guard the poll or drop `compileAsync`
       on drivers without `KHR_parallel_shader_compile` — where, per this file's own
       header, its resolution is a lie anyway.
+
+      Update 2026-08-29: the specific disposal race this entry names -
+      "a material being disposed by a scene switch that lands mid-poll" -
+      no longer exists for the dominant caller. F144 (same day) changed
+      every shader scene's material from create-and-dispose-per-mount to a
+      cached, non-disposed-until-context-loss object (`getSceneMaterial` in
+      `src/engine/createShaderScene.tsx`), which both production call
+      sites of `prewarmShaders` compile against - `SceneManager`'s per-mount
+      warm-render and F145's new boot-time prewarm. Neither can race a
+      disposal that no longer happens on a scene switch. Not closing this:
+      the underlying three.js hazard (`checkMaterialsReady`'s unguarded
+      `properties.get(material).currentProgram.isReady()`, verified in
+      `node_modules/three`'s source - throws from a detached `setTimeout`
+      no `try/catch` around `compileAsync` can reach) is still real for
+      anything NOT covered by that cache - a genuine context loss, or any
+      future `compileAsync` caller on a `useDispose`-owned material (the
+      post chain's own `LensPass`/`MirrorPass`/`GradePass` materials are
+      exactly that shape today, though none of them currently call
+      `compileAsync`). Substantially less likely to fire than when this was
+      written; not eliminated. Same root cause as F93 below.
 
 - [x] **F50 · The full engine rendered behind the start card** — *fixed and
       measured 2026-08-26*
@@ -1566,8 +1691,8 @@ with `GradePass` (the chain's first real finishing stage) and an async
       to correct than the budget-derived 0.02, for the same reason its mean
       target was: it had been measured rather than aspired to.
 
-- [ ] **F81 · Three other passes omit the colour-space conversion** — *latent,
-      correct today by position only*
+- [x] **F81 · Three other passes omit the colour-space conversion** — *fixed
+      2026-08-29 — latent, correct today by position only*
       `MirrorPass`, `FeedbackPass` and `LensPass` are all ShaderMaterials with no
       `colorspace_fragment` include. That is correct while they render to
       intermediate linear buffers and something else is last — but it means the
@@ -1577,6 +1702,27 @@ with `GradePass` (the chain's first real finishing stage) and an async
       `renderToScreen`, or add a test/assert that the final pass is one that
       converts. The second is cheaper and catches the real mistake, which is a
       reorder rather than a missing line.
+      **Took the cheaper option**, but as a runtime check rather than a unit
+      test — `EffectsDirector.tsx` has no test file (nothing in this codebase
+      unit-tests an R3F component tree directly; the closest precedent is
+      source-text parsing, which is fragile against a prettier reformat and
+      not worth introducing new). Instead, inside the component's own
+      `useFrame` (which already reads `composerRef.current` every frame for
+      the DPR-resize block right above it): once per mount, checks that
+      `composerRef.current.passes[passes.length - 1] === gradePass` — the
+      COMPOSED pass list three actually built, not the JSX source, so it
+      catches the mistake regardless of how a reorder happened. `gradePass`
+      mounts via `<primitive object={gradePass} />` (a raw `Pass`, not a
+      merged `Effect`), confirmed by reading `@react-three/postprocessing`'s
+      `buildPasses` — so it lands in `composer.passes` at its own JSX
+      position, unmerged, making direct identity comparison meaningful.
+      `console.error`, not a throw: a wrong chain order is a real bug worth
+      surfacing loudly, but this component's own header (F48) already
+      establishes that staying up matters more than failing fast here.
+      Warns at most once per mount (a ref flag), so a real regression is
+      still loud without spamming the console every frame. Zero behavior
+      change when the chain is correct, which it is today. `npm run check`
+      clean (764 tests, 0 lint errors/warnings, build passes).
 
 ---
 
@@ -1821,8 +1967,8 @@ It did not refine the cost model; it retired it.
       crossfade with itself, versus effectively none at tier 4 before. Pinned by
       a test rather than a comment (`slotBudget.test.ts`).
 
-- [ ] **F86 · `chrome` gets ~5x MORE expensive as quality drops** — *scene bug,
-      exposed by the sweep*
+- [x] **F86 · `chrome` gets ~5x MORE expensive as quality drops** — *fixed
+      2026-08-29 — scene bug, exposed by the sweep*
       `src/scenes/ChromeFormScene.tsx`
       CPU mean per frame, tiers 0→4: **21.3 / 19.9 / 16.7 / 27.8 / 43.6 ms**,
       with p95 reaching 72 ms. GPU is a flat 0.06 ms throughout, so this is
@@ -1838,6 +1984,54 @@ It did not refine the cost model; it retired it.
       cannot on its own show the cost is on the main thread. `/bench` now has a
       JS column; re-run it before hunting. `chrome` is also one of the three
       scenes F34's camera fix changes, so its numbers move for that reason too.
+
+      **Found the per-mount rebuild the "smells like" line guessed at — the
+      exact F144 mechanism, just outside F144's fix.** `ChromeFormScene`
+      predates `createShaderScene` and was never migrated to it: `heroGeo`/
+      `heroMat` were built in a component-scoped `useMemo` and freed via
+      `useDispose` on every unmount, same as every `createShaderScene` scene
+      was doing before F144. Disposing a `MeshPhysicalMaterial` fires the same
+      `WebGLPrograms.releaseProgram()` → `program.destroy()` chain F144 traced
+      for maze, so chrome recompiled its (genuinely large — clearcoat is a
+      second specular lobe and a second env-map sample) program from scratch
+      on every single mount. `/bench`'s non-monotone numbers are exactly the
+      shape of that stall landing unpredictably inside a per-tier measurement,
+      not a real per-fragment cost curve — the same false signal F137's
+      `MAX_STEPS` mitigation gave for maze before F144 found the actual cause.
+      **Fixed** the same way: `getChromeAssets(gl)` caches `{geometry,
+      material}` per renderer in a `WeakMap`, built once and never disposed
+      except on context loss. `useDispose(heroGeo, heroMat)` is gone — there
+      is nothing left for a mount to own. `releaseSharedEnvMap()` still fires
+      on every unmount (unchanged) even though `getSharedEnvMap()` inside
+      `getChromeAssets` now only runs once per renderer — confirmed safe by
+      reading `resourceCache.release()`: the entry is pinned, so an "extra"
+      release just clamps its refcount at 0 instead of disposing, identical
+      to never releasing at all. `npm run check` clean (764 tests, build
+      passes). Not re-run through `/bench` in this environment (no browser
+      automation available) — the mechanism and fix are the same as F144's,
+      which IS live-confirmed, but this specific scene's numbers are not yet
+      re-measured.
+
+      **Found the same pattern in 15 more scenes while looking for this one**
+      (`FoldPathScene`, `InversionMachineScene`, `JuliaWingsScene`,
+      `KaleidoPulseScene`, `TorusFoldScene`, `TrailLineScene`,
+      `OrbitGlowScene`, `FlowRibbonScene`, `TunnelDriftScene`,
+      `SynthGridScene`, `NetworkConstellationScene`, `HeapCorruptionScene`,
+      `PointCloudScanScene`, `PlasmaFilamentScene`, `DissolveCageScene` — each
+      calls `useDispose` on a `useMemo`'d material) — every bespoke,
+      non-`createShaderScene` scene in the roster likely pays this same
+      per-remount recompile tax to some degree, exactly as F144 itself
+      predicted ("a general bug affecting every scene in the roster... other
+      scenes pay the same tax in a few milliseconds and nobody could see
+      it") — chrome and now the maze/malachite pair are just the ones with
+      shaders complex enough to make it visible. NOT fixed here: each of
+      those 15 has its own geometry/material construction logic, and some
+      may legitimately need per-mount (or `useSceneParamSteps`-bucket)
+      regeneration for reasons specific to that scene rather than being a
+      pure bug — applying chrome's exact fix to all 15 blind, in one pass,
+      without reading each one individually first, is a bigger and riskier
+      change than this entry's scope. Flagging as the natural next
+      systemic follow-up to F144, not attempting it here.
 
 - [~] **F87 · `ribbons` shows a 68 ms frame at tier 0** — *my diagnosis was
       wrong; the instrument to settle it now exists*
@@ -1889,6 +2083,19 @@ It did not refine the cost model; it retired it.
       plausibly layerable (a background at 0.6x its work is a genuine saving on
       the six expensive scenes), or delete the parameter and stop implying a
       discount that cannot happen. Do not leave it as decoration.
+      **2026-08-29: investigated, deliberately left as-is.** Confirmed the
+      mechanism itself is real, not decoration — `slotCostMs` (`slotBudget.ts`)
+      correctly discounts, it's genuinely wired through `SceneManager`,
+      `PerformanceDirector` and `EffectDirector`, and has real test coverage
+      (`slotBudget.test.ts`). It just has no scene willing to claim it yet.
+      Neither of the two ways out is a mechanical call: implementing it means
+      choosing WHICH scenes get cheaper in a secondary role and rewriting
+      their shaders to actually branch on `ctx.role` — exactly the kind of
+      unreviewed visual change F42 explicitly refused to do blind ("it
+      visibly changes the scene's depth density"), and deleting it throws
+      away working, tested infrastructure for a feature that's simply
+      unclaimed rather than broken. Left open rather than forcing either
+      call in a pass that's mostly bugfixes and cleanup, not art direction.
 
 - [ ] **F90 · The post chain and the feedback pass are the last invented
       numbers** — *supersedes the F43/F44/F51 estimate notes*
@@ -1932,6 +2139,13 @@ It did not refine the cost model; it retired it.
       Likely fix: a `window.onerror`/`unhandledrejection` guard around the warm
       path, or track the in-flight prewarm per entry and abandon it explicitly
       on dispose rather than leaving three's poll pointed at a dead program.
+
+      Update 2026-08-29: same finding as F49's update above (this is the
+      same bug, opened twice) - F144 made the materials both production
+      `prewarmShaders` callers compile against session-cached and no longer
+      disposed on a scene switch, which was exactly the disposal this entry
+      names as the trigger. Substantially less likely now, not eliminated -
+      see F49 for what's still exposed.
 
 ---
 
@@ -3825,11 +4039,13 @@ denominated in milliseconds on this side.
       though, for a second and much worse freeze that hits the same scene
       about 2.3s later, unrelated to the mount.
 
-- [ ] **F139 - `MazeFlightScene`'s hard `raymarchSteps >= 50` pixelBudget
+- [x] **F139 - `MazeFlightScene`'s hard `raymarchSteps >= 50` pixelBudget
       threshold sits exactly on a tier boundary, so a normal DEMOTE snaps
       its render target through a discontinuous cut in one frame - lands
       on a confirmed 2.1s stall, worse than the original bug, though the
       full mechanism behind that magnitude is still unverified** -
+      *(resolved 2026-08-29 - root cause was F144, not this entry's own
+      cliff theory; see the closing update below and F144 itself)* -
       `src/scenes/MazeFlightScene.tsx:424`, `src/engine/quality.ts`,
       `src/engine/createShaderScene.tsx:416-429`
       *(found 2026-08-28, correlation confirmed, not fixed)*
@@ -3989,6 +4205,19 @@ denominated in milliseconds on this side.
       this entry originally centered on is disproven, not just superseded.
       Full trace, and what's actually left to do about it, is in F144.
 
+      Closed 2026-08-29: F144 found and fixed the actual mechanism (every
+      scene's compiled shader PROGRAM was destroyed on every unmount and
+      rebuilt from scratch on every remount - invisible for cheap shaders,
+      the exact multi-second freeze here for maze's raymarching one), and a
+      live 180s/10448-frame log confirmed clean across 8 remounts of 4
+      other scenes, with the session's only remaining stall landing on a
+      scene's first-ever mount - exactly what F144's fix was never going to
+      touch by definition. F145 (same day) moved that unavoidable first-
+      compile cost to boot for maze specifically, off the critical path
+      entirely. This entry's own cliff/resize theory is disproven per the
+      update above; closing here rather than leaving it open under a root
+      cause it never actually had.
+
 - [ ] **F140 - Worst frame times cluster on tier-DEMOTE / render-scale-change
       events on an already-mounted scene, not on scene mounts** -
       `src/engine/renderScale.ts`, `src/engine/createShaderScene.tsx`
@@ -4026,6 +4255,41 @@ denominated in milliseconds on this side.
       change, or something tier-change-specific - since the render-target
       theory that motivated this entry doesn't apply to these particular
       frames.
+
+      Update 2026-08-29: F147 (same day, `src/engine/createShaderScene.tsx`)
+      found and fixed the render-target-reallocation-on-DPR-change hazard
+      for maze's OWN offscreen target - `RenderTarget.setSize()`, verified
+      directly in three's source, unconditionally `.dispose()`s and forces
+      a real GPU teardown-and-recreate whenever width/height actually
+      change. That fix was scoped to one scene's one render target, but the
+      SAME hazard applies, at a much larger scale, to every buffer the
+      shared `EffectComposer` owns - `inputBuffer`, `outputBuffer`, the
+      depth target, Bloom's whole mip pyramid, the feedback pass's history
+      buffer, the mirror/lens racks' own targets - because `postprocessing`'s
+      `EffectComposer.setSize()` (verified in `node_modules/postprocessing`)
+      unconditionally calls `.setSize()` on every one of those on every
+      invocation, and each one independently reallocates the instant the
+      renderer's drawing-buffer size (CSS size x DPR) actually differs from
+      what it already has. Every scene in the roster shares one composer,
+      so THIS reallocation storm - not a per-scene one - is the "something
+      shared by every scene" this entry went looking for, and it fires on
+      literally every tier/render-scale step, budgeted scene or not, which
+      lines up with the frequency this entry already measured (49 tier
+      changes / 57 scale changes in 195s under `auto` mode).
+      Not fixed here: unlike maze's single target, the composer's buffers
+      live inside a third-party library (`postprocessing`, not
+      `@react-three/postprocessing` - confirmed by reading both) - there is
+      no exposed hook to make ITS `setSize()` grow-only the way F147 did for
+      one target by hand, and the alternative (stop resizing the actual
+      canvas/drawing-buffer on a DPR step and express render-scale purely
+      via viewport/scissor across the whole post chain instead) is a
+      genuinely bigger, engine-wide change to how `PerfMonitor`/`renderScale`
+      apply resolution, not a contained fix like F147's. Flagging with the
+      concrete mechanism now confirmed, for whoever picks this up next -
+      it's very likely the single biggest remaining item in this whole
+      performance investigation, bigger than anything F136-F147 individually
+      found, precisely because it is paid on every scene's every tier step
+      rather than one scene's occasional pixelBudget cliff.
 
 - [x] **F141 - Composition layers (background/accent/overlay) skip the
       warm-mount system entirely and compile their shader live, on whatever
