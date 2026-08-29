@@ -21,7 +21,7 @@ export interface ActiveEffect {
  * This is the seam the whole architecture pivots on. Above it, creative systems
  * (AutoPilot, PerformanceDirector, CueTimeline — and later any ML-driven
  * director) decide what the show wants. Below it, execution systems
- * (SceneDirector, CameraDirector, AnimationDirector, EffectsDirector) do what
+ * (SceneDirector, CameraDirector, AnimationDirector, PostFXChain) do what
  * it says. Nothing below reads audio to make a *decision*; nothing above
  * touches a Three.js object.
  *
@@ -180,7 +180,7 @@ export interface PerformanceState {
    * Raw-ish audio the optical racks need, published here rather than read
    * directly by the executor.
    *
-   * `EffectsDirector` is a pure executor by contract — it reads
+   * `PostFXChain` is a pure executor by contract — it reads
    * `performanceState` and applies it, and reads no audio. But the lens
    * materials genuinely need beat information: kicks re-seat a material's
    * structure (a new flute phase, a re-rolled tear, a fresh heat plume), which

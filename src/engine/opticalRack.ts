@@ -8,7 +8,7 @@
  *
  * ## The structural rule these racks exist under
  *
- * `EffectsDirector`'s header states it: **the effect list is structurally
+ * `PostFXChain`'s header states it: **the effect list is structurally
  * fixed.** Adding or removing an entry rebuilds the composer's merged shader —
  * a multi-hundred-millisecond stall that has lost the WebGL context outright
  * when repeated. So neither rack is ever mounted or unmounted in response to a

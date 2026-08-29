@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
 import type { AudioFeatures } from '../audio/types'
 import { updateAnimationSignals } from '../engine/AnimationDirector'
-import { EffectsDirector } from '../engine/EffectsDirector'
+import { PostFXChain } from '../engine/PostFXChain'
 import { memo } from 'react'
 import { LightRig } from '../engine/LightRig'
 import { performanceState } from '../engine/performanceState'
@@ -61,22 +61,26 @@ const PROFILE_PASS =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
 
 /**
- * `EffectsDirector`, wrapped so it can never re-render.
+ * `PostFXChain` (F15: renamed from `EffectsDirector`), wrapped so it can
+ * never re-render.
  *
- * Not a precaution — it crashed the sweep. `Bench` re-renders on every progress
- * update, which re-rendered this, and `@react-three/postprocessing` memoizes
- * effect args on `JSON.stringify(props)`. Under React 19 `ref` is an ordinary
- * prop, and its `.current` carries R3F's circular `__r3f` graph, so the
- * stringify throws: "Converting circular structure to JSON".
+ * Was not a precaution when this was written — it crashed the sweep. `Bench`
+ * re-renders on every progress update, which re-rendered this, and
+ * `@react-three/postprocessing` (pre-3.1.1) memoized effect args on
+ * `JSON.stringify(props)`. Under React 19 `ref` is an ordinary prop, and its
+ * `.current` carries R3F's circular `__r3f` graph, so the stringify threw:
+ * "Converting circular structure to JSON".
  *
- * This is F48 exactly, in a second place. That entry documents the same failure
- * taking the whole Canvas down in the app, and `EffectsDirector`'s own header
- * carries it as a numbered constraint — the component must not re-render. A
- * constraint that has now been violated twice by different callers is worth
- * enforcing at the boundary rather than restating.
+ * This was F48 exactly, in a second place — that entry documents the same
+ * failure taking the whole Canvas down in the app. F48 fixed the underlying
+ * hazard (upgraded past the `JSON.stringify` memo key, verified by reading
+ * 3.1.1's source directly), so this `memo()` is no longer load-bearing
+ * against a crash. Left in place anyway: cheap, harmless, and
+ * `PostFXChain`'s own header still recommends avoiding an unnecessary
+ * re-render on its own perf terms, independent of the now-fixed crash.
  */
 const StablePostChain = memo(function StablePostChain() {
-  return <EffectsDirector />
+  return <PostFXChain />
 })
 
 export function BenchStage({ runner, version }: { runner: BenchRunner; version: number }) {
@@ -281,7 +285,7 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       camera.updateMatrixWorld()
     }
 
-    // In the profile pass `EffectsDirector` owns the draw (also priority 1), so
+    // In the profile pass `PostFXChain` owns the draw (also priority 1), so
     // rendering here as well would draw the scene twice and time the wrong one.
     // GPU timings are meaningless in that pass and are not read.
     if (!PROFILE_PASS) {

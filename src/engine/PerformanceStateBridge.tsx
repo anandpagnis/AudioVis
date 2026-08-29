@@ -209,12 +209,12 @@ export function PerformanceStateBridge() {
     // Phase 4: these are DECISIONS, not a transcription of the audio. The base
     // level is chosen per mood, and the music modulates around it — so a
     // breakdown reads calm even if its transients are sharp, and a peak reads
-    // hot even between hits. EffectsDirector just applies the result.
+    // hot even between hits. PostFXChain just applies the result.
     const pulse = beatPulse(f) * params.reactivity
     const reactive = (f.bass * 0.7 + pulse * 0.7 + (f.drop ? 0.8 : 0)) * params.reactivity
     // The vocal lift: fast tonality-gated voice band for the MOTION, slow
     // voiceFocus for the PERMISSION. Computed here rather than in
-    // EffectsDirector because that stays a pure executor that reads no audio —
+    // PostFXChain because that stays a pure executor that reads no audio —
     // the creative decision belongs on this side of the seam.
     const fastVoice = Math.max(0, Math.min(1, f.vocal * (1 - Math.min(1, f.spectralFlatness))))
     const voiceLift = fastVoice * p.voiceFocus * 0.45 * params.reactivity
@@ -269,7 +269,7 @@ export function PerformanceStateBridge() {
     )
 
     // Audio the optical racks consume. Published here rather than read by
-    // EffectsDirector, which is a pure executor and reads no audio — see the
+    // PostFXChain, which is a pure executor and reads no audio — see the
     // `rackAudio` doc on PerformanceState.
     //
     // `onKick` is the rising edge: `beatPulse` is a decaying envelope, so

@@ -101,7 +101,7 @@ export function fillScale(internalMP: number): number {
 }
 
 /**
- * `FeedbackPass`, mounted permanently in the post chain (see EffectsDirector).
+ * `FeedbackPass`, mounted permanently in the post chain (see PostFXChain).
  *
  * Two fullscreen draws every frame regardless of the `trails` value — the
  * blend (a warp + two texture samples) and the copy (one texture sample) — so

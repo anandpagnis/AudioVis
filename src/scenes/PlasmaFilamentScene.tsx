@@ -227,7 +227,7 @@ export function PlasmaFilamentScene() {
   useDispose(material, geometry)
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, params, state }) => {
+    ({ f, dt, b, col, vis, params, state, role }) => {
       const u = material.uniforms
 
       // The particle budget, read from the performance state rather than the
@@ -236,7 +236,21 @@ export function PlasmaFilamentScene() {
       // creative reasons too. Seeds are generated in random order, so the first
       // N are already an unbiased subset of the whole field. Draws nothing at
       // all until the worker's field has landed.
-      geometry.setDrawRange(0, filled.current ? Math.floor(COUNT * state.particleDensity) : 0)
+      //
+      // `roleScalable` (F89): as an accent or overlay this is not the subject,
+      // so it is cut further, to ROLE_SCALED_FRACTION (slotBudget.ts) — declared
+      // in scenes/index.ts and honoured here, not just claimed. `setDrawRange`
+      // is a genuine cost cut, not a cosmetic one: fewer particles is fewer
+      // vertex-shader invocations (each one runs the 4-step curl-noise
+      // advection above) and fewer sprites for the fragment shader/rasterizer
+      // to touch, unlike a uniform that only changes how something looks.
+      // Seeds stay an unbiased random subset either way, so thinning further
+      // here costs density, not a different-looking field.
+      const roleDensity = role === 'primary' ? 1 : 0.6
+      geometry.setDrawRange(
+        0,
+        filled.current ? Math.floor(COUNT * state.particleDensity * roleDensity) : 0,
+      )
 
       flow.current += dt * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
 

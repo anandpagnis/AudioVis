@@ -143,7 +143,7 @@ export class MirrorPass extends Pass {
    *
    * `dt` and `mids` drive the rotation the same way lilim does — spin scales
    * with mid content, so the kaleidoscope turns faster through busy material
-   * and settles in a breakdown. Called once per frame from `EffectsDirector`;
+   * and settles in a breakdown. Called once per frame from `PostFXChain`;
    * allocation-free.
    *
    * Also sets {@link Pass.enabled}, which is the whole branch: an inert rack is

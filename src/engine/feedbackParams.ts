@@ -8,7 +8,7 @@
  *
  * ## Why one dial, not five
  *
- * `EffectsDirector` is a pure executor by contract (see its header): it reads
+ * `PostFXChain` is a pure executor by contract (see its header): it reads
  * `performanceState` and applies it, and reads no audio itself. A director
  * upstream is free to set `trails` from mood, tension, or a human dial — but
  * whatever sets it hands over ONE number, not `persist`/`zoom`/`rotate`/`swirl`/
@@ -20,7 +20,7 @@
  * Ported from lilim's per-frame feedback tuning (`main.js`, `fb.uZoom` /
  * `uRotate` / `uSwirl` / `uWobble`), with the audio coupling removed — those
  * terms read `s.kick` / `s.mids` / `s.sub` directly, which is exactly the
- * "everything creative happened upstream" boundary `EffectsDirector` does not
+ * "everything creative happened upstream" boundary `PostFXChain` does not
  * cross. The autonomous motion here is what is left once the audio terms are
  * gone: a fixed, gentle drift whose AMPLITUDE still scales with `trails`, so
  * the pass looks alive even at a trails value nothing has changed in seconds.

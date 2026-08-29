@@ -26,9 +26,19 @@ const CA_INITIAL_OFFSET = new Vector2(0, 0)
 /**
  * Owns the post chain. Scenes never touch bloom, aberration, or vignette.
  *
- * This is a pure executor: it reads `performanceState.bloom` / `.glitch` and
- * applies them. It makes no decisions and reads no audio — everything creative
- * happened upstream. That separation is what lets a director dial the look
+ * Named `PostFXChain`, not `...Director` (F15): unlike `EffectDirector`
+ * (which picks and manages effect-ROLE *scenes*) or `CameraDirector`/
+ * `AnimationDirector` (which make creative decisions), this component is a
+ * pure executor — it reads `performanceState.bloom` / `.glitch` and applies
+ * them, makes no decisions, and reads no audio. `EffectsDirector` (one
+ * character from `EffectDirector`) and "Director" on a component that
+ * explicitly isn't one were both real, live sources of confusion; this name
+ * shares no root with either sibling. Also distinct from `Stage.tsx`'s own
+ * `PostChain`, the component that mounts this one only once the show has
+ * actually started (`starting`/`running`) — that one is the mount GATE,
+ * this one is what it gates.
+ *
+ * That separation from decision-making is what lets a director dial the look
  * (calmer bloom in a breakdown, glitch on a drop) without any post-chain code
  * knowing what a "breakdown" is.
  *
@@ -38,21 +48,23 @@ const CA_INITIAL_OFFSET = new Vector2(0, 0)
  *    rebuilds the composer's merged shader — a multi-hundred-millisecond stall
  *    that, repeated, has lost the WebGL context outright. Quality tiers and
  *    director decisions modulate by *uniform*, never by changing the list.
- * 3. **This component must not re-render after mount.** Not a preference — a
- *    hard constraint imposed by the library. `@react-three/postprocessing`
- *    memoises each wrapped effect's constructor args on `JSON.stringify(props)`,
- *    and under React 19 `ref` is an ordinary prop, so those props include
- *    `{ current: <the effect instance> }`. Once mounted, that instance carries
- *    R3F's `__r3f` bookkeeping, whose `parent`/`children` form a cycle — so the
- *    stringify throws `Converting circular structure to JSON`, React unwinds,
- *    and the whole Canvas unmounts to a black screen.
- *
- *    It survives the FIRST render only because the refs are still `null` then.
- *    So: no `useThree` selector here that changes (`scene` is stable for the
- *    session), no store subscription that moves, no `useState`. Anything this
- *    component needs to watch must be read inside `useFrame` instead. Entering
- *    fullscreen used to black the app out for exactly this reason — a `size`
- *    selector was added here, and resizing then re-rendered it.
+ * 3. **Avoid re-rendering this component after mount, though it is no longer
+ *    a black-screen risk if it does (F48, fixed 2026-08-29).** Until then,
+ *    `@react-three/postprocessing` memoised each wrapped effect's constructor
+ *    args on `JSON.stringify(props)`, and under React 19 `ref` is an ordinary
+ *    prop — so those props included `{ current: <the effect instance> }`,
+ *    which once mounted carried R3F's `__r3f` bookkeeping (a `parent`/
+ *    `children` cycle) straight into the stringify call, throwing
+ *    `Converting circular structure to JSON`, unwinding React, and taking the
+ *    whole Canvas down to a black screen that nothing remounted. Entering
+ *    fullscreen blacked the app out for exactly this reason once, when a
+ *    `size` selector was briefly added here. F48 upgraded past the version
+ *    that memoised this way (verified by reading 3.1.1's actual source: no
+ *    `JSON.stringify` anywhere in the package, `ref` is destructured out
+ *    before anything is memoised) — a re-render is no longer a crash. Still
+ *    worth avoiding on its own terms: nothing here needs to re-render (`scene`
+ *    is stable for the session), and anything this component needs to watch
+ *    belongs inside `useFrame`, not a changing prop or a new `useState`.
  *
  * 2. **A filmic grade cannot be bolted on here.** It was attempted twice and
  *    reverted; the blocker is that scenes render hot (most of the frame at or
@@ -60,7 +72,7 @@ const CA_INITIAL_OFFSET = new Vector2(0, 0)
  *    come down first. Full write-up in docs/09_Rendering_Engine.md — read it
  *    before touching this chain.
  */
-export function EffectsDirector() {
+export function PostFXChain() {
   const bloomRef = useRef<BloomEffect>(null)
   const caRef = useRef<ChromaticAberrationEffect>(null)
   const vignetteRef = useRef<VignetteEffect>(null)
@@ -174,10 +186,10 @@ export function EffectsDirector() {
       if (passes && passes.length > 0 && last !== gradePass) {
         warnedChainOrder.current = true
         console.error(
-          '[AudioVis] EffectsDirector: GradePass is no longer the last pass in the ' +
+          '[AudioVis] PostFXChain: GradePass is no longer the last pass in the ' +
             'composer chain — the colour-space conversion (F79/F81) may be missing ' +
             'or running on the wrong buffer. Check the <EffectComposer> children order ' +
-            "in EffectsDirector.tsx; GradePass's own header explains why it must be last.",
+            "in PostFXChain.tsx; GradePass's own header explains why it must be last.",
         )
       }
     }

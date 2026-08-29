@@ -6,6 +6,7 @@ import { createLilimState, updateLilimState, type LilimAudioState } from './lili
 import type { PaletteBlender } from './palettes'
 import { useSceneFrame, type SceneFrame } from './sceneFrame'
 import { useSceneParams, type ResolvedSceneParams } from './sceneParams'
+import { resourceCache } from './streaming/resourceCache'
 import { prewarmShaders } from './streaming/shaderPrewarm'
 
 /**
@@ -540,6 +541,17 @@ function createBudgetedScene<S>(
       const neededH = Math.max(1, Math.round(size.height * dpr))
       if (neededW > rt.target.width || neededH > rt.target.height) {
         rt.target.setSize(Math.max(neededW, rt.target.width), Math.max(neededH, rt.target.height))
+        // F16: this target deliberately never goes through resourceCache's
+        // acquire/release lifecycle (see that method's own doc comment) —
+        // but budgetLedger.ts exists specifically for targets like this one,
+        // and it can't see a size nobody reports. HalfFloat RGBA, no mipmaps,
+        // no depth/stencil buffer (see the type below) — 4 channels x 2
+        // bytes each is the whole allocation. Only reported on an actual
+        // grow, matching how rarely this now actually changes post-F147.
+        resourceCache.reportExternalByteSize(
+          `rt:${spec.id}`,
+          rt.target.width * rt.target.height * 8,
+        )
       }
       const fullW = rt.target.width
       const fullH = rt.target.height

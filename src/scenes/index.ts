@@ -376,6 +376,11 @@ export const SCENES: SceneDef[] = [
       intensity: 'high',
       // 70k advected points — the one genuinely heavy scene in the roster.
       performanceCost: 'high',
+      // F89: PlasmaFilamentScene reads ctx.role and cuts its particle draw
+      // range by ROLE_SCALED_FRACTION outside 'primary' — a real vertex/fill
+      // reduction (setDrawRange), not a cosmetic one. First scene in the
+      // roster to actually earn this discount rather than just declaring it.
+      roleScalable: true,
       compatibleWith: ['wireframe', 'dissolve', 'chrome'],
       moodFit: { groove: 0.7, building: 0.84, peak: 0.94, aggressive: 0.9 },
       // Wide field — the particle cloud needs distance to read as a form.
@@ -439,6 +444,11 @@ export const SCENES: SceneDef[] = [
       intensity: 'medium',
       // A few dozen strips, all motion in the vertex shader.
       performanceCost: 'medium', // measured 2.14 ms GPU @ tier 1 (/bench)
+      // F89: never primary (roles above), so `role !== 'primary'` holds on
+      // every mount — FlowRibbonScene reads it and cuts its ribbon count by
+      // ROLE_SCALED_FRACTION accordingly, on top of (not instead of) the
+      // existing tier-based particleDensity cut.
+      roleScalable: true,
       compatibleWith: ['wireframe', 'chrome', 'dissolve'],
       // Was 0.97/0.96/0.92/0.98/0.97 — the highest scores in the whole roster,
       // which made this the top-ranked layer candidate in five of six moods and

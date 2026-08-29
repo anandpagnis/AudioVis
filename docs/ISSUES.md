@@ -246,48 +246,90 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       exponential follower that re-converges within a frame or two of coming
       back, and clearing it would snap visibly on fade-in.
 
-- [ ] **F15 · `EffectDirector` and `EffectsDirector` are different subsystems** —
-      `src/engine/`
+- [x] **F15 · `EffectDirector` and `EffectsDirector` are different subsystems** —
+      *fixed 2026-08-29* `src/engine/`
       One owns event-triggered effect *scenes*, the other owns the post-processing
       chain. Both are mounted in `Stage`, one character apart. Rename the post chain
       to `PostChain`.
-      **2026-08-29: the proposed target name is now taken.** `Stage.tsx` grew
-      its own `PostChain` component since this was written (F50, the mount
-      gate that holds `EffectsDirector`/`ExposureSampler` off until the show
-      is `starting`/`running`) — renaming `EffectsDirector` to `PostChain` as
-      literally proposed would collide with it. Left open rather than
-      inventing a replacement name unreviewed; still Low severity (a
-      confusing name, not a bug) and touches enough call sites
-      (`EffectsDirector.tsx` itself, `Stage.tsx`'s import, this file's own
-      cross-references) to want an actual name picked, not improvised here.
+      **The proposed target name was taken by then.** `Stage.tsx` grew its own
+      `PostChain` component since this was written (F50, the mount gate that
+      holds `EffectsDirector`/`ExposureSampler` off until the show is
+      `starting`/`running`) — renaming `EffectsDirector` to `PostChain` as
+      literally proposed would have collided with it.
+      **Renamed to `PostFXChain` instead.** Shares no root with either
+      sibling (`EffectDirector`'s "Effect", `PostChain`'s own name), and drops
+      "Director" — the file's own header already says this component is a
+      *pure executor*, explicitly not a decision-maker like `CameraDirector`/
+      `AnimationDirector`/`EffectDirector`, so keeping that suffix was its own
+      small ongoing confusion. `git mv EffectsDirector.tsx PostFXChain.tsx`,
+      the exported function, both import/usage sites (`Stage.tsx`,
+      `BenchStage.tsx`), and every comment reference across 9 more files
+      (`FeedbackPass.ts`, `frameLoad.ts`, `MirrorPass.ts`, `feedbackParams.ts`,
+      `opticalRack.ts`, `SynthGridScene.tsx`, `performanceState.ts`,
+      `PerformanceStateBridge.tsx`, `transitions.ts`) — grepped clean
+      afterward except the two lines that intentionally explain the rename
+      (`BenchStage.tsx`, `PostFXChain.tsx`'s own header). Also updated
+      `PostFXChain.tsx`'s F48 constraint while touching it anyway: it still
+      recommended never re-rendering the component as a "hard constraint"
+      against a black-screen crash that F48 (same day) already fixed —
+      corrected to describe the crash as historical and the no-re-render
+      discipline as a perf preference now, not a safety rule. `npm run check`
+      clean (764 tests, 0 lint errors/warnings, build passes).
 
-- [ ] **F16 · `budgetLedger` is unreached Phase-7 scaffolding** —
+- [~] **F16 · `budgetLedger` is unreached Phase-7 scaffolding** — *partly
+      fixed 2026-08-29 — real data now flows in, nothing acts on it yet, by
+      design*
       `src/engine/streaming/budgetLedger.ts`
       111 lines plus a 250-line test suite; `ceilingForTier` and `evaluateLedger` are
       imported only by that test. It is the VRAM-budget mechanism the uncapped render
       targets actually need — wire it up or delete it, but do not leave a tested
       no-op.
-      **2026-08-29: confirmed worse than described, and more relevant, not
-      less.** Grepped `reportByteSize` (the ONE thing that would feed real
-      numbers into this ledger): zero production callers, only its own test
-      exercises it directly — so `resourceCache.totalBytes()` reads 0 in the
-      live app today, meaning the disconnect isn't just "the ledger's verdict
-      is never read", the ledger never has real data to evaluate in the first
-      place. Wiring it up for real needs three separate pieces, not one:
-      (1) computing actual GPU byte sizes at each render-target/texture/
-      geometry creation site and reporting them, (2) mapping `SceneManager`'s
-      simpler Entry/warm-mount state onto `budgetLedger`'s richer
-      `SceneLifecycleStatus` (LOADING/PREWARMING/READY/ACTIVE/BACKGROUND/
-      UNLOADING — none of which the live Entry system currently tracks),
-      and (3) actually acting on `evaluateLedger`'s eviction candidates.
-      That's a genuine multi-file feature, not a wire-up-and-done fix, so
-      left undone here rather than rushed. Newly more worth doing, though:
-      F147 (same day) made maze's own render target grow-only for the
-      session's lifetime specifically to stop a reallocation stall — correct
-      for that stall, but it also means GPU memory for budgeted scenes now
-      only ever grows, never shrinks, for as long as the tab stays open. A
-      real ceiling is exactly what this ledger was built for; it just isn't
-      built out far enough yet to use.
+      **Confirmed worse than described first.** Grepped `reportByteSize`
+      (the ONE thing that would feed real numbers into this ledger): zero
+      production callers, only its own test exercises it directly — so
+      `resourceCache.totalBytes()` read 0 in the live app, meaning the
+      disconnect wasn't just "the ledger's verdict is never read", the
+      ledger never had real data to evaluate in the first place. A full
+      wire-up needs three separate pieces: (1) real GPU byte sizes at every
+      allocation site, (2) mapping `SceneManager`'s Entry system onto
+      `budgetLedger`'s richer `SceneLifecycleStatus`, and (3) actually
+      acting on eviction candidates — a genuine multi-file feature.
+      **Did (1) for real, deliberately stopped short of (2)/(3).**
+      `resourceCache` gained `reportExternalByteSize()` — a plain size
+      ledger entry for GPU resources whose LIFECYCLE is owned elsewhere (the
+      render targets in `createShaderScene.tsx`'s own `WeakMap` caches,
+      F138/F144/F147, which deliberately never go through `acquire()`/
+      `release()` — refcounting a resource nothing ever frees is bookkeeping
+      with no decision behind it). `createShaderScene.tsx` now reports every
+      budgeted render target's real byte size (HalfFloat RGBA, no mipmaps —
+      `width * height * 8`) whenever it grows; `envMap.ts`'s shared PMREM
+      texture — the one resource that WAS already routed through
+      `resourceCache.acquire()` — had never had its size reported either
+      (stuck at 0 since the day it was added), fixed the same pass. Wired a
+      real `evaluateLedger()` call into `PerfMonitor.tsx` (every 2s — VRAM
+      only moves on a grow, no reason to check every frame), publishing
+      `perf.vramMB`/`perf.vramCeilingMB` and a `console.warn` naming
+      eviction candidates if ever over.
+      **Left (2)/(3) undone, on purpose, not from running out of time.**
+      Every ledger entry maps to a synthetic `'ACTIVE'`/`'BACKGROUND'`
+      status (current primary vs. everything else) rather than a real
+      `SceneLifecycleStatus`, and the verdict is published, never acted on.
+      Two independent reasons a real eviction path isn't safe to add
+      unverified: `ceilingForTier`'s numbers are an explicitly untuned
+      guess (its own doc comment says so) with nothing in today's roster
+      remotely close to them, so there is no live case to test eviction
+      against even if it existed; and forcing a resident scene's render
+      target to tear down and rebuild mid-show is exactly the reallocation
+      stall F147 spent this same session eliminating for maze — wiring an
+      automated trigger for that, in a codebase this session has already
+      caught it in twice, without a live browser to confirm it lands
+      safely, would be trading one hazard for another rather than fixing
+      one. A visible, honest, real number is the actual deliverable here;
+      taking action on it is real, separate, harder work for whenever it's
+      backed by both a tuned ceiling and a way to verify the eviction path
+      live. `npm run check` clean (764 tests, 0 lint errors/warnings, build
+      passes) — including the existing `resourceCache.test.ts` suite,
+      unmodified and still green against the new external-entries path.
 
 ## Low
 
@@ -2071,8 +2113,8 @@ It did not refine the cost model; it retired it.
       per-GPU-class tables. Until then the model is right and the constants are
       local.
 
-- [ ] **F89 · `roleScalable` is declared by exactly zero scenes** —
-      *the discount has never once been applied*
+- [x] **F89 · `roleScalable` is declared by exactly zero scenes** — *fixed
+      2026-08-29 — the discount had never once been applied*
       `src/scenes/index.ts`, `src/engine/slotBudget.ts`
       `slotCostMs` discounts a scene outside the primary slot only if it
       declared `roleScalable`, meaning it actually reads `ctx.role` and reduces
@@ -2083,19 +2125,38 @@ It did not refine the cost model; it retired it.
       plausibly layerable (a background at 0.6x its work is a genuine saving on
       the six expensive scenes), or delete the parameter and stop implying a
       discount that cannot happen. Do not leave it as decoration.
-      **2026-08-29: investigated, deliberately left as-is.** Confirmed the
-      mechanism itself is real, not decoration — `slotCostMs` (`slotBudget.ts`)
-      correctly discounts, it's genuinely wired through `SceneManager`,
-      `PerformanceDirector` and `EffectDirector`, and has real test coverage
-      (`slotBudget.test.ts`). It just has no scene willing to claim it yet.
-      Neither of the two ways out is a mechanical call: implementing it means
-      choosing WHICH scenes get cheaper in a secondary role and rewriting
-      their shaders to actually branch on `ctx.role` — exactly the kind of
-      unreviewed visual change F42 explicitly refused to do blind ("it
-      visibly changes the scene's depth density"), and deleting it throws
-      away working, tested infrastructure for a feature that's simply
-      unclaimed rather than broken. Left open rather than forcing either
-      call in a pass that's mostly bugfixes and cleanup, not art direction.
+      First pass (same day): investigated, left as-is — confirmed the
+      mechanism was real and tested but unclaimed, and declined to pick
+      scenes/rewrite shaders unreviewed, the same discipline F42 already
+      established for visible depth-density changes.
+      **Implemented for the two scenes it was actually safe to pick**,
+      instead of either extreme. Of the live (post-F105) roster, only four
+      scenes carry a layer role at all (`plasma`, `ribbons`, `malachite`,
+      `matrix`); of those, `malachite`/`matrix` are already `performanceCost:
+      'low'`, where a further cut buys almost nothing (matching this entry's
+      own framing — "a genuine saving on the SIX EXPENSIVE scenes"). `plasma`
+      (`'high'`, `roles: ['primary','accent','overlay']`) and `ribbons`
+      (`'medium'`, `roles: ['accent','overlay']` — never primary at all) are
+      exactly the candidates it named. Both already had a genuine, existing,
+      already-proven lever to hook into — `state.particleDensity`-driven
+      `geometry.setDrawRange()`, the SAME quality-governor knob both scenes
+      already use for tier-based thinning — so this wasn't new complexity-
+      reduction logic, just a role-based multiplier (`0.6`, matching
+      `ROLE_SCALED_FRACTION`) on a mechanism already live and trusted.
+      `setDrawRange` is a genuine GPU cost cut, not a cosmetic one: fewer
+      particles/ribbons is fewer vertex-shader invocations and less fill,
+      unlike a uniform that only changes appearance — so the discount
+      `roleScalable: true` now claims is actually earned, not aspirational.
+      `ribbons` is never primary, so its cut is now unconditional (matching
+      what a scene that ONLY ever plays a secondary role should cost).
+      Left the two low-cost, background/overlay-only scenes (`malachite`,
+      `matrix`) and everything primary-only alone — no shader-rewrite risk
+      taken anywhere; both changes are pure multipliers on numbers that
+      already existed. `npm run check` clean (764 tests, 0 lint
+      errors/warnings, build passes). Not re-run through `/bench` or a live
+      session — no browser automation available in this environment — so the
+      actual ms saved is not yet measured, only the mechanism verified
+      correct by reading it.
 
 - [ ] **F90 · The post chain and the feedback pass are the last invented
       numbers** — *supersedes the F43/F44/F51 estimate notes*
@@ -4290,6 +4351,55 @@ denominated in milliseconds on this side.
       performance investigation, bigger than anything F136-F147 individually
       found, precisely because it is paid on every scene's every tier step
       rather than one scene's occasional pixelBudget cliff.
+
+      Update 2026-08-29 (later same day): went back to actually attempt
+      F147's fix here before giving up on it, rather than assuming it
+      wouldn't transfer. It doesn't, and the reason is structural, not a
+      missing hook to find harder. F147 worked because `createBudgetedScene`
+      had ALREADY built its own viewport/scissor sub-rect abstraction (the
+      "active" rect vs. the "full" allocated target, with `uUvMax` sampling
+      only the active part) - grow-only just meant "the full allocation can
+      be bigger than currently needed, because the active rect already
+      knows how to be smaller than the buffer it lives in." Read
+      `postprocessing`'s pass hierarchy directly (`node_modules/
+      postprocessing/build/postprocessing.js` and the base `Pass.setSize()`)
+      looking for the same abstraction at the composer level: there isn't
+      one. Every pass - `RenderPass`, `EffectPass`, Bloom's mip chain,
+      the feedback/mirror/lens racks - assumes buffer size EQUALS render
+      size throughout; `EffectComposer.setSize()` just forwards the new
+      drawing-buffer size to every one of them with no sub-rect concept
+      anywhere. A grow-only allocation with nothing downstream that knows
+      how to render into only PART of it would either silently upscale the
+      canvas past its own size or require building that whole sub-rect
+      abstraction into a third-party library's rendering path by hand -
+      not a targeted patch, a fork.
+      Also refined, not just confirmed, why the frequency matters: each
+      individual buffer's own `RenderTarget.setSize()` (verified in three's
+      source, same as F147) only actually disposes/reallocates when its
+      width/height differ from what it already has - so a `renderScale`
+      change that rounds to the SAME integer pixel dimensions as before
+      (plausible for a small scale delta) is a cheap no-op through this
+      whole chain, not a reallocation. This entry's real reallocation count
+      is therefore likely somewhat LOWER than "49 tier changes / 57 scale
+      changes in 195s" taken at face value - some fraction of those land as
+      no-ops - but the CASES that do change integer dimensions still pay
+      the full multi-target reallocation storm, and there is no
+      instrumentation in place to say what that fraction actually is
+      without a live profile.
+      **Staying open, not attempted:** the only two real options are
+      patching/forking `postprocessing`'s render-pass hierarchy to add a
+      sub-rect abstraction it was never built with, or redesigning how
+      `PerfMonitor`/`renderScale` apply resolution engine-wide so the actual
+      canvas/drawing-buffer stops resizing on a DPR step at all - both
+      genuinely large, both touch every scene and every frame, and neither
+      is verifiable without a live browser in this environment. Taking
+      either on unverified would be a real risk to a render pipeline this
+      session has already spent significant effort hardening (F136-F147),
+      for a fix that could easily be wrong in a way `npm run check` cannot
+      catch (a passing test suite proves nothing about whether a resize
+      still looks correct on a real screen). Left for whoever picks this up
+      with access to a real browser and a profiler - the mechanism is now
+      fully understood; what's missing is verification, not diagnosis.
 
 - [x] **F141 - Composition layers (background/accent/overlay) skip the
       warm-mount system entirely and compile their shader live, on whatever

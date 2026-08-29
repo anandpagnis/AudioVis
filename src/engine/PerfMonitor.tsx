@@ -3,10 +3,19 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { quality } from './quality'
 import { renderScale } from './renderScale'
 import { frameSampler } from './frameSampler'
+import { performanceState } from './performanceState'
+import { resourceCache } from './streaming/resourceCache'
+import { ceilingForTier, evaluateLedger, type LedgerEntry } from './streaming/budgetLedger'
 import { useStore } from '../store'
 
 /** How often the frame-time percentiles are recomputed. See the call site. */
 const P95_INTERVAL_SEC = 0.25
+
+/** How often the VRAM ledger (F16) is re-evaluated. Coarser than
+ *  P95_INTERVAL_SEC — real GPU memory only moves on a resource grow, which
+ *  is rare (post-F147, at most once per render-target's session peak),
+ *  so there is nothing to gain from checking it every frame. */
+const LEDGER_INTERVAL_SEC = 2
 
 /**
  * How long a TIER change must hold before its share of the render scale is
@@ -122,6 +131,18 @@ export const perf = {
   geometries: 0,
   textures: 0,
   programs: 0,
+  /**
+   * Real, measured GPU memory (F16) — everything `resourceCache` currently
+   * knows the size of: the shared PMREM env map plus every budgeted scene's
+   * render target (createShaderScene.tsx, reported on grow). NOT a total of
+   * every GPU allocation in the app — geometries/plain textures/the post
+   * chain's own buffers aren't routed through `resourceCache` and aren't
+   * counted here. Read as a floor on real usage, not the whole picture.
+   */
+  vramMB: 0,
+  /** `budgetLedger.ceilingForTier(tier)` for the CURRENT tier — a tuning
+   *  guess (see that function's own doc comment), not a measured ceiling. */
+  vramCeilingMB: 0,
 }
 
 /**
@@ -173,6 +194,9 @@ export function PerfMonitor() {
   const appliedTier = useRef(-1)
   const p95 = useRef(0)
   const lastP95At = useRef(0)
+  /** F16: coarser than P95_INTERVAL_SEC — VRAM only moves on a resource
+   *  grow, not every frame or even every fourth of a second. */
+  const lastLedgerAt = useRef(0)
   /** Tier waiting out {@link RENDER_SCALE_HOLD_SEC} before its DPR is applied. */
   const heldTier = useRef(-1)
   const heldSince = useRef(0)
@@ -290,6 +314,56 @@ export function PerfMonitor() {
       // measurement matters most.
       if (frameSampler.display.count() > 30) {
         quality.setRefreshInterval(frameSampler.display.percentile(0.1))
+      }
+    }
+
+    // F16: budgetLedger.ts was tested-but-unreached scaffolding — nothing
+    // fed it real data and nothing read its verdict. `resourceCache` now
+    // carries real, measured byte sizes for the resources that actually
+    // matter here (the shared env map, every budgeted scene's render
+    // target — see envMap.ts and createShaderScene.tsx). This closes the
+    // "no data in" half honestly.
+    //
+    // Deliberately NOT closing the "no action taken" half: `evaluateLedger`
+    // is run and its verdict is published (`perf.vramMB`/`vramCeilingMB`,
+    // and a console.warn when over), but nothing here actually tears a
+    // scene down. Two reasons, not one: (1) nothing in today's roster is
+    // remotely close to `ceilingForTier`'s guessed numbers (that function's
+    // own doc comment says so — it's untuned against real content), so
+    // there is no live case to verify eviction against; (2) forcing a
+    // resident scene's render target to rebuild mid-show is exactly the
+    // reallocation stall F147 just spent this session eliminating for
+    // maze specifically — automating that trigger without a live browser
+    // to confirm it lands safely would be trading one hazard for another.
+    // A visible, honest number beats a confident action nobody has verified.
+    if (clock.elapsedTime - lastLedgerAt.current >= LEDGER_INTERVAL_SEC) {
+      lastLedgerAt.current = clock.elapsedTime
+      const activeId = performanceState.activeScene
+      const entries: LedgerEntry[] = resourceCache.snapshot().map((e) => {
+        // `rt:<sceneId>` (createShaderScene.tsx) maps back to a real scene
+        // id; anything else (e.g. `envMap:room`) is a shared, non-scene
+        // resource — never the current primary, so BACKGROUND is the
+        // honest status for it too (resident, not on screen).
+        const sceneId = e.key.startsWith('rt:') ? e.key.slice(3) : e.key
+        return {
+          sceneId,
+          status: sceneId === activeId ? 'ACTIVE' : 'BACKGROUND',
+          vramMB: e.byteSize / (1024 * 1024),
+          measured: true,
+          priority: 0,
+          lastActiveAtSec: 0,
+        }
+      })
+      const verdict = evaluateLedger(entries, ceilingForTier(quality.tier))
+      perf.vramMB = verdict.totalMB
+      perf.vramCeilingMB = verdict.ceilingMB
+      if (verdict.overBy > 0) {
+        console.warn(
+          `[AudioVis] VRAM ledger: ${verdict.totalMB.toFixed(1)}MB over ` +
+            `${verdict.ceilingMB}MB ceiling (tier ${quality.tier}) — eviction ` +
+            `candidates: ${verdict.evictionCandidates.join(', ') || '(none evictable)'}. ` +
+            'Not acted on automatically; see F16 in docs/ISSUES.md.',
+        )
       }
     }
 

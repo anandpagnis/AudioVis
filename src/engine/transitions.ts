@@ -337,7 +337,7 @@ export function transitionRack(style: TransitionStyle, t: number): TransitionRac
       // pools, the debug panel, the persisted store) — tiles was one dead
       // control among several. Restored here alone (F130): this is the
       // transition's own signature look, not the standing mode F108 actually
-      // targeted, and EffectsDirector reads `rack.mirrorTiles` directly into a
+      // targeted, and PostFXChain reads `rack.mirrorTiles` directly into a
       // scratch mirror state rather than through `performanceState.mirror`, so
       // it is untouched by F108's `p.mirror.tiles = 0` gate — restoring it here
       // does not reopen the standing mode.

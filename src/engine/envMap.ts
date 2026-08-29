@@ -31,6 +31,15 @@ export function getSharedEnvMap(gl: THREE.WebGLRenderer): THREE.Texture {
       const tex = pmrem.fromScene(room, 0.04).texture
       room.dispose()
       pmrem.dispose()
+      // F16: `acquire()` defaults a fresh entry's byteSize to 0 and nothing
+      // was ever reporting the real one — this was the one resource already
+      // routed through resourceCache and still invisible to totalBytes().
+      // PMREM's own mip-pyramid output is HalfFloat RGBA; `.image` carries
+      // the base level's real dimensions regardless of how PMREMGenerator
+      // chose to size it, so this reads the actual allocation rather than
+      // assuming a constant that could drift if that choice ever changes.
+      const { width, height } = tex.image
+      resourceCache.reportByteSize(ENV_MAP_KEY, width * height * 8)
       return tex
     },
     { pinned: true },

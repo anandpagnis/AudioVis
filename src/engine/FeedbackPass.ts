@@ -35,7 +35,7 @@ import { isFeedbackActive, resolveFeedbackKnobs } from './feedbackParams'
  *
  * ## Sits BEFORE bloom, not after
  *
- * `EffectsDirector` inserts this pass as a `<primitive>` ahead of the merged
+ * `PostFXChain` inserts this pass as a `<primitive>` ahead of the merged
  * `Bloom`/`ChromaticAberration`/`Vignette` effect list — matching lilim's own
  * ordering (`feedbackPass` before `bloomPass` in `main.js`). Bloom then blooms
  * the accumulated trail, not just the current frame, which is most of why the
@@ -45,7 +45,7 @@ import { isFeedbackActive, resolveFeedbackKnobs } from './feedbackParams'
  * mechanically, not just visually: `@react-three/postprocessing`'s
  * `<EffectComposer>` merges consecutive `Effect` children into one shader
  * program, and ADDING one is the multi-hundred-millisecond recompile
- * `EffectsDirector`'s header warns about. A `Pass` is pushed as its own
+ * `PostFXChain`'s header warns about. A `Pass` is pushed as its own
  * separate chain entry instead — mounting this permanently and modulating it
  * by uniform (persist near zero reads as off) is not a workaround for that
  * cost, it costs nothing extra to begin with.
@@ -198,7 +198,7 @@ export class FeedbackPass extends Pass {
    * never sees it, which is the point of this being a `Pass` and not an
    * `Effect` (see the header).
    *
-   * Set from `EffectsDirector`'s frame callback at priority 0; the composer
+   * Set from `PostFXChain`'s frame callback at priority 0; the composer
    * renders at priority 1, so a change lands on the same frame it is made.
    */
   setTrails(trails: number): void {

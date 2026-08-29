@@ -279,12 +279,24 @@ export function FlowRibbonScene() {
   useDispose(material, geometry, waveTex)
 
   useSceneFrame(
-    ({ f, dt, b, col, vis, state }) => {
+    ({ f, dt, b, col, vis, state, role }) => {
       const u = material.uniforms
 
       // Density budget: whole ribbons drop out rather than every ribbon
       // getting shorter, so what remains still reads as continuous flow.
-      const keep = Math.max(4, Math.floor(RIBBONS * state.particleDensity))
+      //
+      // `roleScalable` (F89): this scene's roles are `['accent', 'overlay']`
+      // only — it is NEVER primary, so `role !== 'primary'` is true every
+      // single mount, not just sometimes. `/bench`'s recorded cost (2.14ms
+      // @ tier 1) was measured without this cut, so for `slotBudget.ts`'s
+      // ROLE_SCALED_FRACTION charge to be honest rather than aspirational,
+      // this scene has to actually draw about that much less, always — not
+      // a redundant restatement of the tier-based `particleDensity` cut
+      // above, which varies with load, not with role. Whole ribbons still
+      // drop rather than every ribbon thinning, same reasoning as the line
+      // above: what remains should read as continuous flow, not gappy.
+      const roleDensity = role === 'primary' ? 1 : 0.6
+      const keep = Math.max(4, Math.floor(RIBBONS * state.particleDensity * roleDensity))
       geometry.setDrawRange(0, keep * (SEGMENTS - 1) * 6)
 
       u.uFade.value = vis

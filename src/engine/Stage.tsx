@@ -7,7 +7,7 @@ import { AutoPilot } from './AutoPilot'
 import { CameraDirector } from './CameraDirector'
 import { CueTimeline } from './CueTimeline'
 import { EffectDirector } from './EffectDirector'
-import { EffectsDirector } from './EffectsDirector'
+import { PostFXChain } from './PostFXChain'
 import { SceneManager } from './SceneManager'
 import { LightRig } from './LightRig'
 import { ExposureSampler } from './ExposureSampler'
@@ -30,7 +30,7 @@ import { useStore } from '../store'
  *   decide     `PerformanceStateBridge` (-95) → `AutoPilot` (-90) →
  *              `CueTimeline` (-88) → `EffectDirector` (-86) →
  *              `PerformanceDirector` (-85)
- *   execute    `CameraDirector` (-80) → scenes (0) → `EffectsDirector` (1) →
+ *   execute    `CameraDirector` (-80) → scenes (0) → `PostFXChain` (1) →
  *              `ExposureSampler` / `ScreenshotCapture` (2)
  *
  * Everything in the first two bands runs from mount. The post chain and the
@@ -182,8 +182,12 @@ function MirrorPublisher() {
  *
  * The cheaper half-measure — dropping bloom's `mipmapBlur` while idle — was
  * rejected: changing the effect list rebuilds the merged shader anyway (see
- * `EffectsDirector`'s header), so it pays the same cost without shedding the
+ * `PostFXChain`'s header), so it pays the same cost without shedding the
  * pass.
+ *
+ * Not the same thing as `PostFXChain` itself (F15) despite the near-identical
+ * name: this component is the mount GATE (decides *whether* the post chain
+ * exists yet), `PostFXChain` is the chain it gates.
  */
 function PostChain({ glEpoch }: { glEpoch: number }) {
   const live = useStore((s) => s.status === 'running' || s.status === 'starting')
@@ -207,7 +211,7 @@ function PostChain({ glEpoch }: { glEpoch: number }) {
   if (!live) return null
   return (
     <>
-      <EffectsDirector key={`fx-${glEpoch}`} />
+      <PostFXChain key={`fx-${glEpoch}`} />
       {/* Priority 2: after the composer has drawn, while the buffer is still
           readable. Keyed on glEpoch so a restored context starts a fresh loop. */}
       <ExposureSampler key={`exp-${glEpoch}`} />

@@ -32,6 +32,21 @@ interface Entry<T> {
 
 export class ResourceCache {
   private entries = new Map<string, Entry<unknown>>()
+  /**
+   * Byte sizes for GPU resources whose LIFECYCLE is owned elsewhere — the
+   * render targets cached in `createShaderScene.tsx`'s own `WeakMap`s
+   * (F138/F144/F147) are the reason this exists (F16). Those targets
+   * deliberately don't go through {@link acquire}/{@link release}: they are
+   * session-resident by design ("pay once, keep it"), refcounting a resource
+   * nothing ever frees would just be bookkeeping with no decision behind it.
+   * But `budgetLedger.ts`'s whole premise — "the VRAM-budget mechanism the
+   * uncapped render targets actually need" — needs their real size
+   * SOMEWHERE, or {@link totalBytes} silently undercounts the resources most
+   * worth tracking. This is a plain size ledger, not a second cache: no
+   * refcount, no `dispose`, no eviction — the owner reports, this just adds
+   * it to the total.
+   */
+  private externalEntries = new Map<string, number>()
 
   /**
    * Build-or-reuse a disposable resource, incrementing its reference count.
@@ -94,9 +109,22 @@ export class ResourceCache {
     if (entry) entry.byteSize = bytes
   }
 
+  /**
+   * Reports (or updates) the byte size of an externally-owned resource — see
+   * {@link externalEntries}. Call again with the same key any time the real
+   * size changes (e.g. a grow-only render-target resize); there is no
+   * corresponding release call, because there is no corresponding acquire —
+   * the key simply keeps whatever was last reported until the session ends
+   * or a context loss clears it via {@link invalidateAll}.
+   */
+  reportExternalByteSize(key: string, bytes: number): void {
+    this.externalEntries.set(key, bytes)
+  }
+
   totalBytes(): number {
     let total = 0
     for (const entry of this.entries.values()) total += entry.byteSize
+    for (const bytes of this.externalEntries.values()) total += bytes
     return total
   }
 
@@ -109,15 +137,27 @@ export class ResourceCache {
    */
   invalidateAll(): void {
     this.entries.clear()
+    this.externalEntries.clear()
   }
 
   snapshot(): { key: string; refCount: number; byteSize: number; pinned: boolean }[] {
-    return Array.from(this.entries, ([key, e]) => ({
+    const owned = Array.from(this.entries, ([key, e]) => ({
       key,
       refCount: e.refCount,
       byteSize: e.byteSize,
       pinned: e.pinned,
     }))
+    // Externally-owned entries have no refcount/pin concept — reported as a
+    // permanent single reference so a snapshot reader doesn't have to know
+    // about two different resource shapes to add up a total that means
+    // anything.
+    const external = Array.from(this.externalEntries, ([key, byteSize]) => ({
+      key,
+      refCount: 1,
+      byteSize,
+      pinned: true,
+    }))
+    return [...owned, ...external]
   }
 }
 

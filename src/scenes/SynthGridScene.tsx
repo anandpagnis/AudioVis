@@ -419,7 +419,7 @@ const POST_FRAG = /* glsl */ `
     col = mix(col, col.zyx, pow(sat(length(cuv*2.)),4.));
 
     // Pull the floor back to black BEFORE the contrast curve. Two bloom passes
-    // run over this scene — its own 40-tap one above, and then EffectsDirector's
+    // run over this scene — its own 40-tap one above, and then PostFXChain's
     // on the composited frame — and each one lifts the darks a little. Without
     // this the second bloom has a grey base to work from and the result is a
     // wash rather than neon on black.
