@@ -632,7 +632,35 @@ export function createShaderScene<S = void>(spec: ShaderSceneSpec<S>): Prewarmab
     const { material, geometry } = getSceneMaterial(gl, spec)
     const scene = new THREE.Scene()
     scene.add(new THREE.Mesh(geometry, material))
+    // Gives the driver's own parallel-compile thread a head start on
+    // compileShader/linkProgram, off the main thread where the extension
+    // is actually honoured (shaderPrewarm.ts). Fire-and-forget: the render
+    // below does not depend on this having resolved, it just means less
+    // work is left for that render to do synchronously if it has.
     void prewarmShaders(gl, scene, PREWARM_CAMERA)
+    // F145 correction (2026-08-29): compileShader/linkProgram alone was not
+    // enough — a live session log showed maze's boot-prewarmed material
+    // still stalling ~1.8s on its first real mount, completely unchanged
+    // from before this file had a prewarm path at all. Read three's own
+    // `compile()` source to confirm why: it calls `prepareMaterial()` for
+    // every material and never calls `render()` — no draw call is ever
+    // issued. F139 already suspected the actual mechanism: on this
+    // session's backend (ANGLE/D3D11 — see env.gpu in a session log),
+    // linking a program is not the same as the driver having really
+    // compiled it — some ANGLE/D3D11 configurations defer the real
+    // HLSL-compile-and-link step to the first draw call that exercises the
+    // program with a concrete vertex layout, which compileShader/
+    // linkProgram alone never provides. A real render forces that too —
+    // into a throwaway 1x1 target so the actual fill cost is negligible,
+    // using the exact geometry/material pair the real mount will use, so
+    // whatever the driver was waiting for is already settled by the time
+    // anything needs this scene live.
+    const warmTarget = new THREE.WebGLRenderTarget(1, 1)
+    const prevTarget = gl.getRenderTarget()
+    gl.setRenderTarget(warmTarget)
+    gl.render(scene, PREWARM_CAMERA)
+    gl.setRenderTarget(prevTarget)
+    warmTarget.dispose()
   }
   return Component
 }
@@ -641,18 +669,25 @@ export function createShaderScene<S = void>(spec: ShaderSceneSpec<S>): Prewarmab
 export type PrewarmableScene = ComponentType & {
   /**
    * Forces this scene's material to exist (creating and caching it via
-   * `getSceneMaterial` if this is the first call for this renderer) and
-   * issues a real `compileShader`/`linkProgram` for it through the same
-   * `compileAsync` path `EntryGroup`'s warm-mount uses — off the critical
-   * path, before any mount ever asks for this scene.
+   * `getSceneMaterial` if this is the first call for this renderer), issues
+   * a real `compileShader`/`linkProgram` for it through the same
+   * `compileAsync` path `EntryGroup`'s warm-mount uses, AND renders it once
+   * into a throwaway 1x1 target — off the critical path, before any mount
+   * ever asks for this scene.
+   *
+   * The render is not decoration: `compileAsync`/`compile()` never issue an
+   * actual draw call (verified directly in three's source), and on at least
+   * one backend observed live (ANGLE/D3D11) that alone was not enough — see
+   * the F145 update in ISSUES.md for the live log that caught it. Whatever
+   * that backend was deferring past link, a real draw with the exact
+   * geometry/material pair the real mount will use forces it too.
    *
    * For a scene heavy enough that its first-ever compile this session runs
    * into whole seconds (see F144 in ISSUES.md), this is what lets that cost
    * land at boot instead of on whatever moment the director first picks it
    * mid-show. Cheap and safe to call more than once: `getSceneMaterial`
-   * hands back the same cached object every time, so a second call issues a
-   * `compileAsync` against an already-compiled program, which resolves
-   * immediately.
+   * hands back the same cached object every time, so a second call compiles
+   * and draws against an already-warm program, which is fast.
    */
   prewarm: (gl: THREE.WebGLRenderer) => void
 }

@@ -4672,10 +4672,12 @@ denominated in milliseconds on this side.
       here is a genuinely separate question (e.g. pre-warming known-
       expensive scenes at boot) from the bug this entry fixed.
 
-- [x] **F145 - The remaining cost F144 called out (first-ever compile of a
+- [~] **F145 - The remaining cost F144 called out (first-ever compile of a
       heavy scene lands on whichever live frame the director first picks
       it) is now paid at boot instead** - `src/engine/createShaderScene.tsx`,
-      `src/engine/SceneManager.tsx` *(fixed 2026-08-29)*
+      `src/engine/SceneManager.tsx` *(first attempt 2026-08-29, confirmed
+      NOT sufficient by the user's own session log same day, real fix
+      shipped same day - see the update below)*
 
       F144 fixed the repeat-mount recompile but was explicit that a scene's
       very first compile that session is a separate, unavoidable cost that
@@ -4716,6 +4718,41 @@ denominated in milliseconds on this side.
       live session log with the prewarm actually in place - next log
       capture should show maze's first pick landing clean instead of at
       ~1.8s.
+
+      **Update 2026-08-29, same day: the user's own next session log
+      disproved this.** The exact stall is still there, completely
+      unchanged - `kifs -> maze` at t=39.28s, worst frame in the whole
+      180s session at **1812.6ms**, matching F144's original confirmation
+      log almost to the millisecond. Boot prewarm ran (confirmed: maze was
+      never the cold-open primary that session - `pointcloud` was, so the
+      `sceneId` skip condition didn't apply) and did nothing.
+      Read three's own `compile()` source (the function `compileAsync`
+      calls internally) to find out why, rather than guessing again: it
+      calls `prepareMaterial()` for every material in the scene graph and
+      NEVER calls `render()` - `compileShader`/`linkProgram` happen, but no
+      draw call is ever issued. F139 (2026-08-28, before this session)
+      already carried an unconfirmed hypothesis for exactly this shape of
+      stall - that this session's backend (ANGLE/D3D11, see `env.gpu` in
+      the log) can defer the REAL HLSL-compile-and-link work past
+      `linkProgram` to the first draw call that actually exercises the
+      program with a concrete vertex layout, which a compile-only path
+      never provides. The live log turns that from a hypothesis into a
+      confirmed mechanism: a fix that does everything `compile()` can do
+      and still stalls identically is direct evidence the missing piece is
+      specifically "no draw call happened."
+      **Fixed for real** by having `.prewarm()` also `gl.render()` the
+      scene once into a throwaway 1x1 target (negligible fill cost, real
+      draw call) after the existing `compileAsync` call, using the exact
+      cached geometry/material pair the real mount will use. `npm run
+      check` clean (764 tests, 0 lint errors/warnings, build passes).
+      **Still not re-verified live** - no browser automation available in
+      this environment, and this entry has already been wrong once behind
+      a passing `npm run check`, so it stays open until a fresh session log
+      shows maze's first pick landing clean. If it still stalls after
+      this, the next thing to check is whether the throwaway render's 1x1
+      viewport is itself sidestepping whatever the driver keys the deferred
+      compile on (unlikely, but the honest next branch if this doesn't
+      settle it).
 
 - [x] **F146 - Maze's march-step / AO-tap / edge-glow / far-plane knobs were
       tier-gated (reduced under load) despite the scene's own profiling
