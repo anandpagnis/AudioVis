@@ -517,3 +517,70 @@ export function decideTierResize(i: TierResizeInput): TierResizeAction {
   if (!i.heldForThisTier || i.txActive) return 'restart-hold'
   return i.heldForSec >= i.holdSec ? 'apply' : 'wait'
 }
+
+/**
+ * Pixel-count ratio a CLIMB must clear before it is worth a reallocation (F162).
+ *
+ * ## Why a climb needs a floor and a shed does not
+ *
+ * A render-scale change is not a cheap write. `PerfMonitor` moves the canvas
+ * DPR and `PostFXChain` re-derives the whole chain from the new drawing-buffer
+ * size, which reallocates the composer's read/write buffers, Bloom's mip
+ * pyramid and the feedback history. Measured in
+ * `audiovis-session-2026-08-31-16-47-12`, worst frame within 0.15 s of the
+ * change, by the scale being LEFT:
+ *
+ *       0.91 -> 0.75   196.9 ms
+ *       0.84 -> 0.70   145.4 ms
+ *       0.70 -> 0.59   103.7 ms
+ *       0.97 -> 0.80    57.0 ms
+ *       0.50 -> 0.63    19.5 ms
+ *       0.40 -> 0.50    16.9 ms
+ *
+ * Against that, what a small change buys. Cost is linear in pixels, so a climb
+ * of 6% (0.97 -> 1.00, which this session paid for at 98.75 s) adds about 1 ms
+ * to a 16.7 ms frame and adds nothing a viewer can see — 3% more linear
+ * resolution. It is the clearest case in the file of paying a two-figure
+ * millisecond stall for a change below the threshold of perception.
+ *
+ * A SHED is the opposite trade and keeps the existing rule: relief is not
+ * optional, it is the governor having already decided the frame is
+ * unaffordable, and `decideTierResize` exists precisely to make it land on
+ * sight. So this gate is asymmetric by construction — the same asymmetry
+ * `MAX_RENDER_SCALE_STEP_UP` and `decideTierResize` already state, applied to
+ * the third and last place that could pay for a resize nobody asked for.
+ *
+ * ## Why 1.25, in pixels
+ *
+ * It is `MAX_RENDER_SCALE_STEP_UP` squared, divided down to the largest value
+ * that cannot fight it. The step-up cap is 1.25 LINEAR — 1.5625x the pixels —
+ * so a capped climb always clears a 1.25x pixel floor and the ratchet still
+ * terminates. Anything above ~1.56 would deadlock the walk: the cap would
+ * refuse to take a big enough step for the gate to accept it, and the scale
+ * would never climb again.
+ *
+ * Expressed as pixels rather than linear scale because that is the unit cost is
+ * linear in — the same reason `pixelBudgetScale` scales a budget in megapixels
+ * rather than naming a resolution.
+ */
+export const MIN_CLIMB_PIXEL_RATIO = 1.25
+
+/**
+ * Is moving the canvas from `applied` to `next` worth a reallocation? (F162)
+ *
+ * Total by construction: a non-finite or non-positive argument returns `true`,
+ * because the honest response to an input this cannot reason about is to let
+ * the resize through rather than to pin the canvas at a stale scale forever.
+ *
+ * Pure, so the policy is testable without a GPU. The frame loop owns the
+ * decision to consult it; see {@link MIN_CLIMB_PIXEL_RATIO} for why climbs and
+ * sheds are treated differently.
+ */
+export function worthReallocating(applied: number, next: number): boolean {
+  if (!(applied > 0) || !(next > 0) || !isFinite(applied) || !isFinite(next)) return true
+  // Half the 0.01 grid `solveRenderScale` quantises to: "the solve moved at
+  // all", matching `decideTierResize`'s own epsilon.
+  if (next < applied - 0.005) return true // shedding — never gated
+  if (next <= applied + 0.005) return false // no material change either way
+  return (next * next) / (applied * applied) >= MIN_CLIMB_PIXEL_RATIO
+}

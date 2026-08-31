@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_PIXEL_BUDGET,
+  MIN_CLIMB_PIXEL_RATIO,
   MIN_PIXEL_BUDGET,
   NATIVE_PIXEL_BUDGET,
   RENDER_SCALE_FLOOR,
@@ -8,6 +9,7 @@ import {
   combinePixelBudgets,
   decideTierResize,
   solveRenderScale,
+  worthReallocating,
 } from '../renderScale'
 
 /**
@@ -267,5 +269,54 @@ describe('decideTierResize', () => {
     expect(
       decideTierResize({ ...base, solved: 1.0, heldForThisTier: true, heldForSec: 0.1 }),
     ).toBe('wait')
+  })
+})
+
+describe('worthReallocating (F162)', () => {
+  it('never gates a shed — relief is not optional', () => {
+    expect(worthReallocating(0.91, 0.75)).toBe(true)
+    expect(worthReallocating(1.0, 0.97)).toBe(true) // 6% of the pixels, still applied
+    expect(worthReallocating(0.41, 0.4)).toBe(true)
+  })
+
+  it('refuses a climb that buys less than a quarter more pixels', () => {
+    // The two the 08-31 session actually paid for.
+    expect(worthReallocating(0.97, 1.0)).toBe(false) // 1.06x pixels
+    expect(worthReallocating(0.75, 0.8)).toBe(false) // 1.14x pixels
+  })
+
+  it('allows a climb worth the reallocation', () => {
+    expect(worthReallocating(0.8, 0.97)).toBe(true) // 1.47x
+    expect(worthReallocating(0.4, 0.5)).toBe(true) // 1.56x
+  })
+
+  it('accepts the largest step MAX_RENDER_SCALE_STEP_UP can produce', () => {
+    // The ratchet caps a climb at 1.25 LINEAR. If the gate were stricter than
+    // that squared, the cap could never take a step the gate would accept and
+    // the scale would stop climbing entirely.
+    expect(MIN_CLIMB_PIXEL_RATIO).toBeLessThan(1.25 * 1.25)
+    for (const from of [0.4, 0.5, 0.63, 0.75, 0.8]) {
+      const capped = Math.round(from * 1.25 * 100) / 100
+      expect(worthReallocating(from, Math.min(1, capped))).toBe(true)
+    }
+  })
+
+  it('measures the gap from what is APPLIED, so a drift accumulates into one resize', () => {
+    // Three 5% climbs are individually refused; against the applied scale the
+    // third one has moved far enough to be worth paying for.
+    expect(worthReallocating(0.7, 0.74)).toBe(false)
+    expect(worthReallocating(0.7, 0.77)).toBe(false)
+    expect(worthReallocating(0.7, 0.79)).toBe(true)
+  })
+
+  it('is total — a nonsense input lets the resize through rather than pinning the canvas', () => {
+    expect(worthReallocating(0, 0.8)).toBe(true)
+    expect(worthReallocating(0.8, 0)).toBe(true)
+    expect(worthReallocating(NaN, 0.8)).toBe(true)
+    expect(worthReallocating(0.8, Infinity)).toBe(true)
+  })
+
+  it('is a no-op when nothing moved', () => {
+    expect(worthReallocating(0.75, 0.75)).toBe(false)
   })
 })

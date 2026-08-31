@@ -368,6 +368,38 @@ export class QualityGovernor {
   private probeAt = 0
 
   /**
+   * Richest tier each scene has actually been observed HOLDING, and the scene
+   * currently on screen (F164).
+   *
+   * ## The gap this closes
+   *
+   * The tier is one global number and the fill cost is per-scene. In
+   * `audiovis-session-2026-08-31-16-47-12` the ladder climbed to tier 0 at
+   * 98.43 s on `wingfold`, which had been sitting flat at 16.7 ms, and 0.32 s
+   * later handed that setting to `maze` — which cannot hold it. Maze then spent
+   * 2.6 s over budget and the ladder conceded four rungs and four resizes in
+   * six seconds getting back out. The rung was proven, but it was proven
+   * against a scene that was no longer on screen.
+   *
+   * ## Why this is measured rather than priced
+   *
+   * `sceneCost.ts` exists and is the obvious place to look, and it cannot
+   * answer this question: it prices a scene per TIER with no megapixel
+   * denominator, so `maze` reads as the cheapest scene in the roster (0.42 ms)
+   * on the strength of a sweep taken at its own low `pixelBudget` solve. Its
+   * own header says so — "these rows are a floor for those, not a ceiling".
+   * Using it here would have predicted exactly the wrong thing for exactly the
+   * scene that failed. So this learns the same way {@link blockedUntil} does:
+   * from what the machine has actually been seen doing.
+   *
+   * Lower index = richer. `undefined` means "never measured on this display",
+   * which is treated as one rung of caution rather than as a verdict.
+   */
+  private readonly provenTier = new Map<string, number>()
+  private sceneId = ''
+  private sceneTierSince = 0
+
+  /**
    * Tell the governor the display's actual refresh interval in milliseconds.
    *
    * Clamped to a sane range so a bad measurement (a backgrounded tab throttling
@@ -486,6 +518,18 @@ export class QualityGovernor {
       this.failures[this.tier] = 0
       this.probeTier = -1
     }
+    // F164: the live scene has now held this rung for the same proof window,
+    // steadily. Record it, so the next commit of this scene may enter here
+    // directly instead of paying a rung of caution. Tenure runs from whichever
+    // came last, the scene arriving or the tier moving — both restart the
+    // claim, because the pair is what is being proven.
+    if (this.sceneId && steady) {
+      const tenureFrom = Math.max(this.sceneTierSince, this.lastChangeAt)
+      if (elapsedSec - tenureFrom >= RUNG_PROOF_SEC) {
+        const best = this.provenTier.get(this.sceneId)
+        if (best === undefined || this.tier < best) this.provenTier.set(this.sceneId, this.tier)
+      }
+    }
     if (elapsedSec - this.lastChangeAt < SETTLE_SEC) {
       if (steady) this.goodSince = Math.max(this.goodSince, this.lastChangeAt)
       return
@@ -523,6 +567,45 @@ export class QualityGovernor {
   }
 
   /**
+   * A new primary scene has committed (F164).
+   *
+   * Called by `SceneManager` on the commit, not on the request: a warming
+   * candidate is not yet the thing the frame is paying for, and clamping on a
+   * request would penalise a scene that never arrives (see F163 for one that
+   * did not).
+   *
+   * The rule is deliberately the smallest one that removes the observed
+   * failure: **do not enter a scene at a tier that scene has never held.** A
+   * scene with a proven rung enters at it; a scene with no record enters one
+   * rung down from wherever the ladder happens to be and re-probes from there.
+   * It is never a ratchet — `tick` climbs back out of the caution on its normal
+   * hysteresis, and the first time the scene holds a richer rung for
+   * {@link RUNG_PROOF_SEC} that becomes the new record.
+   *
+   * Only ever moves the tier CHEAPER. Entering a scene richer than the ladder
+   * currently sits is what the climb is for, and it has its own evidence.
+   *
+   * Idempotent per scene id, so a caller may invoke it on every commit without
+   * checking whether the id actually changed.
+   */
+  enterScene(id: string, elapsedSec: number): void {
+    if (!id || id === this.sceneId) return
+    this.sceneId = id
+    this.sceneTierSince = elapsedSec
+    if (!this.auto) return
+    const proven = this.provenTier.get(id)
+    const cap = proven ?? Math.min(TIERS.length - 1, this.tier + 1)
+    if (cap <= this.tier) return
+    this.setTier(cap)
+    // The scene changed, so the steady credit the old one earned is stale, and
+    // the rung this just entered is not a probe the ladder chose — it must not
+    // be charged to `blockedUntil` if the new scene turns out to be expensive.
+    this.probeTier = -1
+    this.lastChangeAt = elapsedSec
+    this.goodSince = elapsedSec
+  }
+
+  /**
    * Forget which rungs have failed their probe (F149).
    *
    * Called from {@link setMode} and {@link pinTier}, which between them cover
@@ -538,6 +621,19 @@ export class QualityGovernor {
     this.blockedUntil.fill(0)
     this.failures.fill(0)
     this.probeTier = -1
+    // F164's record is a claim about a pixel count too — a resized window or a
+    // different monitor invalidates "maze cannot hold tier 0" exactly as it
+    // invalidates "tier 0 is unaffordable". Cleared on the same signal, for the
+    // same reason.
+    this.provenTier.clear()
+    // The scene on screen is forgotten along with it, which suspends PROVING
+    // until the next commit re-arms it. That is the conservative reading and
+    // the right one: immediately after a resize the current tier has not been
+    // demonstrated at the new pixel count either, and re-proving it from a
+    // tenure clock that started on the old display would write down a claim
+    // nothing has tested.
+    this.sceneId = ''
+    this.sceneTierSince = 0
   }
 
   private setTier(t: number): void {

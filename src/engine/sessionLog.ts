@@ -183,6 +183,18 @@ export type SessionEventKind =
    */
   | 'layer-visible'
   | 'mood'
+  /**
+   * The complexity knobs the scenes actually read, at the frame they actually
+   * changed (F161).
+   *
+   * Distinct from `tier`, which is the frame the GOVERNOR DECIDED. Since F157
+   * made the render-scale hold directional the two can be seconds apart on a
+   * climb — the knobs swap on the decision, the resolution waits — and nothing
+   * recorded the second half of that. The session this was added for has a
+   * 234 ms frame 0.67 s after a `promote 2 -> 1`, with no instrument able to
+   * say whether anything was applied in between.
+   */
+  | 'knobs'
   | 'palette'
   | 'audio'
   | 'effect'
@@ -333,6 +345,7 @@ class SessionLog {
     effects: 0,
     pending: '',
     palette: '',
+    knobs: '',
   }
   private transitionStartedAt = 0
   private transitionStyle = ''
@@ -401,6 +414,7 @@ class SessionLog {
       effects: 0,
       pending: '',
       palette: '',
+      knobs: '',
     }
 
     const c = stageCanvas()
@@ -505,10 +519,41 @@ class SessionLog {
     // above can trail it by seconds while SceneManager warms the shader and
     // waits for a downbeat. Logging only the commit made a slow decision and a
     // slow handoff look identical (F118).
-    const pending = useStore.getState().pendingSceneId ?? ''
+    const store = useStore.getState()
+    const pending = store.pendingSceneId ?? ''
     if (pending !== this.prev.pending) {
       if (pending) this.push('scene', `requested ${pending}`)
+      // A WITHDRAWAL (F163). `pendingSceneId` clearing means one of two very
+      // different things, and the log used to record neither: the request
+      // committed, or it went away. Compared against the store's own `sceneId`
+      // rather than `activeScene` because `commitScene` sets them together, so
+      // this is exact rather than a race with SceneManager's crossfade — on a
+      // commit the ids match and nothing is pushed.
+      //
+      // The session that produced F163 had a `requested chrome` at 22.58 s that
+      // was gone by 22.87 s having never mounted, and there was no line in any
+      // stream saying so; it took a diff of two 4 Hz samples to notice at all.
+      else if (this.prev.pending && this.prev.pending !== store.sceneId)
+        this.push('scene', `withdrew ${this.prev.pending}`)
       this.prev.pending = pending
+    }
+    // F161: what the scenes are actually reading, at the frame it changed.
+    // Suppressed during a crossfade, where TRANSITION_DISCOUNT_TIERS eases the
+    // same knobs dozens of times for a reason the transition events already
+    // record — the question this exists to answer is what moved when NOTHING
+    // structural was happening.
+    if (!tx.active) {
+      const k = quality.knobs
+      const knobKey = `${k.raymarchSteps}/${k.noiseOctaves}/${k.fluidJacobi}/${k.particleFraction.toFixed(2)}/${k.pixelBudgetScale.toFixed(2)}`
+      if (knobKey !== this.prev.knobs) {
+        if (this.prev.knobs)
+          this.push(
+            'knobs',
+            `steps ${k.raymarchSteps} oct ${k.noiseOctaves} jacobi ${k.fluidJacobi} ` +
+              `particles ${k.particleFraction.toFixed(2)} budget x${k.pixelBudgetScale.toFixed(2)}`,
+          )
+        this.prev.knobs = knobKey
+      }
     }
     const palette = performanceState.palette
     if (palette !== this.prev.palette) {
@@ -931,7 +976,15 @@ class SessionLog {
       )
       L.push(`autoPilot on: ${this.samples[this.samples.length - 1].autoPilot}`)
     }
-    L.push(`scene changes: ${this.events.filter((ev) => ev.kind === 'scene').length}`)
+    // Three counts, not one. The old single figure summed commits, requests and
+    // (once F163 added them) withdrawals, so "scene changes: 15" was really
+    // 8 requests and 7 commits and read as fifteen cuts. Requests minus commits
+    // is the churn number, and it is the one F163 exists to make visible.
+    const sceneEvents = this.events.filter((ev) => ev.kind === 'scene')
+    const commits = sceneEvents.filter((ev) => ev.detail.includes(' -> ')).length
+    const requests = sceneEvents.filter((ev) => ev.detail.startsWith('requested ')).length
+    const withdrawn = sceneEvents.filter((ev) => ev.detail.startsWith('withdrew ')).length
+    L.push(`scene commits: ${commits}  requested: ${requests}  withdrawn: ${withdrawn}`)
     // Two counts, because they answer different questions (F150). The first is
     // how often the DIRECTOR changed its mind; the second is how often the
     // viewer saw a layer appear or disappear. A large gap means desires are

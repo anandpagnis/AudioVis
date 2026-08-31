@@ -6008,9 +6008,472 @@ whose ladder reached tier 0. Both of these were invisible until it did.
       `POST_CHAIN_MS` and `fillScale`'s reference are. Either way F43, F90,
       F110's magnitude and F148's source (5) all resolve with it.
 
+## The first log after F157/F159: the steady state improved, the tail got worse (2026-08-31)
+
+From `audiovis-session-2026-08-31-16-47-12` - 119.3 s, 7056 frames, same RTX 4060
+laptop, same 2560x1440 @ baseDpr 1.5. This is the evidence run F149, F157 and
+F159 each said they were waiting for, so the confirmations come first and the
+new entries after.
+
+Against `...09-47-58` (147.5 s), normalised per minute:
+
+                        08-30      08-31
+      mean ms           16.80      16.90
+      p95 ms            18.5       17.3    better
+      p99 ms            23.0       26.0    worse
+      max ms            148.1      234.2   worse
+      frames > 33 ms    16.6/min   17.6/min
+      frames > 50 ms     2.8/min    9.6/min   3.4x worse
+
+That split - p95 down, p99 and max up - is the whole story of this log, and
+F162 below is the reason.
+
+**F157 confirmed live.** Demote to the first render-scale reduction that
+followed it, all nine demotes:
+
+      14.11  DEMOTE 1 -> 2   relief 14.49   0.38 s
+      41.29  DEMOTE 0 -> 1   relief 41.65   0.36 s
+      43.39  DEMOTE 1 -> 2   relief 43.39   0.00 s
+      51.03  DEMOTE 1 -> 2   relief 51.03   0.00 s
+      75.12  DEMOTE 2 -> 3   relief 75.50   0.38 s
+     100.45  DEMOTE 0 -> 1   relief 100.45  0.00 s
+     102.46  DEMOTE 1 -> 2   relief 102.46  0.00 s
+     104.46  DEMOTE 2 -> 3   relief 104.46  0.00 s
+     106.48  DEMOTE 3 -> 4   relief 106.48  0.00 s
+
+Worst gap 0.38 s against 5.02 s before, and six of nine land on the deciding
+frame. The prediction was "the demote-to-relief gaps collapsing to well under a
+second"; they did. The second half of it - "the frames-over-33 ms count falling
+with them" - did not, and that is F162.
+
+**F149 confirmed live.** Two tier-0 probes in 119 s (38.11 s, held 3.18 s;
+98.43 s, held 2.02 s), against 13 in 320 s before - the back-off is doing
+exactly what `RUNG_PROOF_SEC` / `RUNG_BACKOFF_SEC` were written to do. Render
+scale 1.00 was still reached twice and shed both times, within 0.16 s and
+1.70 s. The rung is still unaffordable and the governor still pays to relearn
+it, but it now pays twice instead of thirteen times.
+
+**F159 confirmed live.** Chrome's first commit of the session (43.60 s) costs
+19.6 ms - the transition's own worst frame - and its second (112.25 s) costs
+21.1 ms. Last session the same first commit cost 148.1 ms and had a second
+139.7 ms frame behind it. Prewarming `getSharedEnvMap` removed both. The
+145.4 ms frame at 43.39 s in this log is *not* the mount: it lands 0.21 s
+before the commit, on the frame that carried `DEMOTE 1 -> 2` and
+`0.84 -> 0.70` together, and it belongs to F162.
+
+**F158 reproduced, unchanged.** One clean instance, same mechanism, same shape:
+
+      79.05  scene: requested wingfold
+      79.06  layer-visible: background: - malachite
+      79.18  layer-visible: background: + malachite    120 ms later
+             (the `layer` desire does not move until 80.36)
+
+**F160 improved but still live.** Samples where the fixed reservation alone
+exceeds the whole tier budget: 113 of 459 (25%), down from 42%. Worst single
+sample `fixedMs 12.61` against `budgetMs 11.0`. By target tier:
+
+      tier   n    mean fixedMs   budgetMs   over   mean MP
+        0    18       9.17         11.0      33%    6.77
+        1    88       8.53          9.5      25%    5.77
+        2   271       7.55          8.5      31%    4.67
+        3    66       3.83          7.5       0%    2.85
+        4    16       1.80          6.5       0%    1.33
+
+Still waiting on the `/bench?postchain` number, which is the only thing that
+settles which half of the contradiction is wrong. Nobody has run it yet.
+
+**F150 mostly quiet.** Two layer desires withdrawn inside 60 ms (plasma and
+ribbons, both at 112.3 s, both landing on the maze -> chrome request), against
+12 of 22 mounts last time.
+
+- [ ] **F161 - The worst frame of the session, 234 ms, has nothing next to it in
+      any event stream. Forty consecutive 16.6-16.8 ms frames, one 234.2 ms
+      frame, then instant recovery. No resize, no tier apply, no mount, no
+      layer, no program-count change.**
+
+      At 48.07 s, on `chrome`, mid-scene:
+
+        47.66 .. 47.83   16.8 16.7 16.6 16.6 16.8 16.7 16.6 16.7 16.6 16.7
+        48.07            234.2
+        48.09 ..         25.2  7.2  16.7 16.6 16.7 16.7 16.7 18.3
+
+      Everything the 4 Hz sampler records is identical on both sides of it:
+      `appliedTier 2`, `renderScale 0.75`, `drawCalls 21`, `triangles 11223`,
+      `programs 18`, `transitionActive false`, `effectCount 0`,
+      `mirrorSegments 0`, `lensStyle 6`. No `scale` event within 2.6 s either
+      side.
+
+      The only two things that happen anywhere near it:
+
+        47.40  tier: promote 2 -> 1   (`appliedTier` stays 2 until 50.42 -
+                                       F157's hold correctly delays the CLIMB)
+        47.66  palette: cobalt -> violet
+
+      The promote LOOKED like the more interesting suspect of the two, because
+      the tier's *resolution* half was held but its *complexity* half was not:
+      `quality.knobs` swaps the instant `tick()` moves the tier, and only the
+      render-scale solve waits. So between 47.40 and 50.42 the frame was running
+      tier 1's `raymarchSteps` / `noiseOctaves` / `particleFraction` at tier 2's
+      resolution - a state the ladder did not exist in before F157 made the hold
+      directional.
+
+      Both were chased in the codebase before this entry was written, and **both
+      are dead or close to it**, which is the useful half of the finding:
+
+      (1) *A knob compiled as a `#define`, relinking a program.* Dead. Nothing in
+          `src/scenes` or `src/engine` feeds a `defines` object from
+          `quality.knobs`, and more decisively `ChromeFormScene.tsx:42` states
+          outright that "this scene reads no `quality.knobs` value, and that is
+          correct rather than an oversight". The tier promote could not have
+          changed a single thing about what chrome renders. `programs` staying
+          at 18 across the frame agrees.
+      (2) *A palette swap building or uploading a texture.* Very weak. The
+          palette is applied by `PaletteBlender`, which EASES between palettes
+          over `f.delta` (`LightRig.tsx:17-21`), and every consumer found so far
+          is a `Color.set()` on a uniform or a light - `PostFXChain.tsx:229/252`,
+          `GradePass.ts:317`. There is no discrete apply moment to be expensive,
+          no `DataTexture`, no `needsUpdate`, no mipmap. Consistent with the
+          other five palette changes in this session costing nothing at all:
+          worst frame in the 0.6 s after each is 16.8, 16.9, 17.0 and 16.9 ms,
+          and the sixth (100.40 s) is confounded by a demote on the same frame.
+      (3) *Not ours - a driver shader-cache write, a GC, a compositor or
+          power-management hitch.* Cannot be confirmed or excluded from a
+          frame-time array, and the clean-approach / clean-recovery shape fits it
+          as well as it fits anything. With (1) dead and (2) all but dead this is
+          now the leading explanation by elimination, which is an uncomfortable
+          place to leave the largest frame in the corpus.
+
+      **What would settle it.** Nothing in the current instrument set can, which
+      is the actionable part. Two cheap additions, both one line in code that
+      already emits a neighbouring event:
+
+        - an event at the frame where `quality.knobs` actually swaps, distinct
+          from the frame where `tick()` decides the tier. F157 made the hold
+          directional, so decision and application are now up to 3 s apart and
+          nothing records the second one.
+        - `performance.measure` marks around the composer draw and the scene
+          draw, so a 234 ms frame can at least be attributed to inside-the-app
+          or outside-it.
+
+      If a rerun on this machine reproduces an isolated >100 ms frame with those
+      marks showing the app doing nothing unusual, the entry closes as external
+      and the p99 target moves accordingly.
+
+      Second, weaker instance of the same shape at 94.42 s (39.1 ms, 0.39 s after
+      `0.80 -> 0.97`), which may just be the tail of that resize.
+
+      **Instrumented 2026-09-01, not explained.** The `knobs` event now exists —
+      `sessionLog.ts` pushes one whenever the complexity bundle the scenes
+      actually read changes value (steps / octaves / jacobi / particles /
+      budget scale), which since F157 made the hold directional can be seconds
+      away from the `tier` event that decided it. Suppressed inside a crossfade,
+      where `TRANSITION_DISCOUNT_TIERS` eases the same knobs dozens of times for
+      a reason the transition events already record; the question this exists to
+      answer is what moved when nothing structural was happening.
+
+      The second instrument the entry asked for — `performance.measure` marks
+      bracketing the composer and scene draws, to split an app stall from an
+      external one — is **not** shipped. It is the one that would actually close
+      this entry, and it wants a browser session to validate against rather than
+      a blind commit.
+
+      Note what the `knobs` stream will and will not settle. If a `knobs` line
+      lands on the 234 ms frame, hypothesis (1) is alive again despite the
+      static read of the code. If the stream is silent there — which is what the
+      code says to expect, since `chrome` reads no knob — then every in-app
+      cause this session can distinguish is exhausted and (3) is the finding,
+      not the fallback.
+
+
+- [~] **F162 - F157 made the relief immediate, which also means a demote now pays
+      the tier change AND the composer reallocation on the same frame. The steady
+      state got better and the tail got three times worse: the two worst frames
+      of the session are both demote frames.**
+
+      This is the cost of the fix, and it was foreseeable from F140 - the entry
+      F157 was careful not to stack itself on. Now that the shed applies on
+      sight, the frame that decides to demote is also the frame that frees one
+      `EffectComposer` and allocates another.
+
+      All 35 frames over 33 ms, classified by what is within 0.3 s:
+
+        render-scale change      20
+        maze at 8.29 MP (F164)   11
+        scene commit              2
+        unexplained (F161)        2
+
+      The scale-change 20, worst first, by the resolution they were leaving:
+
+           t        ms      change                    demote on same frame?
+         51.03    196.9     0.91 -> 0.75  (6.87 MP)   yes
+         43.39    145.4     0.84 -> 0.70  (5.85 MP)   yes
+         75.12    103.7     0.70 -> 0.59  (4.06 MP)   yes
+         41.29     77.6     0.84 -> 1.00 climb, shed 0.16 s later
+         14.11     66.1     0.80 -> 0.97 climb, shed 0.38 s later
+        100.51     63.8     1.00 -> 0.84  (8.29 MP)   yes
+         41.65     50.6     1.00 -> 0.84  (8.29 MP)   yes
+
+      **The cost is in the resolution being left, not the one being entered, and
+      shrinking is the expensive direction.** Every pair in this log runs that
+      way:
+
+           13.95  0.80 -> 0.97  climb     24.9 ms
+           14.49  0.97 -> 0.80  shrink    57.0 ms
+           41.13  0.84 -> 1.00  climb     30.7 ms
+           41.65  1.00 -> 0.84  shrink    50.6 ms
+           50.40  0.75 -> 0.91  climb     36.1 ms
+           51.03  0.91 -> 0.75  shrink   196.9 ms
+
+      and the changes made down at 0.40-0.60 cost 17-21 ms, so it scales with the
+      buffer being torn down. A grow can hand the driver a fresh allocation and
+      let the old one retire whenever; a shrink appears to be paying for the
+      teardown synchronously.
+
+      Note what this does NOT say. The old behaviour was worse: it carried the
+      failed tier's resolution for up to 5 s, which cost 22 of 26 slow frames
+      spread over seconds of visible stutter, and p95 has come down 18.5 ->
+      17.3 ms because that is gone. Trading a smear for a spike is the right
+      trade at equal area - but the area did not stay equal. Frames over 50 ms
+      went from 2.8/min to 9.6/min.
+
+      Fix shape, in order of confidence, all of it F140's territory:
+
+      (1) **Do not reallocate; keep a pool.** Allocate the composer's targets at
+          the largest size the session will use and render into a
+          viewport-restricted sub-rectangle. This is the standard answer to
+          dynamic-resolution rendering, and it deletes the whole class of frame
+          rather than moving it. It is also the largest change.
+      (2) **Retire the old target off the deciding frame.** If the shrink cost
+          really is the teardown, dropping the reference and letting it be
+          collected a frame or two later converts one 197 ms frame into a smaller
+          cost now and an unknown cost later. Cheap to try, easy to measure
+          against this log, and it may only relocate the stall.
+      (3) **Separate the two events.** Apply the tier's complexity knobs on the
+          deciding frame - that is the relief that costs nothing - and the resize
+          on the next coalesce tick, 0-0.5 s later. Keeps F157's principle that
+          the shed lands immediately while not billing one frame for both.
+          Smallest of the three, and it interacts with F161's hypothesis (1).
+
+      Whichever is taken, the measurement to hold it to is in this log: frames
+      over 50 ms per minute, which must come back under 2.8.
+
+      **Partly addressed 2026-09-01, and the smallest of the three shapes above
+      is deliberately NOT the one taken.** Fix (3) — split the tier change off
+      the resize — was written down as the cheapest, and looking at it with the
+      code open it buys nothing: `quality.knobs` swaps on the decision either
+      way, and on more than half the roster (`chrome`, `wireframe`, `matrix`,
+      `kifs` read no knob at all, per `sceneCost.ts`'s own header) the tier's
+      only lever IS the resolution. Splitting them would move a 197 ms frame
+      half a second later, not make it cheaper. Fix (1), the pool, remains the
+      only thing that deletes the cost, and it is a session of its own.
+
+      What shipped instead attacks the COUNT rather than the price, on the one
+      side of the asymmetry where the count is optional —
+      `MIN_CLIMB_PIXEL_RATIO` / `worthReallocating` in `renderScale.ts`, gating
+      `applyRenderScale`:
+
+        - **A climb must buy at least 1.25x the pixels or it is refused.** Cost
+          is linear in pixels, so the 0.97 -> 1.00 this session paid for at
+          98.75 s added about 1 ms to a 16.7 ms frame and 3% of linear
+          resolution — the clearest case in the file of a two-figure
+          millisecond stall bought for a change below the threshold of
+          perception.
+        - **A shed is never gated.** Same asymmetry `MAX_RENDER_SCALE_STEP_UP`
+          and `decideTierResize` already state: relief is not optional. This is
+          the third and last place that could have paid for a resize nobody
+          asked for.
+        - **1.25 is not a free parameter.** It is bounded above by
+          `MAX_RENDER_SCALE_STEP_UP` squared (1.5625): a gate stricter than the
+          largest step the ratchet can take would deadlock the climb walk
+          entirely. There is a test that pins that relationship rather than the
+          number.
+        - The gap is measured from the APPLIED scale, not the last solved one,
+          so a slow drift accumulates into one resize instead of being refused
+          forever.
+
+      **Replayed against this session's 29 scale changes it refuses three**:
+      0.70 -> 0.75 (1.148x), 0.75 -> 0.80 (1.138x) and 0.97 -> 1.00 (1.063x).
+      That is a 10% reduction and it is not, by itself, worth writing home
+      about. It is written down at this size on purpose: the honest claim is
+      three fewer reallocations and one of them is the climb at 98.75 s that
+      handed `maze` 8.29 MP and set off F164's cascade, not that the tail is
+      fixed.
+
+      **The pass/fail number stands and is not yet met.** Frames over 50 ms per
+      minute went 2.8 -> 9.6 with F157; this change does not plausibly recover
+      that on its own, and if the next log still shows ~9/min then fix (1) is
+      the work and there is no point trying anything else first.
+
+      7 tests in `renderScale.test.ts`. `npm run check` clean, 901 tests.
+
+
+- [~] **F163 - A scene request vanished without committing and without a single
+      line in any event stream saying so. The palette moved one frame later and
+      stayed moved.** *(diagnosis corrected below — the two are not causally
+      linked, and the original headline was wrong)*
+
+        22.58  scene:   requested chrome
+        22.60  palette: aurora -> violet
+        22.60  sample:  scene chrome, activeScene wireframe, pendingScene chrome
+        22.87  sample:  scene wireframe, activeScene wireframe, pendingScene null
+               ^ the request is gone, and nothing recorded its going
+        31.70  scene:   wireframe -> kifs        (still violet, 9.1 s later)
+
+      `chrome` never mounts — `incomingMs` is 1.58 for exactly one sample and
+      `triangles` never moves off wireframe's 1391 — so the request is dropped
+      before the warm mount and costs nothing in frame time.
+
+      **Correction, and it matters more than the original claim.** This entry
+      first said the palette "hangs off the scene DESIRE rather than the scene
+      COMMIT". **That is not what the code does.** `AutoPilot`'s palette block
+      has its own trigger set — `sectionChange` or a latched
+      `structureRecolour` — runs BEFORE any `requestScene` in the same tick, and
+      its own `PALETTE_MIN_SEC` floor. The two subsystems fired one frame apart
+      off the same section boundary and are otherwise unrelated; the other five
+      palette changes in this session sit 1.5-4.5 s away from the nearest scene
+      request. A coincidence at 4 Hz sampling read as a coupling, and the fix
+      that followed from it would have changed code that was already correct.
+
+      What survives the correction is smaller and still real: **a section
+      boundary recoloured the show, the scene change that boundary also asked
+      for was silently dropped, and no instrument would have told anyone.**
+      `sessionLog.detectEvents` pushed an event when `pendingSceneId` became
+      non-empty and updated its shadow copy silently when it cleared, so a
+      commit and an abandonment looked identical — which is exactly the hole
+      F118 closed for the request side and left open on the other.
+
+      **Instrumented 2026-09-01** — `src/engine/sessionLog.ts`. A cleared
+      `pendingSceneId` now pushes `scene: withdrew <id>` unless the store's own
+      `sceneId` has become that id, which is the exact test for "it committed"
+      (`commitScene` sets both together, so this cannot race SceneManager's
+      crossfade the way a comparison against `activeScene` would).
+
+      The summary's scene line was wrong in the same direction and is fixed with
+      it: `scene changes: 15` was 8 requests plus 7 commits summed into one
+      figure that read as fifteen cuts. It now prints
+      `scene commits: N  requested: N  withdrawn: N`, and requests-minus-commits
+      is the churn number this entry is actually about.
+
+      **Still open** because the mechanism is unexplained. `commitScene` is the
+      only writer that clears `pendingSceneId`, and it sets `sceneId` to the
+      pending id in the same `set()` — yet the sample two frames later has
+      `pendingSceneId: null` AND `sceneId: 'wireframe'`, which that path cannot
+      produce. The remaining candidates are `outputLink`'s `adoptCommittedScene`
+      (clears pending and adopts a foreign `sceneId`; should be inert with no
+      output window open) and a store write from a path not yet found. The next
+      log settles it: a `withdrew` line means a real abandonment to chase, and
+      its absence means the request committed and something else moved `sceneId`
+      back.
+
+- [x] **F164 - Quality earned on a cheap scene is spent on the next one. The
+      ladder promoted to tier 0 / 8.29 MP on `wingfold` (flat 16.7 ms) and 0.3 s
+      later handed that setting to `maze`, which cannot hold it and spent 2.6 s
+      hitching at a metronomic 5 Hz.**
+
+        98.43  tier:  promote 1 -> 0          on wingfold, which had been flat
+        98.73  scene: requested maze
+        98.75  scale: 0.97 -> 1.00 (8.29 MP)
+        98.75  scene: wingfold -> maze
+        99.05 .. 101.69   17 frames over 33 ms
+
+      The hitch is startlingly regular - 64.1, 71.9, 65.4, 60.1, 62.0, 62.6,
+      60.0, 61.5, 63.8 ms at a mean interval of 0.198 s (5.05 Hz) - and each one
+      is followed by two very short frames (3-8 ms) as the queue drains. It
+      survives the demote cascade with its period intact and only its amplitude
+      falling: ~62 ms at 8.29 MP, ~40 ms at 5.85 MP, gone by 4.06 MP. Whatever
+      fires every 190 ms costs a fixed amount of fill.
+
+      **It is the resolution, not the scene being new.** In `...09-47-58` maze
+      mounted at tier 3 / 1.83 MP and ran dead flat at 16.66 ms for its whole
+      tenancy, with a single frame over 28 ms. Same scene, same machine, 4.5x
+      fewer pixels, no hitch. Maze is the scene F146 already established is pure
+      fill on this GPU.
+
+      Two separable problems, and the second is the structural one:
+
+      (1) **What is periodic at 5 Hz?** Nothing in the sampler runs at that rate
+          (the sampler itself is 4 Hz); the BPM at the time was 133.8, so the beat
+          is 0.449 s and 0.198 s is not a clean subdivision of it; and
+          `drawCalls` / `triangles` / `programs` are constant across the whole
+          window. A per-N-frames job inside maze, a texture or SDF refresh, and a
+          driver-side residency effect are all still open. Worth watching a maze
+          pinned at tier 0 on the `D` panel before instrumenting anything.
+
+      (2) **The governor's tier is global; the cost is per-scene.** It probes a
+          rung against whatever happens to be on screen, and the roster's fill
+          cost spans at least 4.5x - `wingfold` is flat at 8.29 MP, `maze` cannot
+          hold 5.85. `sceneCost.ts` exists and `canFundOverlap` already consults a
+          per-scene view for the crossfade, so the information is in the engine;
+          the ladder just never consults it at a commit. The minimum version is a
+          rule, not a model: **do not enter a scene at a tier the incoming scene
+          has never held**, and re-probe from one rung down. That alone would have
+          moved this mount to tier 1 and skipped a cascade of four tier changes
+          and four resizes in six seconds - which per F162 is exactly where the
+          expensive frames are.
+
+      This also explains the per-scene table in the summary looking
+      self-contradictory. `maze 7 s mean 19.2 p95 27.1` and `maze +layers 7 s
+      mean 16.7 p95 16.7` are the same scene before and after the cascade dropped
+      it to 0.40-0.47 scale. The layers are innocent; the resolution was the whole
+      difference.
+
+      **Fixed 2026-09-01** — `src/engine/quality.ts`, called from
+      `SceneManager`'s commit block. `quality.enterScene(id, elapsed)` applies
+      the minimum rule this entry asked for: **do not enter a scene at a tier
+      that scene has never held.** A scene with a proven rung enters at it; a
+      scene with no record enters one rung down from wherever the ladder sits
+      and re-probes from there. It only ever moves the tier CHEAPER — entering
+      richer is what the climb is for, and the climb has its own evidence.
+
+      Three properties worth stating, because each is a way this could have gone
+      wrong:
+
+        - **It is not a ratchet.** `tick` climbs back out of the caution on its
+          normal hysteresis, and the first time the scene holds a richer rung
+          steadily for `RUNG_PROOF_SEC` that becomes its new record. A scene
+          that only ever mounts on a busy machine is not condemned to tier 4
+          forever.
+        - **The caution is not charged to `blockedUntil`.** `enterScene` clears
+          the probe, so a demote that follows it blames the rung the LADDER
+          chose, not the one the commit imposed. There is a test for exactly
+          this, because the opposite would have quietly poisoned F149's back-off
+          with every scene change.
+        - **It is cleared by `clearRungMemory`**, alongside F149's record and
+          for the same reason: "maze cannot hold tier 0" is a claim about a
+          pixel count, and a resized window invalidates it. The active scene id
+          is forgotten with it, which suspends PROVING until the next commit —
+          immediately after a resize the current tier has not been demonstrated
+          at the new pixel count either.
+
+      **It could not be priced from `sceneCost.ts`, and that is its own
+      finding.** That table is per-scene per-TIER with no megapixel denominator,
+      so it reads `maze` as the cheapest scene in the roster at 0.42 ms — on the
+      strength of a sweep taken at maze's own low `pixelBudget` solve. Its
+      header says as much ("these rows are a floor for those, not a ceiling").
+      Consulting it here would have predicted the exact opposite of what
+      happened, for the exact scene that failed. So the memory is observational,
+      the same shape as F149's: it learns from what the machine has been seen
+      doing. **The missing denominator is the same original sin F160 named for
+      the post chain**, now visible in a second table, and it is what F88 should
+      be widened to cover.
+
+      8 tests in `qualityGovernor.test.ts`. `npm run check` clean, 901 tests.
+
+      **Not verified live.** Same caveat as F149 and F157: this is a controller
+      change and the next session log is the evidence. What to look for — a
+      commit into a scene the ladder has not measured should show a `tier` event
+      one rung cheaper within a frame or two of the `scene: X -> Y` line, and
+      the maze cascade (four demotes and four resizes in six seconds) should not
+      recur.
+
+      Part (1) of this entry — **what is periodic at 5.05 Hz inside maze** — is
+      untouched and stays open. Nothing above explains it; the fix only stops
+      the ladder from putting maze somewhere the period is expensive.
+
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **886 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **901 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

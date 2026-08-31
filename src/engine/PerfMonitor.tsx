@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { quality } from './quality'
-import { decideTierResize, renderScale } from './renderScale'
+import { decideTierResize, renderScale, worthReallocating } from './renderScale'
 import { frameSampler } from './frameSampler'
 import { performanceState } from './performanceState'
 import { resourceCache } from './streaming/resourceCache'
@@ -249,7 +249,7 @@ export function PerfMonitor() {
    * resize it triggers reallocates the post chain, and letting the governor see
    * that cost is precisely the feedback loop frameSampler.ts describes.
    */
-  const applyRenderScale = () => {
+  const applyRenderScale = (force = false) => {
     const solved = renderScale.solve()
     const prev = renderScale.applied
     // Ratchet the climb (see MAX_RENDER_SCALE_STEP_UP). A big budget jump can
@@ -259,6 +259,22 @@ export function PerfMonitor() {
     // the convergence walk in the frame loop terminates cleanly.
     const climbCap = Math.round(prev * MAX_RENDER_SCALE_STEP_UP * 100) / 100
     const scale = solved > prev ? Math.min(solved, climbCap) : solved
+    // F162: a reallocation measured 50-197 ms at high resolution in
+    // `...08-31-16-47-12`, and a small CLIMB buys about 1 ms of a 16.7 ms frame
+    // plus 3% of linear resolution. Sheds are never gated — see
+    // `worthReallocating`. `force` is the user's own hand on the quality
+    // control or a display change, both of which are facts rather than guesses
+    // and apply whatever the arithmetic says.
+    if (!force && !worthReallocating(prev, scale)) {
+      // The bookkeeping still advances. These refs record "the current inputs
+      // have been consulted", not "a resize happened", and leaving them stale
+      // would re-enter this branch on every subsequent frame for a change this
+      // just decided is not worth making.
+      appliedTier.current = quality.tier
+      appliedPair.current = renderScale.pairKey
+      heldTier.current = -1
+      return
+    }
     const dpr = renderScale.baseDpr * scale
     // Published before `setDpr` so a scene that sizes its own offscreen targets
     // from `renderScale.applied` sees the new value on the same frame the canvas
@@ -289,7 +305,7 @@ export function PerfMonitor() {
     gl.info.autoReset = false
     quality.setMode(storeQuality)
     renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
-    applyRenderScale()
+    applyRenderScale(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeQuality, size.width, size.height])
 

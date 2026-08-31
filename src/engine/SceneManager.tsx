@@ -771,6 +771,11 @@ export function SceneManager() {
       if (commit) {
         commitScene()
         pendingSince.current = -1
+        // F164: the ladder's tier was earned against the scene going OFF, and
+        // the roster's fill cost spans more than 4x. Clamp to what the incoming
+        // scene has actually been seen holding before the frame starts paying
+        // for it — the governor climbs back out on its own evidence.
+        quality.enterScene(pendingSceneId, clock.elapsedTime)
         // A commit is the most expensive moment in the app: a shader compile
         // that prewarming did not manage to confirm, plus two primaries
         // rendering at once for the length of the crossfade. All of that is

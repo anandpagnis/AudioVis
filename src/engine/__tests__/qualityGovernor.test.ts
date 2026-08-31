@@ -493,3 +493,89 @@ describe('quality governor — failed-rung memory', () => {
     expect(g.tier).toBe(0)
   })
 })
+
+describe('quality governor — per-scene rung memory (F164)', () => {
+  const STEADY = { ms: 16.6, p95: 16.7 }
+  const BAD = { ms: 21, p95: 24 }
+
+  it('enters an unmeasured scene one rung down from wherever the ladder sits', () => {
+    const g = governorAt(1)
+    g.tick(STEADY.ms, 0, STEADY.p95)
+    g.tick(STEADY.ms, 10, STEADY.p95)
+    expect(g.tier).toBe(0) // earned on whatever was on screen
+    g.enterScene('maze', 11)
+    expect(g.tier).toBe(1) // maze has never been seen holding tier 0
+  })
+
+  it('never moves the tier RICHER on a commit', () => {
+    const g = governorAt(3)
+    g.enterScene('wireframe', 1)
+    expect(g.tier).toBe(4)
+    // A second scene with no record must not undo the caution by climbing.
+    g.enterScene('kifs', 2)
+    expect(g.tier).toBe(4)
+  })
+
+  it('lets a scene back into a rung it has actually held', () => {
+    const g = governorAt(1)
+    g.enterScene('wingfold', 0)
+    expect(g.tier).toBe(2) // unmeasured: one rung of caution
+    // Hold tier 2 steadily past RUNG_PROOF_SEC (10 s) — now it is proven.
+    g.tick(STEADY.ms, 1, STEADY.p95)
+    g.tick(STEADY.ms, 12, STEADY.p95)
+    // Away and back: no caution the second time, because there is a record.
+    g.enterScene('maze', 13)
+    g.enterScene('wingfold', 14)
+    expect(g.tier).toBeLessThanOrEqual(2)
+  })
+
+  it('does not ratchet: the ladder climbs back out of the caution', () => {
+    const g = governorAt(1)
+    g.enterScene('kifs', 0)
+    expect(g.tier).toBe(2)
+    g.tick(STEADY.ms, 1, STEADY.p95)
+    g.tick(STEADY.ms, 8, STEADY.p95)
+    expect(g.tier).toBe(1)
+  })
+
+  it('is idempotent for the scene already on screen', () => {
+    const g = governorAt(1)
+    g.enterScene('maze', 0)
+    expect(g.tier).toBe(2)
+    g.enterScene('maze', 1)
+    g.enterScene('maze', 2)
+    expect(g.tier).toBe(2)
+  })
+
+  it('the caution is not charged to the rung back-off', () => {
+    const g = governorAt(1)
+    g.enterScene('maze', 0) // caution: 1 -> 2, NOT a probe the ladder chose
+    expect(g.tier).toBe(2)
+    // Climb back to 1 and fail it immediately. If `enterScene` had left a probe
+    // armed for tier 2, this demote would have blocked tier 2 rather than 1.
+    g.tick(STEADY.ms, 1, STEADY.p95)
+    g.tick(STEADY.ms, 8, STEADY.p95)
+    expect(g.tier).toBe(1)
+    g.tick(BAD.ms, 11, BAD.p95)
+    expect(g.tier).toBe(2)
+  })
+
+  it('a display change clears the per-scene record with everything else', () => {
+    const g = governorAt(2)
+    g.enterScene('maze', 0)
+    g.tick(STEADY.ms, 1, STEADY.p95)
+    g.tick(STEADY.ms, 12, STEADY.p95) // maze proven at some rung
+    g.setMode('auto') // PerfMonitor re-runs this on every display change
+    g.pinTier(1)
+    g.setMode('auto')
+    g.enterScene('maze', 20)
+    expect(g.tier).toBe(2) // record gone: cautious again
+  })
+
+  it('a pinned governor is not second-guessed by a scene commit', () => {
+    const g = new QualityGovernor()
+    g.pinTier(0)
+    g.enterScene('maze', 0)
+    expect(g.tier).toBe(0)
+  })
+})
