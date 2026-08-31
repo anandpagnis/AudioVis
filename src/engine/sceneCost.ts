@@ -133,6 +133,32 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   synthgrid: [22.35, 16.94, 15.46, 12.91, 9.91],
   torusfold: [0.11, 0.1, 0.1, 0.1, 0.1],
   trail: [0.76, 0.76, 0.7, 0.7, 0.69],
+
+  // --- New effect scenes (c6), NOT /bench-MEASURED — engineering estimate ---
+  // `shock`/`flare`/`spark` shipped with the `effect` slot's first licensed
+  // content and there is no headless-browser harness in this repo to run
+  // `/bench` and get a real number (see the audit's own note on that gap).
+  // Flat across every tier, unlike most of the measured rows above: each is a
+  // fullscreen quad reading NO `quality.knobs` — same reasoning that makes
+  // `ribbons`/`wingfold`/`malachite` flat — so the only tier lever is the
+  // resolution solve, which is priced separately.
+  // Estimated by op-count comparison against the cheapest ACTUALLY-measured
+  // rows in this table: `orbs` (0.06 ms; three `length()` + three divides)
+  // and `wireframe` (0.78-0.63 ms; real 3D line geometry). Every one of these
+  // three is a closed-form fullscreen shader with 2-5 `exp()` evaluations, no
+  // loop, no texture fetch and no geometry — fewer operations than `orbs` and
+  // far fewer than `wireframe` — so each is priced at or a little above
+  // `orbs`'s measured floor, never approaching `wireframe`'s. Deliberately
+  // NOT run through the {@link SceneCostModel} fit: that requires real
+  // measurements at multiple resolutions to fit a line, and fabricating a
+  // regression from unmeasured numbers would manufacture false precision on
+  // top of a value already known to be a guess. Replace with a real `/bench`
+  // sweep the moment one is possible; until then this is a documented
+  // estimate, not a measurement, exactly like `SCENE_COST_MODEL`'s own
+  // "supersedes this" note asks of itself.
+  shock: [0.08, 0.08, 0.08, 0.08, 0.08],
+  flare: [0.1, 0.1, 0.1, 0.1, 0.1],
+  spark: [0.07, 0.07, 0.07, 0.07, 0.07],
 }
 
 /**

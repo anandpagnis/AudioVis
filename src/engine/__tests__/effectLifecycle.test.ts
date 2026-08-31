@@ -55,12 +55,16 @@ const advance = (over: Partial<Parameters<typeof advanceEffects>[0]>) =>
  * the role unclaimed is the one a future effect scene will also forget.
  */
 describe('the effect roster', () => {
-  it('is empty again after the licence sweep', () => {
-    // `orbs` was the only effect scene (F20) and F105 quarantined it as
-    // unverified Shadertoy provenance. The slot is finished, tested and once
-    // more has nothing to fire — recorded rather than demanded, so this flips
-    // back the moment a licensed scene claims the role.
-    expect(getEffectScenes().length).toBe(0)
+  it('has content again — three licensed scenes, one per trigger family', () => {
+    // `orbs` was the only effect scene (F20), and F105 quarantined it as
+    // unverified Shadertoy provenance, reopening F20 the same day. The
+    // ledger's prescribed fix was "a LICENSED scene willing to claim the
+    // role" — the pattern `malachite` already used for `background` — rather
+    // than reinstating `orbs`. `shock`/`flare`/`spark` are that: written
+    // directly for this slot, `license: 'original'`, one each for the drop,
+    // section-change/build-peak, and transient trigger families.
+    const ids = getEffectScenes().map((s) => s.id).sort()
+    expect(ids).toEqual(['flare', 'shock', 'spark'])
   })
 
   it('gives every effect scene a trigger and a finite lifetime', () => {

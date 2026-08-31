@@ -1,63 +1,59 @@
 import { describe, expect, it } from 'vitest'
-import { getEffectScenes } from '../index'
+import { effectEnvelope } from '../effectEnvelope'
 
-/**
- * The one requirement that kept the effect role unclaimed for so long.
- *
- * `SceneManager` retires an effect entry the moment `slotProgress` reaches 1
- * and does NOT fade it out — so a scene still bright there simply vanishes,
- * which reads as a dropped frame rather than as punctuation. It is the sort of
- * contract that is invisible until someone writes the second effect scene and
- * forgets it.
- *
- * The envelope itself lives in `OrbitGlowScene`; this pins the shape it has to
- * have, against a local copy, so a future scene has something to check against.
- */
-function effectEnvelope(p: number): number {
-  const t = Math.min(1, Math.max(0, p))
-  const rise = t < 0.05 ? t / 0.05 : 1
-  const fall = 1 - (t - 0.18) / 0.82
-  return rise * Math.max(0, Math.min(1, fall)) ** 1.6
-}
+describe('effectEnvelope', () => {
+  it('is exactly zero at slotProgress 0', () => {
+    expect(effectEnvelope(0)).toBe(0)
+  })
 
-describe('the effect slot exit contract', () => {
-  it('is exactly zero at slotProgress 1, where SceneManager retires it', () => {
+  it('is exactly zero at slotProgress 1 — the hard SceneManager guarantee', () => {
+    // SceneManager retires an effect the instant slotProgress reaches 1 and
+    // does NOT fade it out. If this were nonzero, every effect scene using
+    // this envelope would pop instead of settle.
     expect(effectEnvelope(1)).toBe(0)
   })
 
-  it('rises fast enough to land on the transient that fired it', () => {
-    // A drop is an instant. An effect that takes half a second to arrive has
-    // already missed the thing it is punctuating.
-    expect(effectEnvelope(0.05)).toBeGreaterThan(0.9)
+  it('rises to full strength by the end of the rise window (5%)', () => {
+    expect(effectEnvelope(0.05)).toBeCloseTo(1, 6)
   })
 
-  it('spends most of its life decaying', () => {
-    // What makes a drop read as a hit followed by a room, rather than as a
-    // shape that came and went.
-    expect(effectEnvelope(0.5)).toBeLessThan(effectEnvelope(0.2))
-    expect(effectEnvelope(0.9)).toBeLessThan(0.1)
+  it('holds at full strength through the plateau (5%..18%)', () => {
+    expect(effectEnvelope(0.1)).toBeCloseTo(1, 6)
+    expect(effectEnvelope(0.18)).toBeCloseTo(1, 6)
   })
 
-  it('never leaves the 0..1 range, including outside its domain', () => {
-    for (const p of [-1, 0, 0.5, 1, 2, 99]) {
-      const v = effectEnvelope(p)
-      expect(v, `p=${p}`).toBeGreaterThanOrEqual(0)
-      expect(v, `p=${p}`).toBeLessThanOrEqual(1)
+  it('decays monotonically from the plateau to the end', () => {
+    const samples = [0.18, 0.3, 0.5, 0.7, 0.9, 1]
+    const values = samples.map(effectEnvelope)
+    for (let i = 1; i < values.length; i++) {
+      expect(values[i]).toBeLessThanOrEqual(values[i - 1])
     }
   })
 
-  it('has no step at either end', () => {
-    // A hard edge at 1 looks like a dropped frame, which is the impression the
-    // effect slot exists to avoid.
-    expect(effectEnvelope(0.99)).toBeLessThan(0.02)
-    expect(effectEnvelope(0.01)).toBeLessThan(0.35)
+  it('rises monotonically through the rise window', () => {
+    const samples = [0, 0.01, 0.02, 0.03, 0.04, 0.05]
+    const values = samples.map(effectEnvelope)
+    for (let i = 1; i < values.length; i++) {
+      expect(values[i]).toBeGreaterThanOrEqual(values[i - 1])
+    }
   })
-})
 
-describe('the registered effect scenes', () => {
-  it('are none, until a licensed scene claims the role', () => {
-    // See F105. The envelope contract above is still pinned — it is what the
-    // NEXT effect scene has to satisfy, and it outlives any particular scene.
-    expect(getEffectScenes().length).toBe(0)
+  it('stays within 0..1 across the whole lifetime', () => {
+    for (let p = 0; p <= 1; p += 0.01) {
+      const v = effectEnvelope(p)
+      expect(v).toBeGreaterThanOrEqual(0)
+      expect(v).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('clamps out-of-range input rather than propagating it', () => {
+    expect(effectEnvelope(-1)).toBe(effectEnvelope(0))
+    expect(effectEnvelope(2)).toBe(effectEnvelope(1))
+  })
+
+  it('is total against non-finite input', () => {
+    expect(Number.isFinite(effectEnvelope(NaN))).toBe(true)
+    expect(Number.isFinite(effectEnvelope(Infinity))).toBe(true)
+    expect(effectEnvelope(NaN)).toBe(0)
   })
 })

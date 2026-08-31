@@ -24,8 +24,13 @@ import { useStore } from '../store'
  * costs no shader compile — an effect mounts precisely when something is
  * happening, which is the worst possible moment to stall.
  *
- * Inert until effect scenes are authored: `getEffectScenes()` is empty today,
- * so every path below early-returns.
+ * Content: `getEffectScenes()` returns three scenes (c6) — `shock` (drop),
+ * `flare` (sectionChange/buildPeak) and `spark` (transient) — one per trigger
+ * family, so `pickVariedScene` below only ever has to choose between
+ * candidates that already agree on WHICH kind of moment they are answering.
+ * Every path below still early-returns cleanly if that list is ever empty
+ * again (a future licence sweep, say), which is what let this machinery ship
+ * and be fully tested well before any of the three existed.
  */
 
 /** Only ever one effect on screen at a time. */

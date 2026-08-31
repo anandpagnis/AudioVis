@@ -385,17 +385,44 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       authored layer-only scenes, not more role declarations — most of the
       roster is documented as correctly primary-only, with reasons.
 
-- [~] **F20 · The effect slot is fully built and completely empty** — *fixed
-      2026-08-27, then reopened the same day by the licence sweep*
-      **Reopened.** `orbs` was the scene that claimed the role, and F105
-      quarantined it as unverified Shadertoy provenance. `getEffectScenes()`
-      returns nothing again and the slot is inert.
-      Nothing about the fix was wrong and none of it was lost: the
+- [x] **F20 · The effect slot is fully built and completely empty** — *fixed
+      2026-08-27, reopened the same day by the licence sweep, re-fixed 2026-09-01*
+      **Re-fixed.** Three new scenes claim the role directly rather than
+      reviving `orbs`: `src/scenes/ShockRingScene.tsx` (drop), `SectionFlareScene.tsx`
+      (sectionChange/buildPeak) and `TransientSparkScene.tsx` (transient) — one per
+      trigger family, all `license: 'original'`, all written for this project from
+      scratch with closed-form, singularity-free math (Gaussian rings and beams,
+      `amt/(d²k+1)` spark falloff — no `1/d` term anywhere, unlike `orbs`'s own
+      glow). Registered in the live `SCENES` roster, not `DISABLED_SCENES`.
+      Reuses the exact `effectEnvelope` contract the original fix proved out —
+      pulled into its own module (`src/scenes/effectEnvelope.ts`) so all three
+      new scenes and `OrbitGlowScene` share one tested implementation of the
+      "must reach visual zero by `slotProgress` 1" rule instead of each
+      re-deriving it.
+      `transient`'s effect (`spark`) initially shipped at a 0.32s duration and
+      1.4s cooldown; `effectLifecycle.test.ts`'s own "keeps effect lifetimes
+      musical" (1-8s) and "does not fire on every transient" (cooldown >2s)
+      invariants — written when the slot had no content to check them against —
+      caught both violations immediately. Retuned to 1.2s / 2.5s: the mitigation
+      for a frequent trigger is the cooldown, not a sub-second duration, and
+      `effectEnvelope`'s decay-dominated shape still reads as a quick pop at 1.2s.
+      Priced in `sceneCost.ts`'s `SCENE_COST_MS` as a documented, clearly-labelled
+      engineering ESTIMATE (0.07-0.10 ms flat, by op-count comparison against
+      `orbs` at 0.06 ms measured) rather than a `/bench` measurement — no headless
+      browser exists in this repo to run the real sweep. `registry.test.ts`,
+      `sceneCost.test.ts` and `slotBudget.test.ts` all have blanket loops over
+      the live roster that would otherwise price an unmeasured scene from the
+      pessimistic 8ms/tier unknown-fallback; adding the estimate (rather than
+      weakening those tests) keeps their invariant intact.
+      **Previously reopened.** `orbs` was the scene that claimed the role, and
+      F105 quarantined it as unverified Shadertoy provenance. `getEffectScenes()`
+      returned nothing and the slot was inert.
+      Nothing about the original fix was wrong and none of it was lost: the
       `effectEnvelope` contract, its tests, and the `slotProgress` exit rule all
-      stand and are what the next effect scene has to satisfy. What is missing is
-      a LICENSED scene willing to claim the role. `malachite` did exactly this
+      stood and are what the next effect scene had to satisfy. What was missing
+      was a LICENSED scene willing to claim the role. `malachite` did exactly this
       for `background` (F18 stayed closed because a licensed scene picked the
-      role up), so the pattern is available.
+      role up), which is the pattern the re-fix above follows.
 
       Original entry:
 
@@ -6473,7 +6500,7 @@ ribbons, both at 112.3 s, both landing on the maze -> chrome request), against
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **901 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1124 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

@@ -46,6 +46,9 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   maze: () => import('./MazeFlightScene').then((m) => ({ default: m.MazeFlightScene })),
   wingfold: () => import('./WingfoldJuliaScene').then((m) => ({ default: m.WingfoldJuliaScene })),
   crystalfold: () => import('./CrystalFoldScene').then((m) => ({ default: m.CrystalFoldScene })),
+  shock: () => import('./ShockRingScene').then((m) => ({ default: m.ShockRingScene })),
+  flare: () => import('./SectionFlareScene').then((m) => ({ default: m.SectionFlareScene })),
+  spark: () => import('./TransientSparkScene').then((m) => ({ default: m.TransientSparkScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -142,6 +145,9 @@ const KifsRoseScene = lazyScene('kifs')
 const MazeFlightScene = lazyScene('maze')
 const WingfoldJuliaScene = lazyScene('wingfold')
 const CrystalFoldScene = lazyScene('crystalfold')
+const ShockRingScene = lazyScene('shock')
+const SectionFlareScene = lazyScene('flare')
+const TransientSparkScene = lazyScene('spark')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -838,6 +844,91 @@ export const SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
       // No `density`/`tilt` — nothing in an iterated escape-time field has a
       // discrete element count or a camera-relative axis for those to bind to.
+    },
+  },
+  {
+    id: 'shock',
+    name: 'Shock Ring',
+    component: ShockRingScene,
+    metadata: {
+      // Original content, written directly for this slot (see F20's history:
+      // `orbs` claimed the `effect` role once, then lost it when the licence
+      // sweep quarantined its Shadertoy-derived source into the withheld
+      // list below. The ledger's own prescribed fix was "a LICENSED scene
+      // willing to claim the role" — the pattern `malachite` already used for
+      // `background` — so this is that scene for `effect`, not a revival of
+      // `orbs`.
+      license: 'original',
+      roles: ['effect'],
+      effect: { triggers: ['drop'], durationSec: 4.0, cooldownSec: 12 },
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'energy'],
+      intensity: 'high',
+      // Two exp() terms, no loop, no division anywhere in the shader.
+      performanceCost: 'low',
+      compatibleWith: [],
+      moodFit: { groove: 0.7, building: 0.85, peak: 0.95, aggressive: 0.9 },
+      // Flat 2D screen-space math, no camera concept at all — inert here,
+      // declared only for CameraDirector.test.ts's variety invariant, same
+      // reasoning as `heap`/`kaleido` in the withheld list below.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'flare',
+    name: 'Section Flare',
+    component: SectionFlareScene,
+    metadata: {
+      license: 'original',
+      roles: ['effect'],
+      // Section changes and build peaks happen at any mood, unlike a drop —
+      // so this fires far more broadly than `shock`, and is tuned dimmer and
+      // shorter (1.8s vs 4.0s) so it reads as a marker rather than a second
+      // instance of the same kind of punctuation.
+      effect: { triggers: ['sectionChange', 'buildPeak'], durationSec: 1.8, cooldownSec: 6 },
+      moods: ['ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive'],
+      bands: ['energy'],
+      intensity: 'medium',
+      performanceCost: 'low',
+      compatibleWith: [],
+      moodFit: {
+        ambient: 0.55,
+        mellow: 0.6,
+        groove: 0.68,
+        building: 0.78,
+        peak: 0.75,
+        aggressive: 0.7,
+      },
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'spark',
+    name: 'Transient Spark',
+    component: TransientSparkScene,
+    metadata: {
+      license: 'original',
+      roles: ['effect'],
+      // `transient` fires on far more onsets than `drop` or a section change,
+      // so the mitigation is the COOLDOWN (>2s — see effectLifecycle.test.ts's
+      // "does not fire an effect on every transient"), not a sub-second
+      // duration: this engine's own effect-lifetime contract holds "under
+      // about a second reads as a dropped frame" for every effect regardless
+      // of how often its trigger fires. `effectEnvelope`'s fast-rise, long-
+      // decay shape still reads as a quick pop at 1.2s — the decay dominates
+      // the lifetime at any duration — so the punctuation feel survives the
+      // longer floor.
+      effect: { triggers: ['transient'], durationSec: 1.2, cooldownSec: 2.5 },
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['high', 'energy'],
+      intensity: 'medium',
+      performanceCost: 'low',
+      compatibleWith: [],
+      moodFit: { groove: 0.6, building: 0.65, peak: 0.7, aggressive: 0.7 },
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
 ]

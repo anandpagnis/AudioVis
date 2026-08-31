@@ -5,6 +5,7 @@ import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 import { drastic } from './contract'
+import { effectEnvelope } from './effectEnvelope'
 
 /**
  * Orbit Glow — three soft orbs drifting on independent Lissajous paths.
@@ -134,25 +135,6 @@ export const FRAG = /* glsl */ `
     gl_FragColor = vec4(finalColor * U_BRIGHTNESS * uFade, 1.0);
   }
 `
-
-/**
- * The effect slot's exit envelope, over `slotProgress` 0..1.
- *
- * Punctuation, not a fade: a fast rise so it lands ON the transient that fired
- * it, a brief hold, then a long decay that is genuinely zero at 1. The decay
- * dominates the lifetime because that is what makes a drop read as a hit
- * followed by a room rather than as a shape that came and went.
- *
- * `smoothstep` on both ends so neither edge is a step — an effect that snaps
- * off at 1 looks like a dropped frame, which is exactly the impression an
- * effect slot exists to avoid.
- */
-function effectEnvelope(p: number): number {
-  const t = Math.min(1, Math.max(0, p))
-  const rise = t < 0.05 ? t / 0.05 : 1
-  const fall = 1 - (t - 0.18) / 0.82
-  return rise * Math.max(0, Math.min(1, fall)) ** 1.6
-}
 
 export function OrbitGlowScene() {
   const size = useThree((s) => s.size)
