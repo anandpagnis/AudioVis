@@ -46,7 +46,7 @@ export function ExposureSampler() {
   const lastSampleAt = useRef(0)
   const busy = useRef(false)
   /** Reused across samples — this runs for the life of the session. */
-  const sample = useRef<LumaSample>({ mean: 0, p85: 0, p99: 0, blownShare: 0 })
+  const sample = useRef<LumaSample>({ mean: 0, p50: 0, p85: 0, p99: 0, blownShare: 0 })
 
   const ctx = useMemo(() => {
     if (typeof document === 'undefined') return null

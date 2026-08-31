@@ -6,6 +6,8 @@ import {
   HOT_MEAN,
   MUDDY_ENERGY_GATE,
   MUDDY_MEAN,
+  STEP_DOWN,
+  STEP_UP,
   TARGET_HIGHLIGHT,
   analyseLuma,
   applyExposureSample,
@@ -28,6 +30,10 @@ import {
 
 const s = (mean: number, p85: number, blownShare = 0, p99 = p85): LumaSample => ({
   mean,
+  // p50 has no dedicated fault threshold yet (see LumaSample's own doc), so
+  // exposureError never reads it — approximating it from mean here keeps
+  // every existing call site's intent (`s(mean, p85, ...)`) unchanged.
+  p50: mean,
   p85,
   p99,
   blownShare,
@@ -81,11 +87,11 @@ describe('analyseLuma', () => {
   })
 
   it('survives an empty buffer', () => {
-    expect(analyseLuma(new Uint8ClampedArray(0))).toEqual({ mean: 0, p85: 0, p99: 0, blownShare: 0 })
+    expect(analyseLuma(new Uint8ClampedArray(0))).toEqual({ mean: 0, p50: 0, p85: 0, p99: 0, blownShare: 0 })
   })
 
   it('reuses the caller-supplied object rather than allocating', () => {
-    const into: LumaSample = { mean: 0, p85: 0, p99: 0, blownShare: 0 }
+    const into: LumaSample = { mean: 0, p50: 0, p85: 0, p99: 0, blownShare: 0 }
     expect(analyseLuma(flat(0.3), into)).toBe(into)
   })
 })
@@ -308,5 +314,155 @@ describe('the closed loop', () => {
     resetExposure()
     expect(exposure.gain).toBe(1)
     expect(exposure.sampled).toBe(false)
+  })
+})
+
+describe('analyseLuma — p50 (F162/F164 audit: percentile metering)', () => {
+  it('reads the median back on a flat frame, matching mean and p85', () => {
+    const a = analyseLuma(flat(0.4))
+    expect(a.p50).toBeCloseTo(0.4, 2)
+  })
+
+  it('sits in the dark majority on a mostly-black frame, same as p85', () => {
+    // 90% black, 10% white — the median must be in the black majority.
+    const px = flat(0)
+    for (let i = 346; i < 384; i++) {
+      px[i * 4] = 255
+      px[i * 4 + 1] = 255
+      px[i * 4 + 2] = 255
+    }
+    expect(analyseLuma(px).p50).toBe(0)
+  })
+
+  it('is more robust than mean to a handful of blown outliers', () => {
+    // Ten percent of the frame blown to white; the rest a dim, uniform 0.1.
+    // The mean is pulled noticeably upward by the outliers; the median is not
+    // moved at all, because a majority of pixels are still exactly 0.1. This is
+    // the concrete case the whole statistic exists for — see LumaSample's doc.
+    const px = flat(0.1)
+    for (let i = 0; i < 38; i++) {
+      px[i * 4] = 255
+      px[i * 4 + 1] = 255
+      px[i * 4 + 2] = 255
+    }
+    const a = analyseLuma(px)
+    expect(a.p50).toBeCloseTo(0.1, 2)
+    expect(a.mean).toBeGreaterThan(a.p50 + 0.05)
+  })
+
+  it('is monotone with p85 and p99 on the same frame', () => {
+    const a = analyseLuma(flat(0.3))
+    // On a uniform frame all three coincide; the ordering is still checkable
+    // and must never invert.
+    expect(a.p50).toBeLessThanOrEqual(a.p85)
+    expect(a.p85).toBeLessThanOrEqual(a.p99)
+  })
+})
+
+describe('stepExposure — asymmetric rate (F162/F164 audit)', () => {
+  it('darkens strictly faster than it brightens for the same error magnitude', () => {
+    const darkened = stepExposure(1, -0.5)
+    const brightened = stepExposure(1, 0.5)
+    // Distance travelled in log space from 1.
+    const downDistance = Math.abs(Math.log(darkened))
+    const upDistance = Math.abs(Math.log(brightened))
+    expect(downDistance).toBeGreaterThan(upDistance)
+  })
+
+  it('STEP_UP is exactly half of STEP_DOWN, and STEP_DOWN is unchanged from the pre-split constant', () => {
+    // STEP_DOWN must equal the OLD single STEP value (0.08) so every already-
+    // validated darkening/hot/wash dynamic is untouched by this change.
+    expect(STEP_DOWN).toBe(0.08)
+    expect(STEP_UP).toBeCloseTo(STEP_DOWN / 2, 10)
+  })
+
+  it('still holds still on zero error and still recovers a poisoned gain', () => {
+    // The two existing invariants must survive the sign-aware branch.
+    expect(stepExposure(0.8, 0)).toBe(0.8)
+    expect(stepExposure(NaN, -0.5)).toBe(1)
+    expect(stepExposure(NaN, 0.5)).toBe(1)
+  })
+
+  it('both directions still reach their clamp under sustained pressure', () => {
+    // Time-to-CLAMP is not a valid proxy for rate here and deliberately not
+    // asserted either way: GAIN_MIN (0.35) sits roughly 1.05 in log-distance
+    // from 1, GAIN_MAX (1.25) only about 0.22 — the range itself is far more
+    // asymmetric than the 2x rate difference, so the slower-but-shorter climb
+    // to GAIN_MAX actually clamps in FEWER steps than the faster-but-longer
+    // descent to GAIN_MIN. That is a fact about the gain limits, not a
+    // regression in the rate split — see the direct rate comparison above and
+    // the fixed-step-count comparison below for what actually pins the rate.
+    let down = 1
+    let up = 1
+    for (let i = 0; i < 500; i++) {
+      down = stepExposure(down, -1)
+      up = stepExposure(up, 1)
+    }
+    expect(down).toBeCloseTo(GAIN_MIN, 5)
+    expect(up).toBeCloseTo(GAIN_MAX, 5)
+  })
+
+  it('travels less log-distance than a hot correction after the same number of samples, unclamped', () => {
+    // The direct, unconfounded version of the rate comparison: same sample
+    // count, same |err|, gain never reaches a clamp (few enough steps that
+    // even the faster direction stays interior), so only STEP_DOWN vs
+    // STEP_UP can explain the difference.
+    let down = 1
+    let up = 1
+    for (let i = 0; i < 4; i++) {
+      down = stepExposure(down, -1)
+      up = stepExposure(up, 1)
+    }
+    expect(down).toBeGreaterThan(GAIN_MIN)
+    expect(up).toBeLessThan(GAIN_MAX)
+    const downDistance = Math.abs(Math.log(down))
+    const upDistance = Math.abs(Math.log(up))
+    expect(upDistance).toBeLessThan(downDistance)
+  })
+})
+
+describe('the closed loop — asymmetric rate does not break convergence or recovery', () => {
+  beforeEach(resetExposure)
+
+  it('a muddy frame still lifts the gain and still settles', () => {
+    const muddy = (): LumaSample => ({
+      mean: MUDDY_MEAN * 0.3,
+      p50: MUDDY_MEAN * 0.3,
+      p85: 0.05,
+      p99: 0.2,
+      blownShare: 0,
+    })
+    for (let i = 0; i < 400; i++) applyExposureSample(muddy(), MUDDY_ENERGY_GATE + 0.3)
+    const settled = exposure.gain
+    expect(settled).toBeGreaterThan(1)
+    expect(settled).toBeLessThanOrEqual(GAIN_MAX)
+    for (let i = 0; i < 200; i++) applyExposureSample(muddy(), MUDDY_ENERGY_GATE + 0.3)
+    expect(exposure.gain).toBeCloseTo(settled, 6)
+  })
+
+  it('after equally many samples, a hot fault has moved the gain further (in log space) than an equally-extreme muddy one', () => {
+    // Fixed sample count, both wells short of their clamp, so only the rate
+    // split can explain the gap — same reasoning as the unclamped
+    // stepExposure comparison above, run through the actual closed loop.
+    const N = 5
+    for (let i = 0; i < N; i++) applyExposureSample(s(HOT_MEAN * 2, 0.4, 0, 0.85), 0.8)
+    const hotGain = exposure.gain
+    expect(hotGain).toBeGreaterThan(GAIN_MIN)
+
+    resetExposure()
+    const muddy = (): LumaSample => ({
+      mean: MUDDY_MEAN * 0.1,
+      p50: MUDDY_MEAN * 0.1,
+      p85: 0.02,
+      p99: 0.1,
+      blownShare: 0,
+    })
+    for (let i = 0; i < N; i++) applyExposureSample(muddy(), MUDDY_ENERGY_GATE + 0.3)
+    const muddyGain = exposure.gain
+    expect(muddyGain).toBeLessThan(GAIN_MAX)
+
+    const hotDistance = Math.abs(Math.log(hotGain))
+    const muddyDistance = Math.abs(Math.log(muddyGain))
+    expect(muddyDistance).toBeLessThan(hotDistance)
   })
 })

@@ -74,6 +74,21 @@
 export interface LumaSample {
   /** Mean relative luminance across the sampled pixels. */
   mean: number
+  /**
+   * Median relative luminance — the "typical pixel", robust to the handful of
+   * blown highlights that swing {@link mean} on sparse content. Not consumed
+   * by {@link exposureError} today (the hot/muddy thresholds below are
+   * calibrated against `mean`/`p99`/`blownShare` from 89 real samples, and
+   * swapping the statistic a threshold reads without new measured data would
+   * repeat this file's own documented mistake of calibrating against numbers
+   * nobody re-measured — see HOT_MEAN's history). Carried on the sample and
+   * on {@link exposure} for the debug panel, and as the input the NEXT
+   * calibration pass — against a real playing track, per F69 — should reach
+   * for first: a percentile is the textbook answer to "mean is skewed by a
+   * few bright pixels on a mostly-black frame", and this is that percentile,
+   * shipped and visible before it is trusted with a threshold.
+   */
+  p50: number
   /** 85th percentile — the highlight shoulder, not the peak. */
   p85: number
   /** 99th percentile — the subject's own brightness on sparse content. */
@@ -211,14 +226,47 @@ export const GAIN_MAX = 1.25
 export const SAMPLE_INTERVAL_SEC = 0.18
 
 /**
- * Log-space step per sample. With the interval above this gives tau ~2.3 s at
- * any frame rate, which is the "slower than any musical event" property the
- * header depends on.
+ * Log-space step per sample for a DARKENING correction (hot or blown — `err <
+ * 0`). With the interval above this gives tau ~2.3 s at any frame rate, which
+ * is the "slower than any musical event" property the header depends on.
+ *
+ * This is the direction the servo's own calibration history is about — every
+ * threshold in this file (`HOT_MEAN`, `BLOWN_TOLERANCE`) was measured and
+ * re-measured against real output specifically to get darkening right, so
+ * this constant is unchanged from the single `STEP` this file used before the
+ * up/down split below: the validated dynamics stay validated.
  */
-export const STEP = 0.08
+export const STEP_DOWN = 0.08
 
 /**
- * Log-space step per sample used to return toward unity when nothing is wrong.
+ * Log-space step per sample for a BRIGHTENING correction (muddy — `err > 0`).
+ *
+ * ## Why brightening is slower than darkening
+ *
+ * Real adaptive-exposure systems are not symmetric, and the asymmetry runs
+ * the same direction here as it does in a camera or an eye: going from bright
+ * to dim adapts quickly (a pupil constricting is a protective reflex, and a
+ * genuinely blown or washed-out frame is this servo's own "protect the
+ * projector" case — see `BLOWN_TOLERANCE`'s doc), while adapting from dim to
+ * bright is unhurried, because there is no fault to protect against, only a
+ * preference to restore. This file's OWN stated bias points the same way
+ * without yet having acted on it: "the correction that matters is downward",
+ * from {@link GAIN_MIN}/{@link GAIN_MAX}'s doc — this constant is where that
+ * stated priority actually reaches the loop's timing, not just its range.
+ *
+ * Half of {@link STEP_DOWN}, so a muddy correction takes roughly twice as
+ * long to reach the same log-space distance as a hot one. Deliberately not
+ * more aggressive than that: the muddy branch already takes the SMALLER of
+ * two corrections (mean-target and highlight-target — see
+ * {@link exposureError}) specifically to avoid overshooting a sparse frame,
+ * and slowing it further than 2x would make it too sluggish to ever clear a
+ * genuine mid-set mud before the section that caused it has already passed.
+ */
+export const STEP_UP = STEP_DOWN / 2
+
+/**
+ * Log-space step per sample used to return toward unity when nothing is
+ * wrong.
  *
  * ## Without this the servo is a ratchet, not a loop
  *
@@ -231,11 +279,21 @@ export const STEP = 0.08
  * A correction with no restoring force is not a servo. Unity is the resting
  * position and the loop has to be pulled back to it whenever the frame is fine.
  *
- * A quarter of {@link STEP}, so recovery is decisively slower than correction:
- * a sustained genuine fault still wins and holds the gain down, while a brief
- * one is forgiven over the following few seconds instead of forever.
+ * A quarter of {@link STEP_DOWN}, so recovery is decisively slower than a
+ * darkening correction: a sustained genuine fault still wins and holds the
+ * gain down, while a brief one is forgiven over the following few seconds
+ * instead of forever.
+ *
+ * Deliberately NOT split into an up/down pair the way {@link STEP_DOWN} and
+ * {@link STEP_UP} are — {@link recoverExposure} is symmetric around unity
+ * whichever side the gain is drifting back from, unchanged by the up/down
+ * split above. Recovery is a return to a neutral resting position, not a
+ * fault correction, and giving it the same directional bias as the
+ * correction path is untested behaviour this file's calibration history
+ * (see {@link HOT_MEAN}) argues strongly against introducing without
+ * measuring it first.
  */
-export const RECOVERY_STEP = STEP / 4
+export const RECOVERY_STEP = STEP_DOWN / 4
 
 /**
  * Below this the frame is intentionally dark and the servo must not touch it.
@@ -262,10 +320,11 @@ export const MUDDY_ENERGY_GATE = 0.4
  * `into` lets the per-sample caller reuse one object instead of allocating.
  */
 export function analyseLuma(pixels: Uint8ClampedArray, into?: LumaSample): LumaSample {
-  const out = into ?? { mean: 0, p85: 0, p99: 0, blownShare: 0 }
+  const out = into ?? { mean: 0, p50: 0, p85: 0, p99: 0, blownShare: 0 }
   const n = (pixels.length / 4) | 0
   if (n <= 0) {
     out.mean = 0
+    out.p50 = 0
     out.p85 = 0
     out.p99 = 0
     out.blownShare = 0
@@ -288,6 +347,7 @@ export function analyseLuma(pixels: Uint8ClampedArray, into?: LumaSample): LumaS
   lumaScratch.sort()
   out.mean = total / n
   out.blownShare = blown / n
+  out.p50 = lumaScratch[Math.min(n - 1, Math.floor(n * 0.5))]
   out.p85 = lumaScratch[Math.min(n - 1, Math.floor(n * 0.85))]
   out.p99 = lumaScratch[Math.min(n - 1, Math.floor(n * 0.99))]
   return out
@@ -335,7 +395,11 @@ export function exposureError(sample: LumaSample, energy: number): number {
 export function stepExposure(gain: number, err: number): number {
   if (!isFinite(gain)) return 1
   if (!isFinite(err) || err === 0) return gain
-  return Math.max(GAIN_MIN, Math.min(GAIN_MAX, gain * Math.exp(err * STEP)))
+  // Sign of err IS the direction: negative wants less gain (darkening,
+  // STEP_DOWN), positive wants more (brightening, STEP_UP). See both
+  // constants' docs for why they are not the same number.
+  const step = err < 0 ? STEP_DOWN : STEP_UP
+  return Math.max(GAIN_MIN, Math.min(GAIN_MAX, gain * Math.exp(err * step)))
 }
 
 /**
@@ -349,6 +413,7 @@ export function stepExposure(gain: number, err: number): number {
 export const exposure = {
   gain: 1,
   mean: 0,
+  p50: 0,
   p85: 0,
   p99: 0,
   blownShare: 0,
@@ -364,6 +429,7 @@ export const exposure = {
  */
 export function applyExposureSample(sample: LumaSample, energy: number): void {
   exposure.mean = sample.mean
+  exposure.p50 = sample.p50
   exposure.p85 = sample.p85
   exposure.p99 = sample.p99
   exposure.blownShare = sample.blownShare
@@ -400,6 +466,7 @@ export function recoverExposure(gain: number): number {
 export function resetExposure(): void {
   exposure.gain = 1
   exposure.mean = 0
+  exposure.p50 = 0
   exposure.p85 = 0
   exposure.p99 = 0
   exposure.blownShare = 0

@@ -102,6 +102,23 @@ import { useStore } from '../store'
  * itself is deliberately NOT added here yet, because that document is equally
  * clear that exposure constants can only be calibrated against a real playing
  * track, and that has not been done.
+ *
+ * **Correcting an external mischaracterisation of the AgX failure (2026-09):**
+ * a competitive audit of this engine, written without reading this file, guessed
+ * the AgX regression was caused by metering off a whole-frame MEAN on
+ * black-dominant content, and proposed retrying AgX after switching the exposure
+ * servo to a percentile statistic. That is not what the paragraph above says
+ * happened, and it is worth being explicit about the difference: the actual
+ * cause was an ADDITIVE brightness offset going negative and AgX's log-space
+ * transform having no representation for negative light, which is a different
+ * bug, in a different stage, already fixed by the specific discipline this
+ * pass's own `uGain` enforces — "Exposure is a multiply; anything else is a
+ * different operation wearing its name" (see above). `exposure.ts` gained a
+ * `p50` statistic in the same pass that corrected this comment, which is a
+ * genuine improvement (a percentile is more robust than a mean to a few
+ * outlier-bright pixels) but is not what unblocks AgX — the blocker named two
+ * paragraphs up, a live-track calibration pass, is unrelated to it and remains
+ * the actual gate.
  */
 
 const GRADE_FRAG = /* glsl */ `

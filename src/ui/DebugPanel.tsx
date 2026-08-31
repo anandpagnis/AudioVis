@@ -136,7 +136,7 @@ export function DebugPanel() {
       ctx.fillText(
         exposure.sampled
           ? `exp ×${exposure.gain.toFixed(2)}  luma ${exposure.mean.toFixed(3)}` +
-              `  p85 ${exposure.p85.toFixed(2)} p99 ${exposure.p99.toFixed(2)}` +
+              `  p50 ${exposure.p50.toFixed(2)} p85 ${exposure.p85.toFixed(2)} p99 ${exposure.p99.toFixed(2)}` +
               `  blown ${(exposure.blownShare * 100).toFixed(1)}%`
           : 'exp -- (no sample yet)',
         6,
