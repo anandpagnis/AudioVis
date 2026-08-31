@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pickPalette } from '../AutoPilot'
+import { PALETTE_VA, pickPalette } from '../AutoPilot'
 
 /**
  * The bug this guards: palette used to change only when the current one was
@@ -64,5 +64,82 @@ describe('pickPalette', () => {
 
   it('drops palette ids that are not registered', () => {
     expect(pickPalette(['nope', 'alsonope'], 'aurora', '', '', 0)).toBeNull()
+  })
+})
+
+describe('pickPalette — VA-weighted rotation (audit c8)', () => {
+  it('is unaffected when currentVA is omitted — every existing call above', () => {
+    for (let r = 0; r < 8; r++) {
+      expect(pickPalette(GROOVE, 'aurora', '', '', r)).toBe(
+        pickPalette(GROOVE, 'aurora', '', '', r, undefined),
+      )
+    }
+  })
+
+  it('solar (building/peak pools) reads more aroused than violet (mellow/groove)', () => {
+    // Sanity check on the test premise, not on pickPalette: confirms the
+    // derived positions actually differ before trusting the frequency tests
+    // below to mean anything.
+    expect(PALETTE_VA.solar.arousal).toBeGreaterThan(PALETTE_VA.violet.arousal)
+  })
+
+  it('is still deterministic — same inputs always give the same answer', () => {
+    const a = [0, 1, 2, 3, 4].map((r) => pickPalette(GROOVE, 'aurora', '', '', r, PALETTE_VA.solar))
+    const b = [0, 1, 2, 3, 4].map((r) => pickPalette(GROOVE, 'aurora', '', '', r, PALETTE_VA.solar))
+    expect(a).toEqual(b)
+  })
+
+  it('picks the VA-closer alternative more often across a long rotation', () => {
+    // Reading near solar's own position should surface solar more often than
+    // violet across many rotation indices, versus reading near violet's own
+    // position doing the reverse.
+    const countOf = (target: string, currentVA: (typeof PALETTE_VA)['solar']) => {
+      let n = 0
+      for (let r = 0; r < 400; r++) {
+        if (pickPalette(GROOVE, 'aurora', '', '', r, currentVA) === target) n++
+      }
+      return n
+    }
+    const solarNearSolar = countOf('solar', PALETTE_VA.solar)
+    const solarNearViolet = countOf('solar', PALETTE_VA.violet)
+    expect(solarNearSolar).toBeGreaterThan(solarNearViolet)
+  })
+
+  it('never fully excludes the farther alternative from the rotation', () => {
+    const seen = new Set<string>()
+    for (let r = 0; r < 200; r++) {
+      const p = pickPalette(GROOVE, 'aurora', '', '', r, PALETTE_VA.solar)
+      if (p) seen.add(p)
+    }
+    // Both non-current, non-excluded alternatives must still appear.
+    expect(seen).toEqual(new Set(['violet', 'solar']))
+  })
+
+  it('the key family still wins outright, ahead of any VA weighting', () => {
+    // Same case as the plain-rotation test above, now with a VA read that
+    // would otherwise favour solar — key family must still take it.
+    expect(pickPalette(GROOVE, 'aurora', 'violet', '', 0, PALETTE_VA.solar)).toBe('violet')
+  })
+
+  it('a palette with no derived VA (never pooled) is not excluded, just untethered', () => {
+    // Defensive: PALETTE_VA is derived from MOOD_PALETTES, so every real
+    // palette id has an entry, but the lookup falls back to the origin for
+    // a foreign id rather than throwing.
+    const pool = ['aurora', 'made-up-id']
+    expect(() => pickPalette(pool, 'violet', '', '', 0, PALETTE_VA.solar)).not.toThrow()
+  })
+})
+
+describe('PALETTE_VA', () => {
+  it('places every real palette referenced by MOOD_PALETTES', () => {
+    expect(PALETTE_VA.aurora).toBeDefined()
+    expect(PALETTE_VA.solar).toBeDefined()
+    expect(PALETTE_VA.violet).toBeDefined()
+  })
+
+  it('gives aurora a lower arousal than the peak-only palettes, reflecting its calmer pools', () => {
+    // aurora sits in ambient/mellow/groove/building (per AutoPilot.tsx's own
+    // comment); solar sits in building/peak, a hotter pair.
+    expect(PALETTE_VA.aurora.arousal).toBeLessThan(PALETTE_VA.solar.arousal)
   })
 })

@@ -9,7 +9,9 @@ import {
 } from './autoPilotGates'
 import { cueState } from './CueTimeline'
 import { keyPaletteTracker } from './keyPalette'
+import { deriveVAFromList } from './moodValenceArousal'
 import { PALETTES } from './palettes'
+import { vaDistance, type ValenceArousal } from './valenceArousal'
 import { getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
 import { performanceState } from './performanceState'
 import { useStore } from '../store'
@@ -64,6 +66,33 @@ export const MOOD_PALETTES: Record<MoodState, string[]> = {
   aggressive: ['ember', 'acid', 'neon', 'emberGlass', 'oxide', 'mirage', 'carnival', 'mono'],
 }
 
+/**
+ * Every palette's derived valence/arousal position (audit c8), built once
+ * from {@link MOOD_PALETTES} at module load rather than hand-annotated: a
+ * palette's position is `deriveVAFromList` over every mood pool it sits in.
+ * `aurora`, which the header above notes "sits in ambient, mellow, groove AND
+ * building", lands somewhere in the middle of all four — exactly the
+ * behaviour hand-placing it would have had to reconstruct by eye, recovered
+ * here for free from data this file already declares.
+ *
+ * A palette that appears in only one pool gets exactly that mood's point,
+ * which means several single-pool palettes COLLIDE at the same coordinates —
+ * `ocean`/`glacial`/`nocturne`/`pearl`/`moss`/`mono` all read as pure
+ * `ambient` if none of them sit in a second pool. `pickPalette`'s VA
+ * weighting is built to tolerate that (a weighted rotation, not a nearest-
+ * neighbour argmin) precisely because collisions like this are expected, not
+ * a defect in the derivation.
+ */
+export const PALETTE_VA: Readonly<Record<string, ValenceArousal>> = (() => {
+  const membership: Partial<Record<string, MoodState[]>> = {}
+  for (const [mood, ids] of Object.entries(MOOD_PALETTES) as [MoodState, string[]][]) {
+    for (const id of ids) (membership[id] ??= []).push(mood)
+  }
+  const out: Record<string, ValenceArousal> = {}
+  for (const [id, moods] of Object.entries(membership)) out[id] = deriveVAFromList(moods ?? [])
+  return out
+})()
+
 const MANUAL_HOLD_SEC = 45 // back off after the DJ touches anything
 
 // A committed mood change only drives a scene/palette switch once the read is
@@ -116,12 +145,30 @@ const PALETTE_MIN_SEC = 10
  *
  * @param rotation monotonic counter; deterministic so a recorded set repeats.
  */
+/**
+ * How strongly VA closeness biases the final rotation, and the resolution
+ * that bias is quantised to. `PALETTE_VA_DAMPENING` bounds the weight the
+ * farthest palette in a pool can lose (never below `1 - dampening`, so
+ * nothing is ever fully excluded — same floor philosophy as
+ * `pickVariedScene`'s `VA_DAMPENING`). `PALETTE_VA_SLOTS` is how many
+ * replicated slots a weight-1 entry gets in the deterministic rotation below;
+ * higher resolves the bias more finely at the cost of a longer array to
+ * rotate through.
+ */
+const PALETTE_VA_DAMPENING = 0.6
+const PALETTE_VA_SLOTS = 10
+/** Plane-diagonal normaliser — see pickVariedScene's identical constant. */
+const PALETTE_VA_PLANE_DIAGONAL = Math.sqrt(2 * 2 + 1 * 1)
+
 export function pickPalette(
   moodPalettes: string[],
   current: string,
   keyFamily: string,
   lastPick: string,
   rotation: number,
+  /** Live valence/arousal read. Omitted, this is the original uniform
+   *  rotation, unchanged — see the module doc on {@link PALETTE_VA}. */
+  currentVA?: ValenceArousal,
 ): string | null {
   const valid = moodPalettes.filter((id) => PALETTES.some((p) => p.id === id))
   const choices = valid.filter((id) => id !== current)
@@ -135,9 +182,32 @@ export function pickPalette(
   const pool = fresh.length > 0 ? fresh : choices
   // Prefer the key's family when it survived that filter: it is the harmonic
   // anchor, and skipping it only when it was just used keeps colour coherent
-  // without pinning the show to a single palette.
+  // without pinning the show to a single palette. Ranked ahead of the VA term
+  // below on purpose — this is a real idea the MER literature does not have,
+  // and it stays in charge of the choice when it applies at all.
   if (keyFamily && pool.includes(keyFamily)) return keyFamily
-  return pool[Math.abs(rotation) % pool.length]
+  if (!currentVA) return pool[Math.abs(rotation) % pool.length]
+  // VA-weighted deterministic rotation (audit c8): each pool entry is
+  // replicated into `expanded` a number of times proportional to how close
+  // its DERIVED position (PALETTE_VA) sits to the live read, then indexed by
+  // `rotation` exactly as the plain pool was. Over many rotations this makes
+  // a close palette come up more often WITHOUT excluding a far one (every
+  // entry gets at least one slot) and without giving up determinism (no
+  // Math.random anywhere in this file, matching pickVariedMode/
+  // pickTransitionStyle). A pure nearest-neighbour argmin was considered and
+  // rejected: many single-pool palettes collide at identical derived
+  // coordinates (see PALETTE_VA's own doc), and an argmin would deterministically
+  // favour whichever collided entry happens to sit first in the pool, every
+  // single time — killing variety rather than sharpening it.
+  const expanded: string[] = []
+  for (const id of pool) {
+    const va = PALETTE_VA[id] ?? { valence: 0, arousal: 0 }
+    const normDist = Math.min(1, vaDistance(va, currentVA) / PALETTE_VA_PLANE_DIAGONAL)
+    const weight = 1 - PALETTE_VA_DAMPENING * normDist
+    const slots = Math.max(1, Math.round(weight * PALETTE_VA_SLOTS))
+    for (let i = 0; i < slots; i++) expanded.push(id)
+  }
+  return expanded[Math.abs(rotation) % expanded.length]
 }
 
 /**
@@ -288,6 +358,7 @@ export function AutoPilot() {
         keyPaletteTracker.family,
         lastPalettePick.current,
         paletteRotation.current++,
+        { valence: performanceState.valence, arousal: performanceState.arousal },
       )
       if (pick) {
         lastPalettePick.current = pick
