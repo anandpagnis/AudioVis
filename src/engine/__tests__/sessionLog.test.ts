@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { frameStats, readRing, sessionLog } from '../sessionLog'
 import { performanceState } from '../performanceState'
 import { quality } from '../quality'
+import { audioEngine } from '../../audio/AudioEngine'
 
 describe('readRing', () => {
   it('returns an unwrapped buffer in write order', () => {
@@ -136,6 +137,81 @@ describe('SessionLog', () => {
       for (let f = 0; f < 60 * 2; f++) sessionLog.tick(1 / 60)
     }
     expect(() => sessionLog.stop()).not.toThrow()
+  })
+})
+
+describe('SessionLog — show quality', () => {
+  it('includes beat-timing, duty-cycle and entropy lines derived from a real cut', () => {
+    const savedScene = performanceState.activeScene
+    const savedPalette = performanceState.palette
+    const savedBar = audioEngine.features.bar
+    const savedBeatInBar = audioEngine.features.beatInBar
+    const savedBeatProgress = audioEngine.features.beatProgress
+    try {
+      sessionLog.start()
+      sessionLog.tick(1 / 60) // baseline sample — establishes prev.scene, no commit yet
+
+      // A cut landing exactly on a downbeat.
+      audioEngine.features.bar = 1
+      audioEngine.features.beatInBar = 0
+      audioEngine.features.beatProgress = 0
+      performanceState.activeScene = 'showQualityTestScene'
+      sessionLog.tick(1 / 60)
+
+      // Enough more ticks to cross a couple of 4Hz sample boundaries so the
+      // rack/entropy lines have something to summarise.
+      for (let i = 0; i < 30; i++) sessionLog.tick(1 / 60)
+
+      const { summary } = sessionLog.stop()
+      expect(summary).toContain('--- show quality ---')
+      expect(summary).toContain('mirror duty cycle')
+      expect(summary).toContain('lens   duty cycle')
+      expect(summary).toContain('scene entropy')
+      expect(summary).toContain('palette entropy')
+
+      // The cut landed exactly on the downbeat: offset stats must say so.
+      const offLine = summary.split('\n').find((l) => l.startsWith('cut offset'))
+      expect(offLine).toBeDefined()
+      expect(offLine).toContain('mean 0.00')
+      const hitLine = summary.split('\n').find((l) => l.startsWith('beat hit score'))
+      expect(hitLine).toBeDefined()
+      expect(hitLine).toContain('beat coverage score')
+      expect(hitLine).toContain('100%')
+    } finally {
+      performanceState.activeScene = savedScene
+      performanceState.palette = savedPalette
+      audioEngine.features.bar = savedBar
+      audioEngine.features.beatInBar = savedBeatInBar
+      audioEngine.features.beatProgress = savedBeatProgress
+    }
+  })
+
+  it('reports no cuts when the scene never changes', () => {
+    sessionLog.start()
+    for (let i = 0; i < 10; i++) sessionLog.tick(1 / 60)
+    const { summary } = sessionLog.stop()
+    expect(summary).toContain('cut timing: no scene commits recorded')
+  })
+
+  it('measures scene time-to-repeat, with a histogram, when a scene comes back around', () => {
+    const savedScene = performanceState.activeScene
+    try {
+      sessionLog.start()
+      sessionLog.tick(1 / 60)
+      performanceState.activeScene = 'sceneA'
+      sessionLog.tick(1 / 60)
+      performanceState.activeScene = 'sceneB'
+      sessionLog.tick(1 / 60)
+      performanceState.activeScene = 'sceneA' // repeat — this is what the metric measures
+      sessionLog.tick(1 / 60)
+      const { summary } = sessionLog.stop()
+      const line = summary.split('\n').find((l) => l.startsWith('scene time-to-repeat'))
+      expect(line).toBeDefined()
+      expect(line).toMatch(/\(n=1\)/)
+      expect(line).toContain('0-10s:1') // the repeat landed inside one 60Hz tick, well under 10s
+    } finally {
+      performanceState.activeScene = savedScene
+    }
   })
 })
 

@@ -1,11 +1,23 @@
 import { audioEngine } from '../audio/AudioEngine'
 import { MOOD_CHANGE_MAX_AMBIGUITY, MOOD_CHANGE_MIN_CONFIDENCE } from './autoPilotGates'
 import { frameLoad } from './frameLoad'
+import { isLensActive, isMirrorActive } from './opticalRack'
 import { PALETTES } from './palettes'
 import { performanceState } from './performanceState'
 import { perf } from './PerfMonitor'
 import { quality } from './quality'
 import { renderScale } from './renderScale'
+import {
+  beatCoverageScore,
+  beatHitScore,
+  cutOffsetDistribution,
+  histogramBuckets,
+  normalisedEntropy,
+  rackDutyCycle,
+  repeatGapsSec,
+  timeToRepeat,
+  type CutBeatSample,
+} from './showQualityMetrics'
 import { useStore } from '../store'
 
 /**
@@ -167,6 +179,13 @@ export interface SessionSample {
    */
   qualityMode: string
   autoPilot: boolean
+  /** Bar count (`AudioFeatures.bar`) — the beat-grid position this sample fell at, for show-quality metrics (c13). */
+  bar: number
+  /** `isMirrorActive`/`isLensActive` on the state this sample already captured — reuses the racks' own "is there
+   *  anything to do" predicate rather than re-deriving engagement from a subset of the dials (mirror's `segments`
+   *  alone reads as off for three of its four ON modes). */
+  mirrorActive: boolean
+  lensActive: boolean
 }
 
 export type SessionEventKind =
@@ -209,6 +228,12 @@ export interface SessionEvent {
   ms: number
   p95: number
   scene: string
+  /** Beat-grid position at the moment this event was pushed (c13's show-quality metrics) —
+   *  recorded on every event, same as `ms`/`p95`/`scene`, cheap context that is only load-bearing
+   *  for 'scene' commits (cuts) but costs nothing to carry on the rest. */
+  bar: number
+  beatInBar: number
+  beatProgress: number
 }
 
 /* ------------------------------------------------------------------ state */
@@ -447,6 +472,7 @@ class SessionLog {
 
   private push(kind: SessionEventKind, detail: string): void {
     if (this.events.length >= EVENT_CAPACITY) return
+    const f = audioEngine.features
     this.events.push({
       t: round(this.elapsed, 2),
       kind,
@@ -454,6 +480,9 @@ class SessionLog {
       ms: round(perf.ms, 2),
       p95: round(perf.p95, 2),
       scene: performanceState.activeScene,
+      bar: f.bar,
+      beatInBar: f.beatInBar,
+      beatProgress: round(f.beatProgress, 3),
     })
   }
 
@@ -682,6 +711,9 @@ class SessionLog {
       palette: p.palette,
       qualityMode: store.quality,
       autoPilot: store.autoPilot,
+      bar: f.bar,
+      mirrorActive: isMirrorActive(p.mirror),
+      lensActive: isLensActive(p.lens),
     })
   }
 
@@ -934,6 +966,76 @@ class SessionLog {
     L.push(
       `palette changes: ${this.events.filter((e) => e.kind === 'palette').length}  (of ${PALETTES.length} available)`,
     )
+    L.push('')
+
+    // --- show quality -------------------------------------------------------
+    // Cut timing, rack presence, and pool variety — none of it new data. All
+    // five numbers below are derived from events and samples this recorder was
+    // already taking; see showQualityMetrics.ts for the pure arithmetic.
+    L.push('--- show quality ---')
+    const rhsOf = (detail: string): string => {
+      const i = detail.indexOf(' -> ')
+      return i < 0 ? '' : detail.slice(i + 4)
+    }
+    const sceneCommitEvents = this.events.filter((e) => e.kind === 'scene' && e.detail.includes(' -> '))
+    const cuts: CutBeatSample[] = sceneCommitEvents.map((e) => ({
+      bar: e.bar,
+      beatInBar: e.beatInBar,
+      beatProgress: e.beatProgress,
+    }))
+    const totalBars = new Set(this.samples.map((s) => s.bar)).size
+    if (cuts.length > 0) {
+      const off = cutOffsetDistribution(cuts)
+      L.push(
+        `cut offset from nearest downbeat (beats): mean ${off.meanBeats.toFixed(2)} median ${off.medianBeats.toFixed(2)} p90 ${off.p90Beats.toFixed(2)} max ${off.maxBeats.toFixed(2)}`,
+      )
+      L.push(
+        `beat hit score (cuts within an 8th note of any beat): ${(beatHitScore(cuts) * 100).toFixed(0)}%   ` +
+          `beat coverage score (of ${totalBars} bars spanned, one landed near the downbeat): ${(beatCoverageScore(cuts, totalBars) * 100).toFixed(0)}%`,
+      )
+    } else {
+      L.push('cut timing: no scene commits recorded')
+    }
+    if (this.samples.length > 0) {
+      const mirrorDuty = rackDutyCycle(this.samples.map((s) => s.mirrorActive), SAMPLE_INTERVAL_SEC)
+      const lensDuty = rackDutyCycle(this.samples.map((s) => s.lensActive), SAMPLE_INTERVAL_SEC)
+      L.push(
+        `mirror duty cycle: ${(mirrorDuty.dutyCycle * 100).toFixed(0)}%  longest on ${mirrorDuty.longestOnSec.toFixed(1)}s  longest off ${mirrorDuty.longestOffSec.toFixed(1)}s`,
+      )
+      L.push(
+        `lens   duty cycle: ${(lensDuty.dutyCycle * 100).toFixed(0)}%  longest on ${lensDuty.longestOnSec.toFixed(1)}s  longest off ${lensDuty.longestOffSec.toFixed(1)}s`,
+      )
+      const sceneEntropy = normalisedEntropy(this.samples.map((s) => s.activeScene))
+      const paletteEntropy = normalisedEntropy(this.samples.map((s) => s.palette))
+      L.push(
+        `scene entropy: ${sceneEntropy.toFixed(2)} of 1 (evenness among the scenes actually used)   ` +
+          `palette entropy: ${paletteEntropy.toFixed(2)} of 1`,
+      )
+    }
+    // Time-to-repeat: how long between one scene/palette's appearances and its
+    // next, aggregated across every one that came back at all. The histogram
+    // buckets in 10s bins — coarse on purpose, this is "does the show cycle
+    // back inside a minute or take five", not a precise distribution.
+    const histLine = (label: string, entries: { t: number; label: string }[]): string | null => {
+      const s = timeToRepeat(entries)
+      if (s.n === 0) return null
+      const gaps = repeatGapsSec(entries)
+      const buckets = histogramBuckets(gaps, 10, 6)
+      const hist = buckets
+        .map((c, i) => (i === buckets.length - 1 ? `${i * 10}s+:${c}` : `${i * 10}-${(i + 1) * 10}s:${c}`))
+        .join(' ')
+      return (
+        `${label} time-to-repeat: mean ${s.meanSec.toFixed(1)}s median ${s.medianSec.toFixed(1)}s ` +
+        `min ${s.minSec.toFixed(1)}s max ${s.maxSec.toFixed(1)}s (n=${s.n})  [${hist}]`
+      )
+    }
+    const sceneEntries = sceneCommitEvents.map((e) => ({ t: e.t, label: rhsOf(e.detail) }))
+    const paletteEvents = this.events.filter((e) => e.kind === 'palette')
+    const paletteEntries = paletteEvents.map((e) => ({ t: e.t, label: rhsOf(e.detail) }))
+    const sceneLine = histLine('scene', sceneEntries)
+    if (sceneLine) L.push(sceneLine)
+    const paletteLine = histLine('palette', paletteEntries)
+    if (paletteLine) L.push(paletteLine)
     L.push('')
 
     L.push('--- audio & show ---')
