@@ -30,8 +30,45 @@ const WINDOW = 12 // seconds of onset history
  */
 const PRIOR_MAX_MIX = 0.65
 /** A ½×/2× octave sibling must beat the candidate's onset-grid fit by this
- * factor before we switch — keeps the correction from flapping on ties. */
+ * factor before we switch — keeps the correction from flapping on ties. This is
+ * the base margin for a *cold* switch; leaving a well-supported metrical level
+ * costs `+ octaveLock * OCTAVE_LOCK_MARGIN` on top (see {@link BpmEstimator}). */
 const OCTAVE_SWITCH_MARGIN = 1.15
+/** How much a fully-established `octaveLock` (1.0) adds to the switch margin
+ * when a correction would push AWAY from the locked metrical level. */
+const OCTAVE_LOCK_MARGIN = 0.9
+/** Above this `octaveLock` a sparse-passage octave read is reclaimed by the
+ * lock rather than followed, and the persist-before-jump gate holds an octave
+ * jump entirely. Below it the lock has eroded enough to let a genuine metrical
+ * change through. */
+const OCTAVE_LOCK_HOLD = 0.35
+
+/**
+ * Reconcile a soft model tempo read (Essentia) against a confident internal
+ * lock, folding an obvious ½×/2× octave error onto the locked metrical level.
+ *
+ * `degara` reports no confidence and does no octave folding of its own, so a
+ * 152-BPM track can come back as a clean-looking 76. When the internal grid is
+ * already locked with real confidence and the model read is ~half or ~double it,
+ * trust the grid's octave and fold the model onto it — the model still gets to
+ * refine the *rate*, it just doesn't get to halve the whole show. A model read
+ * that carries its own strong confidence (multifeature ≥ ~0.7), or that lands
+ * somewhere unrelated, passes through untouched.
+ */
+export function reconcileModelBpm(
+  modelBpm: number,
+  refBpm: number,
+  refConfidence: number,
+  modelConf: number,
+): number {
+  if (!Number.isFinite(modelBpm) || modelBpm <= 0) return modelBpm
+  if (!Number.isFinite(refBpm) || refBpm <= 0) return modelBpm
+  if (refConfidence < 0.6 || modelConf >= 0.7) return modelBpm
+  for (const mult of [0.5, 2] as const) {
+    if (Math.abs(modelBpm * mult - refBpm) / refBpm < 0.06) return modelBpm * mult
+  }
+  return modelBpm
+}
 
 export class BpmEstimator {
   period = 0.5 // seconds per beat (120 BPM)
@@ -51,6 +88,17 @@ export class BpmEstimator {
    * histogram's pick was halved (double-time error), 2 = doubled (half-time
    * error). Exposed for the debug panel. */
   octaveCorrection: 0.5 | 1 | 2 = 1
+  /**
+   * 0..1 — how strongly the CURRENT metrical level is backed by dense,
+   * well-fitting onset evidence. Rises quickly while a dense section confirms
+   * `period` is best among its octave siblings; decays slowly otherwise, so a
+   * sparse verse cannot erase a lock a chorus established. This is the memory
+   * the old recompute-from-scratch octave correction lacked: the ~8 % of
+   * samples where the tempo read flipped 76↔152 were sparse passages that are
+   * information-theoretically ambiguous between the two — only carried-forward
+   * evidence of the dense sections resolves them (F121).
+   */
+  octaveLock = 0
   private externalUntil = -1
 
   private modelBpm = 0
@@ -68,6 +116,7 @@ export class BpmEstimator {
     this.stableCount = 0
     this.hitScore = 0
     this.octaveCorrection = 1
+    this.octaveLock = 0
     this.externalUntil = -1
     this.modelBpm = 0
     this.modelConf = 0
@@ -185,29 +234,65 @@ export class BpmEstimator {
     // candidate and its octave siblings against the actual onsets — which
     // grid do the observed hits land on — and take the best fit, not the
     // biggest vote pile. Skipped when too few onsets exist to test against.
+    //
+    // The switch is now ASYMMETRIC around the current metrical level: a sibling
+    // that pulls BACK toward `this.period`'s octave is cheap (or free, when
+    // `octaveLock` is high — a sparse passage's half-tempo read is reclaimed by
+    // the lock rather than followed), while one that pushes AWAY is resisted in
+    // proportion to `octaveLock`. This is what stops the 76↔152 flip: the
+    // sparse verse can no longer win the octave the dense chorus established.
     let fitQuality = 0
     if (os.length >= 8) {
       const baseFit = this.gridFit(candidate)
       let bestFit = baseFit
       let correction: 0.5 | 1 | 2 = 1
+      const octavesFromLock = (p: number) => Math.abs(Math.log2(p / this.period))
+      const candDist = octavesFromLock(candidate)
       for (const mult of [0.5, 2] as const) {
         const p2 = candidate * mult
         if (p2 < MIN_PERIOD || p2 > MAX_PERIOD) continue
         const fit = this.gridFit(p2)
-        if (fit > bestFit && fit > baseFit * OCTAVE_SWITCH_MARGIN) {
-          bestFit = fit
+        const pullingHome = octavesFromLock(p2) < 0.15 && this.octaveLock > OCTAVE_LOCK_HOLD
+        if (pullingHome && fit > baseFit * (1 - 0.5 * this.octaveLock)) {
+          // A well-supported metrical level reclaims a sparse-passage octave
+          // read without having to out-score it outright.
+          if (fit > bestFit) bestFit = fit
           correction = mult
+        } else {
+          const leavingLock = octavesFromLock(p2) > candDist + 0.05
+          const margin =
+            OCTAVE_SWITCH_MARGIN + (leavingLock ? this.octaveLock * OCTAVE_LOCK_MARGIN : 0)
+          if (fit > bestFit && fit > baseFit * margin) {
+            bestFit = fit
+            correction = mult
+          }
         }
       }
       this.octaveCorrection = correction
       if (correction !== 1) candidate *= correction
       fitQuality = bestFit
+
+      // --- Metrical-level memory: reinforce `octaveLock` only when a dense
+      // window confirms `period` is genuinely the best octave, decay it slowly
+      // the rest of the time (a sparse verse must not erase a chorus's lock).
+      const slowerP = this.period * 2
+      const fasterP = this.period * 0.5
+      const selfFit = this.gridFit(this.period)
+      const slowerFit = slowerP <= MAX_PERIOD ? this.gridFit(slowerP) : 0
+      const fasterFit = fasterP >= MIN_PERIOD ? this.gridFit(fasterP) : 0
+      const wellSupported =
+        os.length >= 12 && selfFit > 0.6 && selfFit >= slowerFit && selfFit >= fasterFit
+      this.octaveLock += ((wellSupported ? 1 : 0) - this.octaveLock) * (wellSupported ? 0.15 : 0.03)
     } else {
       this.octaveCorrection = 1
     }
     // degara reports no confidence — fall back to grid-fit quality as the
-    // reliability read rather than letting confidence collapse to zero.
-    if (modelFresh && clarity <= 0) clarity = fitQuality
+    // reliability read, but only when the applied octave is trusted; otherwise
+    // a wrong-octave candidate would launder its grid-fit into "model reliability".
+    if (modelFresh && clarity <= 0) {
+      clarity =
+        os.length >= 8 && this.octaveCorrection === 1 ? fitQuality : Math.max(0.3, this.hitScore)
+    }
 
     const density = modelFresh ? 1 : Math.min(1, os.length / 16)
     const candConf = clarity * density
@@ -226,7 +311,13 @@ export class BpmEstimator {
         this.stableCount = 0
       }
       this.lastCandidate = candidate
-      if (this.stableCount >= 2 || this.confidence < 0.08) {
+      // A well-supported metrical level does not yield to an octave jump at all
+      // until `octaveLock` has eroded (a sustained ½/2× section outlasting the
+      // lock's decay) or confidence has collapsed. `stableCount` keeps counting
+      // meanwhile, so a genuine metrical change flips the instant the lock lets go.
+      const octaveJump = Math.abs(Math.abs(Math.log2(candidate / this.period)) - 1) < 0.15
+      const lockedIn = octaveJump && this.octaveLock > OCTAVE_LOCK_HOLD && this.confidence > 0.15
+      if (!lockedIn && (this.stableCount >= 2 || this.confidence < 0.08)) {
         this.period = candidate
         this.stableCount = 0
       }
@@ -321,6 +412,15 @@ export class BpmEstimator {
    *  - `occupancy`: onsets per expected beat. A halved period fits the
    *    intervals perfectly (they land on 2, 4…) but leaves half its beats
    *    empty — this is what rejects double-time.
+   *
+   * The occupancy PENALTY is kept (a too-fast period with empty beats still
+   * scores low — this is what rejects double-time), but its former mirror-image
+   * REWARD is now density-gated: in a sparse passage where real onsets land
+   * every other beat, "a hit on every predicted beat" no longer boosts the
+   * half-tempo grid over the true one, because we can't tell "wrong period"
+   * from "sparse music" without more onsets than a sparse window holds. That
+   * asymmetry is what made `gridFit(halfTempo) > gridFit(true)` in the F121
+   * sparse passages.
    */
   private gridFit(p: number): number {
     const os = this.onsets
@@ -343,6 +443,11 @@ export class BpmEstimator {
     }
     if (totalW <= 0 || expectedBeats <= 0) return 0
     const occupancy = Math.min(1, intervals / expectedBeats)
-    return (fitW / totalW) * (0.3 + 0.7 * occupancy)
+    // `densFactor` → 1 only with a dense window (~1.5 onsets/s over 12 s); when
+    // it is low, occupancy stops pulling the score down and the histogram/prior
+    // and `octaveLock` decide the metrical level instead. At `densFactor = 1`
+    // this reduces exactly to the old `(0.3 + 0.7·occupancy)`.
+    const densFactor = Math.min(1, os.length / (WINDOW * 1.5))
+    return (fitW / totalW) * (1 - 0.7 * densFactor * (1 - occupancy))
   }
 }

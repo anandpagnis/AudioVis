@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
 import { essentiaBridge } from '../audio/essentia/EssentiaBridge'
+import { structureBridge } from '../audio/essentia/StructureBridge'
 import { voiceBridge } from '../audio/essentia/VoiceBridge'
 import { perf } from '../engine/PerfMonitor'
 import { exposure } from '../engine/exposure'
@@ -10,7 +11,7 @@ const W = 280
  * Panel height. Rows sit on a 12px grid starting at y=14:
  *
  *   14 bpm · 26 phrase strip · 36 fps/tier/dpr · 48 render scale ·
- *   60 exposure · 72 GPU telemetry · 84 mood · 96 key · 108 voice
+ *   60 exposure · 72 GPU telemetry · 84 mood · 96 key · 108 voice · 120 structure
  *
  * Written down because the rows are drawn by separate blocks in this file and
  * two of them silently shared y=48 for a while — the later draw simply painted
@@ -35,15 +36,16 @@ export function DebugPanel() {
       const f = audioEngine.features
       ctx.clearRect(0, 0, W, H)
 
-      // Spectrum (log-ish bucketing for readability).
+      // Spectrum (log-ish bucketing for readability). f.spectrum now spans the
+      // full Nyquist range; show only the lower ~13 kHz so the useful part
+      // keeps its width instead of compressing to make room for a noise-floor
+      // tail up top.
       const bars = 64
+      const specView = Math.min(f.spectrum.length, 620)
       ctx.fillStyle = 'rgba(120, 200, 255, 0.75)'
       for (let i = 0; i < bars; i++) {
-        const start = Math.floor(Math.pow(i / bars, 1.8) * f.spectrum.length)
-        const end = Math.max(
-          start + 1,
-          Math.floor(Math.pow((i + 1) / bars, 1.8) * f.spectrum.length),
-        )
+        const start = Math.floor(Math.pow(i / bars, 1.8) * specView)
+        const end = Math.max(start + 1, Math.floor(Math.pow((i + 1) / bars, 1.8) * specView))
         let v = 0
         for (let j = start; j < end; j++) v = Math.max(v, f.spectrum[j])
         const h = Math.min(1, v * 14) * (H - 40)
@@ -159,15 +161,15 @@ export function DebugPanel() {
         6,
         84,
       )
-      // Key + raw danceability from the essentia worker (read-only for now).
-      if (f.key || f.danceability > 0) {
-        ctx.fillStyle = 'rgba(179, 136, 255, 0.85)'
-        ctx.fillText(
-          `${f.key ? `${f.key} ${f.scale} ${f.keyConfidence.toFixed(2)}` : 'key —'}   dance ${f.danceability.toFixed(2)}`,
-          6,
-          96,
-        )
-      }
+      // Key + raw danceability from the essentia worker (read-only for now),
+      // plus the K-weighting short-term loudness (an absolute-scale "is the
+      // input gain sane" readout — target roughly -14 LUFS for a live source).
+      ctx.fillStyle = 'rgba(179, 136, 255, 0.85)'
+      ctx.fillText(
+        `${f.key ? `${f.key} ${f.scale} ${f.keyConfidence.toFixed(2)}` : 'key —'}   dance ${f.danceability.toFixed(2)}   ${f.lufsShortTerm.toFixed(1)} LUFS`,
+        6,
+        96,
+      )
       // Voice + mood heads from the classifier worker (read-only for now).
       const vs = voiceBridge.status
       if (vs.runs > 0) {
@@ -181,6 +183,26 @@ export function DebugPanel() {
       } else if (vs.error) {
         ctx.fillStyle = 'rgba(255, 138, 101, 0.75)'
         ctx.fillText(`voice: ${vs.missing ? 'models not fetched' : vs.error.slice(0, 34)}`, 6, 108)
+      }
+      // Song structure — latched section read + the async analyzer's health.
+      const ss = f.songSection
+      const st = structureBridge.status
+      ctx.fillStyle = f.structureValid ? 'rgba(140, 200, 255, 0.9)' : 'rgba(255,255,255,0.35)'
+      if (f.structureValid) {
+        const bd = ss.beatsTillDrop >= 0 ? ` drop~${ss.beatsTillDrop}b` : ''
+        const bp = ss.isBuild ? ` bld ${(ss.buildProgress * 100).toFixed(0)}%` : ''
+        const rep = ss.repetitionLabel ? ` [${ss.repetitionLabel}]` : ''
+        ctx.fillText(
+          `${ss.section}${rep}  ${ss.beatsInSection}b  conf ${(ss.sectionConfidence * 100).toFixed(0)}%${bp}${bd}`,
+          6,
+          120,
+        )
+      } else {
+        ctx.fillText(
+          `structure: ${st.missing ? 'wasm unavailable' : st.runs > 0 ? 'warming' : 'no read yet'}`,
+          6,
+          120,
+        )
       }
 
       raf = requestAnimationFrame(draw)

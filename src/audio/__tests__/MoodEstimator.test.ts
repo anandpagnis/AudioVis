@@ -124,6 +124,82 @@ describe('MoodEstimator', () => {
     expect(decisive.mood.ambiguity).toBeLessThan(contested.mood.ambiguity)
   })
 
+  it('does not commit mellow for a bass-heavy mid-energy mix (F121)', () => {
+    // The F121 failure: 139 of 155 s on `mellow` while bass regularly passed
+    // 0.8. Soft-ish energy but a bass-forward mix must read as groove.
+    const f = run(10, 0.02, (f) => {
+      f.silence = false
+      f.energy = 0.4
+      f.bass = 0.85
+      f.confidence = 0.7
+      f.centroid = 0.45
+      f.bpm = 120
+    })
+    expect(f.mood.state).not.toBe('mellow')
+  })
+
+  it('still reaches groove when the beat-tracker confidence is weak', () => {
+    // groove used to collapse to ~half when `f.confidence` was low — which is
+    // exactly F121's octave-flip symptom. The CONF_FLOOR keeps it reachable.
+    const f = run(10, 0.02, (f) => {
+      f.silence = false
+      f.energy = 0.6
+      f.bass = 0.7
+      f.confidence = 0.15
+      f.centroid = 0.4
+      f.flux = 0.2
+      f.bpm = 120
+    })
+    expect(f.mood.state).toBe('groove')
+  })
+
+  it('still commits mellow for genuinely soft, sparse, bass-light material', () => {
+    const f = run(10, 0.02, (f) => {
+      f.silence = false
+      f.energy = 0.32
+      f.bass = 0.2
+      f.confidence = 0.4
+      f.centroid = 0.6
+      f.bpm = 90
+    })
+    expect(f.mood.state).toBe('mellow')
+  })
+
+  it('reports a high confidence for a decisive, settled read (not capped near 0.39)', () => {
+    // F121: the old formula could not carry confidence past ~0.4 on ANY input
+    // because it used the raw score margin. A sustained, clearly-groove read
+    // must now land well above the AutoPilot gate.
+    const f = run(12, 0.02, (f) => {
+      f.silence = false
+      f.energy = 0.62
+      f.bass = 0.6
+      f.confidence = 0.85
+      f.centroid = 0.42
+      f.flux = 0.2
+      f.bpm = 122
+    })
+    expect(f.mood.state).toBe('groove')
+    expect(f.mood.confidence).toBeGreaterThan(0.6)
+  })
+
+  it('confidence moves opposite to ambiguity', () => {
+    // Decisive: silence scores 1.5 alone → ambiguity ~0.
+    const decisive = run(2, 0.05, (f) => {
+      f.silence = true
+      f.energy = 0
+    })
+    // Contested: a boundary-region input with several states near-tied.
+    const contested = run(2, 0.05, (f) => {
+      f.silence = false
+      f.energy = 0.3
+      f.bass = 0.3
+      f.confidence = 0.4
+      f.centroid = 0.3
+    })
+    expect(decisive.mood.ambiguity).toBeLessThan(contested.mood.ambiguity)
+    expect(decisive.mood.confidence).toBeGreaterThan(contested.mood.confidence)
+  })
+
   it('scores aggressive higher for a noisier (higher spectral flatness) texture at the same energy', () => {
     function aggressiveScoreFor(flatness: number): number {
       const f = run(5, 0.02, (f) => {
@@ -139,5 +215,23 @@ describe('MoodEstimator', () => {
       return f.mood.scores.aggressive
     }
     expect(aggressiveScoreFor(0.9)).toBeGreaterThan(aggressiveScoreFor(0.05))
+  })
+
+  it('ignores f.sparkle — it is a contract-level cue, not wired into scoring yet', () => {
+    const scoreWith = (sparkle: number) =>
+      run(5, 0.02, (f) => {
+        f.silence = false
+        f.energy = 0.75
+        f.bass = 0.6
+        f.confidence = 0.7
+        f.centroid = 0.5
+        f.flux = 0.5
+        f.bpm = 140
+        f.sparkle = sparkle
+      }).mood.scores
+    const lo = scoreWith(0)
+    const hi = scoreWith(1)
+    expect(hi.aggressive).toBeCloseTo(lo.aggressive, 10)
+    expect(hi.ambient).toBeCloseTo(lo.ambient, 10)
   })
 })

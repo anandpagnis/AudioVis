@@ -8,6 +8,19 @@ export interface SpectralBandsResult {
   vocal: number
   /** High-frequency "air" content above `high` (~9-16 kHz) — shimmer, cymbal wash, breath. */
   air: number
+  /**
+   * "Sparkle" — mean linear magnitude from 16 kHz to Nyquist, above where `air`
+   * stops. Non-overlapping with `air` by construction. High on an air-heavy
+   * master, ~floor on a dull or lossy-encoded one.
+   */
+  sparkle: number
+  /**
+   * 0..~1+ — spectral centroid (mean frequency) as a fraction of 9 kHz.
+   * Accumulated over the FULL spectrum, so an air-heavy master reads brighter
+   * than one that rolls off early; can exceed 1 for very bright material (the
+   * consumer clamps). Still normalized to a fixed 9 kHz reference, so it is
+   * sample-rate-invariant.
+   */
   centroidRaw: number
   bassFlux: number
   /** 0..1 — tonal/harmonic (low) vs. noisy/distorted (high) spectral texture. */
@@ -25,7 +38,7 @@ export interface SpectralBandsResult {
   hihatFlux: number
 }
 
-/** Upper edge of the "air" band. */
+/** Upper edge of the "air" band; also the lower edge of "sparkle". */
 const AIR_HZ = 16000
 
 /** Drum-band edges (Hz). Deliberately narrow — overlap blurs the three apart. */
@@ -49,6 +62,7 @@ const result: SpectralBandsResult = {
   high: 0,
   vocal: 0,
   air: 0,
+  sparkle: 0,
   centroidRaw: 0,
   bassFlux: 0,
   spectralFlatness: 0,
@@ -60,13 +74,15 @@ const result: SpectralBandsResult = {
 
 /**
  * Pure per-frame spectral analysis: bands, centroid, flux, and the texture
- * cues (flatness/rolloff/air). Extracted from AudioEngine.update() so it can
- * be unit-tested against synthetic spectra without a real AudioContext.
+ * cues (flatness/rolloff/air/sparkle). Extracted from AudioEngine.update() so it
+ * can be unit-tested against synthetic spectra without a real AudioContext.
  *
- * Reproduces the original inline loop's math exactly for the six legacy
- * outputs (sub/bass/mid/presence/high/vocal/centroidRaw/bassFlux) — this is a
- * refactor, not a rebalance. `air` reads a separate bin range past `highEnd`
- * so it can never perturb the bands above it.
+ * Reproduces the original inline loop's math exactly for the six legacy bands
+ * (sub/bass/mid/presence/high/vocal), the three drum-flux bands, `bassFlux`,
+ * `spectralFlatness` and `spectralRolloff` — those are BYTE-IDENTICAL, and a
+ * golden-value test locks them. What changed: `centroidRaw` now accumulates
+ * over the whole spectrum instead of stopping at 9 kHz (so brightness above
+ * `high` finally registers), and a new `sparkle` cue reads 16 kHz–Nyquist.
  *
  * `prevMag` is mutated in place — it carries flux state frame-to-frame and is
  * owned by the caller (same buffer AudioEngine already allocates once).
@@ -100,13 +116,17 @@ export function computeSpectralBands(
   let presence = 0
   let high = 0
   let vocal = 0
-  let centW = 0
-  let centWF = 0
+  let bandW = 0 // energy sum over [1, highEnd) — flatness + rolloff reference
   let bassFlux = 0
   let sumLogMag = 0
   let kickFlux = 0
   let snareFlux = 0
   let hihatFlux = 0
+  // Centroid accumulates over the FULL spectrum (all three loops below), so
+  // content above 9 kHz pulls the mean up. Normalized to `highEnd` (a fixed
+  // 9 kHz reference) to stay sample-rate-invariant.
+  let centW = 0
+  let centWF = 0
 
   for (let i = 1; i < highEnd; i++) {
     const mag = Math.pow(10, freqDb[i] / 20)
@@ -116,6 +136,7 @@ export function computeSpectralBands(
     if (i < subEnd) sub += mag
     if (i >= vocalStart && i < presenceEnd) vocal += mag
     if (i >= midEnd && i < presenceEnd) presence += mag
+    bandW += mag
     centW += mag
     centWF += mag * i
     sumLogMag += Math.log(mag + 1e-6)
@@ -138,20 +159,23 @@ export function computeSpectralBands(
   presence /= Math.max(1, presenceEnd - midEnd)
   high /= Math.max(1, highEnd - midEnd)
   vocal /= Math.max(1, presenceEnd - vocalStart)
-  const centroidRaw = centW > 1e-6 ? centWF / centW / highEnd : 0
 
   // Flatness: geometric mean / arithmetic mean of magnitude — ~1 for a
-  // white-noise-like spectrum, ~0 for a single dominant tone.
+  // white-noise-like spectrum, ~0 for a single dominant tone. Kept on the
+  // [1, highEnd) range: extending it to the (near-dead) top octave would sink
+  // the geometric mean and collapse the cue for tonal material.
   const nBins = Math.max(1, highEnd - 1)
-  const meanMag = centW / nBins
+  const meanMag = bandW / nBins
   const spectralFlatness = meanMag > 1e-9 ? Math.min(1, Math.exp(sumLogMag / nBins) / meanMag) : 0
 
   // Rolloff: the bin below which 85% of [1, highEnd) energy sits, normalized
   // 0..1 — a brightness cue that isn't skewed by one hot bin the way centroid
-  // can be. Needs the total (centW) first, so it's necessarily a second pass.
+  // can be. Kept referenced to `highEnd` (not Nyquist): its one consumer reads
+  // it as a 2–9 kHz harshness cue, and a Nyquist reference would spend most of
+  // the 0..1 range on the octave where a musical rolloff point never sits.
   let spectralRolloff = 0
-  if (centW > 1e-9 && highEnd > 1) {
-    const target = centW * 0.85
+  if (bandW > 1e-9 && highEnd > 1) {
+    const target = bandW * 0.85
     let acc = 0
     let rolloffBin = highEnd - 1
     for (let i = 1; i < highEnd; i++) {
@@ -173,11 +197,28 @@ export function computeSpectralBands(
   for (let i = highEnd; i < airEnd; i++) {
     const mag = Math.pow(10, freqDb[i] / 20)
     air += mag
+    centW += mag
+    centWF += mag * i
     const diff = mag - prevMag[i]
     if (diff > 0 && i < hihatHi) hihatFlux += diff
     prevMag[i] = mag
   }
   air /= Math.max(1, airEnd - highEnd)
+
+  // Sparkle: 16 kHz → Nyquist, above where `air` stops. Same prevMag hygiene
+  // as the air loop even though nothing reads flux up here yet. Also feeds the
+  // full-spectrum centroid accumulators.
+  let sparkle = 0
+  for (let i = airEnd; i < n; i++) {
+    const mag = Math.pow(10, freqDb[i] / 20)
+    sparkle += mag
+    centW += mag
+    centWF += mag * i
+    prevMag[i] = mag
+  }
+  sparkle /= Math.max(1, n - airEnd)
+
+  const centroidRaw = centW > 1e-6 ? centWF / centW / highEnd : 0
 
   result.sub = sub
   result.bass = bass
@@ -186,6 +227,7 @@ export function computeSpectralBands(
   result.high = high
   result.vocal = vocal
   result.air = air
+  result.sparkle = sparkle
   result.centroidRaw = centroidRaw
   result.bassFlux = bassFlux
   result.spectralFlatness = spectralFlatness
@@ -194,4 +236,54 @@ export function computeSpectralBands(
   result.snareFlux = snareFlux
   result.hihatFlux = hihatFlux
   return result
+}
+
+/**
+ * dB → linear magnitude, clamped to the `f.spectrum` 0..1-per-bin contract.
+ * Writes `out.length` bins (`FFT_SIZE / 2`, spanning 0..Nyquist). A real
+ * `AnalyserNode` does NOT clamp `getFloatFrequencyData` to `maxDecibels`, so a
+ * hot master genuinely pushes bins past 1.0 linear (~1.6) — hence the clamp.
+ * Pure and allocation-free (writes into the caller's buffer) so it is testable.
+ */
+export function writeLinearSpectrum(freqDb: Float32Array, out: Float32Array): void {
+  for (let i = 0; i < out.length; i++) {
+    const mag = Math.pow(10, freqDb[i] / 20)
+    out[i] = mag < 1 ? mag : 1
+  }
+}
+
+/** Reused scratch — the low-band path allocates nothing, matching `result`. */
+const lowResult = { sub: 0, bass: 0 }
+
+/**
+ * Sub/bass mean linear magnitude from a dedicated high-resolution analyser
+ * (AudioEngine's second AnalyserNode, fftSize 8192 ≈ 5.4 Hz/bin at 44.1 kHz).
+ *
+ * Mirrors the sub/bass accumulation in {@link computeSpectralBands} EXACTLY —
+ * bins `[1, ceil(cut / binHz))`, skip DC, divide by `endBin - 1` — just on a
+ * finer grid, so `f.sub` keeps the same contract and the same BandNormalizer
+ * behaviour. Only `sub` is sourced from here in practice: `bass` includes kick
+ * fundamentals that this window's ~186 ms span would smear, so it stays on the
+ * 2048 grid. `bass` is returned anyway for symmetry / callers that want it.
+ *
+ * `lowFreqDb` is `getFloatFrequencyData` output (dB); `lowBinHz` MUST be
+ * `nyquist / lowFreqDb.length` (do not hardcode — it is sample-rate dependent).
+ */
+export function computeLowBands(
+  lowFreqDb: Float32Array,
+  lowBinHz: number,
+): { sub: number; bass: number } {
+  const n = lowFreqDb.length
+  const subEnd = Math.min(n, Math.ceil(80 / lowBinHz))
+  const bassEnd = Math.min(n, Math.ceil(160 / lowBinHz))
+  let sub = 0
+  let bass = 0
+  for (let i = 1; i < bassEnd; i++) {
+    const mag = Math.pow(10, lowFreqDb[i] / 20)
+    if (i < subEnd) sub += mag
+    bass += mag
+  }
+  lowResult.sub = sub / Math.max(1, subEnd - 1)
+  lowResult.bass = bass / Math.max(1, bassEnd - 1)
+  return lowResult
 }

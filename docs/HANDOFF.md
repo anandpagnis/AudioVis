@@ -97,11 +97,19 @@ The long-term product is a modular visual instrument:
      network streams, OSC/MIDI bridges, and synth inputs.
    - FFT, RMS, adaptive energy normalization, onset flux, BPM estimation, beat grid, phrase
      novelty detection, drop/build heuristics, silence detection, and mood estimation.
+   - Off-thread song-structure analyzer (F153): `structure.worker.ts` (a second
+     essentia-WASM instance, no TF) does streaming self-similarity segmentation +
+     a riser detector; `SectionTracker` (pure, synchronous) latches it into
+     `AudioFeatures.songSection` / `.structureValid`. Fails silent → directors
+     fall back to `f.sectionChange`.
 
 2. **Musical understanding**
    - Seven committed moods: silence, ambient, mellow, groove, building, peak, aggressive.
    - Hysteresis prevents per-frame mood whiplash.
    - Predicted mood and estimated beats-to-transition support pre-queuing.
+   - Latched song section (`intro/build/drop/breakdown/section/outro`) with
+     `buildProgress` / `beatsTillDrop` / `boundaryChanged` — the directors hold
+     through builds, fire on the drop, and skip heavy visuals in breakdowns.
    - Beat, bar, measure, phrase, section-change, drop, and build flags are available to scenes.
 
 3. **Scene registry and metadata**
@@ -188,13 +196,17 @@ The long-term product is a modular visual instrument:
      shader program count from `renderer.info`, alongside fps and render scale.
 
 13. **Wider audio detection + numeric analytics/testing**
-    - `AudioFeatures` gained four additive signals, none of which touch the six original bands'
-      calibration: `air` (~9–16 kHz shimmer/cymbal-wash, above where `high` stops), `spectralFlatness`
-      (tonal vs. noisy texture), `spectralRolloff` (a brightness cue robust to one dominant bin),
-      and `crestFactor` (peak/RMS — pushed/brickwalled vs. dynamic material). All four feed new,
-      clearly-labeled additive terms in `MoodEstimator.score()` — existing state weights are
-      untouched. The heavy per-bin spectral loop moved to a pure, unit-tested function,
-      `src/audio/spectralFeatures.ts`.
+    - `AudioFeatures` gained additive texture signals that don't touch the six original bands'
+      calibration: `air` (~9–16 kHz shimmer/cymbal-wash, above where `high` stops), `sparkle`
+      (16 kHz–Nyquist — an air-heavy-vs-dull discriminator, computed and on the contract but not
+      yet wired into scoring), `spectralFlatness` (tonal vs. noisy texture), `spectralRolloff` (a
+      2–9 kHz harshness cue robust to one dominant bin), and `crestFactor` (peak/RMS —
+      pushed/brickwalled vs. dynamic material). The heavy per-bin spectral loop moved to a pure,
+      unit-tested function, `src/audio/spectralFeatures.ts` (which also exports `computeLowBands`
+      for the dedicated 8192-point sub/bass analyser and `writeLinearSpectrum` for the clamped
+      `f.spectrum` copy). See `docs/DSP_AUDIT_CHECKLIST.md` F154 for the 2026-08-30 front-end
+      sweep — `f.spectrum` is now full-Nyquist 1024 bins, `centroid` integrates the whole
+      spectrum, `f.sub` comes off the 8192 grid, and the onset windows are time-based.
     - Three signals that were already computed but silently discarded are now exposed: beat-grid
       tracking accuracy (`AudioFeatures.beatGridAccuracy`, from `BpmEstimator`'s internal
       `hitScore`), continuous section-boundary strength (`AudioFeatures.sectionChangeStrength`,

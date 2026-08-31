@@ -141,7 +141,7 @@ describe('specHi resampler', () => {
 
   it('leaves no bin permanently empty from an out-of-range source span', () => {
     // The bottom of a 192-bin log range is narrower than one 21.5 Hz FFT bin,
-    // and the top must not index past f.spectrum's 512 entries. Either mistake
+    // and the top must not index past f.spectrum's 1024 entries. Either mistake
     // shows up as a bin that is always exactly zero against a flat input.
     const s = createLilimState()
     updateLilimState(s, frame({ f: withSpectrum(() => 1) }))

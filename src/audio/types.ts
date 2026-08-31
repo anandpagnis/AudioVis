@@ -20,6 +20,34 @@ export const MOOD_STATES = [
 export type MoodState = (typeof MOOD_STATES)[number]
 
 /**
+ * Song-structure sections — a LATCHED read of where in the track we are, from
+ * the off-thread structure analyzer, as opposed to the one-frame
+ * `AudioFeatures.sectionChange` event.
+ *
+ * Deliberately NOT verse/chorus. Without a trained model, guessing "this
+ * recurring loud segment is the chorus" is a rule cascade that breaks on
+ * anything without pop structure. What IS acoustically robust — and what the
+ * directors actually need — is: are we in a build-up (hold the look), did a
+ * drop just land (fire the switch), are we in a breakdown (no heavy visuals),
+ * did *some* boundary happen (recompose). `'section'` is "a boundary was
+ * detected, function unknown"; `intro`/`outro` are position-based.
+ * `SongSectionMomentum.repetitionLabel` separately carries "this is the same
+ * material as an earlier segment" (A/B/C…) without claiming to name it.
+ */
+export const SECTION_STATES = [
+  'intro',
+  'build',
+  'drop',
+  'breakdown',
+  'section',
+  'outro',
+] as const
+
+/** `''` is the bootstrap sentinel; the field holds its last value between
+ * async structure reads, like `key`. */
+export type SongSection = (typeof SECTION_STATES)[number] | ''
+
+/**
  * The live mood read: where the song is, where it's heading, and how the
  * visuals should lean. Produced by MoodEstimator once per frame.
  */
@@ -98,6 +126,72 @@ export function createEmptyMood(): MoodMomentum {
 }
 
 /**
+ * The live song-structure read — where we are, where a boundary/drop is
+ * heading, and whether we've returned to earlier material. Produced by
+ * `SectionTracker` once per frame from the off-thread structure analyzer's
+ * latest result plus the synchronous drop/build flags.
+ */
+export interface SongSectionMomentum {
+  /** Committed (hysteresis-gated) section. */
+  section: SongSection
+  /** The section before the last committed boundary. */
+  previousSection: SongSection
+  /** 0..1 certainty in the committed section. */
+  sectionConfidence: number
+  /** Beats elapsed since the last committed boundary. */
+  beatsInSection: number
+  /** Estimated beats until the next boundary (-1 = unknown). */
+  beatsTillBoundary: number
+  /** True for exactly one frame when a committed boundary lands. */
+  boundaryChanged: boolean
+  /** Total committed boundaries since start. */
+  changeCount: number
+
+  /** 0..1 progress through the current build-up (0 when not building). */
+  buildProgress: number
+  /** A drop is coming — hold the current look. */
+  dropExpected: boolean
+  /** Estimated beats until the drop (-1 = unknown / not building). */
+  beatsTillDrop: number
+
+  /** Convenience flags. */
+  isBuild: boolean
+  /** True for a short latched window right after a drop lands. */
+  isDrop: boolean
+  isBreakdown: boolean
+  /** `isBuild || dropExpected` — "hold discretionary transitions". */
+  isSustain: boolean
+
+  /**
+   * A/B/C… identifying repeated material (this segment's feature profile
+   * matches an earlier one), or `''`. Directors can recall an earlier
+   * palette/scene on a return without the read claiming "chorus".
+   */
+  repetitionLabel: string
+}
+
+/** Neutral structure state for engine construction and reset between sources. */
+export function createEmptySongSection(): SongSectionMomentum {
+  return {
+    section: '',
+    previousSection: '',
+    sectionConfidence: 0,
+    beatsInSection: 0,
+    beatsTillBoundary: -1,
+    boundaryChanged: false,
+    changeCount: 0,
+    buildProgress: 0,
+    dropExpected: false,
+    beatsTillDrop: -1,
+    isBuild: false,
+    isDrop: false,
+    isBreakdown: false,
+    isSustain: false,
+    repetitionLabel: '',
+  }
+}
+
+/**
  * The normalized audio state handed to scenes every frame.
  * Scenes never touch the Web Audio API — this is the whole contract.
  */
@@ -109,7 +203,13 @@ export interface AudioFeatures {
 
   /** Time-domain samples, -1..1. */
   waveform: Float32Array
-  /** Normalized magnitude spectrum, 0..1 per bin. */
+  /**
+   * Linear magnitude spectrum, clamped to 0..1 per bin. `FFT_SIZE / 2` = 1024
+   * bins spanning 0..Nyquist (~21.5 Hz/bin, ~0–22 kHz at 44.1 kHz). The empty
+   * upper bins sit at the FFT noise floor (~1e-5), not zero. The clamp matters
+   * on hot masters — an un-clamped bin reaches ~1.6 linear there (a real
+   * `AnalyserNode` does not clamp `getFloatFrequencyData` to `maxDecibels`).
+   */
   spectrum: Float32Array
   /**
    * Time-domain samples from a band-pass around the lead/synth range
@@ -139,6 +239,19 @@ export interface AudioFeatures {
   /** High-frequency "air" content above `high` (~9-16 kHz) — shimmer, cymbal
    * wash, breath. Adaptively normalized like the other bands. */
   air: number
+  /**
+   * "Sparkle" — mean magnitude from 16 kHz to Nyquist, above where `air` stops.
+   * Non-overlapping with `air` by construction. Distinguishes an air-heavy
+   * master from a dull or lossy-encoded one (most lossy codecs brick-wall
+   * around 15–19 kHz). Adaptively normalized like the other bands.
+   *
+   * Surfaced on the contract but NOT yet consumed anywhere. It reads as a
+   * natural harshness/shimmer cue for `MoodEstimator`, but the calibration
+   * corpus (96 kbps) has nothing up here, so a wired weight would be untunable
+   * — wiring waits for a lossless A/B. Same "computed and exposed first"
+   * pattern as `air` / `key` / `vocalPresence` before them.
+   */
+  sparkle: number
   /** Spectral centroid 0..1 (dark → bright). */
   centroid: number
   /** Spectral flatness 0..1 — tonal/harmonic (low) vs. noisy/distorted (high)
@@ -150,6 +263,25 @@ export interface AudioFeatures {
   /** Peak/RMS ratio, typically 1..~15. Low = pushed/brickwalled masters, high
    * = dynamic/headroomy material. */
   crestFactor: number
+  /**
+   * Perceived loudness 0..1 — ITU-R BS.1770 K-weighted RMS over ~400 ms,
+   * adaptively normalized like the bands (so it is loudness-INVARIANT). Unlike
+   * `energy` (a hand-weighted band blend, bass-dominated) this uses the
+   * standards frequency shaping: sub-bass de-weighted, 1–4 kHz — where the ear
+   * judges loudness — boosted. Computed off a dedicated K-weighting worklet.
+   */
+  loudness: number
+  /**
+   * Raw short-term loudness in LUFS (ITU-R BS.1770, 3 s window), roughly
+   * −60..0. This is an ABSOLUTE scale: it rises when the operator turns the
+   * input gain up, unlike every other field here. Diagnostic / reference only
+   * — a "is the input level sane" readout and a substrate for a gain-invariant
+   * dynamic-range measure (a *difference* of two LUFS values is invariant).
+   * NEVER feed it into `mood.state` scoring or `energy` — that would break the
+   * loudness-invariance guarantee. Mono-path, so ~3 dB below a true stereo
+   * short-term meter. Floors at −70 (silence / no worklet).
+   */
+  lufsShortTerm: number
   /** Onset flux 0..1 (spiky). */
   flux: number
   /** Fast transient envelope, useful for flashes and particles. */
@@ -198,6 +330,25 @@ export interface AudioFeatures {
    * this value thresholded at 0.45). Holds its last value between
    * evaluations, similar to `phraseProgress`. */
   sectionChangeStrength: number
+
+  /**
+   * Latched, predictive song-structure read from the off-thread analyzer +
+   * `SectionTracker`. Unlike `sectionChange` (a one-frame event), this says
+   * where in the song we ARE and whether a boundary/drop is imminent.
+   *
+   * Holds its last value between async reads. Read `structureValid` first:
+   * when false, consumers fall back to `sectionChange` / today's behaviour.
+   */
+  songSection: SongSectionMomentum
+  /**
+   * True once the structure analyzer has produced at least one real segmentation.
+   *
+   * Four-way ambiguous exactly like `moodsValid`: `songSection.section === ''`
+   * also means "worker not built yet" AND "still in the first ~30 s of history"
+   * AND "worker died". Every consumer must gate on this AND stay additive with a
+   * neutral fallback — an absent structure read costs nothing.
+   */
+  structureValid: boolean
 
   /**
    * Estimated tonic ('C', 'F#', …) and mode, from Essentia's KeyExtractor in
@@ -284,7 +435,7 @@ export function createEmptyFeatures(): AudioFeatures {
     time: 0,
     delta: 1 / 60,
     waveform: new Float32Array(1024),
-    spectrum: new Float32Array(512),
+    spectrum: new Float32Array(1024), // FFT_SIZE / 2 — full FFT output, 0..Nyquist
     midWaveform: new Float32Array(1024),
     rms: 0,
     energy: 0,
@@ -295,10 +446,13 @@ export function createEmptyFeatures(): AudioFeatures {
     high: 0,
     vocal: 0,
     air: 0,
+    sparkle: 0,
     centroid: 0,
     spectralFlatness: 0,
     spectralRolloff: 0,
     crestFactor: 1,
+    loudness: 0,
+    lufsShortTerm: -70,
     flux: 0,
     transient: 0,
     percussion: createEmptyPercussion(),
@@ -317,6 +471,8 @@ export function createEmptyFeatures(): AudioFeatures {
     phraseProgress: 0,
     sectionChange: false,
     sectionChangeStrength: 0,
+    songSection: createEmptySongSection(),
+    structureValid: false,
     key: '',
     scale: '',
     keyConfidence: 0,

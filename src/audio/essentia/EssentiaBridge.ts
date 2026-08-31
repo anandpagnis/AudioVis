@@ -1,13 +1,17 @@
 import type { BpmEstimator } from '../BpmEstimator'
 import type { AudioFeatures } from '../types'
+import {
+  applyDispatch,
+  drainResults,
+  ingestResponse,
+  makeSchedState,
+  pickJob,
+  resetSchedState,
+  MODEL_FRESH_SEC,
+} from './scheduling'
+import { structureBridge } from './StructureBridge'
 import { voiceBridge } from './VoiceBridge'
-import type {
-  DanceabilityResult,
-  EssentiaJobType,
-  EssentiaResponse,
-  KeyResult,
-  RhythmResult,
-} from './protocol'
+import type { EssentiaResponse } from './protocol'
 
 /**
  * Main-thread side of the Essentia integration.
@@ -27,25 +31,13 @@ const RHYTHM_WINDOW_SEC = 12
  * 82.03 from a 12 s window but 163.84 — a confident double-time error — from
  * an 8 s one. Short windows don't just add noise, they produce wrong answers
  * that look certain, so the first read simply waits for a full window.
+ *
+ * Global, not rhythm-scoped: every job takes a `copyWindow(RHYTHM_WINDOW_SEC)`
+ * window, so key/danceability wait for it too.
  */
 const RHYTHM_MIN_SEC = RHYTHM_WINDOW_SEC
-const RHYTHM_CADENCE_SEC = 2.5
-/** How long a worker read stays authoritative before onset tracking resumes. */
-const MODEL_FRESH_SEC = 8
 
-/**
- * Key is stable within a section, so it is normally triggered by
- * PhraseDetector's section boundary rather than a timer. This is the fallback
- * for material that never fires one, and the floor between section-triggered
- * runs so a burst of boundaries can't spam the worker.
- */
-const KEY_FALLBACK_SEC = 20
-const KEY_MIN_GAP_SEC = 6
-/**
- * Danceability is a slow character read (DFA over segment lengths up to 8.8 s),
- * so it only needs refreshing every few sections' worth of time.
- */
-const DANCE_CADENCE_SEC = 8
+// The job cadences + the scheduler itself live in ./scheduling.ts (issue 16).
 
 /** Inline AudioWorklet processor: mono mixdown, 4096-sample blocks (~12 msg/s).
  * Registered from a Blob URL because Vite has no first-class worklet support. */
@@ -106,19 +98,15 @@ class EssentiaBridge {
   private ringFilled = 0
   private sampleRate = 48000
   private busy = false
-  private lastJobAt = -1
-  private cadence = RHYTHM_CADENCE_SEC
   private jobId = 0
-  private pending: RhythmResult | null = null
-  private pendingKey: KeyResult | null = null
-  private pendingDance: DanceabilityResult | null = null
+  /** id of the job currently in the worker; -1 while nothing is in flight or
+   * after a detach. A response whose id doesn't match is stale — from a job
+   * dispatched before the last source change — and is dropped so track 2 can't
+   * inherit track 1's tempo/key read (issue 16, Bug B). */
+  private inFlightId = -1
   private window: Float32Array | null = null
-  private lastKeyAt = -1
-  private lastDanceAt = -1
-  /** Set by AudioEngine when PhraseDetector reports a boundary; the next
-   * eligible slot runs a key job. Key is stable within a section, so this is
-   * the natural trigger and it costs nothing on material that never fires. */
-  private keyRequested = false
+  /** All job-scheduling + result-merge state — pure logic in ./scheduling.ts. */
+  private readonly sched = makeSchedState()
 
   /** Wire the PCM tap into a freshly built audio graph. Never throws — any
    * failure just leaves the built-in estimator in charge. */
@@ -144,6 +132,7 @@ class EssentiaBridge {
       tap.port.onmessage = (e: MessageEvent<Float32Array>) => {
         this.pushPcm(e.data)
         voiceBridge.pushPcm(e.data, this.sampleRate)
+        structureBridge.pushPcm(e.data, this.sampleRate)
       }
       source.connect(tap)
       this.tap = tap
@@ -162,23 +151,18 @@ class EssentiaBridge {
     this.ringFilled = 0
     this.ringWrite = 0
     this.busy = false
-    this.lastJobAt = -1
-    this.cadence = RHYTHM_CADENCE_SEC
-    this.pending = null
-    this.pendingKey = null
-    this.pendingDance = null
-    this.lastKeyAt = -1
-    this.lastDanceAt = -1
-    this.keyRequested = false
+    this.inFlightId = -1 // any worker job still running is now stale
+    resetSchedState(this.sched)
     this.status.lastAt = -1
     voiceBridge.reset()
+    structureBridge.reset()
     // The worker (and its loaded WASM) survives detach on purpose — restarting
     // a source shouldn't re-pay the ~2.5 MB load.
   }
 
   /** PhraseDetector found a section boundary — key may have changed. */
   requestKey() {
-    this.keyRequested = true
+    this.sched.keyRequested = true
   }
 
   /**
@@ -200,57 +184,32 @@ class EssentiaBridge {
     // worker on it — every field simply holds its last value.
     if (f.silence) return
 
-    const job = this.pickJob(now)
+    const job = pickJob(this.sched, now)
     if (!job) return
-    if (job === 'rhythm') this.lastJobAt = now
-    else if (job === 'key') {
-      this.lastKeyAt = now
-      this.keyRequested = false
-    } else this.lastDanceAt = now
+    applyDispatch(this.sched, job, now)
 
     this.busy = true
     const win = this.copyWindow(RHYTHM_WINDOW_SEC)
     this.jobId++
-    this.worker.postMessage(
-      { id: this.jobId, type: job, pcm: win, sampleRate: this.sampleRate },
-      [win.buffer],
-    )
+    this.inFlightId = this.jobId
+    this.worker.postMessage({ id: this.jobId, type: job, pcm: win, sampleRate: this.sampleRate }, [
+      win.buffer,
+    ])
     this.window = null // transferred; next job reallocates
-  }
-
-  /** Which job is due, rhythm first. Null when nothing is. */
-  private pickJob(now: number): EssentiaJobType | null {
-    if (this.lastJobAt < 0 || now - this.lastJobAt >= this.cadence) return 'rhythm'
-    const keyDue =
-      this.lastKeyAt < 0 ||
-      (this.keyRequested && now - this.lastKeyAt >= KEY_MIN_GAP_SEC) ||
-      now - this.lastKeyAt >= KEY_FALLBACK_SEC
-    if (keyDue) return 'key'
-    if (this.lastDanceAt < 0 || now - this.lastDanceAt >= DANCE_CADENCE_SEC) return 'danceability'
-    return null
   }
 
   /** Move completed worker results onto the feature object / estimator. */
   private drain(f: AudioFeatures, est: BpmEstimator, now: number) {
-    if (this.pending) {
-      const r = this.pending
-      this.pending = null
-      if (r.bpm >= 40 && r.bpm <= 240 && Number.isFinite(r.bpm)) {
-        est.setModelTempo(r.bpm, r.confidence01, now, MODEL_FRESH_SEC)
-      }
+    const out = drainResults(this.sched, est, now)
+    if (out.modelTempo) {
+      est.setModelTempo(out.modelTempo.bpm, out.modelTempo.conf, now, MODEL_FRESH_SEC)
     }
-    if (this.pendingKey) {
-      const r = this.pendingKey
-      this.pendingKey = null
-      f.key = r.key
-      f.scale = r.scale === 'major' || r.scale === 'minor' ? r.scale : ''
-      f.keyConfidence = Number.isFinite(r.strength) ? Math.max(0, Math.min(1, r.strength)) : 0
+    if (out.key) {
+      f.key = out.key.key
+      f.scale = out.key.scale
+      f.keyConfidence = out.key.keyConfidence
     }
-    if (this.pendingDance) {
-      const r = this.pendingDance
-      this.pendingDance = null
-      if (Number.isFinite(r.danceability)) f.danceability = r.danceability
-    }
+    if (out.dance !== undefined) f.danceability = out.dance
   }
 
   private ensureWorker() {
@@ -263,32 +222,23 @@ class EssentiaBridge {
         type: 'module',
       })
       worker.onmessage = (e: MessageEvent<EssentiaResponse>) => {
-        this.busy = false
+        this.busy = false // the worker is free regardless
         const r = e.data
-        if (r.type === 'error') {
-          this.status.error = `${r.job}: ${r.message}`
-          return
-        }
-        if (r.type === 'key') {
-          this.pendingKey = r
-          this.status.keyMs = r.ms
-          this.status.keyRuns++
-          return
-        }
-        if (r.type === 'danceability') {
-          this.pendingDance = r
-          this.status.danceMs = r.ms
-          this.status.danceRuns++
-          return
-        }
-        this.pending = r
-        this.status.lastBpm = r.bpm
-        this.status.lastConfidence = r.confidence01
-        this.status.lastMethod = r.method
-        this.status.lastMs = r.ms
-        this.status.lastAt = performance.now() / 1000
-        // Self-throttle: never spend more than ~half the wall clock analyzing.
-        this.cadence = Math.max(RHYTHM_CADENCE_SEC, (r.ms / 1000) * 2)
+        // Drop any result (incl. an error) from a job dispatched before the last
+        // source change — its id won't match the current in-flight one (Bug B).
+        if (r.id !== this.inFlightId) return
+        this.inFlightId = -1
+        const patch = ingestResponse(this.sched, r, performance.now() / 1000)
+        if (patch.error !== undefined) this.status.error = patch.error
+        if (patch.lastBpm !== undefined) this.status.lastBpm = patch.lastBpm
+        if (patch.lastConfidence !== undefined) this.status.lastConfidence = patch.lastConfidence
+        if (patch.lastMethod !== undefined) this.status.lastMethod = patch.lastMethod
+        if (patch.lastMs !== undefined) this.status.lastMs = patch.lastMs
+        if (patch.lastAt !== undefined) this.status.lastAt = patch.lastAt
+        if (patch.keyMs !== undefined) this.status.keyMs = patch.keyMs
+        if (patch.incKeyRuns) this.status.keyRuns++
+        if (patch.danceMs !== undefined) this.status.danceMs = patch.danceMs
+        if (patch.incDanceRuns) this.status.danceRuns++
       }
       worker.onerror = (e) => {
         this.status.error = e.message || 'worker error'

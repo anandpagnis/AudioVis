@@ -1,5 +1,6 @@
 import { BpmEstimator } from './BpmEstimator'
 import { essentiaBridge } from './essentia/EssentiaBridge'
+import { structureBridge } from './essentia/StructureBridge'
 import { voiceBridge } from './essentia/VoiceBridge'
 import { MoodEstimator } from './MoodEstimator'
 import { PercussionDetector } from './PercussionDetector'
@@ -11,7 +12,9 @@ import {
   REF_RATE,
   type SilenceConfig,
 } from './bandNormalizer'
-import { computeSpectralBands } from './spectralFeatures'
+import { computeLowBands, computeSpectralBands, writeLinearSpectrum } from './spectralFeatures'
+import { meanSquareToLufs } from './loudness'
+import { SectionTracker } from './SectionTracker'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 
 export type SourceKind = 'system' | 'mic' | 'file'
@@ -29,8 +32,137 @@ const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
 /** Sum of the `energyTarget` band weights below — keeps energy in 0..1. */
 const ENERGY_WEIGHT_SUM = 0.5 + 0.3 + 0.2 + 0.3
 
+/** Age-based length of the onset-flux ring — see {@link AudioEngine.fluxHistory}. */
+const FLUX_WINDOW_SEC = 1.0
+
 const FFT_SIZE = 2048
-const SPECTRUM_BINS = 512 // we keep the lower half — up to ~11 kHz at 44.1k
+
+/**
+ * Dedicated low-frequency analyser. At ~5.4 Hz/bin (44.1k) it resolves the
+ * sub-bass region the 2048 main analyser cannot — there, 20–80 Hz is barely
+ * three bins and everything below ~23 Hz is bin 1 alone. Its ~186 ms window is
+ * fine for `f.sub` (a slow envelope nothing samples per-beat); `f.bass` stays
+ * on the 2048 grid because it carries kick fundamentals that this window smears
+ * and that `beatStrength` / scene pulses read at the beat.
+ */
+const LOW_FFT_SIZE = 8192
+
+/**
+ * Inline AudioWorklet: ITU-R BS.1770-4 K-weighting → sliding mean-squares.
+ *
+ * A dedicated worklet rather than an AnalyserNode because the two K-weighting
+ * biquads are IIR and need the unbroken sample stream (an AnalyserNode only
+ * exposes gapped 1024-sample snapshots). Mixes to mono, runs the pre-filter
+ * (high-shelf) then the RLB high-pass, and keeps mean-squares of the weighted
+ * signal over the last 400 ms (momentary) and 3 s (short-term). Posts
+ * `{ msMomentary, msShort }` at ~60 Hz — NOT per 128-sample block.
+ *
+ * The coefficient formulas + biquad + denormal flush + NaN guard are the same
+ * as `src/audio/loudness.ts` (a worklet Blob can't import) — keep them in sync;
+ * `loudness.test.ts` pins that copy against the BS.1770 spec.
+ *
+ * Distinct processor name ('audiovis-loudness') so it never collides with
+ * EssentiaBridge's 'audiovis-tap'.
+ */
+const LOUDNESS_PROCESSOR = `
+class AudioVisLoudness extends AudioWorkletProcessor {
+  constructor() {
+    super()
+    const fs = sampleRate
+    { // stage 1 — pre-filter (high-shelf)
+      const f0 = 1681.9744509555319, G = 3.99984385397, Q = 0.7071752369554196
+      const K = Math.tan(Math.PI * f0 / fs)
+      const Vh = Math.pow(10, G / 20), Vb = Math.pow(Vh, 0.4996667741545416)
+      const a0 = 1 + K / Q + K * K
+      this.b0a = (Vh + Vb * K / Q + K * K) / a0
+      this.b1a = 2 * (K * K - Vh) / a0
+      this.b2a = (Vh - Vb * K / Q + K * K) / a0
+      this.a1a = 2 * (K * K - 1) / a0
+      this.a2a = (1 - K / Q + K * K) / a0
+    }
+    { // stage 2 — RLB high-pass
+      const f0 = 38.13547087602444, Q = 0.5003270373238773
+      const K = Math.tan(Math.PI * f0 / fs)
+      const a0 = 1 + K / Q + K * K
+      this.a1b = 2 * (K * K - 1) / a0
+      this.a2b = (1 - K / Q + K * K) / a0
+    }
+    this.x1a = this.x2a = this.y1a = this.y2a = 0
+    this.x1b = this.x2b = this.y1b = this.y2b = 0
+
+    // Ring of per-block (sumSquares, sampleCount) — evict by sample-count age.
+    this.winShort = Math.round(fs * 3)
+    this.winMom = Math.round(fs * 0.4)
+    this.slots = Math.ceil(this.winShort / 128) + 2
+    this.ringSS = new Float64Array(this.slots)
+    this.ringN = new Float32Array(this.slots)
+    this.rd = 0; this.wr = 0; this.count = 0
+    this.sumSS = 0; this.sumN = 0
+
+    this.postEvery = Math.max(1, Math.round((fs / 128) / 60))
+    this.postCtr = 0; this.resumCtr = 0
+  }
+
+  process(inputs) {
+    const ch = inputs[0]
+    if (!ch || !ch.length || !ch[0]) return true
+    const L = ch[0], R = ch[1], n = L.length
+    if (n === 0) return true
+
+    let ss = 0
+    for (let i = 0; i < n; i++) {
+      let x = R ? (L[i] + R[i]) * 0.5 : L[i]
+      if (!(x === x) || x === Infinity || x === -Infinity) {
+        this.x1a = this.x2a = this.y1a = this.y2a = 0
+        this.x1b = this.x2b = this.y1b = this.y2b = 0
+        x = 0
+      }
+      let ya = this.b0a * x + this.b1a * this.x1a + this.b2a * this.x2a
+             - this.a1a * this.y1a - this.a2a * this.y2a
+      if (ya < 1e-15 && ya > -1e-15) ya = 0
+      this.x2a = this.x1a; this.x1a = x; this.y2a = this.y1a; this.y1a = ya
+      let yb = ya - 2 * this.x1b + this.x2b - this.a1b * this.y1b - this.a2b * this.y2b
+      if (yb < 1e-15 && yb > -1e-15) yb = 0
+      this.x2b = this.x1b; this.x1b = ya; this.y2b = this.y1b; this.y1b = yb
+      ss += yb * yb
+    }
+
+    this.ringSS[this.wr] = ss
+    this.ringN[this.wr] = n
+    this.wr = (this.wr + 1) % this.slots
+    this.sumSS += ss; this.sumN += n; this.count++
+    while (this.count > 1 && this.sumN - this.ringN[this.rd] >= this.winShort) {
+      this.sumSS -= this.ringSS[this.rd]
+      this.sumN -= this.ringN[this.rd]
+      this.rd = (this.rd + 1) % this.slots
+      this.count--
+    }
+
+    if (++this.postCtr >= this.postEvery) {
+      this.postCtr = 0
+      if (++this.resumCtr >= 16) { // kill running-sum float drift ~4x/s
+        this.resumCtr = 0
+        let s = 0, m = 0
+        for (let k = 0, idx = this.rd; k < this.count; k++, idx = (idx + 1) % this.slots) {
+          s += this.ringSS[idx]; m += this.ringN[idx]
+        }
+        this.sumSS = s; this.sumN = m
+      }
+      // momentary: sum the newest blocks back to ~400 ms
+      let mSS = 0, mN = 0
+      for (let k = 1, idx = (this.wr - 1 + this.slots) % this.slots; k <= this.count && mN < this.winMom; k++, idx = (idx - 1 + this.slots) % this.slots) {
+        mSS += this.ringSS[idx]; mN += this.ringN[idx]
+      }
+      this.port.postMessage({
+        msMomentary: mN > 0 ? mSS / mN : 0,
+        msShort: this.sumN > 0 ? this.sumSS / this.sumN : 0,
+      })
+    }
+    return true
+  }
+}
+registerProcessor('audiovis-loudness', AudioVisLoudness)
+`
 
 /**
  * Capture requests must never hang. Chrome leaves getUserMedia() *pending
@@ -118,6 +250,24 @@ class AudioEngine {
    */
   private midAnalyser: AnalyserNode | null = null
   private midFilter: BiquadFilterNode | null = null
+  /**
+   * Third analyser, fftSize {@link LOW_FFT_SIZE}, smoothing 0, fed from the same
+   * source as the main analyser and the mid tap. `update()` sources `f.sub`
+   * from `computeLowBands()` off this when present; `computeSpectralBands`'s own
+   * sub (2048) is the fallback for a future graph path that skips the tap.
+   */
+  private lowAnalyser: AnalyserNode | null = null
+  /**
+   * ITU-R BS.1770 K-weighting loudness tap (issue 12). A dedicated
+   * AudioWorkletNode — the K-weighting biquads are IIR and need the contiguous
+   * stream. Posts `{ msMomentary, msShort }` (K-weighted mean-squares, linear)
+   * at ~60 Hz; `update()` turns them into `f.lufsShortTerm` (raw dBFS-ish) and
+   * `f.loudness` (BandNormalizer → loudness-invariant 0..1). Null until the
+   * module loads; a load failure leaves both at their idle defaults.
+   */
+  private loudnessNode: AudioWorkletNode | null = null
+  private lastLoudMsMom = 0
+  private lastLoudMsShort = 0
   private stream: MediaStream | null = null
   private sourceNode: AudioNode | null = null
   private mediaEl: HTMLAudioElement | null = null
@@ -145,11 +295,29 @@ class AudioEngine {
 
   private freqDb = new Float32Array(FFT_SIZE / 2)
   private prevMag = new Float32Array(FFT_SIZE / 2)
-  private fluxHistory: number[] = []
+  private lowFreqDb = new Float32Array(LOW_FFT_SIZE / 2)
+  /**
+   * Broadband-onset flux ring: one entry per non-duplicate frame, evicted by
+   * AGE (`now - t > FLUX_WINDOW_SEC`), not by count. A fixed 60-sample count was
+   * ~1 s at 60 fps but 2 s at 30 fps and 0.4 s at 144 fps, so the adaptive
+   * threshold's mean/σ — and onset sensitivity — drifted with the display.
+   */
+  private fluxHistory: { t: number; v: number }[] = []
   private lastOnsetTime = -10
   private lastFrameTime = 0
   private lastGridIndex = -1
   private beatHoldUntil = -1
+  /**
+   * Last frame's time-domain samples at three probe indices. When all three are
+   * unchanged the `AnalyserNode` has not advanced (render loop outrunning the
+   * audio callback — real above a few hundred fps, and whenever a tab is
+   * throttled), so re-running onset/percussion detection would only feed
+   * `flux ≈ 0` samples into the adaptive threshold and dilute it. `NaN` until
+   * the first frame and after every reset.
+   */
+  private waveProbe0 = NaN
+  private waveProbeMid = NaN
+  private waveProbeLast = NaN
 
   private bands = {
     rms: new BandNormalizer(),
@@ -160,6 +328,8 @@ class AudioEngine {
     high: new BandNormalizer(),
     vocal: new BandNormalizer(),
     air: new BandNormalizer(),
+    sparkle: new BandNormalizer(),
+    loudness: new BandNormalizer(),
     flux: new BandNormalizer(),
   }
 
@@ -174,6 +344,7 @@ class AudioEngine {
   readonly phraseDetector = new PhraseDetector()
   readonly moodEstimator = new MoodEstimator()
   readonly percussionDetector = new PercussionDetector()
+  readonly sectionTracker = new SectionTracker()
 
   onEnded: (() => void) | null = null
 
@@ -443,11 +614,64 @@ class AudioEngine {
     filter.connect(analyser)
     this.midFilter = filter
     this.midAnalyser = analyser
+
+    // High-resolution low-frequency tap: same source, no band-pass (only the
+    // bottom ~160 Hz is ever read). Its own analyser rather than reusing the
+    // mid tap's — different fftSize, and the mid tap is band-passed at 1.1 kHz.
+    // Both graph paths call attachMidTap, so this covers system, mic and file.
+    const lowAnalyser = ctx.createAnalyser()
+    lowAnalyser.fftSize = LOW_FFT_SIZE
+    lowAnalyser.smoothingTimeConstant = 0
+    source.connect(lowAnalyser)
+    this.lowAnalyser = lowAnalyser
+
     // Both graph-building paths route through here, so this is also where the
     // Essentia PCM tap attaches. Fire-and-forget: it resolves after the
     // worklet module loads, never throws, and a failure just leaves the
     // built-in estimators in charge.
     void essentiaBridge.attach(ctx, source)
+
+    // K-weighting loudness worklet (issue 12). Same fire-and-forget contract —
+    // its own worklet module, never throws; a failure just leaves f.loudness /
+    // f.lufsShortTerm at their idle defaults.
+    void this.attachLoudnessTap(ctx, source)
+  }
+
+  /**
+   * Wire the ITU-R BS.1770 K-weighting loudness worklet into the graph. Own
+   * AudioWorkletNode (not chained off the essentia tap, which is an
+   * outputs:0 sink), so loudness works even when the essentia WASM is absent.
+   * Never throws.
+   */
+  private async attachLoudnessTap(ctx: AudioContext, source: AudioNode): Promise<void> {
+    try {
+      const url = URL.createObjectURL(new Blob([LOUDNESS_PROCESSOR], { type: 'text/javascript' }))
+      try {
+        await ctx.audioWorklet.addModule(url)
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+      // A newer session's context took over while addModule was in flight.
+      // `this.ctx` is null during the file path's pre-play() window, so only
+      // bail on a genuinely different context.
+      if (this.ctx !== null && this.ctx !== ctx) return
+      const node = new AudioWorkletNode(ctx, 'audiovis-loudness', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0,
+      })
+      node.port.onmessage = (e: MessageEvent<{ msMomentary: number; msShort: number }>) => {
+        const mom = e.data?.msMomentary
+        const short = e.data?.msShort
+        if (typeof mom === 'number' && Number.isFinite(mom) && mom >= 0) this.lastLoudMsMom = mom
+        if (typeof short === 'number' && Number.isFinite(short) && short >= 0) {
+          this.lastLoudMsShort = short
+        }
+      }
+      source.connect(node)
+      this.loudnessNode = node
+    } catch {
+      this.loudnessNode = null
+    }
   }
 
   private connectStream(ctx: AudioContext, stream: MediaStream, maybeMonitor: boolean) {
@@ -534,6 +758,9 @@ class AudioEngine {
     this.analyser = null
     this.midAnalyser = null
     this.midFilter = null
+    this.lowAnalyser = null
+    if (this.loudnessNode) this.loudnessNode.port.onmessage = null
+    this.loudnessNode = null
     this.stream = null
     this.sourceNode = null
     this.mediaEl = null
@@ -545,18 +772,27 @@ class AudioEngine {
   private resetAnalysis() {
     Object.assign(this.features, createEmptyFeatures())
     this.prevMag.fill(0)
+    this.lowFreqDb.fill(0)
+    this.lastLoudMsMom = 0
+    this.lastLoudMsShort = 0
     this.fluxHistory = []
     this.energyLog = []
     this.lastOnsetTime = -10
     this.lastFrameTime = 0
     this.lastGridIndex = -1
     this.beatHoldUntil = -1
+    // Force the next frame to count as "FFT advanced" — a fresh source's first
+    // frame must never be mistaken for a duplicate of the previous source's last.
+    this.waveProbe0 = NaN
+    this.waveProbeMid = NaN
+    this.waveProbeLast = NaN
     this.silenceSince = 0
     this.dropUntil = -1
     this.bpmEstimator.reset()
     this.phraseDetector.reset()
     this.moodEstimator.reset()
     this.percussionDetector.reset()
+    this.sectionTracker.reset()
     // Drops the PCM ring and any pending job so a second track can't inherit
     // the first one's tempo read. The worker (and its loaded WASM) persists.
     essentiaBridge.detach()
@@ -577,6 +813,7 @@ class AudioEngine {
       f.time = now
       this.advanceGrid(now, f)
       this.moodEstimator.update(f)
+      this.sectionTracker.update(f, null)
       return
     }
 
@@ -588,19 +825,32 @@ class AudioEngine {
 
     analyser.getFloatTimeDomainData(f.waveform)
     analyser.getFloatFrequencyData(this.freqDb)
+    if (this.lowAnalyser) this.lowAnalyser.getFloatFrequencyData(this.lowFreqDb)
     // Band-passed time domain — the lead/synth wave scenes can trace.
     if (this.midAnalyser) {
       this.midAnalyser.getFloatTimeDomainData(f.midWaveform)
       this.normalizeWave(f.midWaveform, delta)
     }
 
-    // --- Spectrum (dB → linear magnitude, normalized) ---
+    // Has the analyser actually advanced since last frame? At very high refresh
+    // rates (or a throttled tab) the render loop outruns the audio callback and
+    // getFloatFrequencyData re-reads the same FFT — those frames must not feed
+    // the onset/percussion detectors (see fftAdvanced usage below).
+    const w0 = f.waveform[0]
+    const wMid = f.waveform[f.waveform.length >> 1]
+    const wLast = f.waveform[f.waveform.length - 1]
+    const fftAdvanced =
+      w0 !== this.waveProbe0 || wMid !== this.waveProbeMid || wLast !== this.waveProbeLast
+    this.waveProbe0 = w0
+    this.waveProbeMid = wMid
+    this.waveProbeLast = wLast
+
+    // --- Spectrum (dB → linear magnitude, clamped to the 0..1 contract) ---
+    // f.spectrum now spans the full FFT_SIZE/2 (0..Nyquist), and the clamp
+    // enforces the documented per-bin range on hot masters. See writeLinearSpectrum.
     const nyquist = ctx.sampleRate / 2
     const binHz = nyquist / this.freqDb.length
-    for (let i = 0; i < SPECTRUM_BINS; i++) {
-      const mag = Math.pow(10, this.freqDb[i] / 20)
-      f.spectrum[i] = mag
-    }
+    writeLinearSpectrum(this.freqDb, f.spectrum)
 
     // --- RMS + crest factor (peak/RMS — pushed/brickwalled vs. dynamic) ---
     let sq = 0
@@ -614,8 +864,16 @@ class AudioEngine {
     const rmsRaw = Math.sqrt(sq / f.waveform.length)
     const crestRaw = Math.min(20, peakAbs / (rmsRaw + 1e-6))
 
-    // --- Bands + centroid + flux + texture cues (flatness/rolloff/air) ---
+    // --- Bands + centroid + flux + texture cues (flatness/rolloff/air/sparkle) ---
     const spectral = computeSpectralBands(this.freqDb, this.prevMag, binHz)
+    // `f.sub` comes from the dedicated 8192 analyser when it exists (≈5.4 Hz/bin
+    // vs the 2048 path's ~21.5, which can't resolve sub-bass at all); the
+    // 2048-derived `spectral.sub` is the fallback. `f.bass` deliberately stays
+    // on the 2048 grid — the 8192 window's ~186 ms smear would blunt the kick
+    // energy that `beatStrength` and scene bass-pulses read at the beat.
+    const subRaw = this.lowAnalyser
+      ? computeLowBands(this.lowFreqDb, nyquist / this.lowFreqDb.length).sub
+      : spectral.sub
 
     // --- Silence, judged relative to the program's own level ---------------
     // Computed BEFORE normalization because the normalizer needs it: it holds
@@ -630,14 +888,27 @@ class AudioEngine {
     f.rms = norm(this.bands.rms, rmsRaw)
     f.bass = norm(this.bands.bass, spectral.bass)
     f.mid = norm(this.bands.mid, spectral.mid)
-    f.sub = norm(this.bands.sub, spectral.sub)
+    f.sub = norm(this.bands.sub, subRaw)
     f.presence = norm(this.bands.presence, spectral.presence)
     f.high = norm(this.bands.high, spectral.high)
     f.vocal = norm(this.bands.vocal, spectral.vocal)
     f.air = norm(this.bands.air, spectral.air)
+    f.sparkle = norm(this.bands.sparkle, spectral.sparkle)
+    // BS.1770 K-weighting loudness (issue 12). `f.loudness` is the momentary
+    // (~400 ms) K-weighted RMS through a BandNormalizer, so it is
+    // loudness-invariant and on the same 0..1 scale as the bands.
+    // `f.lufsShortTerm` is the raw 3 s LUFS value — an ABSOLUTE scale (rises
+    // when the operator turns the input up), diagnostic only; nothing that
+    // gates on it may assume loudness invariance.
+    f.loudness = norm(this.bands.loudness, Math.sqrt(this.lastLoudMsMom))
+    f.lufsShortTerm = meanSquareToLufs(this.lastLoudMsShort)
     f.flux = norm(this.bands.flux, spectral.bassFlux)
     f.transient += (Math.min(1, f.flux * 1.5) - f.transient) * Math.min(1, delta * 20)
-    f.centroid += (Math.min(1, spectral.centroidRaw * 3) - f.centroid) * Math.min(1, delta * 8)
+    // `centroidRaw` now integrates the whole spectrum (not just to 9 kHz), so a
+    // bright/air-heavy master reads higher. Gain re-derived against the 8-track
+    // corpus to hold `f.centroid`'s distribution where it was (p50 ~0.54,
+    // p90 ~0.85) — 3 → 2.1 — so every downstream `bright` term is unperturbed.
+    f.centroid += (Math.min(1, spectral.centroidRaw * 2.1) - f.centroid) * Math.min(1, delta * 8)
     f.spectralFlatness += (spectral.spectralFlatness - f.spectralFlatness) * Math.min(1, delta * 8)
     f.spectralRolloff += (spectral.spectralRolloff - f.spectralRolloff) * Math.min(1, delta * 8)
     // Slower smoothing: crest factor is a "character" cue, not a fast envelope.
@@ -653,27 +924,47 @@ class AudioEngine {
       (f.bass * 0.5 + f.mid * 0.3 + f.high * 0.2 + f.rms * 0.3) / ENERGY_WEIGHT_SUM
     f.energy += (energyTarget - f.energy) * Math.min(1, delta * (energyTarget > f.energy ? 14 : 4))
 
-    // --- Independent drum hits (kick / snare / hi-hat) ---
-    // Separate from the broadband onset detector below: that one owns beat
-    // TIMING, this one owns which part of the kit fired, so visual layers can
-    // respond to the three independently.
-    this.percussionDetector.update(f.percussion, spectral, now, delta, f.silence)
+    // --- Independent drum hits + broadband onset ---
+    // Both are flux-diff detectors, so they only make sense on a frame where the
+    // FFT actually advanced. On a duplicate frame (render loop outrunning the
+    // audio callback at high refresh, or a throttled tab) `spectral.bassFlux` is
+    // ~0 by construction (it diffs against an identical `prevMag`), and feeding
+    // those zeros into the adaptive thresholds just drags their mean/σ down and
+    // suppresses real onsets. `computeSpectralBands` still ran above, so
+    // `prevMag` holds the last real magnitudes and the next live frame diffs
+    // across the gap correctly.
+    if (fftAdvanced) {
+      // Drum hits: separate from the broadband onset — that one owns beat
+      // TIMING, this owns which part of the kit fired.
+      this.percussionDetector.update(f.percussion, spectral, now, delta, f.silence)
 
-    // --- Onset detection (adaptive threshold over ~1 s of flux) ---
-    this.fluxHistory.push(spectral.bassFlux)
-    if (this.fluxHistory.length > 60) this.fluxHistory.shift()
-    if (this.fluxHistory.length > 20 && !f.silence) {
-      let mean = 0
-      for (const v of this.fluxHistory) mean += v
-      mean /= this.fluxHistory.length
-      let variance = 0
-      for (const v of this.fluxHistory) variance += (v - mean) * (v - mean)
-      const std = Math.sqrt(variance / this.fluxHistory.length)
-      const threshold = mean + 1.6 * std + 1e-6
-      if (spectral.bassFlux > threshold && now - this.lastOnsetTime > 0.18) {
-        this.lastOnsetTime = now
-        const strength = Math.min(1, (spectral.bassFlux - mean) / (std * 4 + 1e-6))
-        this.bpmEstimator.addOnset(now, strength)
+      // Broadband onset: adaptive threshold over the last FLUX_WINDOW_SEC of
+      // flux. The ring is evicted by age, not count, so its statistics cover a
+      // fixed wall-clock window at any render fps.
+      this.fluxHistory.push({ t: now, v: spectral.bassFlux })
+      // The `- 1e-6` makes this hold exactly 60 samples at a steady 60 fps
+      // (bit-identical to the old fixed count, so the F121 onset calibration is
+      // preserved) despite float drift in the frame clock — while still being a
+      // true ~1 s window at any other frame rate.
+      while (
+        this.fluxHistory.length > 0 &&
+        now - this.fluxHistory[0].t >= FLUX_WINDOW_SEC - 1e-6
+      ) {
+        this.fluxHistory.shift()
+      }
+      if (this.fluxHistory.length > 20 && !f.silence) {
+        let mean = 0
+        for (const e of this.fluxHistory) mean += e.v
+        mean /= this.fluxHistory.length
+        let variance = 0
+        for (const e of this.fluxHistory) variance += (e.v - mean) * (e.v - mean)
+        const std = Math.sqrt(variance / this.fluxHistory.length)
+        const threshold = mean + 1.6 * std + 1e-6
+        if (spectral.bassFlux > threshold && now - this.lastOnsetTime > 0.18) {
+          this.lastOnsetTime = now
+          const strength = Math.min(1, (spectral.bassFlux - mean) / (std * 4 + 1e-6))
+          this.bpmEstimator.addOnset(now, strength)
+        }
       }
     }
 
@@ -701,6 +992,11 @@ class AudioEngine {
 
     // --- Mood: state, momentum, prediction (reads everything above) ---
     this.moodEstimator.update(f)
+
+    // --- Song structure: latched section read. `structureBridge.update` drains
+    // any completed worker segmentation (usually null) and schedules the next
+    // job; the tracker fuses it with the synchronous drop/build flags. ---
+    this.sectionTracker.update(f, structureBridge.update(f))
   }
 
   /**

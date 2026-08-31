@@ -1,4 +1,5 @@
 import { audioEngine } from '../audio/AudioEngine'
+import { MOOD_CHANGE_MAX_AMBIGUITY, MOOD_CHANGE_MIN_CONFIDENCE } from './autoPilotGates'
 import { frameLoad } from './frameLoad'
 import { PALETTES } from './palettes'
 import { performanceState } from './performanceState'
@@ -115,11 +116,19 @@ export interface SessionSample {
    *
    * Added after the first real session (F118): the recording showed the show
    * holding one scene for 38 s and could not say why, because a scene switch is
-   * gated on `confidence`/`ambiguity` inside AutoPilot and neither was being
-   * written down. A recorder that captures a decision's RESULT but not its
-   * INPUTS can only ever confirm that something did not happen.
+   * gated on the mood read inside AutoPilot and it was not being written down.
+   * A recorder that captures a decision's RESULT but not its INPUTS can only
+   * ever confirm that something did not happen.
+   *
+   * `confidence` is `AudioFeatures.confidence` — BEAT-GRID trust
+   * (`BpmEstimator.confidence`, tempo/phase lock). `moodConfidence` is
+   * `AudioFeatures.mood.confidence` — the MoodEstimator's certainty in the
+   * committed state, which is what AutoPilot's `MOOD_CHANGE_MIN_CONFIDENCE`
+   * gate reads. Different signals: F118's "confidence peaked at 0.392" was
+   * measured off `confidence` (this field), before `moodConfidence` existed.
    */
   confidence: number
+  moodConfidence: number
   ambiguity: number
   moodChanges: number
   /** Show state. */
@@ -601,6 +610,7 @@ class SessionLog {
       bpm: round(f.bpm, 1),
       silence: f.silence,
       confidence: round(f.confidence, 3),
+      moodConfidence: round(f.mood.confidence ?? 0, 3),
       ambiguity: round(f.mood.ambiguity ?? 0, 3),
       moodChanges: f.mood.changeCount ?? 0,
       scene: p.scene,
@@ -894,17 +904,30 @@ class SessionLog {
       L.push(`energy mean ${(e.reduce((a, b) => a + b, 0) / e.length).toFixed(3)} max ${Math.max(...e).toFixed(3)}`)
     }
     // Mood-read quality, because a scene switch is gated on it and a show that
-    // will not move is usually a read that will not firm up (F118).
+    // will not move is usually a read that will not firm up (F118). The gate
+    // reads `moodConfidence` and `ambiguity` — NOT `confidence` (beat-grid
+    // trust), which is reported on its own line below.
     if (this.samples.length) {
-      const conf = this.samples.map((s) => s.confidence)
+      const moodConf = this.samples.map((s) => s.moodConfidence)
       const amb = this.samples.map((s) => s.ambiguity)
+      const beatConf = this.samples.map((s) => s.confidence)
       const avg = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length
-      const gated = this.samples.filter((s) => s.confidence < 0.4 || s.ambiguity > 0.6).length
-      L.push(`mood confidence mean ${avg(conf).toFixed(2)} min ${Math.min(...conf).toFixed(2)}`)
+      const gated = this.samples.filter(
+        (s) =>
+          s.moodConfidence < MOOD_CHANGE_MIN_CONFIDENCE ||
+          s.ambiguity > MOOD_CHANGE_MAX_AMBIGUITY,
+      ).length
+      L.push(
+        `mood confidence mean ${avg(moodConf).toFixed(2)} min ${Math.min(...moodConf).toFixed(2)}`,
+      )
       L.push(`mood ambiguity  mean ${avg(amb).toFixed(2)} max ${Math.max(...amb).toFixed(2)}`)
       L.push(
-        `samples FAILING the scene-switch gate (conf<0.4 or amb>0.6): ` +
+        `samples FAILING the scene-switch gate ` +
+          `(moodConf<${MOOD_CHANGE_MIN_CONFIDENCE} or amb>${MOOD_CHANGE_MAX_AMBIGUITY}): ` +
           `${((gated / this.samples.length) * 100).toFixed(0)}%`,
+      )
+      L.push(
+        `beat-grid confidence mean ${avg(beatConf).toFixed(2)} min ${Math.min(...beatConf).toFixed(2)}`,
       )
       L.push(`autoPilot on: ${this.samples[this.samples.length - 1].autoPilot}`)
     }

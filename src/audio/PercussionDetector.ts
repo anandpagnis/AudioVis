@@ -17,8 +17,14 @@
  * has to stay here.)
  */
 
-/** Rolling flux history length (~1 s at 60 fps), matching the main detector. */
-const HISTORY = 60
+/**
+ * Rolling flux-history window in SECONDS, matching the main onset detector.
+ * Was a fixed 60-sample count — "≈ 1 s at 60 fps", but 2 s at 30 fps and 0.4 s
+ * at 144 fps, so the adaptive threshold's mean/σ drifted with the display.
+ */
+const HISTORY_SEC = 1.0
+/** Below this many samples in the window, mean/σ aren't meaningful yet. */
+const MIN_SAMPLES = 20
 
 interface BandConfig {
   /** Threshold sensitivity in σ above the rolling mean. Higher = fewer hits. */
@@ -67,7 +73,7 @@ export function createEmptyPercussion(): PercussionState {
 
 /** Rolling stats + refractory state for a single band. */
 class BandDetector {
-  private history: number[] = []
+  private history: { t: number; v: number }[] = []
   private lastHit = -10
 
   constructor(private readonly cfg: BandConfig) {}
@@ -82,17 +88,21 @@ class BandDetector {
     out.trigger = false
     out.env = Math.max(0, out.env - out.env * Math.min(1, delta * this.cfg.decay))
 
-    this.history.push(flux)
-    if (this.history.length > HISTORY) this.history.shift()
+    this.history.push({ t: now, v: flux })
+    // The `- 1e-6` keeps this exactly 60 samples at a steady 60 fps (unchanged
+    // from the old fixed count, robust to frame-clock float drift) while staying
+    // a true ~1 s window at any other frame rate.
+    while (this.history.length > 0 && now - this.history[0].t >= HISTORY_SEC - 1e-6)
+      this.history.shift()
     // Need enough history for mean/σ to mean anything, and a silent passage
     // must not fire on noise-floor jitter.
-    if (this.history.length < 20 || silence) return
+    if (this.history.length < MIN_SAMPLES || silence) return
 
     let mean = 0
-    for (const v of this.history) mean += v
+    for (const e of this.history) mean += e.v
     mean /= this.history.length
     let variance = 0
-    for (const v of this.history) variance += (v - mean) * (v - mean)
+    for (const e of this.history) variance += (e.v - mean) * (e.v - mean)
     const std = Math.sqrt(variance / this.history.length)
 
     const threshold = mean + this.cfg.sigma * std + 1e-6

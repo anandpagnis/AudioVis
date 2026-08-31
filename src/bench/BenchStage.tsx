@@ -139,6 +139,7 @@ function driveSyntheticAudio(f: AudioFeatures): void {
   f.high = 0.25 + (1 - beat) * 0.2
   f.vocal = 0.3 + swell * 0.15
   f.air = 0.2 + (1 - beat) * 0.12
+  f.sparkle = 0.15 + (1 - beat) * 0.1
   f.centroid = 0.4 + swell * 0.15
   f.spectralFlatness = 0.35
   f.spectralRolloff = 0.55
