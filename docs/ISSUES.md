@@ -4466,6 +4466,31 @@ denominated in milliseconds on this side.
       the count means making fewer TIER decisions, which is **F149**, and that
       is where this entry's frequency problem is now filed.
 
+      **That last sentence is too strong, and the next session disproved it**
+      *(2026-08-30, third pass)*. `...22-20-11` records **37 render-scale changes
+      against ZERO tier changes** - a ladder that never moved, and 17.1 scale
+      changes per minute anyway. So the render-scale ladder is NOT simply the
+      tier ladder's output; with the tier ladder quiet, composition events (scene
+      commits, layer admits and drops, each moving `combinePixelBudgets`) drive
+      the churn entirely on their own.
+
+      What survives is the part about COST, and it is the part that matters:
+
+        session      scale changes   tier changes   frames >33 ms
+        16-29-40     105 (19.7/min)  84 (15.8/min)  212
+        22-12-12      35 (15.0/min)  17  (7.3/min)   26
+        22-20-11      37 (17.1/min)   0  (0.0/min)    0
+
+      Same reallocation rate in the last two rows; 26 bad frames against none.
+      The reallocations that hurt are the ones the TIER ladder drives, because
+      those are the ones that happen at 2.8-4.1 MP and land stacked on a frame
+      that is already over budget. The composition's own resizes are frequent,
+      cheap, and cost nothing measurable.
+
+      That refines this entry rather than closing it: the frequency is not the
+      defect, the frequency AT HIGH RESOLUTION UNDER LOAD is. F149 removed most
+      of those, and F153 below is what is left of them.
+
 - [x] **F141 - Composition layers (background/accent/overlay) skip the
       warm-mount system entirely and compile their shader live, on whatever
       frame the director happens to request them - which is usually the
@@ -5077,7 +5102,7 @@ far and the first with no cold-compile stall anywhere in it (see F145, now
 closed), which is exactly what makes the rest readable: with the 1.8s spikes
 gone, what remains is visible for the first time.
 
-- [~] **F149 - Render scale 1.00 (8.29 MP) is the one rung this machine cannot
+- [x] **F149 - Render scale 1.00 (8.29 MP) is the one rung this machine cannot
       hold; the quality governor has no memory that it just failed, so it
       climbs back into it every ~25s for the whole session - 13 attempts, 13
       demotes, 0 successes** - `src/engine/quality.ts`,
@@ -5214,6 +5239,55 @@ gone, what remains is visible for the first time.
       one's 84, scale changes under 105, and - the specific thing to look for -
       tier-0 tenancies that either hold or stop being attempted.
 
+      **VERIFIED 2026-08-30** against `audiovis-session-2026-08-29-22-12-12`
+      (140 s, same machine, same `high` setting) plus the run that followed it.
+
+      Every one of the session's nine climbs lands where the back-off arithmetic
+      says it should, to within 0.02 s:
+
+        rung 2  climbed  9.45  failed 12.68 (3.2s)  -> blocked to 32.68
+                climbed 32.68  <- exact
+                        failed 35.93 (3.3s)         -> blocked to 75.93
+                climbed 77.46  <- first frame past BOTH that block and
+                                  CLIMB_HOLD_SEC after the 73.45 promote
+                        failed 83.19 (5.7s)         -> blocked to 163.19
+                never entered again (session ends at 140)
+
+        rung 3  climbed 44.65  failed 53.43 (8.8s)  -> blocked to 73.43
+                climbed 73.45  <- exact
+                climbed 94.85  failed 98.83 (4.0s)  -> blocked to 138.83
+                climbed 138.85 <- exact
+
+      The controller has a fixed point now. Where the old governor took the same
+      cliff 13 times in 320 s, this one takes it three times in 140 s and then
+      stops.
+
+        tier changes   15.8/min -> 7.3/min
+        p99            38.5 ms  -> 21.7 ms
+        max            75.4 ms  -> 59.3 ms
+        frames >33 ms  212 (1.13%) -> 26 (0.31%)
+        frames >50 ms  73          -> 9
+
+      **The run after it is the real result.** `...22-20-11` (130 s) records
+      **zero tier changes, zero frames over 33 ms**, max 31.4 ms, p99 20.0 ms -
+      the first session in this corpus with no dropped-frame outlier of any kind.
+      The ladder sat at tier 3 for the whole run. That is the shape the fix was
+      aiming at: not a better climb, a ladder that stops climbing into a wall.
+
+      **Two honest caveats.**
+
+      (1) The price is resolution. This session occupied tiers 2-4 and never
+      exceeded 4.06 MP internal; the pre-fix session reached 8.29 MP. That is the
+      correct trade under the project's standing rule - buttery smooth beats
+      visual ambition - and it is what a rung that cannot hold 60 fps SHOULD cost.
+      It is still a real reduction in delivered pixels and should be re-judged by
+      eye, not from this table.
+
+      (2) Neither result is a controlled comparison. Different tracks, different
+      durations, different starting tiers. The back-off arithmetic matching the
+      timestamps to 0.02 s is the strong evidence here; the aggregate frame-time
+      numbers are consistent with it rather than independent proof of it.
+
       **Caveat, and it matters:** every number here is one machine, one
       panel, one track. 8.29 MP is exactly what `baseDpr` 1.5 produces on a
       2560x1440 panel - a 4K internal frame, which is what F107 deliberately
@@ -5222,7 +5296,7 @@ gone, what remains is visible for the first time.
       rather than about where the cliff sits; fix 2 has to measure rather
       than hardcode.
 
-- [ ] **F150 - 12 of the session's 22 composition-layer mounts live for 20-90ms
+- [x] **F150 - 12 of the session's 22 composition-layer mounts live for 20-90ms
       and are then torn down - always on a scene commit** -
       `src/engine/SceneManager.tsx`, `src/engine/slotBudget.ts`
       *(found 2026-08-30, not fixed)*
@@ -5288,6 +5362,27 @@ gone, what remains is visible for the first time.
       on screen, and the instrumentation above costs one session to settle it
       properly.
 
+      **ANSWERED 2026-08-30** by the instrumentation above, in the first session
+      that carried it (`...22-12-12`). Both readings were half right, which is
+      exactly what the two event streams were added to separate:
+
+        40.48s  accent: + ribbons  ..  40.64s   160 ms   WAS DRAWN
+        111.91s accent: + ribbons  ..  111.98s   70 ms   never drawn
+        122.46s background: + malachite .. 122.55s 90 ms never drawn
+
+      So the warm-mount gate does absorb most of it - two of three desires were
+      raised and withdrawn without a pixel reaching the screen, costing a mount
+      and an unmount and nothing visual. But not all of it: the 160 ms one
+      reached `dir: 1` in 80 ms and was gone 80 ms later. A layer really did fade
+      in and out inside a fifth of a second. The original claim was unsupported
+      when it was written and is now supported for one case in three.
+
+      Cheap enough to leave. Three short-lived desires in 140 s, one of them
+      visible, against a fix that would have to reorder the director, the store's
+      dwell floors and the warm-mount lifecycle. Re-open it if a session shows
+      the count climbing, and note that the same instrumentation immediately
+      found a LARGER flicker that nothing here predicted - F154 below.
+
 - [x] **F151 - The session report hardcodes "(of 6 available)" for the palette
       pool; there are 13, and this session used 13** -
       `src/engine/sessionLog.ts` *(found 2026-08-30, not fixed)*
@@ -5350,9 +5445,386 @@ gone, what remains is visible for the first time.
 
 ---
 
+
+## The relief lags the decision, and the escape hatch is set too high (2026-08-30)
+
+Two sessions after F149 landed. The ladder now stops climbing into rungs it
+cannot hold, and the frame-time distribution improved accordingly, but the
+outliers that remain are not spread across the session - they sit in one
+specific window, and that window is a hold that was designed for the opposite
+case.
+
+- [x] **F153 - A tier DEMOTE waits out `RENDER_SCALE_HOLD_SEC` before the
+      resolution actually drops, so the frame keeps costing the failed tier's
+      money for up to 5 s. 22 of the 26 frames over 33 ms in
+      `...22-12-12` live in that gap, which is 11% of the session.**
+
+      `PerfMonitor`'s render-scale block has three branches. A composition change
+      (`renderScale.pairKey` moved) applies now. A tier change waits
+      `RENDER_SCALE_HOLD_SEC = 3`, restarting the hold on each further tier move
+      and for as long as a crossfade is in flight. An emergency overrides the
+      hold when `p95 > refreshInterval * SCALE_EMERGENCY_RATIO`.
+
+      Measured, demote to the first scale reduction that followed it:
+
+           12.68  DEMOTE 2 -> 3   relief at 17.70   5.02 s
+           14.68  DEMOTE 3 -> 4   relief at 17.70   3.02 s
+           35.93  DEMOTE 2 -> 3   relief at 37.48   1.55 s
+           37.95  DEMOTE 3 -> 4   relief at 38.00   0.05 s
+           53.43  DEMOTE 3 -> 4   relief at 54.93   1.50 s  (rode a scene commit)
+           83.19  DEMOTE 2 -> 3   relief at 84.16   0.97 s
+           85.20  DEMOTE 3 -> 4   relief at 85.20   0.00 s
+           98.83  DEMOTE 3 -> 4   relief at 101.63  2.80 s  (rode a layer add)
+
+      The fast ones are not the hold working. They are the frame getting lucky:
+      a scene commit or a layer change moved `pairKey`, which took the FIRST
+      branch and applied the pending resize as a side effect. When nothing
+      structural happens to coincide, the frame carries the failed tier's
+      resolution for the full three seconds - or five, when a second demote
+      restarts the hold.
+
+      **And the escape hatch cannot fire on this machine's failure mode.**
+      `SCALE_EMERGENCY_RATIO = 3` puts the override at a p95 of 50 ms. The worst
+      p95 anywhere in this session is 21.5 ms. The failure here is not a stall,
+      it is a sustained 19-21 ms p95 with 50-59 ms outliers riding on top - a
+      frame that has stopped holding vsync, which is precisely what the governor
+      demoted for, and precisely what the emergency branch declines to treat as
+      an emergency. The override is calibrated for a stall this GPU does not have.
+
+      Where the bad frames are:
+
+        frames > 33.3 ms                        26 of 8377
+        inside a demote -> relief window        22
+        the other 4                             one scene commit (67.7 s)
+
+        worst: 59.3  58.2  56.8  54.8  52.3  51.7  50.9  50.1  50.0 ms
+               all nine inside a window, all at render scale 0.70
+
+      **The asymmetry is already written down elsewhere in the same file.**
+      `MAX_RENDER_SCALE_STEP_UP` caps how fast the scale may CLIMB and explicitly
+      does not cap the descent: *"Downward is never capped: shedding load must
+      land the instant it is asked for."* That is the right principle and the
+      hold does not follow it. A hold exists to stop the ladder thrashing itself
+      into a resize storm; a thrash is two changes fighting, and a demote is not
+      half of a thrash - it is the ladder conceding. Making the frame cheaper is
+      never the move that needs damping.
+
+      Fix, in order of confidence:
+
+      (1) Make the hold directional. Apply it to a tier change that RAISES the
+          solved scale; apply a demote's reduction on the next coalesce tick.
+          `RESIZE_COALESCE_SEC = 0.5` still stops a burst from paying a realloc
+          each, so this is not "resize every frame", it is "resize within half a
+          second of deciding to". Small, local, and matches the principle already
+          stated for the step-up cap.
+
+      (2) Lower `SCALE_EMERGENCY_RATIO`, or measure it off the same signal the
+          governor demoted on. A p95 at 3x the refresh interval is a stall; the
+          governor's own `STEP_DOWN_P95_RATIO` is 1.5. Two thresholds on the same
+          measurement, 2x apart, where the lower one decides that the frame is in
+          trouble and the higher one decides whether to do anything about it
+          quickly. If (1) lands, this may not be needed at all - but the gap
+          between the two ratios is worth a comment either way.
+
+      Not attempted here: this is a second controller change in the same pass as
+      F149, on the same unmeasured axis, and stacking them would make the next
+      session's log unreadable as evidence for either. F149's result should be
+      confirmed on a second machine first.
+
+      **Confirmed again, larger, on a resized window** *(2026-08-30,
+      `audiovis-session-2026-08-30-09-47-58`, 147 s, buffer 1996x1123)*. This
+      session's ladder reached tier 0 for the first time in the corpus, and the
+      lag scaled with it:
+
+           18.57  DEMOTE 1 -> 2   relief at 25.60   7.03 s
+           20.57  DEMOTE 2 -> 3   relief at 25.60   5.03 s
+           22.58  DEMOTE 3 -> 4   relief at 25.60   3.02 s
+           55.41  DEMOTE 2 -> 3   relief at 58.52   3.11 s
+           73.10  DEMOTE 0 -> 1   relief at 75.55   2.45 s
+           75.12  DEMOTE 1 -> 2   relief at 75.55   0.43 s
+           77.13  DEMOTE 2 -> 3   relief at 80.15   3.02 s
+           89.06  DEMOTE 1 -> 2   relief at 92.31   3.25 s
+           91.06  DEMOTE 2 -> 3   relief at 92.31   1.25 s
+           93.08  DEMOTE 3 -> 4   relief at 96.10   3.02 s
+
+        frames > 33.3 ms                     41 of 8780
+        inside a demote -> relief window     35
+        window seconds                       31.6 s of 147.5 (21%)
+
+      **The 7.03 s case is the hold compounding.** Three demotes 2 s apart, and
+      each one re-enters the `quality.tier !== heldTier.current` branch and
+      restarts `heldSince`. The ladder conceded three whole rungs and the frame
+      kept paying 4.67 MP throughout. A hold that resets every time the
+      controller gives up more ground is not damping a thrash, it is refusing to
+      believe a trend.
+
+      **And the tier-0 excursion is the whole failure in one sequence:**
+
+           67.42  promote 1 -> 0            (the climb)
+           72.98  scale 0.91 -> 1.00        5.56 s later, the resize finally lands
+           73.10  DEMOTE 0 -> 1             0.12 s after that, the frame blows up
+           73.4-75.3                        75.6, 67.4, 64.7, 58.3, 50.1 ms
+           75.55  scale 1.00 -> 0.75        relief, 2.45 s after the demote
+
+      The scale spent five and a half seconds climbing to a resolution the
+      machine held for one tenth of a second. Both halves of that are this
+      entry: slow up is defensible, slow down is not.
+
+      This raises fix (1)'s priority. It is now the single largest remaining
+      source of dropped frames in the corpus, and it has been measured across
+      three sessions and two window sizes.
+
+      **Fixed 2026-08-30** - `src/engine/renderScale.ts`, `PerfMonitor.tsx`.
+
+      The hold is now directional. The decision moved out of the frame loop into
+      a pure `decideTierResize()` next to the solver, so the policy is testable
+      without a GPU or a React tree:
+
+        - A tier change that LOWERS the solved scale applies on the next
+          coalesce tick. `RESIZE_COALESCE_SEC = 0.5` still gates the actual
+          reallocation, so this is "resize within half a second of deciding to",
+          not "resize every frame".
+        - A tier change that RAISES it waits out `RENDER_SCALE_HOLD_SEC` exactly
+          as before. Every word of the hold's justification is about a change
+          that might reverse, and that only ever described a climb.
+        - The compounding case is gone by construction rather than by tuning: a
+          demote no longer reaches the hold branch, so there is no clock for a
+          cascade to restart.
+        - A crossfade still defers a shed. That is the one case where waiting
+          wins - the commit has already reallocated through its own budget
+          change, and stacking a second realloc on it was the biggest cluster of
+          50-250 ms frames in the older logs. It resolves on the first frame
+          after the fade rather than restarting a clock, so the wait is bounded
+          by the transition (under a second) instead of by 3-7 s of hold.
+        - The emergency branch is unchanged and still overrides everything.
+
+      7 tests in `renderScale.test.ts`, including the sign-flip guard (a climb
+      must not read as a shed) and the three-demote cascade that produced the
+      7.03 s case. `npm run check` clean.
+
+      **Fix (2), lowering `SCALE_EMERGENCY_RATIO`, deliberately not taken.** The
+      50 ms line never fired on this machine's failure mode, which is what made
+      it worth writing down - but with sheds now applying on sight, the
+      emergency only has to cover a CLIMB that turns out to be catastrophic, and
+      3x is a defensible line for that. Revisit only if a log shows a climb
+      sitting through the hold at a p95 between 25 and 50 ms.
+
+      **Not verified live.** Same caveat as F149: this is a controller change
+      and the next session log is the evidence. What to look for - the
+      demote-to-relief gaps in the table above collapsing to well under a
+      second, and the frames-over-33 ms count falling with them.
+
+- [ ] **F154 - A layer that nothing asked to change disappears for 90-120 ms at
+      a scene request and comes back. The budget sheds it during the two-primary
+      overlap. This is a real on-screen flicker and the director never knew.**
+
+      Found immediately by F150's `layer-visible` stream, and invisible to every
+      instrument before it - the director's desire never moved, so the old
+      `layer` events show nothing at all at these timestamps:
+
+        108.06  scene: requested kifs
+        108.08  layer-visible: accent: - plasma      <- gone
+        108.20  layer-visible: accent: + plasma      <- back, 120 ms later
+                (no `layer` event anywhere near: the desire never changed)
+
+        136.26  scene: requested pointcloud
+        136.28  layer-visible: accent: - ribbons
+        136.37  layer-visible: accent: + ribbons     <- back, 90 ms later
+
+      Mechanism, and it is a clean one. `requestScene` puts a second primary in
+      flight. `SceneManager` computes `nonLayerMs` over every mounted entry, and
+      during the overlap that includes BOTH primaries - the commit block promotes
+      by setting `outgoing.dir = -1` then `warm.dir = 1`, so at the commit frame
+      the budget is genuinely charged for two subjects. `resolveLayerIds` gets
+      `remaining = frameBudgetMs - nonLayerMs`, finds the accent no longer fits,
+      and sheds it. A few frames later the outgoing primary retires, the money
+      comes back, and the layer is re-admitted.
+
+      Every step of that is individually correct. The frame really is carrying
+      two subjects; the layer really does not fit; shedding it really is the
+      right call for that frame. The result is still wrong, because the budget is
+      being asked a question about a 100 ms transient as though it were the
+      steady state, and the answer is applied to something the viewer can see.
+
+      Two candidate fixes, and the first is much smaller:
+
+      (1) Hysteresis on the shed, not on the admit. A layer that is already
+          `dir: 1` should survive a budget shortfall that lasts less than the
+          crossfade, on the same reasoning that gives a newly-wanted layer a warm
+          mount before it is shown: the composition's visible state should change
+          at composition speed, not at budget-arithmetic speed. Cheapest version:
+          do not evict a visible layer while `performanceState.transition.active`.
+
+      (2) Charge the overlap once. The two primaries are not two subjects for the
+          viewer, they are one subject mid-dissolve, and `canFundOverlap` already
+          has a view on what that costs. Bigger change, touches the thing F110
+          and F148 have both already moved, and would want its own session.
+
+      Related but distinct from F150: that entry is the DIRECTOR changing its
+      mind, mostly below the visible threshold. This is the BUDGET overruling a
+      decision the director never revisited, above it. Both were found by the
+      same two event streams, which is the argument for having added them.
+
+
+## Two costs the boot prewarm and the budget model both miss (2026-08-30)
+
+From `audiovis-session-2026-08-30-09-47-58`, the first session in the corpus
+whose ladder reached tier 0. Both of these were invisible until it did.
+
+- [x] **F155 - `chrome`'s FIRST commit costs a 148 ms frame; its second costs
+      17.4 ms. It is already in `BOOT_PREWARM_IDS`, so this is not a shader
+      compile - it is the shared PMREM environment map, which is built lazily on
+      that mount and nothing builds it at boot.**
+
+      First commit of each scene, against the worst raw frame in the 1.5 s after:
+
+           41.95s  wireframe     37.6 ms    1211 triangles
+           55.26s  chrome       148.1 ms   11223 triangles
+           69.82s  dissolve      26.8 ms   11331 triangles
+           96.75s  pointcloud    20.5 ms     527 triangles
+          103.35s  maze          30.8 ms    1273 triangles
+
+      Repeat commits of the same scenes: chrome 17.4 ms, wireframe 19.8 ms,
+      dissolve 27.4 ms. So the cost is paid exactly once, on chrome, and it is
+      **8.5x the next worst first mount**.
+
+      **It is not the geometry.** `dissolve` carries MORE triangles than chrome
+      (11331 against 11223) and its commits cost 26.8 and 27.4 ms. Vertex-buffer
+      upload does not produce a 148 ms frame at this size on this GPU.
+
+      **It is the env map.** `getSharedEnvMap()` has exactly one caller in the
+      codebase - `ChromeFormScene`, at material construction - and it is lazy:
+      `resourceCache.acquire(ENV_MAP_KEY, factory, { pinned: true })` runs
+      `new PMREMGenerator(gl)` plus `pmrem.fromScene(new RoomEnvironment(), 0.04)`
+      inside the factory. A PMREM prefilter is a mip-pyramid of render passes
+      over a generated scene, synchronous, on the render thread. Nothing calls it
+      at boot, so the first frame that ever mounts chrome pays it in full.
+
+      The codebase already believes otherwise. `TrailLineScene.tsx` cites
+      `envMap.ts` as *"PMREM (one-shot prefilter at startup)"*, and envMap.ts's
+      own header says the point of sharing is to not *"pay PMREM generation per
+      mount"*. Both are half true: it is paid once rather than per mount, but
+      that once lands mid-show on a scene commit rather than at startup, which is
+      the expensive half of the problem.
+
+      Fix, and it is small: call `getSharedEnvMap(gl)` from the boot prewarm
+      alongside `BOOT_PREWARM_IDS`. It is already `pinned: true`, so the cache
+      holds it for the process regardless of chrome's mount lifecycle, and
+      `releaseSharedEnvMap` is documented as safe against a pinned entry.
+      `PerfMonitor` already knows the key (`envMap:room` is called out there as a
+      shared non-scene resource), so the accounting needs no change.
+
+      Worth checking at the same time whether any other scene SHOULD be using it
+      and is not - a lazily-built shared resource with one caller is one refactor
+      away from being built at the worst possible moment for a second time.
+
+      **Fixed 2026-08-30** - `src/engine/SceneManager.tsx`. `getSharedEnvMap(gl)`
+      now runs from the boot prewarm pump, in its own slot before the first
+      scene rather than sharing a macrotask with a compile - it is the single
+      most expensive item there, and not stacking synchronous GPU work on one
+      task is the whole reason `PREWARM_STAGGER_MS` exists. The entry is already
+      `pinned: true`, so the cache holds it for the process however chrome's
+      mount lifecycle behaves; the returned reference is dropped deliberately.
+
+      No test: the assertion worth making is "the first chrome commit no longer
+      costs 148 ms", and nothing in a node test environment can compile a PMREM.
+      The next session log carries the evidence - chrome's first commit should
+      land near its second, 17.4 ms.
+
+- [ ] **F156 - At tiers 0 and 1 the fixed-cost RESERVATION alone exceeds the
+      entire tier budget, so `remainingMs` floors to zero and no layer can be
+      admitted at the top of the ladder. 42% of this session's samples.**
+
+           tier   samples   mean fixedMs   tier budgetMs   mean internal MP
+             0        22        12.61          11.0             6.87
+             1        46        10.86           9.5             5.92
+             2       335         7.22           8.5             4.38
+             3        94         5.97           7.5             3.47
+             4        72         4.61           6.5             2.78
+
+      Worst single sample: `fixedMs 15.23` against `budgetMs 9.5`. 241 of 569
+      samples (42%) have the post chain reserving more than the whole frame is
+      allowed to cost.
+
+      This is F110's linear scaling meeting the tier ladder head-on. `fillScale`
+      makes the post chain, feedback pass and optical racks scale with internal
+      megapixels, which is right - they are fullscreen passes. But the tier
+      budget rises far more slowly than the resolution the same tier unlocks:
+      going 4 -> 0 multiplies the budget by 1.7 and the pixels by 2.5, so the
+      reservation crosses the budget somewhere around tier 2 and the top two
+      rungs are arithmetically bankrupt before anything is drawn.
+
+      Visible in this session as `layer changes: 6 wanted, 2 actually shown` -
+      the largest desire/shown gap yet recorded, and the F150 instrumentation is
+      what made it legible.
+
+      **It does not mean the frame is genuinely over.** `fixedMs` is a
+      reservation built from `POST_CHAIN_MS = 2` and `FEEDBACK_MS = 1`, both
+      explicitly estimates that `/bench` has never measured (F43, F90) - the same
+      correction F148 needed. A frame at tier 0 running 16.7 ms is not spending
+      12.6 ms in the post chain. What the table shows is that the MODEL is
+      self-contradictory at the top of its own ladder, not that the GPU is.
+
+      Which makes the fix order clear: **measure the post chain first** (F90).
+      Retuning either the reservation or the tier budgets against numbers nobody
+      has taken would just move an invented constant around. If the measurement
+      says the chain really is 12 ms at 6.9 MP, then the tier budgets are wrong;
+      if it says 4 ms, then `fillScale`'s reference cost is.
+
+      **Addressed 2026-08-30, by measuring rather than retuning.** This entry
+      said the fix order was to price the post chain first (F90) because
+      retuning either the reservation or the tier budgets against numbers nobody
+      has taken would just move an invented constant around. So that is what
+      shipped: the measurement, not a new guess.
+
+      `/bench?postchain` is a third bench mode. It is the cost pass in every
+      respect - same plan, same per-cell tier pin, same per-scene render-scale
+      solve, same GPU timing, no profile readback - except that `PostFXChain` is
+      mounted and the GPU timer brackets the composer's draw (priorities 0.5 and
+      1.5, straddling the composer's 1) instead of a bare `gl.render`. Subtract
+      a cost sweep from a post-chain sweep and the remainder is the chain.
+
+      It has to be a difference: `EffectComposer` renders the scene into its own
+      buffer before running the effects, so no timer can bracket the chain
+      alone.
+
+      **It could not reuse the existing profile pass**, which also mounts the
+      chain and looks like a free second sample. That pass holds one DPR across
+      every cell, does a `getImageData` readback every frame, and does not GPU-
+      time anything at all ("GPU timings are meaningless in that pass and are not
+      read"). Differencing against it would have billed the post chain for a
+      canvas readback and a resolution change - a confidently wrong number,
+      which is worse than none.
+
+      Shipped with it:
+
+        - `BenchResult.internalMP`, so a millisecond figure carries the
+          resolution it was taken at. A fullscreen pass is priced per pixel and
+          the omission of that denominator is the original sin `FILL_REFERENCE_MP`
+          was invented to paper over.
+        - `postChainDelta()` / `formatPostChainDelta()` in benchHarness.ts. Pure,
+          8 tests, and every one of the interesting ones is a REFUSAL: it will
+          not subtract a pair drawn at different resolutions, will not subtract
+          when either pass lacks GPU timing (CPU time is vsync-locked, so both
+          passes would read identical whatever the chain costs), and will not
+          assume a resolution the harness never reported. It takes the MEDIAN
+          ms/MP across cells and prints the spread, because per-cell agreement is
+          the signal that the method worked.
+        - `/bench` parks each completed sweep in localStorage under its pass
+          name, so the second run finds the first across the reload the mode
+          switch requires, and a "Copy post-chain cost" button appears with the
+          ms-at-2.07-MP headline.
+
+      **Still open, and this is the point:** nobody has run it yet. The entry
+      stays unticked until there is a number. When there is one, it settles which
+      half of the contradiction is wrong - if the chain really is ~12 ms at
+      6.9 MP then the tier budgets are too small, and if it is nearer 4 then
+      `POST_CHAIN_MS` and `fillScale`'s reference are. Either way F43, F90,
+      F110's magnitude and F148's source (5) all resolve with it.
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **773 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **788 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

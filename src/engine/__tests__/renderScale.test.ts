@@ -6,6 +6,7 @@ import {
   RENDER_SCALE_FLOOR,
   bufferScale,
   combinePixelBudgets,
+  decideTierResize,
   solveRenderScale,
 } from '../renderScale'
 
@@ -185,5 +186,86 @@ describe('budget bounds', () => {
     // that declare "not fill-bound" would still be downscaled on the largest
     // display anyone runs a show on.
     expect(NATIVE_PIXEL_BUDGET).toBeGreaterThanOrEqual(mp(5120, 2880))
+  })
+})
+
+/**
+ * The directional hold (F153).
+ *
+ * Before this, a demote waited out `RENDER_SCALE_HOLD_SEC` exactly like a
+ * promote, so the frame kept paying the failed tier's resolution for up to
+ * seven seconds after the governor had already given up on it. Across three
+ * sessions, 22 of 26 and then 35 of 41 of the frames over 33 ms sat in that
+ * gap. The asymmetry these tests pin is the same one `MAX_RENDER_SCALE_STEP_UP`
+ * already states for its own case: shedding load must land immediately.
+ */
+describe('decideTierResize', () => {
+  const base = {
+    applied: 0.75,
+    solved: 0.75,
+    p95Ms: 17,
+    refreshMs: 16.67,
+    txActive: false,
+    heldForThisTier: false,
+    heldForSec: 0,
+    emergencyRatio: 3,
+    holdSec: 3,
+  }
+
+  it('applies a SHED immediately — no hold at all', () => {
+    expect(decideTierResize({ ...base, solved: 0.63 })).toBe('apply')
+  })
+
+  it('still holds a CLIMB', () => {
+    expect(decideTierResize({ ...base, solved: 0.91 })).toBe('restart-hold')
+    expect(
+      decideTierResize({ ...base, solved: 0.91, heldForThisTier: true, heldForSec: 1 }),
+    ).toBe('wait')
+    expect(
+      decideTierResize({ ...base, solved: 0.91, heldForThisTier: true, heldForSec: 3 }),
+    ).toBe('apply')
+  })
+
+  it('never lets a cascade of demotes restart the hold clock', () => {
+    // The 7.03 s case: three demotes ~2 s apart, each previously failing
+    // `heldForThisTier` and resetting the clock while the frame kept paying the
+    // top rung's resolution. Every step of that cascade now sheds on sight, so
+    // there is no clock to reset.
+    for (const solved of [0.63, 0.52, 0.48]) {
+      expect(decideTierResize({ ...base, solved, heldForThisTier: false })).toBe('apply')
+    }
+  })
+
+  it('defers a shed while a crossfade is in flight, and resolves right after', () => {
+    // The one case where waiting beats shedding: the commit has already
+    // reallocated, and a second realloc stacked on it was the biggest cluster
+    // of 50-250 ms frames in the older logs.
+    expect(decideTierResize({ ...base, solved: 0.63, txActive: true })).toBe('restart-hold')
+    // Same inputs one frame later with the fade finished — no clock consulted.
+    expect(decideTierResize({ ...base, solved: 0.63, txActive: false })).toBe('apply')
+  })
+
+  it('the emergency overrides everything, including a crossfade', () => {
+    // p95 past 3x the refresh interval is three dropped frames in a row. At
+    // that point one reallocation is unarguably cheaper than what the frame is
+    // already paying.
+    expect(
+      decideTierResize({ ...base, solved: 0.91, p95Ms: 51, txActive: true }),
+    ).toBe('apply')
+  })
+
+  it('treats a sub-quantum move as no move', () => {
+    // 0.005 is half the 0.01 grid `solveRenderScale` rounds to, so this asks
+    // "did the solve actually change", not "is it slightly smaller".
+    expect(decideTierResize({ ...base, applied: 0.75, solved: 0.748 })).toBe('restart-hold')
+  })
+
+  it('a climb is not a shed even when the hold has long expired', () => {
+    // Guards the obvious inversion: reading the direction backwards would make
+    // every promote instant and every demote wait, which is the bug with its
+    // sign flipped.
+    expect(
+      decideTierResize({ ...base, solved: 1.0, heldForThisTier: true, heldForSec: 0.1 }),
+    ).toBe('wait')
   })
 })

@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SCENES, preloadScene } from '../scenes'
-import { BenchRunner, buildPlan, formatResults, type BenchResult } from '../bench/benchHarness'
+import { FILL_REFERENCE_MP } from '../engine/frameLoad'
+import {
+  BenchRunner,
+  buildPlan,
+  formatResults,
+  formatPostChainDelta,
+  postChainDelta,
+  type BenchResult,
+} from '../bench/benchHarness'
 import { BenchStage } from '../bench/BenchStage'
 
 /**
@@ -38,6 +46,46 @@ import { BenchStage } from '../bench/BenchStage'
 const PROFILE_ONLY =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
 const TIERS = PROFILE_ONLY ? [0] : [0, 1, 2, 3, 4]
+
+/**
+ * Is this the post-chain pass (F156)? Mirrors BenchStage's own flag.
+ *
+ * Sweeps the same plan as the cost pass — same scenes, same five tiers, same
+ * frame counts — because the two are only subtractable if they are the same
+ * measurement twice.
+ */
+const POSTCHAIN_PASS =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('postchain')
+
+/**
+ * Where a finished sweep is parked so the other pass can find it.
+ *
+ * The post-chain number is a difference between two runs, and two runs cannot
+ * be in flight at once — the chain is either mounted for the whole page or it
+ * is not. So the first pass has to survive a reload. localStorage rather than
+ * asking the operator to paste JSON back in: the failure mode of a manual
+ * round-trip is pasting the wrong pass, and nothing downstream could detect it.
+ */
+const RUN_STORE_KEY = (pass: string) => `audiovis:bench:${pass}`
+
+function saveRun(pass: string, results: readonly BenchResult[]): void {
+  try {
+    localStorage.setItem(RUN_STORE_KEY(pass), JSON.stringify(results))
+  } catch {
+    // Private mode, quota, or storage disabled. The sweep still ran and both
+    // copy buttons still work; only the automatic diff is lost.
+  }
+}
+
+function loadRun(pass: string): BenchResult[] | null {
+  try {
+    const raw = localStorage.getItem(RUN_STORE_KEY(pass))
+    return raw ? (JSON.parse(raw) as BenchResult[]) : null
+  } catch {
+    return null
+  }
+}
+
 
 /**
  * The profile pass needs a longer warmup than the cost pass, for a reason the
@@ -109,7 +157,14 @@ export function Bench() {
       setResults([...r.results])
       const cell = r.current
       setLabel(cell ? `${cell.sceneId} · tier ${cell.tier} · ${r.currentPhase}` : 'done')
-      if (r.done) setRunning(false)
+      if (r.done) {
+        setRunning(false)
+        // Park the completed sweep for the other pass to difference against
+        // (F156). Only a COMPLETE run: a stopped one has whatever cells it
+        // reached, and half a plan silently matching half of another is exactly
+        // the confidently-wrong number this is trying to avoid.
+        saveRun(POSTCHAIN_PASS ? 'postchain' : PROFILE_ONLY ? 'profile' : 'cost', r.results)
+      }
     }, 250)
     return () => window.clearInterval(id)
   }, [running])
@@ -123,6 +178,24 @@ export function Bench() {
       () => setCopied('clipboard blocked'),
     )
   }, [])
+
+  /**
+   * The post-chain measurement, if both halves of it exist (F156).
+   *
+   * Available from either side: finish the cost pass with a stored post-chain
+   * run and it appears, and vice versa. The pairing is by (scene, tier) inside
+   * `postChainDelta`, which also refuses any pair drawn at different
+   * resolutions or missing a GPU number, so a stale stored run cannot quietly
+   * contaminate the answer.
+   */
+  const chainDelta = useMemo(() => {
+    if (PROFILE_ONLY || results.length === 0) return null
+    const other = loadRun(POSTCHAIN_PASS ? 'cost' : 'postchain')
+    if (!other || other.length === 0) return null
+    const [off, on] = POSTCHAIN_PASS ? [other, results] : [results, other]
+    const d = postChainDelta(off, on)
+    return d.cells.length > 0 ? d : null
+  }, [results])
 
   const gpuMissing = results.length > 0 && results.every((r) => r.gpu === null)
   const mins = Math.ceil((plan.length * SECONDS_PER_CELL) / 60)
@@ -158,6 +231,12 @@ export function Bench() {
           >
             Copy JSON
           </button>
+          {chainDelta && (
+            <button onClick={() => copy(formatPostChainDelta(chainDelta, FILL_REFERENCE_MP), 'chain')}>
+              Copy post-chain cost ({chainDelta.atReferenceMs(FILL_REFERENCE_MP).toFixed(2)} ms @{' '}
+              {FILL_REFERENCE_MP} MP)
+            </button>
+          )}
           {copied && <span className="bench-copied">{copied === 'md' || copied === 'json' ? 'copied' : copied}</span>}
         </div>
 

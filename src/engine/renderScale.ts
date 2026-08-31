@@ -429,3 +429,91 @@ export function resolvePixelBudget(meta: PixelBudgetInputs, trusted = true): num
       : NATIVE_PIXEL_BUDGET
   return trusted ? base : Math.min(base, UNTRUSTED_MAX_BUDGET)
 }
+
+/** What the frame loop should do about a tier change. See {@link decideTierResize}. */
+export type TierResizeAction =
+  /** Reallocate now (still subject to the caller's coalesce cooldown). */
+  | 'apply'
+  /** (Re)start the hold clock for this tier. */
+  | 'restart-hold'
+  /** Keep waiting out the hold. */
+  | 'wait'
+
+export interface TierResizeInput {
+  /** Scale the live tier asks for — `renderScale.solve()`. */
+  solved: number
+  /** Scale currently on the canvas — `renderScale.applied`. */
+  applied: number
+  /** Rolling p95 frame time, ms. */
+  p95Ms: number
+  /** Measured display refresh interval, ms. */
+  refreshMs: number
+  /** Is a crossfade in flight? */
+  txActive: boolean
+  /** Is the hold clock already running for THIS tier? */
+  heldForThisTier: boolean
+  /** Seconds the hold clock has been running. */
+  heldForSec: number
+  /** {@link TierResizeInput.p95Ms} multiple past which the hold is abandoned. */
+  emergencyRatio: number
+  /** Seconds a scale-RAISING tier change waits before it is applied. */
+  holdSec: number
+}
+
+/**
+ * Should a pending tier change resize the canvas now, or wait? (F153)
+ *
+ * ## The asymmetry this encodes
+ *
+ * The hold exists so a tier change that might reverse does not pay a post-chain
+ * reallocation for nothing. Every word of that is about a change making the
+ * frame MORE expensive. A demote is not a guess about future load — it is the
+ * governor having already decided, and holding it means rendering at a
+ * resolution the controller has just declared unaffordable. The sibling
+ * constant `MAX_RENDER_SCALE_STEP_UP` already states the rule for its own case:
+ * *"Downward is never capped: shedding load must land the instant it is asked
+ * for."* The hold did not follow it, and this is where it now does.
+ *
+ * Measured before the change, across three sessions and two window sizes: 22 of
+ * 26, then 35 of 41, of the frames over 33 ms fell between a demote and the
+ * resize that relieved it — 11% and 21% of session wall-clock. Observed lags
+ * 0.43 s to 7.03 s.
+ *
+ * The 7.03 s case was this decision compounding. Three demotes about 2 s apart,
+ * each one failing `heldForThisTier` and restarting the clock, so the ladder
+ * conceded three whole rungs while the frame kept paying 4.67 MP throughout.
+ * Applying a shed on sight removes that case by construction rather than by
+ * tuning: a demote never reaches the hold branch at all.
+ *
+ * The clearest single sequence, from `audiovis-session-2026-08-30-09-47-58`:
+ *
+ *     67.42  promote 1 -> 0
+ *     72.98  scale 0.91 -> 1.00     5.56 s later, the resize lands
+ *     73.10  DEMOTE 0 -> 1          0.12 s after that, the frame collapses
+ *     73.4-75.3                     75.6, 67.4, 64.7, 58.3, 50.1 ms
+ *     75.55  scale 1.00 -> 0.75     relief, 2.45 s after the demote
+ *
+ * Five and a half seconds spent climbing to a resolution the machine held for
+ * one tenth of a second. Slow up is the hold working; slow down is this bug.
+ *
+ * ## Why a crossfade still defers a shed
+ *
+ * The one case where waiting beats shedding. A commit has already reallocated
+ * through its own budget change, and stacking a second reallocation on top of
+ * it was the biggest cluster of 50-250 ms frames in the older logs. The caller
+ * re-evaluates every frame, so this resolves on the first frame after the fade
+ * rather than restarting any clock — bounded by the longest transition, under a
+ * second, against the 3-7 s the hold was costing.
+ *
+ * Pure so it can be tested without a GPU or a React tree; the frame loop owns
+ * the clock and the refs, this owns the policy.
+ */
+export function decideTierResize(i: TierResizeInput): TierResizeAction {
+  // 0.005 is half the 0.01 grid `solveRenderScale` quantises to, so this is
+  // "the solve moved at all", not a tolerance.
+  const shedding = i.solved < i.applied - 0.005
+  const emergency = i.p95Ms > i.refreshMs * i.emergencyRatio
+  if ((shedding && !i.txActive) || emergency) return 'apply'
+  if (!i.heldForThisTier || i.txActive) return 'restart-hold'
+  return i.heldForSec >= i.holdSec ? 'apply' : 'wait'
+}

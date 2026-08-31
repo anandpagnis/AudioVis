@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { quality } from './quality'
-import { renderScale } from './renderScale'
+import { decideTierResize, renderScale } from './renderScale'
 import { frameSampler } from './frameSampler'
 import { performanceState } from './performanceState'
 import { resourceCache } from './streaming/resourceCache'
@@ -45,6 +45,19 @@ const LEDGER_INTERVAL_SEC = 2
  *
  * A user-pinned quality change bypasses this entirely: that is an explicit
  * instruction, not a guess, and it should look immediate.
+ *
+ * ## Climbs only (F153)
+ *
+ * This delays a tier change that RAISES the solved scale. A change that lowers
+ * it applies on the next coalesce tick, because every word of the justification
+ * above is about a change that might reverse and cost a reallocation for
+ * nothing — and a demote is not a guess about load, it is the governor having
+ * already decided. Holding it means rendering at a resolution the controller
+ * has just declared unaffordable, which is the state the ladder exists to leave.
+ *
+ * Three sessions put 22 of 26, then 35 of 41, of their frames over 33 ms inside
+ * that gap. See the direction check at the call site for the measurements and
+ * for the compounding case this removes.
  */
 const RENDER_SCALE_HOLD_SEC = 3
 
@@ -427,22 +440,27 @@ export function PerfMonitor() {
       // a burst of these inside one transition from each paying a realloc.
       applyRenderScaleCoalesced()
     } else if (quality.tier !== appliedTier.current) {
-      // A frame this late has stopped being a candidate for hysteresis — see
-      // SCALE_EMERGENCY_RATIO. Measured off the p95 rather than the EMA because
-      // the EMA is smoothed over seconds and this is the case where seconds are
-      // the whole problem.
-      if (p95.current > quality.refreshIntervalMs * SCALE_EMERGENCY_RATIO) {
+      // Direction-aware since F153: a tier change that SHEDS load applies on
+      // sight, one that raises it waits out the hold. The reasoning, the
+      // measurements behind it and the crossfade carve-out all live with the
+      // decision in `decideTierResize`. Still gated by RESIZE_COALESCE_SEC, so
+      // "apply" means "within half a second of deciding to", not "every frame".
+      const action = decideTierResize({
+        solved: renderScale.solve(),
+        applied: renderScale.applied,
+        p95Ms: p95.current,
+        refreshMs: quality.refreshIntervalMs,
+        txActive,
+        heldForThisTier: quality.tier === heldTier.current,
+        heldForSec: clock.elapsedTime - heldSince.current,
+        emergencyRatio: SCALE_EMERGENCY_RATIO,
+        holdSec: RENDER_SCALE_HOLD_SEC,
+      })
+      if (action === 'apply') {
         applyRenderScaleCoalesced()
-      } else if (quality.tier !== heldTier.current || txActive) {
-        // (Re)start the hold. The `|| txActive` keeps restarting it for as long
-        // as a crossfade is in flight, so a tier-driven resize can never stack
-        // its post-chain realloc on top of the commit's own — that pile-up was
-        // the biggest single cluster of 50-250 ms frames in the session logs.
-        // The emergency branch above still overrides.
+      } else if (action === 'restart-hold') {
         heldTier.current = quality.tier
         heldSince.current = clock.elapsedTime
-      } else if (clock.elapsedTime - heldSince.current >= RENDER_SCALE_HOLD_SEC) {
-        applyRenderScaleCoalesced()
       }
     } else {
       heldTier.current = -1

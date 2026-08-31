@@ -11,6 +11,7 @@ import {
   prewarmScene,
   scenePixelBudget,
 } from '../scenes'
+import { getSharedEnvMap } from './envMap'
 import { approach, performanceState, type ActiveEffect } from './performanceState'
 import {
   fadeDurationFor,
@@ -608,7 +609,44 @@ export function SceneManager() {
     const ids = BOOT_PREWARM_IDS.filter((id) => id !== useStore.getState().sceneId)
     let idx = 0
     let timer = 0
+    let envWarmed = false
     const pump = () => {
+      // The shared PMREM environment map, built here rather than on the frame
+      // that first needs it (F155).
+      //
+      // `getSharedEnvMap` is lazy — a factory inside `resourceCache.acquire` —
+      // and has exactly ONE caller in the codebase, ChromeFormScene, at material
+      // construction. So `new PMREMGenerator(gl)` plus `fromScene(new
+      // RoomEnvironment())` — a synchronous mip-pyramid of render passes over a
+      // generated scene — ran on whichever frame first committed `chrome`,
+      // mid-show.
+      //
+      // `audiovis-session-2026-08-30-09-47-58` priced it: chrome's first commit
+      // cost a **148.1 ms** frame, its second **17.4 ms**. Not a shader compile
+      // (chrome is in BOOT_PREWARM_IDS above, so F145's prewarm already covered
+      // that) and not geometry either — `dissolve` carries MORE triangles,
+      // 11331 against 11223, and its commits cost 26.8 and 27.4 ms. 8.5x the
+      // next worst first mount, paid exactly once, on the only scene that asks
+      // for an env map.
+      //
+      // The codebase already assumed this was handled: TrailLineScene cites
+      // envMap.ts as "PMREM (one-shot prefilter at startup)", and envMap.ts's
+      // own header explains the sharing exists so nothing has to "pay PMREM
+      // generation per mount". Both were half right — once rather than per
+      // mount, but that once landed on a scene commit instead of at boot.
+      //
+      // It gets the pump's FIRST slot to itself rather than sharing a macrotask
+      // with a scene compile — it is the single most expensive item here, and
+      // not stacking synchronous GPU work on one task is the whole reason
+      // PREWARM_STAGGER_MS exists. The entry is `pinned: true`, so the cache
+      // holds it for the life of the process no matter what chrome's mount
+      // lifecycle does; the returned reference is deliberately dropped.
+      if (!envWarmed) {
+        envWarmed = true
+        getSharedEnvMap(gl)
+        timer = window.setTimeout(pump, PREWARM_STAGGER_MS)
+        return
+      }
       if (idx >= ids.length) return
       prewarmScene(ids[idx++], gl)
       timer = window.setTimeout(pump, PREWARM_STAGGER_MS)

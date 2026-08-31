@@ -79,6 +79,20 @@ export interface BenchResult extends BenchCell {
    * describe the same frames.
    */
   profile: SceneProfile
+  /**
+   * Internal megapixels the cell was drawn at, or null if the harness did not
+   * report one (F156).
+   *
+   * The post chain, the feedback pass and both optical racks are fullscreen
+   * passes, so their cost is per-pixel and a millisecond figure means nothing
+   * without the resolution it was taken at — which is exactly the omission
+   * `frameLoad.ts` spent this project's whole history carrying, and what
+   * {@link FILL_REFERENCE_MP} was later invented to paper over. Recorded per
+   * cell rather than per run because the cost pass re-solves the render scale
+   * for every scene's own pixel budget, so two rows of the same sweep are
+   * routinely at different resolutions.
+   */
+  internalMP: number | null
 }
 
 export type BenchPhase = 'warmup' | 'measure' | 'drain' | 'done'
@@ -147,6 +161,8 @@ export class BenchRunner {
   private jsSamples: number[] = []
   private gpuSamples: number[] = []
   private gpuWasSupported = false
+  /** Last value handed to {@link setInternalMP}; recorded with the cell. */
+  private internalMP: number | null = null
 
   readonly results: BenchResult[] = []
 
@@ -236,6 +252,18 @@ export class BenchRunner {
     this.profile.push(luma, dt)
   }
 
+  /**
+   * Tell the runner what resolution the current cell is being drawn at (F156).
+   *
+   * Called by the harness once per cell, after it has pinned the tier and
+   * solved the render scale. Optional: a caller that never calls it gets
+   * `internalMP: null` and the post-chain diff below refuses to run rather
+   * than assuming a resolution.
+   */
+  setInternalMP(mp: number): void {
+    this.internalMP = mp
+  }
+
   /** Abandon the run, keeping completed cells. */
   stop(): void {
     this.phase = 'done'
@@ -258,6 +286,7 @@ export class BenchRunner {
       // there is no GPU number, and inventing one from an empty set would be
       // worse than admitting it.
       gpu: this.gpuWasSupported && this.gpuSamples.length > 0 ? stats(this.gpuSamples) : null,
+      internalMP: this.internalMP,
     })
     this.profile.reset()
     this.cpuSamples = []
@@ -284,4 +313,176 @@ export function formatResults(results: readonly BenchResult[]): string {
     )
   })
   return [head, ...rows].join('\n')
+}
+
+/** One matched (scene, tier) pair from the two passes. See {@link postChainDelta}. */
+export interface PostChainCell extends BenchCell {
+  internalMP: number
+  /** GPU mean with the post chain mounted, in ms. */
+  withMs: number
+  /** GPU mean without it, in ms. */
+  withoutMs: number
+  /** `withMs - withoutMs`: the chain's cost at this cell's resolution. */
+  deltaMs: number
+  /** {@link deltaMs} normalised by resolution — the number the model wants. */
+  msPerMP: number
+}
+
+export interface PostChainDelta {
+  cells: PostChainCell[]
+  /** Median `msPerMP` across matched cells. Median, not mean: see below. */
+  medianMsPerMP: number
+  /** What {@link medianMsPerMP} implies at a given reference resolution. */
+  atReferenceMs: (referenceMP: number) => number
+  /** Cells present in one pass but not usable in the diff, with the reason. */
+  skipped: { sceneId: string; tier: number; why: string }[]
+}
+
+/**
+ * Difference two bench sweeps to measure the POST CHAIN (F156, and the standing
+ * request in F43 / F90).
+ *
+ * ## The constant this exists to replace
+ *
+ * `frameLoad.ts` reserves `POST_CHAIN_MS = 2` and `FEEDBACK_MS = 1` for costs
+ * present in every frame, and both are openly labelled estimates — reasoned
+ * from what the shaders do, never measured, because `/bench` deliberately
+ * excludes the post chain so that scene costs compare cleanly. F110 later made
+ * them scale with resolution through `fillScale`, which fixed their SHAPE
+ * without ever establishing their magnitude.
+ *
+ * `audiovis-session-2026-08-30-09-47-58` is what that eventually costs. At
+ * tiers 0 and 1 the reservation alone exceeded the entire tier budget — mean
+ * 12.61 ms against 11.0, and 10.86 against 9.5, in 42% of the session's samples
+ * — so `remainingMs` floored to zero and no layer could be admitted at the top
+ * of the ladder at all (`6 wanted, 2 actually shown`). The budget model
+ * contradicts itself up there, and nobody can say which half is wrong without
+ * this number.
+ */
+/*
+ * ## The method, and why it is a difference
+ *
+ * `EffectComposer` renders the scene into its own buffer and then runs the
+ * effects over it, so no timer can bracket the chain alone — timing it always
+ * includes the scene. The chain's cost is therefore the DIFFERENCE between two
+ * sweeps of identical cells:
+ *
+ *   1. the ordinary cost pass  — `/bench`, no chain, GPU-timed around `gl.render`
+ *   2. the post-chain pass     — `/bench?postchain`, chain mounted, GPU-timed
+ *                                around the composer's draw
+ *
+ * Both pin the tier and re-solve the render scale per cell the same way, so a
+ * matched pair is at the same resolution by construction — and this refuses to
+ * subtract a pair whose `internalMP` disagrees rather than quietly reporting a
+ * resolution difference as a post-chain cost.
+ *
+ * **Not the existing profile pass.** `/bench?profile` also mounts the chain,
+ * which makes it look like a free second sample, and it is not one: it holds a
+ * fixed DPR across every cell, it does a `getImageData` readback every frame,
+ * and it does not GPU-time anything ("GPU timings are meaningless in that pass
+ * and are not read"). Differencing against it would charge the post chain for a
+ * canvas readback and a resolution change.
+ *
+ * ## Median, not mean
+ *
+ * Per-cell `msPerMP` should be constant — a fullscreen pass costs what it costs
+ * — so the spread across cells is a measurement-quality signal, not something
+ * to average away. A single cell whose scene happened to hit a driver hiccup
+ * during its 120 measured frames would drag a mean; the median ignores it, and
+ * the per-cell rows are returned so the spread stays visible. If those rows
+ * disagree by more than a little, the answer is that the method is wrong, not
+ * that the chain is variable.
+ *
+ * Pure, and tested without a GPU. A benchmark that silently mismeasures is
+ * worse than no benchmark — the same reasoning that put {@link BenchRunner} in
+ * this file rather than in the React harness.
+ */
+export function postChainDelta(
+  withoutChain: readonly BenchResult[],
+  withChain: readonly BenchResult[],
+): PostChainDelta {
+  const key = (r: BenchCell) => `${r.sceneId}@${r.tier}`
+  const base = new Map(withoutChain.map((r) => [key(r), r]))
+  const cells: PostChainCell[] = []
+  const skipped: { sceneId: string; tier: number; why: string }[] = []
+
+  for (const on of withChain) {
+    const off = base.get(key(on))
+    const note = (why: string) => skipped.push({ sceneId: on.sceneId, tier: on.tier, why })
+    if (!off) {
+      note('no matching cell in the no-chain pass')
+      continue
+    }
+    if (!on.gpu || !off.gpu) {
+      // No GPU timer means CPU numbers only, and those are vsync-locked: two
+      // passes that both hold 60fps are identical on that axis whatever the
+      // chain costs. Differencing them would report 0.00 ms with confidence.
+      note('no GPU timing in one of the passes')
+      continue
+    }
+    if (on.internalMP === null || off.internalMP === null) {
+      note('harness did not report an internal resolution')
+      continue
+    }
+    // 1% — well inside the 0.01 quantisation of `solveRenderScale`, and far
+    // outside anything that could be a real per-cell resolution difference.
+    if (Math.abs(on.internalMP - off.internalMP) > 0.01 * Math.max(on.internalMP, off.internalMP)) {
+      note(`resolution mismatch: ${off.internalMP.toFixed(2)} vs ${on.internalMP.toFixed(2)} MP`)
+      continue
+    }
+    const deltaMs = on.gpu.meanMs - off.gpu.meanMs
+    cells.push({
+      sceneId: on.sceneId,
+      tier: on.tier,
+      internalMP: on.internalMP,
+      withMs: on.gpu.meanMs,
+      withoutMs: off.gpu.meanMs,
+      deltaMs,
+      msPerMP: on.internalMP > 0 ? deltaMs / on.internalMP : 0,
+    })
+  }
+
+  const sorted = cells.map((c) => c.msPerMP).sort((a, b) => a - b)
+  const median =
+    sorted.length === 0
+      ? 0
+      : sorted.length % 2 === 1
+        ? sorted[(sorted.length - 1) / 2]
+        : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+
+  return {
+    cells,
+    medianMsPerMP: median,
+    atReferenceMs: (referenceMP: number) => median * referenceMP,
+    skipped,
+  }
+}
+
+/** {@link postChainDelta} as markdown, for pasting into docs/ISSUES.md. */
+export function formatPostChainDelta(d: PostChainDelta, referenceMP: number): string {
+  const head =
+    '| scene | tier | MP | GPU no chain | GPU with chain | delta | ms/MP |\n|---|---|---|---|---|---|---|'
+  const rows = d.cells.map(
+    (c) =>
+      `| ${c.sceneId} | ${c.tier} | ${c.internalMP.toFixed(2)} | ${c.withoutMs.toFixed(2)}` +
+      ` | ${c.withMs.toFixed(2)} | ${c.deltaMs.toFixed(2)} | ${c.msPerMP.toFixed(3)} |`,
+  )
+  const v = d.cells.map((c) => c.msPerMP)
+  const spread =
+    d.cells.length > 1
+      ? `spread ${Math.min(...v).toFixed(3)} - ${Math.max(...v).toFixed(3)} ms/MP`
+      : 'single cell - no spread to check'
+  const out = [
+    head,
+    ...rows,
+    '',
+    `median ${d.medianMsPerMP.toFixed(3)} ms/MP over ${d.cells.length} matched cell(s); ${spread}`,
+    `=> ${d.atReferenceMs(referenceMP).toFixed(2)} ms at the ${referenceMP} MP reference` +
+      ` (frameLoad.FILL_REFERENCE_MP), against POST_CHAIN_MS + FEEDBACK_MS = 3 reserved today`,
+  ]
+  if (d.skipped.length > 0) {
+    out.push('', 'skipped:')
+    for (const s of d.skipped) out.push(`  ${s.sceneId}@${s.tier}: ${s.why}`)
+  }
+  return out.join('\n')
 }

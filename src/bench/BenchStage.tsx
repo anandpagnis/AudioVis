@@ -61,6 +61,41 @@ const PROFILE_PASS =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
 
 /**
+ * Is this the POST-CHAIN pass (F156)?
+ *
+ * A third mode, and the only one that can price the post chain. It is the cost
+ * pass in every respect — same per-cell tier pin, same per-scene render-scale
+ * solve, same GPU timing, no profile readback — except that `PostFXChain` is
+ * mounted and the timer brackets the composer's draw instead of a bare
+ * `gl.render`. Subtract a cost sweep from a post-chain sweep and the remainder
+ * is the chain, at a resolution both agree on: `postChainDelta()` in
+ * benchHarness.ts does the subtraction and refuses any pair that disagrees.
+ *
+ * It cannot be the profile pass, which also mounts the chain and looks like a
+ * free second sample. That pass holds one DPR across every cell, reads the
+ * canvas back with `getImageData` every frame, and does not time the GPU at all
+ * — differencing against it would bill the post chain for a readback and a
+ * resolution change.
+ *
+ * Why this is worth a third mode: `POST_CHAIN_MS = 2` and `FEEDBACK_MS = 1` are
+ * the last invented numbers in the frame budget (F43, F90), they are added to
+ * EVERY frame, and F110 made them scale with resolution — so at tier 0 on a
+ * 1440p panel the reservation now exceeds the entire tier budget and the top of
+ * the ladder can admit no layers at all (F156). That is either a wrong constant
+ * or a wrong budget, and reading the shaders again cannot tell you which.
+ */
+const POSTCHAIN_PASS =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('postchain')
+
+/**
+ * Does the composer own the draw this run?
+ *
+ * True in both passes that mount it. Where the two differ is timing: the
+ * profile pass does not time at all, the post-chain pass brackets the composer.
+ */
+const CHAIN_MOUNTED = PROFILE_PASS || POSTCHAIN_PASS
+
+/**
  * `PostFXChain` (F15: renamed from `EffectsDirector`), wrapped so it can
  * never re-render.
  *
@@ -96,7 +131,7 @@ export function BenchStage({ runner, version }: { runner: BenchRunner; version: 
       {/* Renders at priority 1 and takes the draw away from BenchDriver, which
           is why the driver skips its own `gl.render` in this mode — two
           renderers at the same priority would both run. */}
-      {PROFILE_PASS && <StablePostChain />}
+      {CHAIN_MOUNTED && <StablePostChain />}
     </Canvas>
   )
 }
@@ -249,12 +284,23 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       // cell 8 even with the composer wrapped in `memo` — the wrapper stops the
       // PARENT re-rendering it and cannot stop the composer re-rendering
       // itself. Same root cause as F48, third appearance.
+      // The POST-CHAIN pass pins the scale too, and must (F156): its whole
+      // purpose is to be subtractable from the cost pass, and two sweeps can
+      // only be differenced cell-for-cell if both drew the cell at the same
+      // resolution. The composer-resize hazard described above is specific to
+      // the profile pass's fixed-DPR requirement, not to resizing itself — the
+      // app changes DPR with the chain mounted on every tier move, and
+      // PostFXChain's own resize hook exists for exactly that.
       if (!PROFILE_PASS) {
         renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
         renderScale.setSceneBudget(getScenePixelBudget(cell.sceneId))
         const scale = renderScale.solve()
         renderScale.applied = scale
         setDpr(renderScale.baseDpr * scale)
+        // Record what the cell was actually drawn at, so the diff can refuse a
+        // pair that disagrees instead of reporting a resolution change as a
+        // post-chain cost.
+        runner.setInternalMP(renderScale.internalMP(scale))
       }
       // Particle scenes scale through `performanceState.particleDensity`, which
       // is normally written by PerformanceStateBridge — and the bench does not
@@ -285,10 +331,11 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       camera.updateMatrixWorld()
     }
 
-    // In the profile pass `PostFXChain` owns the draw (also priority 1), so
+    // With the chain mounted `PostFXChain` owns the draw (also priority 1), so
     // rendering here as well would draw the scene twice and time the wrong one.
-    // GPU timings are meaningless in that pass and are not read.
-    if (!PROFILE_PASS) {
+    // The profile pass reads no GPU timings; the post-chain pass does, and gets
+    // them from the bracket below rather than from here.
+    if (!CHAIN_MOUNTED) {
       timer.begin()
       gl.render(scene, camera)
       timer.end()
@@ -317,6 +364,28 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
 
     runner.frame(delta * 1000, takeSceneCpu(), timer.poll(), timer.supported)
   }, 1)
+
+
+  // GPU timer bracket around the composer, for the post-chain pass only (F156).
+  //
+  // The composer renders at priority 1 and there is no hook inside it, so the
+  // only way to time it is to straddle it: open the query just before priority
+  // 1 and close it just after. Fractional priorities are ordinary numbers to
+  // R3F's ascending sort, and any subscriber above 0 has already taken
+  // rendering away from the automatic pass, so 0.5 and 1.5 add no behaviour of
+  // their own — they only need to be on either side of 1.
+  //
+  // 0.5 rather than the driver's own -100 (audio) or the cost pass's inline
+  // begin/end: the query must not be open across the tier pin and camera setup
+  // at priority 1, or the measurement would include CPU-side work that the cost
+  // pass leaves outside its bracket, and the difference would stop being the
+  // post chain.
+  useFrame(() => {
+    if (POSTCHAIN_PASS && runner.current) timer.begin()
+  }, 0.5)
+  useFrame(() => {
+    if (POSTCHAIN_PASS && runner.current) timer.end()
+  }, 1.5)
 
   // Profile readback, at priority 2.
   //
