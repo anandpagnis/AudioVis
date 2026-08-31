@@ -119,6 +119,17 @@ export interface PerformanceState {
    */
   visualTension: number
   /**
+   * Continuous valence/arousal (`valenceArousal.ts`), published once per
+   * frame by `PerformanceStateBridge` — the single writer, same convention as
+   * every other field on this object — so every director downstream (scene
+   * selection, palette selection, the camera's cut rate) reads ONE computed
+   * value instead of each recomputing it from `AudioFeatures` independently.
+   * -1..1, negative/dark/tense to positive/bright/consonant.
+   */
+  valence: number
+  /** See {@link valence}. 0 calm .. 1 energised. */
+  arousal: number
+  /**
    * 0..1 — how much the show should be listening to the voice right now.
    *
    * Derived from the classifier's `vocalPresence`, which is a SECTION-scale
@@ -304,6 +315,8 @@ export const performanceState: PerformanceState = {
   animationIntensity: 1,
   particleDensity: 1,
   visualTension: 0,
+  valence: 0,
+  arousal: 0,
   voiceFocus: 0,
 
   bloom: 1,

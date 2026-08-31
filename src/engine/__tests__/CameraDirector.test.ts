@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { audioEngine } from '../../audio/AudioEngine'
 import { createEmptyFeatures, type MoodState } from '../../audio/types'
 import {
+  CAMERA_MODE_SHOT,
   computeDesired,
   cutCamera,
   desired,
   lookAt,
   pickCameraMode,
+  sameShot,
   type CameraAnchor,
 } from '../CameraDirector'
 import { CAMERA_MODES, type CameraMode } from '../performanceState'
@@ -259,5 +261,97 @@ describe('pickCameraMode', () => {
     expect(unreachable, `no scene/mood combination can select: ${unreachable.join(', ')}`).toEqual(
       [],
     )
+  })
+})
+
+describe('CAMERA_MODE_SHOT — the shot taxonomy (audit c5)', () => {
+  it('tags every camera mode', () => {
+    for (const mode of CAMERA_MODES) {
+      expect(CAMERA_MODE_SHOT[mode], mode).toBeDefined()
+      expect(['wide', 'medium', 'close']).toContain(CAMERA_MODE_SHOT[mode].size)
+      expect(['high', 'eye', 'low']).toContain(CAMERA_MODE_SHOT[mode].angle)
+    }
+  })
+
+  it('tags pull as the roster’s one wide shot', () => {
+    // pull is the only mode whose target distance exceeds anchor.distance —
+    // see computeDesired's own `anchor.distance * 1.8`.
+    expect(CAMERA_MODE_SHOT.pull.size).toBe('wide')
+  })
+
+  it('tags topdown as the roster’s one high angle', () => {
+    // The only mode whose target height is a multiple of anchor.distance
+    // above the subject, not a gentle lift — computeDesired's own
+    // `anchor.distance * 1.15`.
+    expect(CAMERA_MODE_SHOT.topdown.angle).toBe('high')
+  })
+
+  it('declares low as a valid value with no mode currently reaching it', () => {
+    // Matches this codebase's own pattern for a typed-but-unreached value
+    // (MirrorMode's retired wallpaper/shear) — declared complete rather than
+    // silently narrowed to only what happens to be used today.
+    const anyLow = CAMERA_MODES.some((m) => CAMERA_MODE_SHOT[m].angle === 'low')
+    expect(anyLow).toBe(false)
+  })
+})
+
+describe('sameShot', () => {
+  it('is true only when both size and angle match', () => {
+    expect(sameShot({ size: 'medium', angle: 'eye' }, { size: 'medium', angle: 'eye' })).toBe(true)
+    expect(sameShot({ size: 'medium', angle: 'eye' }, { size: 'close', angle: 'eye' })).toBe(false)
+    expect(sameShot({ size: 'medium', angle: 'eye' }, { size: 'medium', angle: 'high' })).toBe(false)
+  })
+
+  it('is false against null or undefined', () => {
+    const tag = { size: 'medium' as const, angle: 'eye' as const }
+    expect(sameShot(tag, null)).toBe(false)
+    expect(sameShot(tag, undefined)).toBe(false)
+    expect(sameShot(null, tag)).toBe(false)
+  })
+})
+
+describe('pickCameraMode — avoidShot anti-repetition (audit c5)', () => {
+  it('is unaffected when avoidShot is omitted, null, or undefined — every existing call site', () => {
+    const modes: CameraMode[] = ['orbit', 'hover', 'locked']
+    const bare = pickCameraMode(modes, 'groove', 0, 0)
+    expect(pickCameraMode(modes, 'groove', 0, 0, 0, null)).toBe(bare)
+    expect(pickCameraMode(modes, 'groove', 0, 0, 0, undefined)).toBe(bare)
+  })
+
+  it('steers away from a candidate matching avoidShot when a differently-tagged one is eligible', () => {
+    // orbit and hover are both { medium, eye } (the natural pick at beat 0 for
+    // 'groove' is 'orbit' — see MODE_PREFERENCE). cinematic is also
+    // { medium, eye }; topdown is { close, high }, the one mode here that
+    // looks different. With orbit already on screen, the picker must not
+    // return another medium/eye mode.
+    const modes: CameraMode[] = ['orbit', 'hover', 'cinematic', 'topdown']
+    const onScreen = CAMERA_MODE_SHOT.orbit // { medium, eye }
+    const pick = pickCameraMode(modes, 'groove', 0, 0, 0, onScreen)
+    expect(sameShot(CAMERA_MODE_SHOT[pick], onScreen)).toBe(false)
+  })
+
+  it('falls back to the natural pick when every eligible mode looks the same', () => {
+    // Every mode this scene declares is a medium/eye shot — there is nothing
+    // to steer TOWARD, so the natural (mood-preference) pick must still win
+    // rather than the function returning nothing usable.
+    const modes: CameraMode[] = ['orbit', 'hover', 'locked']
+    const natural = pickCameraMode(modes, 'groove', 0, 0)
+    const withAvoid = pickCameraMode(modes, 'groove', 0, 0, 0, CAMERA_MODE_SHOT.orbit)
+    expect(withAvoid).toBe(natural)
+  })
+
+  it('never returns a mode outside the declared list, even while avoiding a shot', () => {
+    const modes: CameraMode[] = ['push', 'pull']
+    for (const avoid of [CAMERA_MODE_SHOT.push, CAMERA_MODE_SHOT.pull, null]) {
+      const pick = pickCameraMode(modes, 'peak', 0, 0, 0, avoid)
+      expect(modes).toContain(pick)
+    }
+  })
+
+  it('does not need to steer when the natural pick already differs from avoidShot', () => {
+    // topdown ({close, high}) is not the same shot as pull ({wide, eye}), so
+    // avoiding pull must not perturb a pick that was never going to collide.
+    const modes: CameraMode[] = ['topdown']
+    expect(pickCameraMode(modes, 'aggressive', 0, 0, 0, CAMERA_MODE_SHOT.pull)).toBe('topdown')
   })
 })

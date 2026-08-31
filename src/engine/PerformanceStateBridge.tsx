@@ -4,7 +4,8 @@ import { audioEngine, beatPulse } from '../audio/AudioEngine'
 import type { MoodState } from '../audio/types'
 import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
-import { cutCamera, pickCameraMode } from './CameraDirector'
+import { CAMERA_MODE_SHOT, cutCamera, pickCameraMode, type CameraShotTag } from './CameraDirector'
+import { computeValenceArousal } from './valenceArousal'
 import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
 import { advanceSteer, clearSteer } from './sceneSteer'
@@ -41,6 +42,19 @@ const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
  * pair that never budges, not the normal exit; see the re-decision guard below.
  */
 const MIRROR_MAX_PHRASES = 3
+
+/**
+ * Arousal above which the camera earns an EXTRA re-pick every phrase, on top
+ * of the section/scene boundaries it always gets (audit c5 — "bind camera cut
+ * rate to arousal, not to mood name").
+ *
+ * 0.7 is deliberately high: `computeValenceArousal`'s own blend puts most of
+ * its weight on `energy` and `loudness`, both already 0..1 and already fairly
+ * generous, so a genuinely energised passage (loud, fast, tense) clears this
+ * comfortably while an ordinary `groove` section does not — the extra cuts are
+ * for a peak or a build, not for every mood that happens to have a beat.
+ */
+const AROUSAL_CUT_THRESHOLD = 0.7
 
 /**
  * Resting bloom per mood — the creative decision the old formula's hardcoded
@@ -96,6 +110,12 @@ const BLOOM_BASE: Record<MoodState, number> = {
 export function PerformanceStateBridge() {
   /** Visible scene the current camera mode was chosen for. */
   const lastCameraScene = useRef('')
+  /** Shot tag of the camera mode currently on screen — see pickCameraMode's
+   *  avoidShot param and the arousal-bound re-pick below. */
+  const lastCameraShot = useRef<CameraShotTag | null>(null)
+  /** Beat index the camera was last (re-)picked on, so the arousal-driven
+   *  phrase re-pick below fires once per phrase rather than once per frame. */
+  const lastCameraBeat = useRef(-1)
   /** Previous frame's beat state, so `rackAudio.onKick` can be an edge. */
   const wasOnKick = useRef(false)
   /** Mood the transition style was last chosen for — see the pick below. */
@@ -164,6 +184,13 @@ export function PerformanceStateBridge() {
       Math.max(buildTension, predictionTension, structureTension) + (f.drop ? 0.5 : 0),
     )
 
+    // Continuous valence/arousal, published once here for every downstream
+    // director to read (see the field's own doc on PerformanceState). Placed
+    // after visualTension because arousal folds it in.
+    const va = computeValenceArousal(f, p.visualTension)
+    p.valence = va.valence
+    p.arousal = va.arousal
+
     // The director's hand on the scene dials. Runs here rather than in
     // PerformanceDirector because that one only fires on section boundaries —
     // it composes, it does not perform — and a steer that moved only at
@@ -201,17 +228,41 @@ export function PerformanceStateBridge() {
     // user is overriding when they pick a scene by hand, so it should keep
     // being directed either way.
     const active = getScene(p.activeScene)
-    if (f.sectionChange || active.id !== lastCameraScene.current) {
+    // Cut rate bound to AROUSAL, not to mood name (audit c5): above the
+    // threshold, an energised passage also earns a re-pick once per phrase
+    // (16 beats) even with no section boundary — a highly energised passage
+    // should be shot with more cuts than a calm one holding the same mood for
+    // a whole section. Bounded to phrase cadence, the same idiom
+    // PerformanceDirector already uses for its own structure-absent fallback,
+    // so this never fires faster than the existing beat-grid vocabulary
+    // already allows elsewhere in the show.
+    const phraseBoundary = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
+    const arousalDue =
+      p.arousal > AROUSAL_CUT_THRESHOLD && phraseBoundary && f.beatIndex !== lastCameraBeat.current
+    const sceneChanged = active.id !== lastCameraScene.current
+    if (f.sectionChange || sceneChanged || arousalDue) {
       lastCameraScene.current = active.id
+      lastCameraBeat.current = f.beatIndex
       p.cameraMode = pickCameraMode(
         active.metadata.cameraModes,
         m.state,
         p.visualTension,
         f.beatIndex,
         p.voiceFocus,
+        // Anti-repetition (audit c5): avoid picking the same SHOT — not just
+        // the same mode — as whatever is already on screen. Skipped on the
+        // very first pick (`lastCameraShot.current` is null) and whenever the
+        // scene itself just changed, since a new subject earns a clean read
+        // of the mood's own top preference rather than being steered away
+        // from it by the previous scene's unrelated framing.
+        sceneChanged ? null : lastCameraShot.current,
       )
+      lastCameraShot.current = CAMERA_MODE_SHOT[p.cameraMode]
       // A section boundary is the one moment a hard angle jump reads as
-      // deliberate rather than as a glitch — this is the VJ cut.
+      // deliberate rather than as a glitch — this is the VJ cut. An
+      // arousal-driven phrase re-pick is not a structural boundary, so it
+      // eases into its new framing the way an ordinary mode change already
+      // does, rather than snapping.
       if (f.sectionChange) cutCamera()
     }
 

@@ -123,6 +123,70 @@ const VOICE_MODES: CameraMode[] = ['locked', 'push']
  */
 const TENSION_EXEMPT: MoodState[] = ['peak', 'aggressive']
 
+/**
+ * Shot taxonomy — what a mode LOOKS like, independent of which mood picked it.
+ *
+ * ## Why this exists
+ *
+ * `pickCameraMode` already varies its pick across repeat visits to the same
+ * (scene, mood) pair (see its own doc), but that rotation is blind to what the
+ * modes it is rotating between actually look like. `orbit`, `hover` and
+ * `locked` are three different mechanisms and land in nearly the same place on
+ * screen — a medium shot at eye level — so "varied" by mode identity is not
+ * the same thing as "varied" by what a viewer sees. This makes that
+ * distinction machine-legible, the same idea 2025 cinematography-understanding
+ * work (ShotBench/ShotVL) is built on: a shot has a size and an angle, and a
+ * system that can name them can reason about repetition a mode-identity check
+ * cannot.
+ *
+ * ## How each mode was classified
+ *
+ * Read off `computeDesired`'s own target distance/height for each mode, not
+ * guessed:
+ *
+ *  - **size** — nominal target distance relative to `anchor.distance`. `close`
+ *    at or below ~0.55x (`push`, `spiral`, `topdown` all close in), `wide` at
+ *    or above ~1.3x (`pull` alone retreats that far), `medium` otherwise.
+ *  - **angle** — nominal target height relative to `anchor.height`. `high`
+ *    when the target sits at multiple times the anchor's own distance above
+ *    it (`topdown` alone — `anchor.distance * 1.15` is not a gentle lift, it
+ *    is looking straight down); `eye` otherwise. No mode's DEFINING trait is a
+ *    low angle today, so `low` is declared but currently unreached — same
+ *    pattern as a retired-but-typed enum value elsewhere in this codebase
+ *    (see `MirrorMode`'s `wallpaper`/`shear`).
+ *
+ * A few modes (`spiral`, `cinematic`) continuously vary their height rather
+ * than holding one — their tag is the mode's NOMINAL/mean framing, not a
+ * constraint `computeDesired` is checked against. The taxonomy exists to
+ * compare modes to each other at the moment one is CHOSEN, not to describe
+ * their motion frame-by-frame.
+ */
+export type CameraShotSize = 'wide' | 'medium' | 'close'
+export type CameraShotAngle = 'high' | 'eye' | 'low'
+
+export interface CameraShotTag {
+  size: CameraShotSize
+  angle: CameraShotAngle
+}
+
+export const CAMERA_MODE_SHOT: Record<CameraMode, CameraShotTag> = {
+  orbit: { size: 'medium', angle: 'eye' },
+  hover: { size: 'medium', angle: 'eye' },
+  push: { size: 'close', angle: 'eye' },
+  pull: { size: 'wide', angle: 'eye' },
+  spiral: { size: 'close', angle: 'eye' },
+  handheld: { size: 'medium', angle: 'eye' },
+  locked: { size: 'medium', angle: 'eye' },
+  topdown: { size: 'close', angle: 'high' },
+  cinematic: { size: 'medium', angle: 'eye' },
+}
+
+/** Two shot tags describe the same framing. */
+export function sameShot(a: CameraShotTag | null | undefined, b: CameraShotTag | null | undefined): boolean {
+  if (!a || !b) return false
+  return a.size === b.size && a.angle === b.angle
+}
+
 /** Fallback for a scene that declares no modes — matches the old hardcoded default. */
 const DEFAULT_MODES: CameraMode[] = ['hover']
 
@@ -142,6 +206,18 @@ export function pickCameraMode(
   tension: number,
   beatIndex: number,
   voiceFocus = 0,
+  /**
+   * The shot tag of whatever is ON SCREEN right now, if known. When the
+   * pick this call would otherwise make has the SAME size+angle (see
+   * {@link sameShot}), the next-ranked eligible mode with a DIFFERENT tag is
+   * preferred instead — so consecutive picks read as a different shot rather
+   * than a different mode that happens to look the same (`orbit` -> `hover`
+   * is a real repeat: both are a medium shot at eye level). `null`/`undefined`
+   * disables the check entirely — the caller has no history yet, or does not
+   * want one enforced (every existing call site and every existing test is
+   * unaffected by leaving this unset).
+   */
+  avoidShot?: CameraShotTag | null,
 ): CameraMode {
   const declared = modes && modes.length > 0 ? modes : DEFAULT_MODES
   const tense = tension > TENSION_THRESHOLD && !TENSION_EXEMPT.includes(mood)
@@ -153,7 +229,14 @@ export function pickCameraMode(
 
   const ranked = preference.filter((mode) => declared.includes(mode))
   if (ranked.length === 0) return declared[0]
-  return ranked[Math.floor(Math.max(0, beatIndex) / 16) % Math.min(2, ranked.length)]
+  const rotated = ranked[Math.floor(Math.max(0, beatIndex) / 16) % Math.min(2, ranked.length)]
+  if (!avoidShot || !sameShot(CAMERA_MODE_SHOT[rotated], avoidShot)) return rotated
+  // The natural pick would repeat the on-screen framing. Take the first
+  // ranked candidate (in the mood's own preference order, not the rotation)
+  // that looks different — mood preference still decides WHICH mode wins
+  // among the ones that qualify, this only removes the one that does not.
+  const different = ranked.find((mode) => !sameShot(CAMERA_MODE_SHOT[mode], avoidShot))
+  return different ?? rotated
 }
 
 /**
