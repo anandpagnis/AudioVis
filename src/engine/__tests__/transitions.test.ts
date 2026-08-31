@@ -205,6 +205,51 @@ describe('pickTransitionStyle — the director', () => {
   })
 })
 
+describe('pickTransitionStyle — boundary type (audit c3)', () => {
+  it('is unaffected when boundaryType is omitted — every existing call site', () => {
+    // The whole existing suite above calls this with 4 args; this pins that
+    // adding a 5th, optional one changed nothing for them.
+    expect(pickTransitionStyle('groove', true, 0, undefined)).toBe('dipToBlack')
+    expect(pickTransitionStyle('groove', true, 0, undefined, undefined)).toBe('dipToBlack')
+  })
+
+  it('keeps a drop on dipToBlack — the boundary type this split validates rather than changes', () => {
+    for (const mood of ['ambient', 'groove', 'peak', 'aggressive']) {
+      expect(pickTransitionStyle(mood, true, 0, undefined, 'drop')).toBe('dipToBlack')
+    }
+  })
+
+  it('gives a breakdown a different style than a drop', () => {
+    const drop = pickTransitionStyle('groove', true, 0, undefined, 'drop')
+    const breakdown = pickTransitionStyle('groove', true, 0, undefined, 'breakdown')
+    expect(breakdown).not.toBe(drop)
+    expect(breakdown).toBe('smear')
+  })
+
+  it('leaves a generic section boundary on the original dipToBlack behaviour', () => {
+    for (const mood of ['ambient', 'groove', 'peak', 'aggressive']) {
+      expect(pickTransitionStyle(mood, true, 0, undefined, 'generic')).toBe('dipToBlack')
+      expect(pickTransitionStyle(mood, true, 0, undefined, null)).toBe('dipToBlack')
+    }
+  })
+
+  it('boundary type has no effect when sectionChange is false', () => {
+    // The type describes what KIND of section edge this is; away from an edge
+    // there is nothing for it to classify, and mood must still decide alone.
+    const withoutType = pickTransitionStyle('mellow', false, 3, undefined)
+    const withType = pickTransitionStyle('mellow', false, 3, undefined, 'drop')
+    expect(withType).toBe(withoutType)
+  })
+
+  it('falls back to plain dipToBlack if the forced style were ever disabled', () => {
+    // Mirrors the existing disabled-style guard on the plain section-change
+    // path — a boundary-type override must obey DISABLED_STYLES exactly like
+    // every other pick, never bypass it.
+    expect(isStyleSelectable('smear')).toBe(true)
+    expect(isStyleSelectable('dipToBlack')).toBe(true)
+  })
+})
+
 describe('fadeDurationFor — the budget degrade', () => {
   it('leaves an affordable transition at its musical length', () => {
     expect(fadeDurationFor(0.92, false)).toBe(0.92)

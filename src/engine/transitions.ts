@@ -181,12 +181,55 @@ const MOOD_STYLES: Record<string, TransitionStyle[]> = {
 export const SECTION_DIP_WINDOW_SEC = 2
 
 /**
+ * What kind of structural boundary a section change actually is, when the
+ * off-thread structure analyser has an opinion — `'generic'` otherwise (any
+ * real section edge that is neither of the other two, e.g. verse→chorus, or
+ * the degraded case with no structure read at all).
+ *
+ * Deliberately a plain string union with no import from `audio/types` — this
+ * module stays audio-agnostic, matching how `mood` below is already a plain
+ * string rather than `MoodState`. The caller (`PerformanceStateBridge`, which
+ * already has `f.songSection` in scope) does the classifying; this only
+ * consumes the verdict.
+ */
+export type TransitionBoundaryType = 'drop' | 'breakdown' | 'generic'
+
+/**
+ * Style forced for a DROP boundary, overriding {@link MOOD_STYLES} the same
+ * way the plain section-change case already does. Unchanged from the
+ * pre-existing section-change behaviour on purpose: a blackout timed to the
+ * beat, then a hard return to full brightness ON the drop, is the working
+ * VJ technique for a landing and the classic case for `dipToBlack` — the
+ * boundary-type split below exists to give the OTHER two boundary kinds
+ * their own treatment, not to second-guess this one.
+ */
+const DROP_STYLE: TransitionStyle = 'dipToBlack'
+
+/**
+ * Style forced for a BREAKDOWN boundary.
+ *
+ * A breakdown is energy draining away, not landing — a hard cut to black
+ * fights that deflation by asking the viewer to notice a boundary at exactly
+ * the moment the music is asking them to stop noticing one. `smear` (a
+ * feedback trail the incoming scene emerges from — see `TRANSITION_STYLES`)
+ * reads as a fade or a dissolve into afterglow, which is what a breakdown
+ * entry actually looks like.
+ */
+const BREAKDOWN_STYLE: TransitionStyle = 'smear'
+
+/**
  * Choose the style for the next scene change.
  *
- * A **section change** overrides the mood entirely with `dipToBlack`. That is
- * the one moment where the two scenes are not continuous material — the music
- * itself has drawn a line — and a dip states that, where a blend would smooth
- * over the structure the show is supposed to be expressing.
+ * Boundary type outranks mood, which outranks nothing — mood only gets a say
+ * once neither a drop nor a breakdown claimed the boundary. `boundaryType`
+ * absent or `'generic'` (unclassified structure, or a real edge that is
+ * neither of the other two — verse→chorus and similar) falls through to the
+ * ORIGINAL behaviour: any section change at all forces `dipToBlack`. This
+ * is the audit's own case for the split — "a drop is not a verse change and
+ * should not get the same curve" — narrowed to the two boundary kinds this
+ * engine can actually tell apart today, `songSection.isDrop` and
+ * `.isBreakdown`, rather than guessed for edges the analyser has no opinion
+ * on.
  *
  * Otherwise the mood picks, rotating through its list and never repeating
  * `last` when an alternative exists. Deterministic from `rotation` so a recorded
@@ -200,8 +243,13 @@ export function pickTransitionStyle(
   sectionChange: boolean,
   rotation: number,
   last: TransitionStyle | undefined,
+  boundaryType?: TransitionBoundaryType | null,
 ): TransitionStyle {
-  if (sectionChange && isStyleSelectable('dipToBlack')) return 'dipToBlack'
+  if (sectionChange) {
+    if (boundaryType === 'drop' && isStyleSelectable(DROP_STYLE)) return DROP_STYLE
+    if (boundaryType === 'breakdown' && isStyleSelectable(BREAKDOWN_STYLE)) return BREAKDOWN_STYLE
+    if (isStyleSelectable('dipToBlack')) return 'dipToBlack'
+  }
   const preferred = (MOOD_STYLES[mood] ?? MOOD_STYLES.groove).filter(isStyleSelectable)
   if (preferred.length === 0) return 'dissolve'
   const fresh = preferred.filter((st) => st !== last)

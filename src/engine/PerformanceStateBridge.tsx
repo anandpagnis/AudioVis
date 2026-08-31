@@ -6,10 +6,12 @@ import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
 import { CAMERA_MODE_SHOT, cutCamera, pickCameraMode, type CameraShotTag } from './CameraDirector'
 import { computeValenceArousal } from './valenceArousal'
+import { exposure, GAIN_MIN } from './exposure'
+import { bloomThreshold } from './bloomParams'
 import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
 import { advanceSteer, clearSteer } from './sceneSteer'
-import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC } from './transitions'
+import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC, type TransitionBoundaryType } from './transitions'
 import {
   lensAmountTarget,
   lensForSection,
@@ -72,11 +74,9 @@ const AROUSAL_CUT_THRESHOLD = 0.7
  * changing it needs no threshold re-derivation — it is the cheapest brightness
  * lever in the app and the right one to reach for first.
  */
-/**
- * Resting bloom threshold — the value the pass was hardcoded to before this was
- * directed. Kept as the base so a calm passage looks exactly as it always did.
- */
-const BLOOM_THRESHOLD_BASE = 0.18
+// Bloom threshold policy — including why it is relative to exposure.gain
+// rather than a bare constant — lives in bloomParams.ts (audit c10), which
+// this file calls into below.
 /** Resting vignette darkness — likewise the pass's former hardcoded value. */
 const VIGNETTE_BASE = 0.85
 
@@ -141,6 +141,9 @@ export function PerformanceStateBridge() {
   const lastSectionAt = useRef(-Infinity)
   /** Previous window state, so the style is re-picked when it closes too. */
   const wasNearSection = useRef(false)
+  /** Boundary type captured at the last section-change edge, held for the
+   *  same dip window as `lastSectionAt` — see the pickTransitionStyle call. */
+  const lastBoundaryType = useRef<TransitionBoundaryType>('generic')
 
   useFrame(() => {
     const f = audioEngine.features
@@ -282,12 +285,18 @@ export function PerformanceStateBridge() {
     p.bloom = (BLOOM_BASE[m.state] + reactive + voiceLift) * params.intensity
 
     // Threshold FALLS as pressure rises, so more of the frame becomes eligible
-    // to bloom — the image opens up rather than merely getting brighter. Floored
-    // well above zero: at 0 everything blooms and the picture turns to soup.
-    p.bloomThreshold = Math.max(
-      0.05,
-      BLOOM_THRESHOLD_BASE - p.visualTension * 0.06 - (f.drop ? 0.07 : 0) - pulse * 0.02,
-    )
+    // to bloom — the image opens up rather than merely getting brighter — on
+    // top of a resting level that tracks the exposure servo's live gain
+    // (audit c10, see bloomParams.ts), one frame stale: the same "late is
+    // free here" tolerance the servo's own async readback already relies on.
+    p.bloomThreshold = bloomThreshold({
+      gain: exposure.gain,
+      sampled: exposure.sampled,
+      gainFloor: GAIN_MIN,
+      tension: p.visualTension,
+      drop: f.drop,
+      pulse,
+    })
 
     // Aberration direction tracks the accumulating mid-driven shear, so the
     // break has a heading that drifts with the harmony instead of sitting on a
@@ -353,7 +362,21 @@ export function PerformanceStateBridge() {
     // would make the style whatever the rotation happened to land on at the
     // instant of commit, which is indistinguishable from random and impossible
     // to reason about when watching a set.
-    if (f.sectionChange) lastSectionAt.current = f.time
+    if (f.sectionChange) {
+      lastSectionAt.current = f.time
+      // Classified once, at the edge, and held for the window below — the
+      // structure read at THIS frame is what just committed, so `isDrop` /
+      // `isBreakdown` here mean "we just entered a drop/breakdown", not
+      // "we are generally in one". No structure read at all degrades to the
+      // original behaviour: every section change forces dipToBlack.
+      lastBoundaryType.current = !f.structureValid
+        ? 'generic'
+        : f.songSection.isDrop
+          ? 'drop'
+          : f.songSection.isBreakdown
+            ? 'breakdown'
+            : 'generic'
+    }
     // A section boundary is an instant; the scene change that should punctuate it
     // commits on the next downbeat, up to a bar later. So the override is a
     // WINDOW rather than an edge — and a bounded one, because latching it
@@ -368,6 +391,7 @@ export function PerformanceStateBridge() {
         nearSection,
         styleRotation.current++,
         p.transitionStyle,
+        nearSection ? lastBoundaryType.current : null,
       )
     }
 
