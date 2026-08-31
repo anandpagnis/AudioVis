@@ -17,14 +17,15 @@ or `npm run corpus:fetch`.
 
 ## Cross-track distributions (see corpus/distributions.json)
 
-- **moodLevel**: p10 0.1755 · p50 0.3237 · p90 0.5039 · mean 0.3391
-- **energy**: p10 0.121 · p50 0.3373 · p90 0.5444 · mean 0.3401
-- **sub**: p10 0.0086 · p50 0.2041 · p90 0.6654 · mean 0.2712
-- **bass**: p10 0.0138 · p50 0.212 · p90 0.5874 · mean 0.26
-- **high**: p10 0.0133 · p50 0.1704 · p90 0.6092 · mean 0.2445
-- **centroid**: p10 0.1551 · p50 0.5448 · p90 0.8454 · mean 0.5128
-- **spectralFlatness**: p10 0.072 · p50 0.32 · p90 0.5379 · mean 0.3087
-- **spectralRolloff**: p10 0.1043 · p50 0.3988 · p90 0.6311 · mean 0.3806
-- **sparkle**: p10 0.0007 · p50 0.0811 · p90 1 · mean 0.2399
-- **crestFactor**: p10 2.1905 · p50 2.5691 · p90 3.0091 · mean 2.5794
-- **energyVelAbs**: p10 0.0184 · p50 0.1066 · p90 0.3221 · mean 0.1452
+- **moodLevel**: p10 0.1756 · p50 0.3237 · p90 0.5039 · mean 0.3391
+- **energy**: p10 0.1206 · p50 0.3373 · p90 0.5449 · mean 0.34
+- **sub**: p10 0.0087 · p50 0.2043 · p90 0.6667 · mean 0.2713
+- **bass**: p10 0.0138 · p50 0.2116 · p90 0.5849 · mean 0.2596
+- **high**: p10 0.0134 · p50 0.171 · p90 0.6087 · mean 0.2446
+- **centroid**: p10 0.155 · p50 0.5442 · p90 0.8454 · mean 0.5126
+- **spectralFlatness**: p10 0.072 · p50 0.3191 · p90 0.5373 · mean 0.3086
+- **spectralRolloff**: p10 0.1043 · p50 0.3983 · p90 0.6313 · mean 0.3805
+- **sparkle**: p10 0.0006 · p50 0.0811 · p90 1 · mean 0.24
+- **crestFactor**: p10 2.1896 · p50 2.5702 · p90 3.0088 · mean 2.579
+- **energyVelAbs**: p10 0.0184 · p50 0.1065 · p90 0.3222 · mean 0.1453
+- **structure**: dropShare 0.011 · buildShare 0.00013 · drop/hr 65.26 · build/hr 3.43
