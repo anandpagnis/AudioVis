@@ -1,12 +1,24 @@
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { quality } from './quality'
+import { createGpuTimer, type GpuTimer } from './gpuTimer'
 import { decideTierResize, renderScale, worthReallocating } from './renderScale'
 import { frameSampler } from './frameSampler'
 import { performanceState } from './performanceState'
 import { resourceCache } from './streaming/resourceCache'
 import { ceilingForTier, evaluateLedger, type LedgerEntry } from './streaming/budgetLedger'
 import { useStore } from '../store'
+
+/**
+ * `useFrame` priorities every other director/pass in this engine uses today
+ * (SceneManager's audio tick through ExposureSampler) span -100..2. The GPU
+ * timer's begin/end have to bracket the ENTIRE frame's GPU submission, so
+ * they sit far outside that range on both ends rather than guessing at "one
+ * more than the latest priority" — a future pass added at, say, priority 3
+ * then still falls inside the bracket without this having to change.
+ */
+const GPU_TIMER_BEGIN_PRIORITY = -1000
+const GPU_TIMER_END_PRIORITY = 1000
 
 /** How often the frame-time percentiles are recomputed. See the call site. */
 const P95_INTERVAL_SEC = 0.25
@@ -180,6 +192,22 @@ export const perf = {
   /** `budgetLedger.ceilingForTier(tier)` for the CURRENT tier — a tuning
    *  guess (see that function's own doc comment), not a measured ceiling. */
   vramCeilingMB: 0,
+  /**
+   * Real GPU execution time for a recent frame, in milliseconds (c11b) — 0
+   * until the first result lands. NOT necessarily THIS frame's: a timer
+   * query's result is available 1-3 frames after it closes (see
+   * gpuTiming.ts), so this always lags `perf.ms` slightly. Read it as "how
+   * GPU-bound is the show right now", not as a same-frame breakdown of
+   * `perf.ms` — the gap between the two is everything ELSE a frame pays for
+   * (JS, driver dispatch, vsync wait), which `perf.ms` alone cannot separate
+   * out and this cannot either on its own, only by comparison.
+   */
+  gpuMs: 0,
+  /** Whether `EXT_disjoint_timer_query_webgl2` was available on this GPU/
+   *  browser — `gpuMs` stays frozen at its last value (0, if never measured)
+   *  when this is false, same degrade-quietly posture as every other
+   *  optional-extension feature in this codebase. */
+  gpuTimerAvailable: false,
 }
 
 /**
@@ -241,6 +269,26 @@ export function PerfMonitor() {
   const appliedPair = useRef('')
   /** Clock time of the last actual reallocation. See {@link RESIZE_COALESCE_SEC}. */
   const lastResizeAt = useRef(-Infinity)
+  /** c11b: null on WebGL1 or a GPU/browser without the extension — every use
+   *  below already treats that as "no measurement available", not an error. */
+  const gpuTimer = useRef<GpuTimer | null>(null)
+
+  // Created once per renderer, disposed on unmount or if the renderer itself
+  // ever changes (a context loss and recreate, in practice) — the same
+  // lifecycle every other GL-owning ref in this file follows.
+  useEffect(() => {
+    const ctx = gl.getContext()
+    const timer =
+      typeof WebGL2RenderingContext !== 'undefined' && ctx instanceof WebGL2RenderingContext
+        ? createGpuTimer(ctx)
+        : null
+    gpuTimer.current = timer
+    perf.gpuTimerAvailable = timer !== null
+    return () => {
+      timer?.dispose()
+      if (gpuTimer.current === timer) gpuTimer.current = null
+    }
+  }, [gl])
 
   /**
    * Push the current tier's render scale to the canvas.
@@ -308,6 +356,12 @@ export function PerfMonitor() {
     applyRenderScale(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeQuality, size.width, size.height])
+
+  // Opens this frame's GPU timer query before anything else in the frame has
+  // had a chance to issue a draw call — see GPU_TIMER_BEGIN_PRIORITY's doc.
+  useFrame(() => {
+    gpuTimer.current?.begin()
+  }, GPU_TIMER_BEGIN_PRIORITY)
 
   useFrame(({ clock }, delta) => {
     // No ceiling: a frame genuinely costing 150-300ms (two heavy raymarch
@@ -494,6 +548,20 @@ export function PerfMonitor() {
       }
     }
   })
+
+  // Closes this frame's GPU timer query after every other priority in the
+  // frame has run — see GPU_TIMER_BEGIN_PRIORITY's doc for why this sits at
+  // the opposite extreme rather than at some specific "last" priority.
+  // `poll()` is cheap on the common not-ready-yet path (a couple of GL
+  // parameter reads), so checking it every frame alongside `end()` costs
+  // nothing extra rather than needing its own cadence.
+  useFrame(() => {
+    const timer = gpuTimer.current
+    if (!timer) return
+    timer.end()
+    const ms = timer.poll()
+    if (ms !== null) perf.gpuMs = ms
+  }, GPU_TIMER_END_PRIORITY)
 
   return null
 }

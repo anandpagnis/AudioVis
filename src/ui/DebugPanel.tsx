@@ -143,8 +143,14 @@ export function DebugPanel() {
         60,
       )
       ctx.fillStyle = 'rgba(255, 214, 130, 0.8)'
+      // GPU time (c11b) appended here rather than its own line — see the
+      // header's line-number map. `--` until the extension delivers a first
+      // result (or forever, on a GPU/browser without it): a real number that
+      // just hasn't arrived yet reads identically to "not supported here",
+      // which is the honest state of things either way.
       ctx.fillText(
-        `${perf.drawCalls} draws  ${(perf.triangles / 1000).toFixed(0)}k tris  geo ${perf.geometries}  tex ${perf.textures}  prg ${perf.programs}`,
+        `${perf.drawCalls} draws  ${(perf.triangles / 1000).toFixed(0)}k tris  geo ${perf.geometries}  tex ${perf.textures}  prg ${perf.programs}` +
+          `  gpu ${perf.gpuTimerAvailable && perf.gpuMs > 0 ? `${perf.gpuMs.toFixed(1)}ms` : '--'}`,
         6,
         72,
       )

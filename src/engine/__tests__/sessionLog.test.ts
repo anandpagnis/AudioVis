@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { frameStats, readRing, sessionLog } from '../sessionLog'
 import { performanceState } from '../performanceState'
+import { perf } from '../PerfMonitor'
 import { quality } from '../quality'
 import { audioEngine } from '../../audio/AudioEngine'
 
@@ -212,6 +213,42 @@ describe('SessionLog — show quality', () => {
     } finally {
       performanceState.activeScene = savedScene
     }
+  })
+})
+
+describe('SessionLog — GPU time (c11b)', () => {
+  afterEach(() => {
+    perf.gpuTimerAvailable = false
+    perf.gpuMs = 0
+  })
+
+  it('reports the extension as unavailable when the timer never reported so', () => {
+    perf.gpuTimerAvailable = false
+    sessionLog.start()
+    sessionLog.tick(1 / 60)
+    const { summary } = sessionLog.stop()
+    expect(summary).toContain('not available on this GPU/browser')
+  })
+
+  it('reports no result landed when available but every sample read zero', () => {
+    perf.gpuTimerAvailable = true
+    perf.gpuMs = 0
+    sessionLog.start()
+    for (let i = 0; i < 20; i++) sessionLog.tick(1 / 60)
+    const { summary } = sessionLog.stop()
+    expect(summary).toContain('available, but no result landed during this session')
+  })
+
+  it('summarises mean/p95 GPU time and its share of frame time once results land', () => {
+    perf.gpuTimerAvailable = true
+    perf.gpuMs = 5
+    sessionLog.start()
+    for (let i = 0; i < 20; i++) sessionLog.tick(1 / 60)
+    const { summary } = sessionLog.stop()
+    const line = summary.split('\n').find((l) => l.startsWith('mean') && l.includes('samples'))
+    expect(line).toBeDefined()
+    expect(line).toContain('5.00ms')
+    expect(summary).toContain('GPU share of frame time')
   })
 })
 

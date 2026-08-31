@@ -179,6 +179,14 @@ export interface SessionSample {
    */
   qualityMode: string
   autoPilot: boolean
+  /**
+   * Real GPU execution time (c11b), milliseconds — 0 when
+   * `gpuTimerAvailable` is false (the extension is unsupported here) or no
+   * result has landed yet. See `perf.gpuMs`'s own doc for why this always
+   * lags `ms` slightly rather than being a same-sample GPU/other split.
+   */
+  gpuMs: number
+  gpuTimerAvailable: boolean
   /** Bar count (`AudioFeatures.bar`) — the beat-grid position this sample fell at, for show-quality metrics (c13). */
   bar: number
   /** `isMirrorActive`/`isLensActive` on the state this sample already captured — reuses the racks' own "is there
@@ -711,6 +719,8 @@ class SessionLog {
       palette: p.palette,
       qualityMode: store.quality,
       autoPilot: store.autoPilot,
+      gpuMs: round(perf.gpuMs, 2),
+      gpuTimerAvailable: perf.gpuTimerAvailable,
       bar: f.bar,
       mirrorActive: isMirrorActive(p.mirror),
       lensActive: isLensActive(p.lens),
@@ -865,6 +875,35 @@ class SessionLog {
       const skipped = ft.length - rendered.length
       if (skipped > 0) {
         L.push(`excluded ${skipped} frame${skipped === 1 ? '' : 's'} spanning a hidden tab`)
+      }
+    }
+    L.push('')
+
+    // --- gpu time -----------------------------------------------------------
+    // c11b: what the governor is still blind to. `frame time` above is the
+    // frame's TOTAL cost — GPU work, JS, driver dispatch, vsync wait, all
+    // folded together — and this isolates just the first of those, which is
+    // the only part the quality knobs can actually shrink. A show reading
+    // high frame time but LOW GPU share is not going to get faster from a
+    // lower render scale; see gpuTiming.ts for why that distinction is not
+    // yet wired into the governor's own decisions.
+    L.push('--- gpu time (EXT_disjoint_timer_query_webgl2) ---')
+    if (!this.samples.some((s) => s.gpuTimerAvailable)) {
+      L.push('not available on this GPU/browser')
+    } else {
+      const gpuSamples = this.samples.filter((s) => s.gpuTimerAvailable && s.gpuMs > 0)
+      if (gpuSamples.length === 0) {
+        L.push('available, but no result landed during this session')
+      } else {
+        const gpuVals = [...gpuSamples.map((s) => s.gpuMs)].sort((a, b) => a - b)
+        const gpuMean = gpuVals.reduce((a, b) => a + b, 0) / gpuVals.length
+        const gpuP95 = gpuVals[Math.min(gpuVals.length - 1, Math.floor(gpuVals.length * 0.95))]
+        const wallMean = gpuSamples.reduce((a, s) => a + s.ms, 0) / gpuSamples.length
+        L.push(`mean ${gpuMean.toFixed(2)}ms  p95 ${gpuP95.toFixed(2)}ms  (n=${gpuVals.length} samples)`)
+        L.push(
+          `GPU share of frame time: ${((gpuMean / Math.max(0.001, wallMean)) * 100).toFixed(0)}%` +
+            ' — the rest is JS, driver dispatch, and vsync wait',
+        )
       }
     }
     L.push('')
