@@ -48,7 +48,7 @@ const PROFILE_ONLY =
 const TIERS = PROFILE_ONLY ? [0] : [0, 1, 2, 3, 4]
 
 /**
- * Is this the post-chain pass (F156)? Mirrors BenchStage's own flag.
+ * Is this the post-chain pass (F160)? Mirrors BenchStage's own flag.
  *
  * Sweeps the same plan as the cost pass — same scenes, same five tiers, same
  * frame counts — because the two are only subtractable if they are the same
@@ -160,7 +160,7 @@ export function Bench() {
       if (r.done) {
         setRunning(false)
         // Park the completed sweep for the other pass to difference against
-        // (F156). Only a COMPLETE run: a stopped one has whatever cells it
+        // (F160). Only a COMPLETE run: a stopped one has whatever cells it
         // reached, and half a plan silently matching half of another is exactly
         // the confidently-wrong number this is trying to avoid.
         saveRun(POSTCHAIN_PASS ? 'postchain' : PROFILE_ONLY ? 'profile' : 'cost', r.results)
@@ -180,7 +180,7 @@ export function Bench() {
   }, [])
 
   /**
-   * The post-chain measurement, if both halves of it exist (F156).
+   * The post-chain measurement, if both halves of it exist (F160).
    *
    * Available from either side: finish the cost pass with a stored post-chain
    * run and it appears, and vice versa. The pairing is by (scene, tier) inside

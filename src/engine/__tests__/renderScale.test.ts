@@ -190,7 +190,7 @@ describe('budget bounds', () => {
 })
 
 /**
- * The directional hold (F153).
+ * The directional hold (F157).
  *
  * Before this, a demote waited out `RENDER_SCALE_HOLD_SEC` exactly like a
  * promote, so the frame kept paying the failed tier's resolution for up to

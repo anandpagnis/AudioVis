@@ -4489,7 +4489,7 @@ denominated in milliseconds on this side.
 
       That refines this entry rather than closing it: the frequency is not the
       defect, the frequency AT HIGH RESOLUTION UNDER LOAD is. F149 removed most
-      of those, and F153 below is what is left of them.
+      of those, and F157 below is what is left of them.
 
 - [x] **F141 - Composition layers (background/accent/overlay) skip the
       warm-mount system entirely and compile their shader live, on whatever
@@ -5381,7 +5381,7 @@ gone, what remains is visible for the first time.
       visible, against a fix that would have to reorder the director, the store's
       dwell floors and the warm-mount lifecycle. Re-open it if a session shows
       the count climbing, and note that the same instrumentation immediately
-      found a LARGER flicker that nothing here predicted - F154 below.
+      found a LARGER flicker that nothing here predicted - F158 below.
 
 - [x] **F151 - The session report hardcodes "(of 6 available)" for the palette
       pool; there are 13, and this session used 13** -
@@ -5454,7 +5454,7 @@ outliers that remain are not spread across the session - they sit in one
 specific window, and that window is a hold that was designed for the opposite
 case.
 
-- [x] **F153 - A tier DEMOTE waits out `RENDER_SCALE_HOLD_SEC` before the
+- [x] **F157 - A tier DEMOTE waits out `RENDER_SCALE_HOLD_SEC` before the
       resolution actually drops, so the frame keeps costing the failed tier's
       money for up to 5 s. 22 of the 26 frames over 33 ms in
       `...22-12-12` live in that gap, which is 11% of the session.**
@@ -5614,7 +5614,7 @@ case.
       demote-to-relief gaps in the table above collapsing to well under a
       second, and the frames-over-33 ms count falling with them.
 
-- [ ] **F154 - A layer that nothing asked to change disappears for 90-120 ms at
+- [ ] **F158 - A layer that nothing asked to change disappears for 90-120 ms at
       a scene request and comes back. The budget sheds it during the two-primary
       overlap. This is a real on-screen flicker and the director never knew.**
 
@@ -5671,7 +5671,7 @@ case.
 From `audiovis-session-2026-08-30-09-47-58`, the first session in the corpus
 whose ladder reached tier 0. Both of these were invisible until it did.
 
-- [x] **F155 - `chrome`'s FIRST commit costs a 148 ms frame; its second costs
+- [x] **F159 - `chrome`'s FIRST commit costs a 148 ms frame; its second costs
       17.4 ms. It is already in `BOOT_PREWARM_IDS`, so this is not a shader
       compile - it is the shared PMREM environment map, which is built lazily on
       that mount and nothing builds it at boot.**
@@ -5731,7 +5731,7 @@ whose ladder reached tier 0. Both of these were invisible until it did.
       The next session log carries the evidence - chrome's first commit should
       land near its second, 17.4 ms.
 
-- [ ] **F156 - At tiers 0 and 1 the fixed-cost RESERVATION alone exceeds the
+- [ ] **F160 - At tiers 0 and 1 the fixed-cost RESERVATION alone exceeds the
       entire tier budget, so `remainingMs` floors to zero and no layer can be
       admitted at the top of the ladder. 42% of this session's samples.**
 

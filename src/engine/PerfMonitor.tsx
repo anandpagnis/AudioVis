@@ -46,7 +46,7 @@ const LEDGER_INTERVAL_SEC = 2
  * A user-pinned quality change bypasses this entirely: that is an explicit
  * instruction, not a guess, and it should look immediate.
  *
- * ## Climbs only (F153)
+ * ## Climbs only (F157)
  *
  * This delays a tier change that RAISES the solved scale. A change that lowers
  * it applies on the next coalesce tick, because every word of the justification
@@ -440,7 +440,7 @@ export function PerfMonitor() {
       // a burst of these inside one transition from each paying a realloc.
       applyRenderScaleCoalesced()
     } else if (quality.tier !== appliedTier.current) {
-      // Direction-aware since F153: a tier change that SHEDS load applies on
+      // Direction-aware since F157: a tier change that SHEDS load applies on
       // sight, one that raises it waits out the hold. The reasoning, the
       // measurements behind it and the crossfade carve-out all live with the
       // decision in `decideTierResize`. Still gated by RESIZE_COALESCE_SEC, so

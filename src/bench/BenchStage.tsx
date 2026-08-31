@@ -61,7 +61,7 @@ const PROFILE_PASS =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('profile')
 
 /**
- * Is this the POST-CHAIN pass (F156)?
+ * Is this the POST-CHAIN pass (F160)?
  *
  * A third mode, and the only one that can price the post chain. It is the cost
  * pass in every respect — same per-cell tier pin, same per-scene render-scale
@@ -81,7 +81,7 @@ const PROFILE_PASS =
  * the last invented numbers in the frame budget (F43, F90), they are added to
  * EVERY frame, and F110 made them scale with resolution — so at tier 0 on a
  * 1440p panel the reservation now exceeds the entire tier budget and the top of
- * the ladder can admit no layers at all (F156). That is either a wrong constant
+ * the ladder can admit no layers at all (F160). That is either a wrong constant
  * or a wrong budget, and reading the shaders again cannot tell you which.
  */
 const POSTCHAIN_PASS =
@@ -284,7 +284,7 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       // cell 8 even with the composer wrapped in `memo` — the wrapper stops the
       // PARENT re-rendering it and cannot stop the composer re-rendering
       // itself. Same root cause as F48, third appearance.
-      // The POST-CHAIN pass pins the scale too, and must (F156): its whole
+      // The POST-CHAIN pass pins the scale too, and must (F160): its whole
       // purpose is to be subtractable from the cost pass, and two sweeps can
       // only be differenced cell-for-cell if both drew the cell at the same
       // resolution. The composer-resize hazard described above is specific to
@@ -366,7 +366,7 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
   }, 1)
 
 
-  // GPU timer bracket around the composer, for the post-chain pass only (F156).
+  // GPU timer bracket around the composer, for the post-chain pass only (F160).
   //
   // The composer renders at priority 1 and there is no hook inside it, so the
   // only way to time it is to straddle it: open the query just before priority

@@ -81,7 +81,7 @@ export interface BenchResult extends BenchCell {
   profile: SceneProfile
   /**
    * Internal megapixels the cell was drawn at, or null if the harness did not
-   * report one (F156).
+   * report one (F160).
    *
    * The post chain, the feedback pass and both optical racks are fullscreen
    * passes, so their cost is per-pixel and a millisecond figure means nothing
@@ -253,7 +253,7 @@ export class BenchRunner {
   }
 
   /**
-   * Tell the runner what resolution the current cell is being drawn at (F156).
+   * Tell the runner what resolution the current cell is being drawn at (F160).
    *
    * Called by the harness once per cell, after it has pinned the tier and
    * solved the render scale. Optional: a caller that never calls it gets
@@ -339,7 +339,7 @@ export interface PostChainDelta {
 }
 
 /**
- * Difference two bench sweeps to measure the POST CHAIN (F156, and the standing
+ * Difference two bench sweeps to measure the POST CHAIN (F160, and the standing
  * request in F43 / F90).
  *
  * ## The constant this exists to replace

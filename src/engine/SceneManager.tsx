@@ -612,7 +612,7 @@ export function SceneManager() {
     let envWarmed = false
     const pump = () => {
       // The shared PMREM environment map, built here rather than on the frame
-      // that first needs it (F155).
+      // that first needs it (F159).
       //
       // `getSharedEnvMap` is lazy — a factory inside `resourceCache.acquire` —
       // and has exactly ONE caller in the codebase, ChromeFormScene, at material

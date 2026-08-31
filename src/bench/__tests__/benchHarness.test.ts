@@ -176,7 +176,7 @@ describe('BenchRunner — JS time is measured separately from frame time', () =>
 })
 
 /**
- * The post-chain difference (F156).
+ * The post-chain difference (F160).
  *
  * `POST_CHAIN_MS = 2` and `FEEDBACK_MS = 1` are the last invented numbers in
  * the frame budget, they are charged to every frame, and F110 made them scale

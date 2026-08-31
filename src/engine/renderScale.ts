@@ -461,7 +461,7 @@ export interface TierResizeInput {
 }
 
 /**
- * Should a pending tier change resize the canvas now, or wait? (F153)
+ * Should a pending tier change resize the canvas now, or wait? (F157)
  *
  * ## The asymmetry this encodes
  *
