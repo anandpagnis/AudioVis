@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MOOD_STATES } from '../../audio/types'
 import { getPrimaryScenesForMood, getScenesForMood, pickVariedScene, SCENES } from '../index'
+import { deriveVA, MOOD_VA } from '../../engine/moodValenceArousal'
 
 /**
  * Regression coverage for the "wireframe is used constantly" bug: the
@@ -96,5 +97,86 @@ describe('pickVariedScene', () => {
       // check, not a precise distribution assertion.
       expect(wireframeCount / trials, m).toBeLessThan((2 / pool.length) * 1.5)
     }
+  })
+})
+
+describe('pickVariedScene — VA-aware fit (audit c2)', () => {
+  // Two synthetic candidates with equal, flat moodFit (so the discrete mood
+  // term cannot distinguish them) but very different DERIVED VA positions —
+  // isolates the VA term from everything else pickVariedScene weighs.
+  type Fixture = { id: string; metadata: { moodFit: Record<string, number> } }
+  const calm: Fixture = { id: 'calm-fixture', metadata: { moodFit: { mellow: 1 } } }
+  const hot: Fixture = { id: 'hot-fixture', metadata: { moodFit: { aggressive: 1 } } }
+  const fixtures = [calm, hot] as unknown as Parameters<typeof pickVariedScene>[0]
+
+  it('is unaffected when currentVA is omitted', () => {
+    // Both fixtures have equal moodFit weight (1) for their respective
+    // single mood, so over many trials with no VA term they should land
+    // close to a 50/50 split under a neutral mood.
+    let calmCount = 0
+    const trials = 2000
+    for (let i = 0; i < trials; i++) {
+      const pick = pickVariedScene(fixtures, 'groove', [])
+      if (pick && (pick as unknown as Fixture).id === 'calm-fixture') calmCount++
+    }
+    expect(calmCount / trials).toBeGreaterThan(0.3)
+    expect(calmCount / trials).toBeLessThan(0.7)
+  })
+
+  it('prefers whichever candidate is closer to the live VA read', () => {
+    // aggressive's derived VA is high-arousal/negative-valence; asking with a
+    // currentVA sitting right on top of it should shift the split toward
+    // the hot fixture despite equal moodFit.
+    const nearHot = MOOD_VA.aggressive
+    let hotCount = 0
+    const trials = 3000
+    for (let i = 0; i < trials; i++) {
+      const pick = pickVariedScene(fixtures, 'groove', [], undefined, nearHot)
+      if (pick && (pick as unknown as Fixture).id === 'hot-fixture') hotCount++
+    }
+    expect(hotCount / trials).toBeGreaterThan(0.5)
+  })
+
+  it('flips the preference when the live VA read moves to the other candidate', () => {
+    const nearCalm = MOOD_VA.mellow
+    let calmCount = 0
+    const trials = 3000
+    for (let i = 0; i < trials; i++) {
+      const pick = pickVariedScene(fixtures, 'groove', [], undefined, nearCalm)
+      if (pick && (pick as unknown as Fixture).id === 'calm-fixture') calmCount++
+    }
+    expect(calmCount / trials).toBeGreaterThan(0.5)
+  })
+
+  it('never lets the VA term zero out a candidate entirely — it sharpens moodFit, not replaces it', () => {
+    // Even at maximum VA mismatch, the disfavoured fixture must still be
+    // reachable — VA_DAMPENING caps the penalty well short of exclusion.
+    const farFromBoth: (typeof MOOD_VA)['aggressive'] = { valence: -1, arousal: 1 }
+    const seen = new Set<string>()
+    for (let i = 0; i < 500; i++) {
+      const pick = pickVariedScene(fixtures, 'groove', [], undefined, farFromBoth)
+      if (pick) seen.add((pick as unknown as Fixture).id)
+    }
+    expect(seen.size).toBe(2)
+  })
+
+  it('a scene with no moodFit at all is unaffected by the VA term (neutral factor)', () => {
+    const noFit: Fixture = { id: 'no-fit-fixture', metadata: { moodFit: {} } }
+    const pair = [calm, noFit] as unknown as Parameters<typeof pickVariedScene>[0]
+    // Should not throw, and should still return one of the two candidates.
+    for (let i = 0; i < 50; i++) {
+      const pick = pickVariedScene(pair, 'groove', [], undefined, MOOD_VA.aggressive)
+      expect(['calm-fixture', 'no-fit-fixture']).toContain((pick as unknown as Fixture)?.id)
+    }
+  })
+
+  it('agrees with deriveVA — the fixtures really are placed where the test assumes', () => {
+    // Sanity check on the test's own premise, not on pickVariedScene: confirms
+    // calm/hot's derived positions really are far apart before trusting the
+    // preference-flip tests above to mean anything.
+    const calmVA = deriveVA(calm.metadata.moodFit)
+    const hotVA = deriveVA(hot.metadata.moodFit)
+    expect(calmVA.arousal).toBeLessThan(hotVA.arousal)
+    expect(calmVA.valence).toBeGreaterThan(hotVA.valence)
   })
 })

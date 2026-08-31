@@ -11,6 +11,7 @@ import { cueState } from './CueTimeline'
 import { keyPaletteTracker } from './keyPalette'
 import { PALETTES } from './palettes'
 import { getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
+import { performanceState } from './performanceState'
 import { useStore } from '../store'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
@@ -310,6 +311,12 @@ export function AutoPilot() {
       const hypeMood: MoodState =
         m.state === 'aggressive' || m.predictedState === 'aggressive' ? 'aggressive' : 'peak'
       const armCands = getPrimaryScenesForMood(hypeMood).filter((sc) => sc.id !== s.sceneId)
+      // Deliberately NOT passed the live VA read: this picks a scene for the
+      // HOT moment about to arrive, not for the still-building passage
+      // playing right now, and those two are far apart in VA by design — see
+      // MOOD_VA.building's negative valence vs peak/aggressive's. Weighting
+      // by the current read would bias the pre-arm pick toward the build's
+      // own anticipatory character instead of the drop's.
       const armPick = pickVariedScene(armCands, hypeMood, s.recentSceneIds)
       if (armPick && s.requestScene(armPick.id, { auto: true, immediate: false })) {
         const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++)
@@ -355,7 +362,10 @@ export function AutoPilot() {
     // the voice worker hasn't produced a read yet.
     const voiceBoost = (scene: (typeof candidates)[number]) =>
       f.moodsValid && f.vocalPresence > 0.5 && scene.metadata.bands.includes('vocal') ? 1.6 : 1
-    const pick = pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost)
+    const pick = pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost, {
+      valence: performanceState.valence,
+      arousal: performanceState.arousal,
+    })
     // A drop is the one trigger that must land on the moment rather than on the
     // next bar: SceneManager skips the downbeat wait and hard-cuts. Every other
     // trigger here (a mood change, a predicted transition) is a section-scale

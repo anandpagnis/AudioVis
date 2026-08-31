@@ -6,6 +6,7 @@ import { cueState } from './CueTimeline'
 import { performanceState, type ActiveEffect } from './performanceState'
 import { quality } from './quality'
 import { renderScale } from './renderScale'
+import type { ValenceArousal } from './valenceArousal'
 import { committedMs } from './frameLoad'
 import { admitSlots, slotCostMs } from './slotBudget'
 import { getEffectScenes, pickVariedScene, type EffectTrigger, type SceneDef } from '../scenes'
@@ -96,6 +97,8 @@ export function advanceEffects(opts: {
   recentIds: readonly string[]
   /** Live internal resolution — forwarded to `slotCostMs`; see its own doc. */
   internalMP?: number
+  /** Live valence/arousal read — forwarded to `pickVariedScene`. */
+  currentVA?: ValenceArousal
 }): ActiveEffect[] {
   const {
     active,
@@ -109,6 +112,7 @@ export function advanceEffects(opts: {
     mood,
     recentIds,
     internalMP,
+    currentVA,
   } = opts
 
   // Retire: expired, or stranded by a source restart that rewound the clock.
@@ -130,7 +134,7 @@ export function advanceEffects(opts: {
   })
   if (eligible.length === 0) return kept as ActiveEffect[]
 
-  const pick = pickVariedScene(eligible, mood, recentIds)
+  const pick = pickVariedScene(eligible, mood, recentIds, undefined, currentVA)
   if (!pick) return kept as ActiveEffect[]
 
   // Effects are last in line for budget — the frame still reads without them.
@@ -199,6 +203,7 @@ export function EffectDirector() {
       mood: f.mood.state,
       recentIds: s.recentSceneIds,
       internalMP: renderScale.internalMP(renderScale.applied),
+      currentVA: { valence: performanceState.valence, arousal: performanceState.arousal },
     })
   }, -86) // after CueTimeline (-88) settles governance, before PerformanceDirector (-85)
 

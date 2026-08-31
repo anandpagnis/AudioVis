@@ -3,7 +3,9 @@ import type * as THREE from 'three'
 import type { MoodState } from '../audio/types'
 import type { CameraAnchor } from '../engine/CameraDirector'
 import type { CameraMode } from '../engine/performanceState'
+import { deriveVA } from '../engine/moodValenceArousal'
 import { MAX_PIXEL_BUDGET, MIN_PIXEL_BUDGET, resolvePixelBudget } from '../engine/renderScale'
+import { vaDistance, type ValenceArousal } from '../engine/valenceArousal'
 import { resolveManifest, type SceneManifestExt } from '../engine/streaming/sceneManifest'
 import {
   resolveMode,
@@ -1565,6 +1567,22 @@ export function getEffectScenes(): SceneDef[] {
  * multiplicative penalty, not a hard exclusion — a mood with only 2-3
  * registered scenes (e.g. `aggressive`) must still be able to return
  * something rather than dead-end because both options were "recent."
+ *
+ * ## `currentVA` — fit onto the CONTINUOUS read, not just the 7-way label
+ * (audit c2)
+ *
+ * `mood` alone routes every candidate through the same discrete `moodFit`
+ * column regardless of how far into `groove` (say) the section actually is —
+ * two `groove` passages can differ a great deal in how bright, how tense, how
+ * energised they are, and `moodFit` cannot see that. Passed a live
+ * valence/arousal read (`performanceState.valence`/`.arousal` in
+ * production), each candidate's OWN position in that space is derived from
+ * its existing `moodFit` table (`deriveVA` — no new authoring, see
+ * `moodValenceArousal.ts`) and candidates whose derived position sits nearer
+ * the live read get a further boost on top of their discrete mood fit.
+ * Bounded to at most halving the weight of the worst-placed candidate — this
+ * sharpens the existing preference, it does not replace it, since `moodFit`
+ * is authored judgment this function has no reason to override.
  */
 export function pickVariedScene(
   candidates: readonly SceneDef[],
@@ -1574,9 +1592,18 @@ export function pickVariedScene(
    *  this to keep preferring whichever scene expresses the current dominant
    *  band, a signal `moodFit` alone doesn't carry. */
   boost?: (scene: SceneDef) => number,
+  /** Live valence/arousal read — see the doc above. Omitted, every existing
+   *  call site and every existing test is unaffected. */
+  currentVA?: ValenceArousal,
 ): SceneDef | undefined {
   if (candidates.length === 0) return undefined
   if (candidates.length === 1) return candidates[0]
+
+  // Normalises vaDistance's raw units (valence spans -1..1, arousal 0..1, so
+  // the plane's own diagonal is the natural "as far apart as two points on it
+  // usually get" reference) into a 0..1 penalty.
+  const VA_PLANE_DIAGONAL = Math.sqrt(2 * 2 + 1 * 1)
+  const VA_DAMPENING = 0.5
 
   const weights = candidates.map((scene) => {
     // Floor above zero: every candidate keeps a real (if small) chance,
@@ -1587,7 +1614,13 @@ export function pickVariedScene(
     // Decaying penalty: the most recently shown scene is heavily
     // discounted, less so further back, gone after 4 picks.
     const recencyPenalty = recentIndex === -1 ? 1 : [0.1, 0.3, 0.55, 0.8][recentIndex]
-    return fit * recencyPenalty * (boost ? boost(scene) : 1)
+    let vaFactor = 1
+    if (currentVA && scene.metadata.moodFit) {
+      const sceneVA = deriveVA(scene.metadata.moodFit)
+      const normDistance = Math.min(1, vaDistance(sceneVA, currentVA) / VA_PLANE_DIAGONAL)
+      vaFactor = 1 - VA_DAMPENING * normDistance
+    }
+    return fit * recencyPenalty * vaFactor * (boost ? boost(scene) : 1)
   })
 
   const total = weights.reduce((sum, w) => sum + w, 0)

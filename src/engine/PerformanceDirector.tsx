@@ -5,8 +5,10 @@ import type { MoodState } from '../audio/types'
 import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { frameLoad } from './frameLoad'
+import { performanceState } from './performanceState'
 import { quality } from './quality'
 import { renderScale } from './renderScale'
+import type { ValenceArousal } from './valenceArousal'
 import { admitSlots, slotCostMs, type SlotRequest } from './slotBudget'
 import {
   getCompatibleScenes,
@@ -80,8 +82,12 @@ export function composeLayers(opts: {
   priority?: readonly LayerRole[]
   /** Live internal resolution — forwarded to `slotCostMs`; see its own doc. */
   internalMP?: number
+  /** Live valence/arousal read — forwarded to `pickVariedScene`; see its own
+   *  doc on why this sharpens the discrete `mood` fit rather than replacing it. */
+  currentVA?: ValenceArousal
 }): Record<LayerRole, string | null> {
-  const { primaryId, primaryCost, budget, tier, pools, mood, recentIds, priority, internalMP } = opts
+  const { primaryId, primaryCost, budget, tier, pools, mood, recentIds, priority, internalMP, currentVA } =
+    opts
   const picks: Partial<Record<LayerRole, SceneDef>> = {}
   const requests: SlotRequest[] = []
 
@@ -100,7 +106,7 @@ export function composeLayers(opts: {
   for (const role of LAYER_ROLES) {
     const pool = pools[role]?.filter((s) => !taken.has(s.id))
     if (!pool || pool.length === 0) continue
-    const pick = pickVariedScene(pool, mood, recentIds)
+    const pick = pickVariedScene(pool, mood, recentIds, undefined, currentVA)
     if (!pick) continue
     taken.add(pick.id)
     picks[role] = pick
@@ -267,7 +273,10 @@ export function PerformanceDirector() {
     // against whichever primary is landing.
     let primaryId = s.pendingSceneId ?? s.sceneId
     if (!s.pendingSceneId && primaryCandidates.length > 0) {
-      const pick = pickVariedScene(primaryCandidates, mood, s.recentSceneIds, bandBoost)
+      const pick = pickVariedScene(primaryCandidates, mood, s.recentSceneIds, bandBoost, {
+        valence: performanceState.valence,
+        arousal: performanceState.arousal,
+      })
       // Only aim the layers at the new subject if the request was actually
       // ACCEPTED. `requestScene` refuses silently when the subject dwell floor
       // (MIN_SUBJECT_DWELL_BEATS) has not elapsed, and this used to assume it
@@ -305,6 +314,9 @@ export function PerformanceDirector() {
       // Price every candidate at what the frame is actually rendering, not
       // what its tier implies alone — see slotCostMs's own doc.
       internalMP: renderScale.internalMP(renderScale.applied),
+      // Sharpens the layer pools' discrete mood fit the same way it does for
+      // the primary above — see pickVariedScene's own doc.
+      currentVA: { valence: performanceState.valence, arousal: performanceState.arousal },
       // The tier's budget LESS the costs that are present in every frame and
       // were previously invisible to it: the post chain and the feedback pass
       // overlay when enabled. Composing against the raw tier budget meant the
