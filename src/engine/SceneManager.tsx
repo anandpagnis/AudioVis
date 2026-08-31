@@ -832,15 +832,20 @@ export function SceneManager() {
         // of the fragment shader, so a scene at 5% opacity costs full price —
         // which is why the honest test is the total, not an average.
         const tier = quality.tier
+        // The live internal resolution, not the tier alone (F162/F164 audit):
+        // a scene composed alongside others renders at the COMBINED budget's
+        // resolution, which sceneCostMs's fitted model can only price correctly
+        // if it is told what that resolution actually is.
+        const liveMP = renderScale.internalMP(renderScale.applied)
         const liveLayerMs = entriesRef.current.reduce((sum, e) => {
           if (e.role === 'primary' || e.role === 'effect' || e.dir === 0) return sum
           const meta = getScene(e.id).metadata
-          return sum + slotCostMs(e.id, tier, e.role, meta.roleScalable, meta.performanceCost)
+          return sum + slotCostMs(e.id, tier, e.role, meta.roleScalable, meta.performanceCost, liveMP)
         }, 0)
         const fundsOverlap = canFundOverlap(
           quality.knobs.frameBudgetMs,
-          outgoing ? slotCostMs(outgoing.id, tier, 'primary') : 0,
-          slotCostMs(incoming.id, tier, 'primary'),
+          outgoing ? slotCostMs(outgoing.id, tier, 'primary', false, undefined, liveMP) : 0,
+          slotCostMs(incoming.id, tier, 'primary', false, undefined, liveMP),
           // Layers AND the fixed per-frame costs. `frameBudgetMs` is total frame
           // capacity, so the overlap test has to account for everything the
           // frame carries or it would read the post chain's share as spare.
@@ -939,6 +944,9 @@ export function SceneManager() {
       mirrorRackMs(performanceState.mirror) +
       lensRackMs(performanceState.lens)
     const budgetTier = quality.tier
+    // Same fix as the overlap test above: price every slot at the resolution
+    // the frame is actually carrying, not the one its tier implies alone.
+    const budgetMP = renderScale.internalMP(renderScale.applied)
     let nonLayerMs = fixedMs
     for (const e of entriesRef.current) {
       if (e.role === 'background' || e.role === 'accent' || e.role === 'overlay') continue
@@ -950,6 +958,7 @@ export function SceneManager() {
         e.role === 'primary' ? 'primary' : e.role,
         meta.roleScalable,
         meta.performanceCost,
+        budgetMP,
       )
     }
     const wantedLayers = resolveLayerIds(
@@ -960,7 +969,7 @@ export function SceneManager() {
         remaining: Math.max(0, quality.knobs.frameBudgetMs - nonLayerMs),
         msFor: (id, role) => {
           const meta = getScene(id).metadata
-          return slotCostMs(id, budgetTier, role, meta.roleScalable, meta.performanceCost)
+          return slotCostMs(id, budgetTier, role, meta.roleScalable, meta.performanceCost, budgetMP)
         },
       },
     )
@@ -1085,6 +1094,7 @@ export function SceneManager() {
             e.role === 'primary' ? 'primary' : e.role,
             meta.roleScalable,
             meta.performanceCost,
+            budgetMP,
           ),
         }
       }),

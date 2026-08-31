@@ -155,6 +155,92 @@ export const FALLBACK_COST_MS: Readonly<Record<ScenePerformanceCost, readonly nu
   high: [8, 7, 6, 5, 4],
 }
 
+
+/**
+ * A scene's cost as (fixed cost) + (marginal cost per internal megapixel),
+ * fitted from {@link SCENE_COST_MS} against the internal resolution EACH row
+ * was actually measured at (F162/F164 audit — "sceneCost.ts could not price
+ * this: it has no megapixel denominator, so it reads `maze` as the cheapest
+ * scene in the roster while the log has maze unable to hold 8.29 MP").
+ *
+ * ## Why a fit instead of a fifth column
+ *
+ * `SCENE_COST_MS` has one number per (scene, tier) — a single (ms, MP) point,
+ * since each tier's `pixelBudgetScale` resolves to a definite internal
+ * resolution for a given scene. Five tiers is five points, which is enough to
+ * fit a line (`ms = fixedMs + msPerMP * internalMP`) rather than just label
+ * one point with the resolution it came from. A fit is also what makes the
+ * price VALID at a resolution the sweep never visited — interpolation and
+ * modest extrapolation both fall out of the same two numbers, where five
+ * disconnected (tier, ms) pairs would not extend past tier 4.
+ *
+ * ## Provenance of the resolution column
+ *
+ * `/bench`'s `BenchResult.internalMP` (shipped for the post-chain measurement,
+ * F160) is the RIGHT way to get this and nobody has re-run the sweep with it
+ * capturing scene cost yet. Absent that, this fit uses internal resolutions
+ * RECONSTRUCTED from the same formula the engine itself runs during a sweep
+ * (`BenchStage.tsx`: `renderScale.setSceneBudget(getScenePixelBudget(id))`,
+ * `renderScale.solve()`, `renderScale.internalMP(scale)`) — i.e.
+ * `resolvePixelBudget({ performanceCost })` (no live scene declares an
+ * explicit `pixelBudget` or `fillBound`, so every one of the eleven measured
+ * scenes resolves through `BUDGET_BY_COST` alone) combined with each tier's
+ * `pixelBudgetScale` and `solveRenderScale`'s own clamp/floor, against
+ * `fullMP = 8.294` — the display the 2026-08-27 sweep almost certainly ran on
+ * (2560x1440 css @ 1.5 baseDpr, the exact machine and buffer size recorded in
+ * every session log in `corpus/`, including the one this fix responds to).
+ *
+ * That reconstruction is honest about being a reconstruction, not a
+ * measurement of a measurement: `internalMP = budgetMP * tierScale`
+ * independent of `fullMP` UNLESS a rung's solve clamped to native (`scale ===
+ * 1`) or to `RENDER_SCALE_FLOOR`, in which case the true MP does depend on
+ * `fullMP` and a wrong guess there would misattribute which points in the fit
+ * sit at native resolution. The fit is least-squares over the five
+ * reconstructed points, with the slope floored at 0 (a scene's GPU cost
+ * cannot fall as its resolution rises — a negative slope from noise is
+ * clamped and refit as a flat mean instead) and the intercept floored at 0.
+ * `ribbons` and `wingfold` fit EXACTLY flat (slope 0), agreeing with this
+ * file's own earlier finding that they "show no cost response to the tier at
+ * all" — the model recovers a fact the file already asserted in prose, from
+ * data, which is the check that it is not nonsense.
+ *
+ * ## What supersedes this
+ *
+ * A real `/bench` run with per-cell `internalMP` recorded directly replaces
+ * every number below with a measurement instead of a reconstruction — same
+ * shape as F160's `postChainDelta()`, not yet run. Until then this is
+ * FITTED-FROM-RECONSTRUCTED, not measured, and `SCENE_COST_MS` above remains
+ * the actual measured artefact; this table is derived from it, not a
+ * replacement for it.
+ *
+ * Only the eleven scenes swept 2026-08-27 have a model — the ten quarantined
+ * rows carry a documented CPU-timing contamination this file's own header
+ * already disqualifies from comparison, and fitting a slope to a contaminated
+ * number would manufacture false precision on top of a value already known to
+ * be wrong.
+ */
+export interface SceneCostModel {
+  /** Ms this scene costs regardless of internal resolution. */
+  fixedMs: number
+  /** Additional ms per internal megapixel rendered. */
+  msPerMP: number
+}
+
+/** Provenance and derivation: see the doc comment on {@link SceneCostModel}. */
+export const SCENE_COST_MODEL: Readonly<Record<string, SceneCostModel>> = {
+  chrome: { fixedMs: 1.538, msPerMP: 0.00535 },
+  dissolve: { fixedMs: 0.639, msPerMP: 0.06486 },
+  kifs: { fixedMs: 2.121, msPerMP: 0.08914 },
+  malachite: { fixedMs: 0.7, msPerMP: 0.00385 },
+  matrix: { fixedMs: 1.887, msPerMP: 0.02022 },
+  maze: { fixedMs: 0.37, msPerMP: 0.00669 },
+  plasma: { fixedMs: 0.72, msPerMP: 0.12041 },
+  pointcloud: { fixedMs: 0.617, msPerMP: 0.14399 },
+  ribbons: { fixedMs: 0.72, msPerMP: 0 },
+  wingfold: { fixedMs: 2.54, msPerMP: 0 },
+  wireframe: { fixedMs: 0.509, msPerMP: 0.02552 },
+}
+
 /** Charged for a scene with neither a measurement nor a usable label. */
 const UNKNOWN_COST_MS = FALLBACK_COST_MS.high
 
@@ -164,7 +250,31 @@ const UNKNOWN_COST_MS = FALLBACK_COST_MS.high
  * Total: every argument shape returns a usable number. A budget that throws is
  * worse than a budget that is wrong, because the throw takes the show with it.
  */
-export function sceneCostMs(sceneId: string, tier: number, declared?: ScenePerformanceCost): number {
+export function sceneCostMs(
+  sceneId: string,
+  tier: number,
+  declared?: ScenePerformanceCost,
+  /**
+   * The internal resolution this scene will ACTUALLY render at this frame —
+   * `renderScale.internalMP(renderScale.applied)` at every real call site.
+   *
+   * Optional and additive: omitted, this returns EXACTLY what it always has
+   * (the flat per-tier table, or the fallback), so a caller that has not been
+   * updated to thread the live resolution through keeps its old behaviour
+   * byte-for-byte. Passed, and a fitted {@link SCENE_COST_MODEL} exists for
+   * this scene, the price is evaluated AT that resolution instead of at
+   * whatever resolution the tier implies in isolation — which is the actual
+   * defect this parameter exists to fix: a scene in a composition renders at
+   * the COMBINED budget's resolution, not the one it was benched alone at, and
+   * `maze` in `audiovis-session-2026-08-31-16-47-12` is the concrete case —
+   * priced at 0.42 ms from a tier lookup, actually running at 8.29 MP.
+   */
+  internalMP?: number,
+): number {
+  if (internalMP !== undefined && isFinite(internalMP) && internalMP > 0) {
+    const model = SCENE_COST_MODEL[sceneId]
+    if (model) return Math.max(0, model.fixedMs + model.msPerMP * internalMP)
+  }
   const row =
     SCENE_COST_MS[sceneId] ?? (declared ? FALLBACK_COST_MS[declared] : undefined) ?? UNKNOWN_COST_MS
   const t = Number.isFinite(tier) ? Math.max(0, Math.min(COST_TIERS - 1, Math.round(tier))) : 0

@@ -148,8 +148,68 @@ export const SIMPLEX3D_GLSL = /* glsl */ `
  * the image out. This was a real bug in `kifs` before the wrap went in. A
  * triangle rather than `mod` alone keeps the gradient continuous across the
  * seam — `mod` would jump from `glow` back to `bg` on a hard edge.
+ *
+ * Both mix in Oklab (`mixOklab`), not the GLSL built-in `mix` on raw linear
+ * sRGB — same reasoning and the same conversion as `oklab.ts`'s `lerpOklab`,
+ * ported to GLSL because a fragment shader cannot call back into JS. Every
+ * scene sampling this ramp is exactly the case Oklab was added for: sweeping
+ * a gradient across hue-distant palette slots (`rainbow` most of all), which
+ * is precisely where a linear-sRGB `mix` desaturates through the midpoint.
+ * Costs one extra `pow`/cube each way per call; every call site sampling this
+ * ramp does so a small fixed number of times per fragment (never inside a
+ * raymarch step loop — checked across the roster), so the added cost is a
+ * constant per-pixel term, not one that scales with march depth.
+ *
+ * {@link PALETTE_RAMP_GLSL} below concatenates this string in front of its
+ * own, so every existing \`include: PALETTE_RAMP_GLSL\` call site picks up
+ * \`mixOklab\` with no change on the scene side — nothing had to be touched
+ * outside this file.
  */
-export const PALETTE_RAMP_GLSL = /* glsl */ `
+export const OKLAB_MIX_GLSL = /* glsl */ `
+  /** Linear sRGB -> Oklab. Same matrices as oklab.ts's linearSrgbToOklab. */
+  vec3 _linearToOklab(vec3 c) {
+    float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+    float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+    float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+    // Guarded against a negative base reaching pow() — GLSL leaves that
+    // implementation-defined, and a straight-line lerp between two in-gamut
+    // colours should never produce one, but a defensive clamp costs nothing.
+    vec3 lms_ = vec3(
+      pow(max(l, 0.0), 1.0 / 3.0),
+      pow(max(m, 0.0), 1.0 / 3.0),
+      pow(max(s, 0.0), 1.0 / 3.0)
+    );
+    return vec3(
+      0.2104542553 * lms_.x + 0.7936177850 * lms_.y - 0.0040720468 * lms_.z,
+      1.9779984951 * lms_.x - 2.4285922050 * lms_.y + 0.4505937099 * lms_.z,
+      0.0259040371 * lms_.x + 0.7827717662 * lms_.y - 0.8086757660 * lms_.z
+    );
+  }
+
+  /** Oklab -> linear sRGB. Same matrices as oklab.ts's oklabToLinearSrgb. */
+  vec3 _oklabToLinear(vec3 lab) {
+    float l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+    float m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+    float s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
+    float l = l_ * l_ * l_;
+    float m = m_ * m_ * m_;
+    float s = s_ * s_ * s_;
+    return vec3(
+       4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+      -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+      -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    );
+  }
+
+  /** Perceptual mix of two linear-sRGB colours — same call shape as \`mix\`. */
+  vec3 mixOklab(vec3 a, vec3 b, float t) {
+    return _oklabToLinear(mix(_linearToOklab(a), _linearToOklab(b), t));
+  }
+`
+
+export const PALETTE_RAMP_GLSL =
+  OKLAB_MIX_GLSL +
+  /* glsl */ `
   /** Triangle-wrapped 0..1, so an unbounded input is always safe. */
   float _rampWrap(float t) {
     float m = mod(t, 1.0);
@@ -161,10 +221,10 @@ export const PALETTE_RAMP_GLSL = /* glsl */ `
     float w = _rampWrap(t) * 4.0;
     float seg = floor(min(w, 3.0));
     float f = w - seg;
-    if (seg < 0.5) return mix(uBg, uShadow, f);
-    if (seg < 1.5) return mix(uShadow, uMid, f);
-    if (seg < 2.5) return mix(uMid, uAccent, f);
-    return mix(uAccent, uGlow, f);
+    if (seg < 0.5) return mixOklab(uBg, uShadow, f);
+    if (seg < 1.5) return mixOklab(uShadow, uMid, f);
+    if (seg < 2.5) return mixOklab(uMid, uAccent, f);
+    return mixOklab(uAccent, uGlow, f);
   }
 
   /** Lit slots only: mid -> accent -> glow. Never resolves to the dark ground. */
@@ -172,7 +232,7 @@ export const PALETTE_RAMP_GLSL = /* glsl */ `
     float w = _rampWrap(t) * 2.0;
     float seg = floor(min(w, 1.0));
     float f = w - seg;
-    return seg < 0.5 ? mix(uMid, uAccent, f) : mix(uAccent, uGlow, f);
+    return seg < 0.5 ? mixOklab(uMid, uAccent, f) : mixOklab(uAccent, uGlow, f);
   }
 `
 

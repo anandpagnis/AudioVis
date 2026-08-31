@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { lerpOklab } from './oklab'
 
 /**
  * The palette contract: five semantic slots, and every scene draws from them.
@@ -235,10 +236,15 @@ export class PaletteBlender {
     if (!isFinite(delta) || delta <= 0) return
     const k = 1 - Math.exp(-delta * speed)
     const s = palette.slots
-    this.bg.lerp(this.target.set(s.bg), k)
-    this.shadow.lerp(this.target.set(s.shadow), k)
-    this.mid.lerp(this.target.set(s.mid), k)
-    this.accent.lerp(this.target.set(s.accent), k)
-    this.glow.lerp(this.target.set(s.glow), k)
+    // Oklab, not the working colour space's native lerp -- see oklab.ts's
+    // header. This product's palettes deliberately put hue-distant colours in
+    // adjacent slots (most explicitly the `rainbow` family), which is exactly
+    // the case a linear-sRGB lerp desaturates through the midpoint of. Same
+    // call shape as `Color.lerp`, so nothing else about this method changed.
+    lerpOklab(this.bg, this.target.set(s.bg), k)
+    lerpOklab(this.shadow, this.target.set(s.shadow), k)
+    lerpOklab(this.mid, this.target.set(s.mid), k)
+    lerpOklab(this.accent, this.target.set(s.accent), k)
+    lerpOklab(this.glow, this.target.set(s.glow), k)
   }
 }

@@ -6,6 +6,7 @@ import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { frameLoad } from './frameLoad'
 import { quality } from './quality'
+import { renderScale } from './renderScale'
 import { admitSlots, slotCostMs, type SlotRequest } from './slotBudget'
 import {
   getCompatibleScenes,
@@ -77,8 +78,10 @@ export function composeLayers(opts: {
   recentIds: readonly string[]
   /** Admission order; lets the busier of accent/overlay get first refusal. */
   priority?: readonly LayerRole[]
+  /** Live internal resolution — forwarded to `slotCostMs`; see its own doc. */
+  internalMP?: number
 }): Record<LayerRole, string | null> {
-  const { primaryId, primaryCost, budget, tier, pools, mood, recentIds, priority } = opts
+  const { primaryId, primaryCost, budget, tier, pools, mood, recentIds, priority, internalMP } = opts
   const picks: Partial<Record<LayerRole, SceneDef>> = {}
   const requests: SlotRequest[] = []
 
@@ -103,13 +106,20 @@ export function composeLayers(opts: {
     picks[role] = pick
     requests.push({
       slot: role,
-      ms: slotCostMs(pick.id, tier, role, pick.metadata.roleScalable, pick.metadata.performanceCost),
+      ms: slotCostMs(
+        pick.id,
+        tier,
+        role,
+        pick.metadata.roleScalable,
+        pick.metadata.performanceCost,
+        internalMP,
+      ),
     })
   }
 
   const affordable = admitSlots(
     budget,
-    slotCostMs(primaryId, tier, 'primary', false, primaryCost),
+    slotCostMs(primaryId, tier, 'primary', false, primaryCost, internalMP),
     requests,
     priority,
   )
@@ -292,6 +302,9 @@ export function PerformanceDirector() {
       primaryId,
       primaryCost: getScene(primaryId).metadata.performanceCost,
       tier: quality.tier,
+      // Price every candidate at what the frame is actually rendering, not
+      // what its tier implies alone — see slotCostMs's own doc.
+      internalMP: renderScale.internalMP(renderScale.applied),
       // The tier's budget LESS the costs that are present in every frame and
       // were previously invisible to it: the post chain and the feedback pass
       // overlay when enabled. Composing against the raw tier budget meant the

@@ -5,6 +5,7 @@ import type { AudioFeatures } from '../audio/types'
 import { cueState } from './CueTimeline'
 import { performanceState, type ActiveEffect } from './performanceState'
 import { quality } from './quality'
+import { renderScale } from './renderScale'
 import { committedMs } from './frameLoad'
 import { admitSlots, slotCostMs } from './slotBudget'
 import { getEffectScenes, pickVariedScene, type EffectTrigger, type SceneDef } from '../scenes'
@@ -93,9 +94,22 @@ export function advanceEffects(opts: {
   lastFiredAt: Map<string, number>
   mood: Parameters<typeof pickVariedScene>[1]
   recentIds: readonly string[]
+  /** Live internal resolution — forwarded to `slotCostMs`; see its own doc. */
+  internalMP?: number
 }): ActiveEffect[] {
-  const { active, fired, candidates, now, budget, committedMs, tier, lastFiredAt, mood, recentIds } =
-    opts
+  const {
+    active,
+    fired,
+    candidates,
+    now,
+    budget,
+    committedMs,
+    tier,
+    lastFiredAt,
+    mood,
+    recentIds,
+    internalMP,
+  } = opts
 
   // Retire: expired, or stranded by a source restart that rewound the clock.
   const elapsed = (e: ActiveEffect) => now - e.startedAt
@@ -130,6 +144,7 @@ export function advanceEffects(opts: {
     'effect',
     pick.metadata.roleScalable,
     pick.metadata.performanceCost,
+    internalMP,
   )
   if (admitSlots(budget, reserved, [{ slot: 'effect', ms }]).length === 0) {
     return kept as ActiveEffect[]
@@ -183,6 +198,7 @@ export function EffectDirector() {
       lastFiredAt: lastFiredAt.current,
       mood: f.mood.state,
       recentIds: s.recentSceneIds,
+      internalMP: renderScale.internalMP(renderScale.applied),
     })
   }, -86) // after CueTimeline (-88) settles governance, before PerformanceDirector (-85)
 

@@ -121,8 +121,11 @@ export function slotCostMs(
   slot: SceneRole | 'primary',
   roleScalable = false,
   declared?: ScenePerformanceCost,
+  /** Forwarded to {@link sceneCostMs} — see its own doc for why this is
+   *  optional and what passing it changes. */
+  internalMP?: number,
 ): number {
-  const ms = sceneCostMs(sceneId, tier, declared)
+  const ms = sceneCostMs(sceneId, tier, declared, internalMP)
   if (slot === 'primary' || !roleScalable) return ms
   return ms * ROLE_SCALED_FRACTION
 }
