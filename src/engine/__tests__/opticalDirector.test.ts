@@ -7,6 +7,7 @@ import {
 } from '../opticalDirector'
 import { LENS_STYLES } from '../opticalRack'
 import type { MoodState } from '../../audio/types'
+import type { Habituation } from '../habituation'
 
 const MOODS: MoodState[] = [
   'silence',
@@ -275,5 +276,94 @@ describe('the LED pixel wall is not selected automatically', () => {
 
   it('is still a real material, so the debug panel can reach it', () => {
     expect(LENS_STYLES[PIXELS]).toBe('pixels')
+  })
+})
+
+describe('the mirror rack — habituation (audit c1)', () => {
+  const FRESH: Habituation = { exposure: 0 }
+  const SATURATED: Habituation = { exposure: 1 }
+  const on = (t: ReturnType<typeof mirrorForSection>) => t.mode !== 'off'
+
+  it('is unaffected when habituation is omitted — original modulo, unchanged', () => {
+    for (let seed = 0; seed < 30; seed++) {
+      expect(mirrorForSection('peak', 0.9, seed)).toEqual(
+        mirrorForSection('peak', 0.9, seed, undefined),
+      )
+    }
+  })
+
+  it('reproduces the exact original engagement pattern when omitted', () => {
+    // The literal old rule: off exactly at seed % 6 === 5.
+    for (let seed = 0; seed < 30; seed++) {
+      const engaged = on(mirrorForSection('peak', 0.9, seed))
+      expect(engaged, `seed ${seed}`).toBe(seed % 6 !== 5)
+    }
+  })
+
+  it('engages less often at high habituation than at zero, over many seeds', () => {
+    const N = 3000
+    let freshOn = 0
+    let saturatedOn = 0
+    for (let seed = 0; seed < N; seed++) {
+      if (on(mirrorForSection('peak', 0.9, seed, FRESH))) freshOn++
+      if (on(mirrorForSection('peak', 0.9, seed, SATURATED))) saturatedOn++
+    }
+    expect(saturatedOn).toBeLessThan(freshOn)
+  })
+
+  it('still returns a fully-formed, coherent target when it does engage', () => {
+    // Habituation only gates WHETHER it engages, never corrupts the shape of
+    // what comes back when it does.
+    for (let seed = 0; seed < 40; seed++) {
+      const t = mirrorForSection('peak', 0.9, seed, FRESH)
+      if (t.mode !== 'off') {
+        expect(['kaleido', 'vortex']).toContain(t.mode)
+      }
+    }
+  })
+
+  it('the eligibility gates (mood/tension) still apply before habituation is even consulted', () => {
+    // ambient/silence must stay off regardless of how fresh the habituation
+    // state is — habituation dampens an eligible gate, it does not make an
+    // ineligible one eligible.
+    for (let seed = 0; seed < 20; seed++) {
+      expect(on(mirrorForSection('silence', 0, seed, FRESH))).toBe(false)
+      expect(on(mirrorForSection('ambient', 0.1, seed, FRESH))).toBe(false)
+    }
+  })
+})
+
+describe('the lens rack — habituation (audit c1)', () => {
+  const FRESH: Habituation = { exposure: 0 }
+  const SATURATED: Habituation = { exposure: 1 }
+
+  it('is unaffected when habituation is omitted — original modulo, unchanged', () => {
+    for (let seed = 0; seed < 30; seed++) {
+      expect(lensForSection('groove', seed)).toBe(lensForSection('groove', seed, undefined))
+    }
+  })
+
+  it('reproduces the exact original engagement pattern when omitted', () => {
+    for (let seed = 0; seed < 30; seed++) {
+      const engaged = lensForSection('groove', seed) >= 0
+      expect(engaged, `seed ${seed}`).toBe(seed % 3 === 0)
+    }
+  })
+
+  it('engages less often at high habituation than at zero, over many seeds', () => {
+    const N = 3000
+    let freshOn = 0
+    let saturatedOn = 0
+    for (let seed = 0; seed < N; seed++) {
+      if (lensForSection('groove', seed, FRESH) >= 0) freshOn++
+      if (lensForSection('groove', seed, SATURATED) >= 0) saturatedOn++
+    }
+    expect(saturatedOn).toBeLessThan(freshOn)
+  })
+
+  it('a mood with no pool stays off regardless of habituation', () => {
+    for (let seed = 0; seed < 20; seed++) {
+      expect(lensForSection('silence', seed, FRESH)).toBe(-1)
+    }
   })
 })

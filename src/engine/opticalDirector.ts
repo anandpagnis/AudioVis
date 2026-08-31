@@ -1,4 +1,5 @@
 import type { MoodState } from '../audio/types'
+import { habituatedGate, type Habituation } from './habituation'
 import { LENS_STYLES } from './opticalRack'
 
 /**
@@ -134,7 +135,19 @@ export const MIRROR_OFF: MirrorTarget = {
  * one eligible section in three. Across a whole set that meant it essentially
  * never appeared.
  */
-export function mirrorForSection(mood: MoodState, tension: number, seed: number): MirrorTarget {
+export function mirrorForSection(
+  mood: MoodState,
+  tension: number,
+  seed: number,
+  /**
+   * Habituation state (audit c1 — Finding 03: this gate used to be a bare
+   * `seed % 6`). Omitted, this function reproduces the ORIGINAL modulo
+   * exactly — every existing call site and every existing test is
+   * unaffected. Passed, the 5-in-6 base rate below is dampened by how
+   * recently the rack last engaged; see `habituation.ts`.
+   */
+  habituation?: Habituation,
+): MirrorTarget {
   const t = Math.min(1, Math.max(0, tension))
   const hot = mood === 'peak' || mood === 'aggressive'
   const warm = mood === 'groove' || mood === 'building'
@@ -152,7 +165,16 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
   // (kifs, maze, wingfold) lives in PerformanceStateBridge, downstream of this
   // function — it stays scene-blind on purpose, same reasoning as the mood
   // gate above.
-  if (seed % 6 === 5) return MIRROR_OFF
+  //
+  // With a habituation state, 5/6 is the rate at ZERO recent exposure, not a
+  // fixed one — see habituatedGate. The two branches roll DIFFERENT
+  // arithmetic (habituatedGate reduces the seed mod 997, not mod 6), so this
+  // is not bit-for-bit the same decision per seed as the original check — it
+  // does not need to be. What has to hold, and does, is that a caller passing
+  // no habituation state gets the ORIGINAL `seed % 6 === 5` byte-for-byte,
+  // preserving every existing test and call site exactly.
+  const engage = habituation ? habituatedGate(seed, habituation, 5 / 6) : seed % 6 !== 5
+  if (!engage) return MIRROR_OFF
 
   // Three entries, not four, and the count is load-bearing: `seed % 4 === 3`
   // has already returned above, so `seed % 4` here only ever yields 0, 1 or 2.
@@ -232,7 +254,13 @@ export function mirrorForSection(mood: MoodState, tension: number, seed: number)
  * The material is held for the whole section: it is the *look* of the frame,
  * and changing it mid-phrase reads as a glitch rather than as a choice.
  */
-export function lensForSection(mood: MoodState, seed: number): number {
+export function lensForSection(
+  mood: MoodState,
+  seed: number,
+  /** See {@link mirrorForSection}'s identical parameter — same contract,
+   *  same "omitted means the original modulo, unchanged" guarantee. */
+  habituation?: Habituation,
+): number {
   // Moods pick a family, not a single material, so a set does not become
   // predictable — but a given mood always draws from materials that suit it.
   const pool: Record<MoodState, readonly number[]> = {
@@ -267,7 +295,12 @@ export function lensForSection(mood: MoodState, seed: number): number {
   // lens read as a fixture rather than a choice. A material is a lighter
   // touch than the kaleidoscope, so it doesn't need to be off as often as the
   // mirror's one-in-four, but it still needs "normal" to be the common case.
-  if (seed % 3 !== 0) return -1
+  //
+  // Same habituation contract as mirrorForSection: passed a state, 1/3 is the
+  // rate at zero exposure, dampened as the lens has recently engaged; omitted,
+  // this is the original `seed % 3 === 0` unchanged.
+  const engage = habituation ? habituatedGate(seed, habituation, 1 / 3) : seed % 3 === 0
+  if (!engage) return -1
   return options[seed % options.length] % LENS_STYLES.length
 }
 

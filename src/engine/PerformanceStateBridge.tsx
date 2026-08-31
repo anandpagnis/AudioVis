@@ -12,6 +12,7 @@ import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
 import { advanceSteer, clearSteer } from './sceneSteer'
 import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC, type TransitionBoundaryType } from './transitions'
+import { createHabituation, stepHabituation, type Habituation } from './habituation'
 import {
   lensAmountTarget,
   lensForSection,
@@ -137,6 +138,11 @@ export function PerformanceStateBridge() {
   const mirrorTensionAtPick = useRef(-1)
   /** Phrases held on the current pick, capped by MIRROR_MAX_PHRASES below. */
   const mirrorPhrasesHeld = useRef(0)
+  /** Recent-engagement memory for the mirror and lens gates (audit c1),
+   *  replacing the bare `seed % n` roll each used to make with no notion of
+   *  how recently it last fired — see habituation.ts. */
+  const mirrorHabituation = useRef<Habituation>(createHabituation())
+  const lensHabituation = useRef<Habituation>(createHabituation())
   /** When the last section boundary fired, for the dip window. */
   const lastSectionAt = useRef(-Infinity)
   /** Previous window state, so the style is re-picked when it closes too. */
@@ -447,17 +453,24 @@ export function PerformanceStateBridge() {
         // The whole rack, not just the segment count. `tiles`, `twist` and
         // `slice` were previously written by nothing but the debug panel, so
         // three of the mirror's five controls were dead in a running show.
-        const mt = mirrorForSection(m.state, p.visualTension, mirrorSeed.current++)
+        const mt = mirrorForSection(
+          m.state,
+          p.visualTension,
+          mirrorSeed.current++,
+          mirrorHabituation.current,
+        )
         mirrorTarget.current = mt
         mirrorMoodAtPick.current = m.state
         mirrorTensionAtPick.current = tensionBucket
         mirrorPhrasesHeld.current = 0
+        mirrorHabituation.current = stepHabituation(mirrorHabituation.current, mt.mode !== 'off')
       }
     }
     if (f.sectionChange) {
       const seed = sectionCount.current++
-      const style = lensForSection(m.state, seed)
+      const style = lensForSection(m.state, seed, lensHabituation.current)
       lensEngaged.current = style >= 0
+      lensHabituation.current = stepHabituation(lensHabituation.current, style >= 0)
       // Keep the previous material while a disengaged lens eases out. Swapping
       // it on the way down would show a material the section never chose.
       if (style >= 0) p.lens.style = style
