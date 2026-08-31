@@ -1,5 +1,6 @@
 import { audioEngine } from '../audio/AudioEngine'
 import { essentiaBridge } from '../audio/essentia/EssentiaBridge'
+import { structureBridge } from '../audio/essentia/StructureBridge'
 import { voiceBridge } from '../audio/essentia/VoiceBridge'
 import { analytics } from './analyticsMetrics'
 import { exposure } from './exposure'
@@ -165,7 +166,7 @@ export type Command =
  * the panels then work unmodified, reading exactly what they always read.
  *
  * **Sent only while a panel is open.** It is an order of magnitude heavier than
- * the base telemetry (a 512-bin spectrum and two 1024-sample waveforms), and
+ * the base telemetry (a 1024-bin spectrum and two 1024-sample waveforms), and
  * for most of a set nobody is looking at it. The console asks; the output
  * window stops the moment it stops being asked.
  */
@@ -178,6 +179,7 @@ export interface Detail {
   an: unknown
   es: unknown
   vo: unknown
+  st: unknown
   kf: string
   /** RAW frame times since the last packet, not a smoothed mean. */
   ms: number[]
@@ -767,6 +769,7 @@ export function publishDetail(nowMs = performance.now()): void {
     an: analytics,
     es: essentiaBridge.status,
     vo: voiceBridge.status,
+    st: structureBridge.status,
     kf: keyPaletteTracker.family,
     ms: rawFrameMs.slice(),
     tx: transitionMetrics.history,
@@ -828,6 +831,7 @@ function applyDetail(d: Detail): void {
   mirrorInto(rec(analytics), rec(d.an))
   mirrorInto(rec(essentiaBridge.status), rec(d.es))
   mirrorInto(rec(voiceBridge.status), rec(d.vo))
+  mirrorInto(rec(structureBridge.status), rec(d.st))
   // `family` is a getter over `committed`, so the backing field is the one that
   // can be written.
   ;(keyPaletteTracker as unknown as Record<string, unknown>).committed = d.kf

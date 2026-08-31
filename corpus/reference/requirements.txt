@@ -1,0 +1,8 @@
+# Optional ground-truth pass for the calibration corpus (see analyze_reference.py).
+# Nothing in `npm run check` or `npm run calibrate` needs these.
+librosa>=0.10
+numpy>=1.24
+soundfile>=0.12
+# madmom gives an octave-robust DBN tempo tracker; analyze_reference.py falls
+# back to librosa.beat.beat_track if it is not installed.
+madmom>=0.16 ; python_version < "3.12"

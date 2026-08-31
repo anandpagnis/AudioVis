@@ -1,0 +1,202 @@
+/**
+ * Calibration harness — runs the REAL `src/audio` estimators over a corpus of
+ * decoded tracks and writes two committed, derived artifacts:
+ *
+ *   corpus/distributions.json  — cross-track feature percentiles the estimator
+ *                                constants are calibrated against.
+ *   corpus/eval-report.md      — per-track octave-flip counts, seconds-per-mood,
+ *                                mood-confidence spread; the before/after oracle.
+ *
+ * Runs via `npm run calibrate` (vitest.calibration.config.ts) — NEVER part of
+ * `npm run check`. Skips cleanly when no audio is present: fetch it with
+ * `node scripts/fetch-test-tracks.mjs` (the 8-track set) or `npm run
+ * corpus:fetch` (the full corpus).
+ */
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { decodeMp3File } from './decode'
+import { runTrack, type FrameSample } from './features'
+import { moodQuality, octaveStats, percentileTable, secondsPerMood } from './report'
+
+const ROOT = resolve(__dirname, '../..')
+const CORPUS_AUDIO = join(ROOT, 'corpus/audio')
+const TESTFOLDER = join(ROOT, 'testfolder')
+const REFS_DIR = join(ROOT, 'corpus/refs')
+const OUT_DIR = join(ROOT, 'corpus')
+
+interface TrackMeta {
+  id: string
+  file: string
+  moodTheme?: string[]
+  genres?: string[]
+  referenceBpm?: number
+}
+
+function collectTracks(): TrackMeta[] {
+  // CALIB_TESTFOLDER_ONLY=1 restricts to the 8 committed-manifest testfolder
+  // tracks — a fast (~40 s), fixed set for before/after constant tuning.
+  const dirs = (
+    process.env.CALIB_TESTFOLDER_ONLY ? [TESTFOLDER] : [CORPUS_AUDIO, TESTFOLDER]
+  ).filter(existsSync)
+  const out: TrackMeta[] = []
+  // Manifests keyed by file name, for reference BPM / tags.
+  const meta = new Map<string, TrackMeta>()
+  for (const mf of [join(ROOT, 'corpus/tracks.json'), join(TESTFOLDER, 'tracks.json')]) {
+    if (!existsSync(mf)) continue
+    const parsed = JSON.parse(readFileSync(mf, 'utf8')) as {
+      tracks?: Array<{
+        file: string
+        moodTheme?: string[]
+        genres?: string[]
+        calibration?: { referenceBpm?: number }
+      }>
+    }
+    for (const t of parsed.tracks ?? []) {
+      meta.set(t.file, {
+        id: t.file.replace(/\.mp3$/, ''),
+        file: t.file,
+        moodTheme: t.moodTheme,
+        genres: t.genres,
+        referenceBpm: t.calibration?.referenceBpm,
+      })
+    }
+  }
+  for (const dir of dirs) {
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith('.mp3')) continue
+      const path = join(dir, name)
+      const m = meta.get(name) ?? { id: name.replace(/\.mp3$/, ''), file: name }
+      out.push({ ...m, file: path })
+    }
+  }
+  return out
+}
+
+function loadReferenceBpm(id: string, fallback?: number): number | undefined {
+  const p = join(REFS_DIR, `${id}.json`)
+  if (existsSync(p)) {
+    try {
+      const r = JSON.parse(readFileSync(p, 'utf8')) as { bpm?: number }
+      if (typeof r.bpm === 'number' && r.bpm > 0) return r.bpm
+    } catch {
+      /* fall through */
+    }
+  }
+  return fallback
+}
+
+/**
+ * Iteration knobs (env). A full 1500-track run is ~2–3 h and must not hold
+ * every frame in memory at once (~19 M objects → OOM). So:
+ *  - CALIB_STRIDE=N  — analyse every Nth track (fast stratified-ish subset).
+ *  - CALIB_LIMIT=N   — hard cap on track count.
+ *  - CALIB_FRAME_STRIDE=N — keep every Nth frame for the cross-track
+ *      distribution pool (default 4 ≈ 15 Hz — percentiles are unchanged).
+ * Per-track stats (octave flips, seconds-per-mood, mood quality) always use
+ * every frame; that track's frame array is freed before the next decode.
+ */
+const STRIDE = Math.max(1, Number(process.env.CALIB_STRIDE) || 1)
+const LIMIT = Number(process.env.CALIB_LIMIT) || Infinity
+const FRAME_STRIDE = Math.max(1, Number(process.env.CALIB_FRAME_STRIDE) || 4)
+
+const tracks = collectTracks()
+  .filter((_, i) => i % STRIDE === 0)
+  .slice(0, LIMIT)
+
+/** Flat per-metric pools for distributions(), fed a strided subset of frames. */
+type Pool = Record<string, number[]>
+function foldFramesInto(pool: Pool, frames: FrameSample[]) {
+  const keys = [
+    'moodLevel',
+    'energy',
+    'sub',
+    'bass',
+    'high',
+    'centroid',
+    'spectralFlatness',
+    'spectralRolloff',
+    'sparkle',
+    'crestFactor',
+  ] as const
+  for (let i = 0; i < frames.length; i += FRAME_STRIDE) {
+    const f = frames[i]
+    if (f.silence) continue
+    for (const k of keys) (pool[k] ??= []).push(f[k])
+    ;(pool.energyVelAbs ??= []).push(Math.abs(f.energyVel))
+  }
+}
+
+describe.skipIf(tracks.length === 0)('calibration harness', () => {
+  it(`analyses ${tracks.length} track(s) and writes corpus/{distributions.json,eval-report.md}`, async () => {
+    const pool: Pool = {}
+    let poolFrames = 0
+    const lines: string[] = [
+      '# Calibration eval report',
+      '',
+      `Generated by \`npm run calibrate\` over ${tracks.length} track(s).`,
+      'Not committed audio — reproduce with `node scripts/fetch-test-tracks.mjs`',
+      'or `npm run corpus:fetch`.',
+      '',
+      '| track | dur | octave flips | half-tempo % | mood (top 3, s) | moodConf p50/p90/max | gate-pass % |',
+      '| --- | --- | --- | --- | --- | --- | --- |',
+    ]
+
+    let analysed = 0
+    for (const t of tracks) {
+      const { pcm, sampleRate } = await decodeMp3File(t.file)
+      const run = runTrack(pcm, sampleRate)
+
+      foldFramesInto(pool, run.frames)
+      poolFrames += run.frames.length
+
+      const refBpm = loadReferenceBpm(t.id, t.referenceBpm)
+      const oct = octaveStats(run.frames, refBpm)
+      const moodSec = secondsPerMood(run.frames, run.frameRate)
+      const topMoods = Object.entries(moodSec)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([m, s]) => `${m} ${s}`)
+        .join(', ')
+      const mq = moodQuality(run.frames)
+
+      lines.push(
+        `| ${t.id} | ${run.durationSec.toFixed(0)}s | ${oct.flips} | ${(oct.halfTempoSampleShare * 100).toFixed(0)}% | ${topMoods} | ${
+          mq ? `${mq.confidence.p50}/${mq.confidence.p90}/${mq.confidenceMax}` : '—'
+        } | ${mq ? (mq.gatePassShare * 100).toFixed(0) + '%' : '—'} |`,
+      )
+
+      expect(run.frames.length).toBeGreaterThan(0)
+      analysed++
+      // run.frames drops out of scope here — the next decode does not stack on it.
+    }
+
+    const dist: Record<string, unknown> = { n: poolFrames }
+    for (const [k, v] of Object.entries(pool)) dist[k] = percentileTable(v)
+
+    mkdirSync(OUT_DIR, { recursive: true })
+    writeFileSync(
+      join(OUT_DIR, 'distributions.json'),
+      JSON.stringify(
+        {
+          generated: 'npm run calibrate',
+          trackCount: analysed,
+          frameStride: FRAME_STRIDE,
+          ...dist,
+        },
+        null,
+        2,
+      ) + '\n',
+    )
+
+    lines.push('', '## Cross-track distributions (see corpus/distributions.json)', '')
+    for (const [k, v] of Object.entries(dist)) {
+      if (typeof v === 'number') continue
+      const t = v as Record<string, number>
+      lines.push(`- **${k}**: p10 ${t.p10} · p50 ${t.p50} · p90 ${t.p90} · mean ${t.mean}`)
+    }
+    writeFileSync(join(OUT_DIR, 'eval-report.md'), lines.join('\n') + '\n')
+
+    expect(analysed).toBeGreaterThan(0)
+  }, 10_800_000)
+})

@@ -171,14 +171,30 @@ export function PerformanceDirector() {
     if (cueState.governed) return // authored cues own the journey
     if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
 
-    const phraseFallback = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
-    const boundary = f.sectionChange || phraseFallback
+    // Hold the subject through a confirmed build-up — recomposing mid-riser is
+    // exactly the "transitions when it doesn't need to" complaint. The drop
+    // itself (`songSection.boundaryChanged` on the build→drop commit) still
+    // gets through below.
+    if (f.structureValid && f.songSection.isBuild && !f.songSection.boundaryChanged) return
+
+    // With a real structure read, a latched boundary replaces the blind
+    // 16-beat timer; without one, the timer is the degraded fallback.
+    const latchedBoundary = f.structureValid && f.songSection.boundaryChanged
+    const phraseFallback =
+      !f.structureValid && f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
+    const boundary = f.sectionChange || latchedBoundary || phraseFallback
     if (!boundary || f.beatIndex === lastBoundaryBeat.current) return
     lastBoundaryBeat.current = f.beatIndex
 
-    // Section changes cut immediately; the periodic fallback respects a light
-    // one-phrase spacing so calm stretches aren't over-recomposed.
-    if (!f.sectionChange && f.beatIndex - lastSwitchBeat.current < PHRASE_HOLD_BEATS) return
+    // Real boundaries (section novelty or a latched structural edge) cut
+    // immediately; only the blind periodic fallback respects the one-phrase
+    // spacing so calm stretches aren't over-recomposed.
+    if (
+      !f.sectionChange &&
+      !latchedBoundary &&
+      f.beatIndex - lastSwitchBeat.current < PHRASE_HOLD_BEATS
+    )
+      return
 
     const response = getAudioResponse(f)
     const mood = f.mood.predictedState === 'silence' ? f.mood.state : f.mood.predictedState
@@ -204,9 +220,17 @@ export function PerformanceDirector() {
     // director fires far more often and pulled the show straight back, most
     // often onto `wireframe` (the only primary every scene lists as
     // compatible). That is what "wireframe is always on" actually was.
-    const primaryCandidates = selectPrimaryCandidates(mood, s.sceneId)
+    // A breakdown wants the show to breathe — no expensive raymarchers, no
+    // stacked layers. Only gated when the structure read is real; otherwise the
+    // pools are unchanged.
+    const inBreakdown = f.structureValid && f.songSection.isBreakdown
+    const notHeavy = (scene: SceneDef) => scene.metadata.performanceCost !== 'high'
 
-    const layerFits = getScenesForMood(mood)
+    const primaryCandidates = inBreakdown
+      ? selectPrimaryCandidates(mood, s.sceneId).filter(notHeavy)
+      : selectPrimaryCandidates(mood, s.sceneId)
+
+    const layerFits = inBreakdown ? [] : getScenesForMood(mood)
     const layerPool = layerFits.filter((scene) => compatibleIds.has(scene.id))
     const layerCandidates = layerPool.length > 0 ? layerPool : layerFits
 
@@ -261,7 +285,8 @@ export function PerformanceDirector() {
     // ground that changes every 16 beats is just a second primary. Holding the
     // previous pick means passing an empty pool, which composeLayers reads as
     // "leave it alone".
-    const backgroundPool = f.sectionChange ? forRole('background') : []
+    const backgroundPool =
+      (f.sectionChange || latchedBoundary) && !inBreakdown ? forRole('background') : []
 
     const slots = composeLayers({
       primaryId,
@@ -291,7 +316,7 @@ export function PerformanceDirector() {
     })
     // Background is preserved across non-section recomposes; the other two are
     // always written, since nothing else clears them.
-    if (f.sectionChange) s.setLayer('background', slots.background, { auto: true })
+    if (f.sectionChange || latchedBoundary) s.setLayer('background', slots.background, { auto: true })
     s.setLayer('accent', slots.accent, { auto: true })
     s.setLayer('overlay', slots.overlay, { auto: true })
     lastSwitchBeat.current = f.beatIndex

@@ -2379,8 +2379,8 @@ It did not refine the cost model; it retired it.
       still reads `frameLoad` exactly as before.
 
       That packet is an order of magnitude heavier than the base telemetry (a
-      512-bin spectrum and two 1024-sample waveforms), so it is **sent only
-      while a panel is open**. Verified: with every panel closed the control
+      spectrum — 512 bins then, 1024 since F154 — and two 1024-sample
+      waveforms), so it is **sent only while a panel is open**. Verified: with every panel closed the control
       window's `features` are empty and stay frozen; opening one fills them with
       live values; closing them all freezes them again.
 
@@ -3491,8 +3491,9 @@ denominated in milliseconds on this side.
       pattern each time is a field the OUTPUT owns being published by the
       CONSOLE. Anything auto-driven inside the Canvas is in that category.
 
-- [ ] **F121 - Mood confidence never exceeds 0.39, and BPM flips octave** -
-      `src/audio/*`
+- [~] **F121 - Mood confidence never exceeds 0.39, and BPM flips octave** -
+      `src/audio/*` *(structural fixes landed 2026-08-30; final constants pending
+      a corpus run - see below)*
       Two findings from the same recording, both about the audio read rather
       than the engine.
       **Confidence.** Across 155 s of clearly-structured music the mood
@@ -3500,18 +3501,48 @@ denominated in milliseconds on this side.
       `ambiguity` averaging 0.555 and touching 0.999. F118 lowered the gate to
       match the observed range, which unblocks the show, but a confidence that
       cannot exceed 0.39 on material like this is a statement about the
-      estimator's scale, not about the music. Either it is mis-normalised or the
-      feature set genuinely cannot separate these moods - and those want
-      different fixes.
+      estimator's scale, not about the music.
+      **Fixed structurally:** `MoodEstimator.update()` built `confidence` from
+      the RAW score margin (`margin*2 + ...`) while the `ambiguity` line right
+      above it used the NORMALIZED one (`1 - margin/bestScore`). `score()`
+      outputs sit in a compressed ~0.1..0.8 band, so `margin*2` could never
+      reach 1. `confidence` is now `0.65*(1 - ambiguity) + 0.2*dwell +
+      0.15*winnerHeld` - a decisive read reaches ~0.9. `AutoPilot`'s
+      `MOOD_CHANGE_MIN_CONFIDENCE` was re-baselined 0.25 -> 0.5 (interim; final
+      from `corpus/eval-report.md`).
+      *Measurement caveat: `sessionLog.ts` was recording the BEAT-TRACKER
+      `f.confidence` under the "mood confidence" label, so the "0.392 peak"
+      figure's magnitude was never confirmed for `mood.confidence` specifically.
+      Fixed too - a real `moodConfidence` sample field now exists.*
       Related: the read sat on `mellow` for **139 of 155 seconds** while energy
-      averaged 0.481 and bass regularly passed 0.8. A mood estimator that
-      answers "mellow" to that is not merely unsure, it is wrong.
+      averaged 0.481 and bass regularly passed 0.8.
+      **Fixed structurally:** `score()` tested `m.level` against energy windows
+      drawn for a 0..1 scale, but `m.level` is post-`RESPONSE_GAMMA` and
+      compressed low (bandNormalizer records `level < 0.55` on 80% of frames),
+      so `mellow`'s window sat where the music lives and `groove`/`peak` barely
+      opened. `score()` is now per-mood checklists keyed on
+      `e = m.level ** ENERGY_SHAPE_EXP`, which restores the scale; `mellow` also
+      gained a real suppressive bass gate (was `1 - bass*0.5`, only halved).
       **BPM octave.** The tempo read flips between ~76 and ~152 within the same
-      track - 8% of samples at the half-tempo reading. Every consumer of `bpm`
-      (transition durations, phrase prediction, the dwell floor in beats)
-      silently doubles or halves with it.
-      Neither is guess-fixable from this data; both need the estimator itself
-      opened up against a known track.
+      track - 8% of samples at the half-tempo reading.
+      **Fixed structurally:** the octave correction was recomputed from scratch
+      every 0.5 s with no memory, and `gridFit`'s occupancy term structurally
+      *rewarded* the half-tempo grid whenever onsets were sparse (a verse where
+      the kick plays every other beat). Added `BpmEstimator.octaveLock` (0..1
+      metrical-level memory), made the octave switch asymmetric around the
+      locked level (pulling back is cheap, leaving costs `octaveLock*0.9` extra
+      margin), density-gated the occupancy *reward* (penalty kept, so
+      double-time rejection is intact), and added a `lockedIn` gate on the
+      persist-before-jump path. A `multifeature` second opinion
+      (`EssentiaBridge` `rhythm-hq`, 20 s cadence) and a pure `reconcileModelBpm`
+      helper fold a degara wrong-octave read onto the locked level.
+      **Still open:** the interim constants (`ENERGY_SHAPE_EXP`, the mood band
+      edges, `MOOD_CHANGE_MIN_CONFIDENCE`, the `octaveLock` rates) are set by
+      reasoning, not measurement. `corpus/` + `npm run calibrate` runs the real
+      estimators over a ~1-2 k-track MTG-Jamendo corpus and regenerates
+      `corpus/distributions.json` / `corpus/eval-report.md`; the constants get
+      their final values from that, and `MOOD_CHANGE_MAX_AMBIGUITY` is
+      re-checked against the post-rewrite ambiguity distribution.
 
 - [x] **F122 - Nothing ever put back the detail the render scale takes away** -
       `src/engine/GradePass.ts` *(fixed 2026-08-28)*
@@ -5443,6 +5474,161 @@ gone, what remains is visible for the first time.
       that a 20s absence is kept in the JSON, excluded from `max`, and labelled;
       one that a genuine 200ms stall in a visible tab is untouched.
 
+- [~] **F153 - No latched notion of where in the song we are; the director cuts
+      mid-build and misses the drop** - `src/audio/*`, `src/engine/*`
+      *(DSP path implemented 2026-08-30; not yet verified against real music)*
+
+      **Complaint:** the visual director "sometimes transitions when it doesn't
+      need to, and sometimes misses it - especially on buildups, where it should
+      sustain the current look until the drop."
+
+      **Root cause (verified in source):** every structural signal on
+      `AudioFeatures` was *instantaneous* - `sectionChange` (one-frame boolean,
+      spectral-novelty thresholded at 0.45), `drop` (0.6 s pulse), `buildUp`
+      (noisy per-frame bool). `PerformanceDirector` recomposed on `sectionChange`
+      OR a blind `beatIndex % 16 === 0` timer - that timer is what cut mid-build.
+      `AutoPilot`'s `STALE_TARGET_SEC = 25` backstop also fired mid-build; its
+      own doc said it existed *because no structural edge was available*. Drops
+      were handled reactively (`dropEdge`), a beat late.
+
+      **Decision:** a learned model was scoped and rejected. There is no
+      directly-convertible MSA model (all-in-one is MIT + ~300K params but needs
+      Demucs + madmom + NATTEN; SongFormer needs 600M of SSL features at
+      inference), so it would be a teacher→student distillation - a multi-week
+      offline pipeline needing a GPU, for a browser/streaming ceiling of only
+      ~0.62 boundary F@±3s (vs a Foote-novelty ~0.45, human agreement ~0.90).
+      Not worth it for this tool. The DSP path was taken instead: a real
+      *segment* structure, not one-frame events, and the director rewiring that
+      the complaint actually needs.
+
+      **Implemented (DSP):**
+        - `src/audio/types.ts` - `SECTION_STATES` + `SongSectionMomentum` on
+          `AudioFeatures.songSection`, with `structureValid` (4-way ambiguous
+          like `moodsValid`; consumers gate on it and fall back to
+          `f.sectionChange`). Taxonomy is `intro / build / drop / breakdown /
+          section / outro` - verse/chorus are NOT guessed without a model;
+          `repetitionLabel` (A/B/C) separately marks returned material.
+        - `src/audio/essentia/structure.worker.ts` - second essentia-WASM
+          instance, NO tf. Rolling ~120 s window → beat-synchronous HPCP + MFCC
+          + scalar cells → cosine SSMs → checkerboard (Foote) novelty → fused
+          adaptive peak-pick → boundaries + greedy repetition letters + a
+          minimal kind map. Plus a 5-slope riser detector for `build` /
+          `beatsTillDrop`. Fails silent (`missing` → permanent disable).
+        - `src/audio/essentia/structureDsp.ts` - the pure algorithm (13 tests).
+        - `src/audio/essentia/StructureBridge.ts` - `VoiceBridge` clone: PCM
+          ring off the shared AudioWorklet tap, ~15 s cadence self-throttled by
+          `costMs`, next-frame drain (4 inert-fallback tests).
+        - `src/audio/SectionTracker.ts` - pure synchronous fusion FSM: latches
+          boundaries/segments, overlays `f.drop` / `f.buildUp`, hysteresis
+          (`holdFor`/`dwellFor` like `MoodEstimator`), soft fizzle release for a
+          build that never drops, drop latch. Bootstraps `structureValid` on the
+          first real segmentation (11 tests).
+        - Directors, each behind `f.structureValid` (additive-neutral otherwise):
+          `PerformanceStateBridge.visualTension` gains a `structureTension` build
+          ramp; `PerformanceDirector` returns early during `isBuild`, uses
+          `songSection.boundaryChanged` instead of the `%16` timer, and filters
+          `performanceCost:'high'` primaries + empties layer pools in a
+          breakdown; `AutoPilot` suppresses discretionary triggers during
+          `isBuild`, recolours on a structural boundary, and pre-arms the hype
+          scene when `beatsTillDrop ≤ 3` so SceneManager commits it on the drop.
+        - Observability: `DebugPanel` structure line (y=120); `structureBridge.status`
+          in `outputLink` telemetry.
+
+      `npm run check` green (28 new tests). **Not verified against real music** -
+      needs a foregrounded browser with a real source to watch the section
+      tracker latch through a build and release on the drop, and the pre-arm
+      timing needs tuning by ear (no automated "did the cut land on the drop").
+
+      **Deferred:** the distilled boundary model (teacher = all-in-one +
+      SongFormer ensemble, student = MusiCNN-scale net in the worker, corpus =
+      FMA commercial-OK subset). Research notes captured; blocked on nothing but
+      the decision that ~0.62 F is worth a multi-week GPU pipeline.
+
+- [x] **F154 - Audio DSP front-end sweep (items 4-8, 19 of the standalone
+      `docs/DSP_AUDIT_CHECKLIST.md`)** - `src/audio/*` *(2026-08-30)*
+      The FFT/analyser plumbing half of the 19-item audio-DSP audit that
+      `DSP_AUDIT_CHECKLIST.md` tracks (items 1/2/3/14 are the F121 set, 18 is
+      the doc refresh). Full per-item detail is in that file; the short version:
+        - **19** - `f.spectrum` is now the full `FFT_SIZE/2` = 1024 bins to
+          Nyquist (was the lower 512); loop bound and `createEmptyFeatures`
+          length derive from the same source so they cannot drift into a silent
+          OOB write.
+        - **6** - a dedicated 8192-point analyser (~5.4 Hz/bin) feeds `f.sub`
+          only; `f.bass` stays on the 2048 grid because the 8192 window's
+          ~186 ms span would blunt kick energy that `beatStrength`/scene pulses
+          read at the beat (adversarial finding - the audit's literal "sub/bass"
+          was narrowed to "sub").
+        - **4** - `centroid` integrates the whole spectrum now (was capped at
+          9 kHz), gain re-derived `3 → 2.1` against the corpus to hold its
+          distribution; `rolloff`/`flatness` deliberately left at the 9 kHz cap
+          (a Nyquist reference kills rolloff's dynamic range for its harshness
+          consumer and breaks a public 0..1 contract). New `sparkle` cue
+          (16 kHz-Nyquist) computed + on the contract but NOT wired into scoring
+          - the 96 kbps calibration corpus has nothing up there.
+        - **5** - premise disproven empirically (`getFloatFrequencyData` is not
+          clamped by `min`/`maxDecibels` in Chromium); no analyser-property
+          change. `f.spectrum` bins are now clamped to the documented 0..1
+          (hot masters reach ~1.6 linear), and a loudness-invariance regression
+          test covers the real dB→band→normalizer path.
+        - **7/8** - the onset + percussion stat windows are age-based (1 s) not
+          a fixed 60-frame count, and detection is skipped on any frame where
+          the FFT buffer is byte-identical to the last.
+      Verified firing-rate-preserving against the 8-track reference set:
+      5/8 tracks byte-exact mood breakdown vs the F121 baseline, `moodLevel`/
+      `energy`/`bass`/`flatness`/`crest` p50 all exact, octave-flip count
+      unchanged. `npm run check` green (828 tests). The calibrate harness was
+      also taught to stream (no OOM on a full run) + `CALIB_*` iteration knobs.
+      Not verified against real music in a foregrounded browser. See
+      `docs/DSP_AUDIT_CHECKLIST.md`.
+
+- [x] **F155 - EssentiaBridge scheduler made pure + tested (audit item 16), and
+      three latent scheduling bugs fixed** - `src/audio/essentia/*` *(2026-08-31)*
+      `pickJob` / `applyDispatch` / `ingestResponse` / `drainResults` moved to a
+      pure `src/audio/essentia/scheduling.ts` over an injected `EssentiaSchedState`;
+      the class keeps all I/O. `essentiaScheduling.test.ts` (35 cases) covers the
+      priority ladder, the degara-only cadence self-throttle, the `hqBpm` capture
+      guard, and every drain merge path. Bugs fixed in passing:
+        - **A** - `rhythm-hq`'s "not the first job" guard was `lastJobAt >= 0`,
+          which `pickJob`'s own first branch already guarantees - dead code that
+          let the ~950 ms multifeature job fire as job #2, ~0.2 s into a track,
+          before any degara grid had locked. Now gated on `RHYTHM_HQ_MIN_READS`
+          (2) completed degara reads.
+        - **B** - no `id` check on a worker response, so a job in flight at a
+          source change resolved after `detach()`+`attach()` and merged track
+          1's tempo/key/danceability onto track 2's freshly-`reset()` state -
+          the exact thing `AudioEngine.ts`'s `essentiaBridge.detach()` comment
+          says cannot happen. Now `inFlightId` (set at dispatch, cleared on
+          `detach()`) drops the stale result.
+        - **D** - `hqFresh` compared a dispatch-time clock (`lastHqAt`) with a
+          receipt-time value (`hqBpm`); dispatching an hq job now clears `hqBpm`
+          so a full-cycle-stale octave reference can't be labelled "fresh"
+          during the ~950 ms run.
+      **Still open - Bug C:** the cadence self-throttle only accounts for degara
+      `ms`; there is no aggregate worker-time budget or rhythm preemption, so on
+      a slow worker a single long `key`/`danceability`/`rhythm-hq` dispatch
+      delays the next degara read past its 2.5 s cadence. Hidden on a fast
+      machine by the slot budget; bites under load. Low priority - a
+      "reserve the slot for rhythm if it's due within `expectedJobMs`" guard, or
+      an aggregate budget.
+      `npm run check` green (872 tests).
+
+- [~] **F156 - No true loudness (LUFS) (audit item 12), Part A** -
+      `src/audio/loudness.ts`, `src/audio/AudioEngine.ts` *(2026-08-31)*
+      ITU-R BS.1770-4 K-weighting: `loudness.ts` derives the two biquads from
+      the analog prototype (sample-rate-agnostic; matches the spec's 48 kHz
+      table to 1e-6), with a denormal-flushed / NaN-guarded `KWeighting` filter
+      and an `OfflineLoudness` windower for the calibrate harness. A dedicated
+      `audiovis-loudness` AudioWorklet runs the IIR biquads on the *contiguous*
+      stream (an AnalyserNode only gives gapped snapshots) and posts 400 ms /
+      3 s K-weighted mean-squares at ~60 Hz. `f.lufsShortTerm` (raw ~-60..0,
+      absolute - rises with input gain, so diagnostic ONLY, never in scoring)
+      and `f.loudness` (BandNormalized momentary K-weighted RMS -> invariant
+      0..1) are on the contract; both panels show LUFS. Worklet verified in a
+      real `AudioWorkletGlobalScope` (full-scale 1 kHz sine -> -3.00 LUFS).
+      **Part B (pending):** wire `f.loudness` into `energyTarget` (swap the
+      crude `f.rms` term) - a full recalibration, blocked on the F154 corpus
+      run finishing.
+
 ---
 
 
@@ -5824,7 +6010,7 @@ whose ladder reached tier 0. Both of these were invisible until it did.
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **788 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **886 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

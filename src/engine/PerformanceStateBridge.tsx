@@ -152,7 +152,17 @@ export function PerformanceStateBridge() {
       m.predictedState === 'peak' && m.beatsTillTransition >= 0
         ? Math.max(0, 1 - m.beatsTillTransition / 16) * 0.5
         : 0
-    p.visualTension = Math.min(1, Math.max(buildTension, predictionTension) + (f.drop ? 0.5 : 0))
+    // Real song structure, when we have it: a confirmed build-up ramps tension
+    // toward ~1 and holds it there until the drop lands (which collapses
+    // `buildProgress` to 0 — the `+ (f.drop ? 0.5 : 0)` term below is the
+    // release spike). `Math.max` with 0 keeps this additive-neutral when the
+    // structure read is absent.
+    const structureTension =
+      f.structureValid && f.songSection.isBuild ? 0.45 + f.songSection.buildProgress * 0.5 : 0
+    p.visualTension = Math.min(
+      1,
+      Math.max(buildTension, predictionTension, structureTension) + (f.drop ? 0.5 : 0),
+    )
 
     // The director's hand on the scene dials. Runs here rather than in
     // PerformanceDirector because that one only fires on section boundaries —

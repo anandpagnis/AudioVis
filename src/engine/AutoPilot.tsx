@@ -2,6 +2,11 @@ import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
 import type { MoodState } from '../audio/types'
+import {
+  MOOD_CHANGE_MAX_AMBIGUITY,
+  MOOD_CHANGE_MIN_CONFIDENCE,
+  MOOD_PREDICT_MIN_CONFIDENCE,
+} from './autoPilotGates'
 import { cueState } from './CueTimeline'
 import { keyPaletteTracker } from './keyPalette'
 import { PALETTES } from './palettes'
@@ -58,44 +63,13 @@ export const MOOD_PALETTES: Record<MoodState, string[]> = {
   aggressive: ['ember', 'acid', 'neon', 'emberGlass', 'oxide', 'mirage', 'carnival', 'mono'],
 }
 
-
 const MANUAL_HOLD_SEC = 45 // back off after the DJ touches anything
 
 // A committed mood change only drives a scene/palette switch once the read is
 // solid: confident enough, and not a near-tie with the runner-up state.
 // Borderline changes stay pending and fire on a later frame once they clear.
-/**
- * Confidence a mood read needs before it may move the SCENE (F118).
- *
- * ## 0.4 was outside the estimator's range
- *
- * Reported as "it seems to not change the scene for like 15-20 secs upon
- * start", and the first recording could not explain it because neither this
- * input nor its sibling was being written down. With both instrumented, the
- * second recording answered it outright: across 155 seconds of real music,
- * `confidence` peaked at **0.392** and averaged 0.259. **Zero of 600 samples
- * cleared 0.4.**
- *
- * So this was not a threshold that sometimes held the show back. It was
- * unreachable, and `AutoPilot` has never once driven a scene change in its
- * life — every switch in that recording came from `PerformanceDirector`'s
- * section boundaries instead, which is why the pacing looked structural rather
- * than musical.
- *
- * 0.25 sits just under the observed mean, so a firm read passes and a weak one
- * still does not. The damage from being wrong is bounded by machinery that
- * already exists: `MIN_SUBJECT_DWELL_BEATS` (32 beats, ~12.6 s at 152 BPM)
- * throttles the rate, and the `pendingSceneId` guard stops a second request
- * evicting a warming one.
- *
- * **The deeper question is left open on purpose.** A confidence that never
- * exceeds 0.39 on clearly-structured music suggests the estimator's scale is
- * itself suspect, and re-tuning a threshold is not the same as fixing that.
- * `MOOD_CHANGE_MAX_AMBIGUITY` is deliberately NOT touched in the same change —
- * loosening two gates at once would make the next recording impossible to read.
- */
-const MOOD_CHANGE_MIN_CONFIDENCE = 0.25
-const MOOD_CHANGE_MAX_AMBIGUITY = 0.6
+// The two thresholds live in ./autoPilotGates so the session recorder can grade
+// a recording against the same numbers the live gate uses.
 
 /**
  * Worst-case gap, in seconds, before AutoPilot looks for a scene change even
@@ -188,6 +162,12 @@ export function AutoPilot() {
   /** The same idea for modes, on its own counter: sharing the palette's would
    *  couple a scene's look to how often the colours happened to change. */
   const modeRotation = useRef(0)
+  /** Drop pre-arm: a hype scene requested a bar or two before the projected
+   *  drop so SceneManager's next-downbeat commit lands ON the drop rather than
+   *  a beat late. `preArmBeat` stamps when — if the drop never comes within a
+   *  few bars the arm is abandoned. */
+  const preArmed = useRef(false)
+  const preArmBeat = useRef(-Infinity)
 
   useFrame(() => {
     const f = audioEngine.features
@@ -224,8 +204,24 @@ export function AutoPilot() {
     //   3) the committed state the moment it changes.
     let target: MoodState | null = null
 
-    if (dropEdge) {
+    // Through a confirmed build-up, hold every DISCRETIONARY switch — the whole
+    // point of the build is that the look should stay put until the drop. The
+    // drop path (`dropEdge`) is exempt, and `pendingChange` still latches so a
+    // mood change that lands mid-build fires the frame the build releases.
+    const inBuild = f.structureValid && f.songSection.isBuild
+
+    // Abandon a stale pre-arm — the projected drop never arrived.
+    if (preArmed.current && f.beatIndex - preArmBeat.current > 24) preArmed.current = false
+
+    const preArmedThisDrop = dropEdge && preArmed.current
+    if (dropEdge) preArmed.current = false
+
+    if (dropEdge && !preArmedThisDrop) {
       target = m.state === 'aggressive' || m.predictedState === 'aggressive' ? 'aggressive' : 'peak'
+      prefetchedFor.current = null
+    } else if (dropEdge) {
+      // Pre-armed: the hype scene is already requested and will commit on the
+      // downbeat ≈ the drop. A palette flip still runs below; no new scene request.
       prefetchedFor.current = null
     } else {
       // Latch committed changes: `m.changed` is true for one frame only, but a
@@ -236,8 +232,10 @@ export function AutoPilot() {
         m.predictedState !== m.state &&
         m.beatsTillTransition >= 0 &&
         m.beatsTillTransition < 4 &&
-        m.confidence > 0.5
-      if (imminent && prefetchedFor.current !== m.predictedState) {
+        m.confidence > MOOD_PREDICT_MIN_CONFIDENCE
+      if (inBuild) {
+        // hold — no discretionary target while the riser runs
+      } else if (imminent && prefetchedFor.current !== m.predictedState) {
         target = m.predictedState
         prefetchedFor.current = m.predictedState
       } else if (
@@ -270,8 +268,12 @@ export function AutoPilot() {
     // passage whose mood never moved. That is the common case: a verse and its
     // chorus are frequently the same mood.
     const paletteMood = target ?? m.state
+    // A latched structural boundary recolours too — but not mid-build (hold the
+    // look) and not while a `target` is already driving the switch below.
+    const structureRecolour =
+      f.structureValid && f.songSection.boundaryChanged && !f.songSection.isBuild
     if (
-      (target !== null || f.sectionChange) &&
+      (target !== null || f.sectionChange || structureRecolour) &&
       f.time - lastPaletteAt.current >= PALETTE_MIN_SEC
     ) {
       // Excluding what is already showing is the actual fix for "colours never
@@ -291,6 +293,31 @@ export function AutoPilot() {
         lastPaletteAt.current = f.time
         s.setPalette(pick, { auto: true })
       }
+    }
+
+    // --- Drop pre-arm --------------------------------------------------------
+    // A bar or two before the projected drop, request the hype scene now with
+    // `immediate: false` so SceneManager's next-downbeat commit lands ON the
+    // drop instead of a beat after it. Only with a real structure read, only
+    // once per build, and only when nothing is already in flight.
+    if (
+      inBuild &&
+      !preArmed.current &&
+      !s.pendingSceneId &&
+      f.songSection.beatsTillDrop >= 1 &&
+      f.songSection.beatsTillDrop <= 3
+    ) {
+      const hypeMood: MoodState =
+        m.state === 'aggressive' || m.predictedState === 'aggressive' ? 'aggressive' : 'peak'
+      const armCands = getPrimaryScenesForMood(hypeMood).filter((sc) => sc.id !== s.sceneId)
+      const armPick = pickVariedScene(armCands, hypeMood, s.recentSceneIds)
+      if (armPick && s.requestScene(armPick.id, { auto: true, immediate: false })) {
+        const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++)
+        if (armMode) s.setSceneMode(armPick.id, armMode, { auto: true })
+        preArmed.current = true
+        preArmBeat.current = f.beatIndex
+      }
+      return
     }
 
     if (!target) return

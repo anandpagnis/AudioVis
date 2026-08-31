@@ -14,7 +14,9 @@
     "test:watch": "vitest",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "corpus:fetch": "node corpus/fetch.mjs",
+    "calibrate": "node --max-old-space-size=6144 ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts"
   },
   "dependencies": {
     "@react-three/fiber": "^9.7.0",
@@ -40,6 +42,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.8.0",
+    "mpg123-decoder": "^1.0.3",
     "prettier": "^3.9.6",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.65.0",

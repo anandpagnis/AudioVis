@@ -8,7 +8,13 @@
  * has priority (it drives the beat grid), key/danceability fill idle slots.
  */
 
-export type EssentiaJobType = 'rhythm' | 'key' | 'danceability'
+/**
+ * `rhythm` is the fast beat-grid source (degara, ~190 ms, no confidence).
+ * `rhythm-hq` is an occasional second opinion (multifeature, ~950 ms, carries a
+ * 0..1 confidence) whose main job is octave arbitration — degara does no octave
+ * folding, so it can hand back a clean-looking half-tempo read (F121).
+ */
+export type EssentiaJobType = 'rhythm' | 'rhythm-hq' | 'key' | 'danceability'
 
 interface BaseRequest {
   id: number
@@ -19,7 +25,7 @@ interface BaseRequest {
 }
 
 export interface RhythmRequest extends BaseRequest {
-  type: 'rhythm'
+  type: 'rhythm' | 'rhythm-hq'
 }
 export interface KeyRequest extends BaseRequest {
   type: 'key'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BpmEstimator } from '../BpmEstimator'
+import { BpmEstimator, reconcileModelBpm } from '../BpmEstimator'
 
 /**
  * Drives the estimator like AudioEngine does: `update()` on every tick,
@@ -148,5 +148,91 @@ describe('BpmEstimator', () => {
     expect(est.confidence).toBe(1)
     expect(est.isExternal(11)).toBe(true)
     expect(est.isExternal(12.1)).toBe(false)
+  })
+
+  it('holds the metrical level through a sparse passage that reads as half-tempo (F121)', () => {
+    // The F121 repro: a dense chorus locks 152, then a verse where the kick
+    // plays every OTHER beat (~76 onsets/min) — mathematically ambiguous
+    // between 76 and 152 — then the chorus returns. The old estimator flipped
+    // to 76 for the length of the verse; the continuity lock must hold 152.
+    const est = new BpmEstimator()
+    const dense = 60 / 152 // ~0.395 s
+    const sparse = dense * 2 // one onset every other true beat
+    let t = simulateClicks(est, dense, 14) // lock 152, build octaveLock
+    expect(Math.abs(est.bpm - 152)).toBeLessThan(6)
+
+    const beforeLock = est.octaveLock
+    expect(beforeLock).toBeGreaterThan(0.3)
+
+    // 9 s of sparse onsets — longer than a typical verse, shorter than the
+    // lock's ~13 s erosion time.
+    let flippedToHalf = false
+    let nextClick = t
+    const sparseEnd = t + 9
+    while (t < sparseEnd) {
+      if (t >= nextClick) {
+        est.addOnset(t, 1)
+        nextClick += sparse
+      }
+      est.update(t)
+      if (est.bpm < 120) flippedToHalf = true
+      t += 0.05
+    }
+    expect(flippedToHalf).toBe(false)
+    expect(Math.abs(est.bpm - 152)).toBeLessThan(10)
+    expect(est.octaveCorrection).not.toBe(2)
+
+    // Chorus returns — still 152, no phantom re-lock.
+    simulateClicks(est, dense, 6, t)
+    expect(Math.abs(est.bpm - 152)).toBeLessThan(6)
+  })
+
+  it('does NOT lock the octave from a cold start, so a real ½/2× seed still corrects', () => {
+    // Regression guard for the continuity lock: it must only resist LEAVING a
+    // dense-confirmed level, never block acquiring the right one. Seed at
+    // double-time with no prior dense evidence — octaveLock is 0, correction
+    // proceeds (this is L66's scenario, restated against octaveLock).
+    const est = new BpmEstimator()
+    est.period = 60 / 164
+    expect(est.octaveLock).toBe(0)
+    simulateClicks(est, 60 / 82, 25)
+    expect(Math.abs(est.bpm - 82)).toBeLessThan(3)
+  })
+})
+
+describe('reconcileModelBpm', () => {
+  it('folds a degara half-tempo read onto a confident lock', () => {
+    expect(reconcileModelBpm(76, 152, 0.9, 0)).toBe(152)
+    expect(reconcileModelBpm(152, 76, 0.9, 0)).toBe(76) // double-time model vs a 76 lock
+  })
+
+  it('leaves a read alone when the internal grid is not confident', () => {
+    expect(reconcileModelBpm(76, 152, 0.3, 0)).toBe(76)
+  })
+
+  it('leaves a read alone when the model carries its own strong confidence', () => {
+    expect(reconcileModelBpm(76, 152, 0.9, 0.8)).toBe(76)
+  })
+
+  it('passes an unrelated tempo through untouched', () => {
+    expect(reconcileModelBpm(96, 152, 0.9, 0)).toBe(96)
+  })
+
+  it('is a no-op on non-finite / non-positive input', () => {
+    expect(reconcileModelBpm(0, 152, 0.9, 0)).toBe(0)
+    expect(reconcileModelBpm(120, 0, 0.9, 0)).toBe(120)
+    expect(Number.isNaN(reconcileModelBpm(NaN, 152, 0.9, 0))).toBe(true)
+  })
+
+  it('integrates: a stream of degara half-tempo reads cannot halve a locked grid', () => {
+    const est = new BpmEstimator()
+    let t = simulateClicks(est, 60 / 152, 20) // lock 152
+    for (let i = 0; i < 30; i++) {
+      const folded = reconcileModelBpm(76, est.bpm, est.confidence, 0)
+      est.setModelTempo(folded, 0, t, 8)
+      est.update(t)
+      t += 0.25
+    }
+    expect(Math.abs(est.bpm - 152)).toBeLessThan(8)
   })
 })

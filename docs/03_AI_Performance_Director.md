@@ -172,12 +172,33 @@ These are the target rules for the unified planner. **Bold** = implemented today
 | **Manual input suppresses automation for 45 s** | ✅ `lastManualAt` |
 | **Scene commits on downbeat when grid trusted** | ✅ SceneManager |
 | **Drop triggers immediate scene request** | ✅ AutoPilot |
+| **Hold discretionary transitions through a build-up** | ✅ `songSection.isBuild` gates PerformanceDirector recompose + AutoPilot's imminent/change/stale triggers (F153) |
+| **Pre-arm the drop so the cut lands ON it** | ✅ AutoPilot requests the hype scene when `songSection.beatsTillDrop ≤ 3`, `immediate:false` so SceneManager commits it on the drop's downbeat (F153) |
 | Never repeat same scene twice in a row | ⚠️ Partial (random 2nd pick helps) |
 | Never perform more than 3 dramatic transitions in 60 s | ❌ Planned |
-| Always transition on musical phrases unless emergency | ⚠️ Phrase fallback + section |
-| Never interrupt breakdown with heavy visuals | ❌ Planned (energy gate) |
+| Always transition on musical phrases unless emergency | ✅ with a structure read (`songSection.boundaryChanged` replaces the blind 16-beat timer); ⚠️ phrase fallback + section novelty without one |
+| Never interrupt breakdown with heavy visuals | ✅ with a structure read (`songSection.isBreakdown` → PerformanceDirector filters `performanceCost:'high'` primaries and passes empty layer pools); ❌ without one |
 | Avoid visual fatigue | ❌ Planned (Performance Memory) |
 | Pre-queue predicted mood within 4 beats | ✅ AutoPilot imminent branch |
+
+**Song-structure-aware directing (F153).** A latched `AudioFeatures.songSection`
+(from the off-thread analyzer + `SectionTracker`, see doc 02 Structure chapter)
+feeds four seams, **every one gated by `f.structureValid`** — byte-for-byte
+today's behaviour when the analyzer is absent:
+
+1. `PerformanceStateBridge.visualTension` gains a `structureTension` term that
+   ramps with `songSection.buildProgress` and holds — the drop's `+0.5` spike is
+   the release.
+2. `PerformanceDirector` returns early while `songSection.isBuild` (no recompose
+   mid-riser), and a `songSection.boundaryChanged` edge replaces the blind
+   `beatIndex % 16` fallback.
+3. `AutoPilot` suppresses its imminent / committed-change / stale-target
+   triggers while `isBuild` (`pendingChange` still latches, so a mood change
+   mid-build fires the frame the build releases), and recolours on a structural
+   boundary.
+4. `AutoPilot` drop pre-arm — once per build, `pendingSceneId`-guarded, with a
+   24-beat stale timeout; the `dropEdge` hard-cut is skipped when a pre-arm is
+   live so it doesn't evict the warming scene.
 
 ---
 

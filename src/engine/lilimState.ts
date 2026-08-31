@@ -73,12 +73,12 @@ const SPEC_HI_BINS = 192
 /**
  * Frequency range covered by `specHi`.
  *
- * lilim ran 35 Hz–18 kHz. This engine's `f.spectrum` keeps only the lower 512
- * of 1024 FFT bins — up to about 11 kHz at 44.1 kHz — so the top of the range is
- * genuinely unavailable rather than merely quiet. Scenes that pick structure out
- * of the spectrum (Chladni mode selection, analyser displays) work from the
- * bottom three-quarters, so this is a real but tolerable reduction. Widening it
- * means raising `SPECTRUM_BINS` in `AudioEngine.ts`.
+ * lilim ran 35 Hz–18 kHz. `f.spectrum` now carries all 1024 FFT bins (0..Nyquist,
+ * ~22 kHz at 44.1 kHz), so the 11 kHz ceiling here is a deliberate choice about
+ * what `specHi` *exposes*, not a data limit any more. Raising it toward lilim's
+ * 18 kHz is safe data-wise but would change the silhouette every shader scene
+ * reading `audio.specHi` is tuned against, so it stays where it is until those
+ * scenes are re-checked.
  */
 const SPEC_LO_HZ = 35
 const SPEC_HI_HZ = 11000
@@ -97,9 +97,9 @@ const BIN_HZ = 44100 / 2 / 1024
 /**
  * Precomputed source-bin span for each output bin, so the frame loop only sums.
  *
- * Verified numerically: no span is empty and the widest end index is 511, inside
- * `f.spectrum`'s 512 entries — 11 kHz was chosen to land just under the 11.025
- * kHz the buffer actually reaches.
+ * Verified numerically: no span is empty and the widest end index is 511, well
+ * inside `f.spectrum`'s 1024 entries. The `Math.min(binEnd[i], spectrum.length)`
+ * guard in the frame loop is now belt-and-braces (it never binds).
  *
  * One real limitation to know about: at 21.5 Hz per source bin, the bottom
  * ~30 output bins all resolve to the same single source bin, so the low end of

@@ -198,8 +198,11 @@ export function AnalyticsPanel() {
           212,
         )
         ctx.fillStyle = 'rgba(255,255,255,0.4)'
+        // …plus the BS.1770 K-weighted short-term loudness — an absolute-scale
+        // readout the app otherwise lacks. `f.loudness` (its normalized,
+        // invariant companion) is not wired into scoring yet.
         ctx.fillText(
-          `  ${ess.keyMs.toFixed(0)}ms/${ess.keyRuns}  ${ess.danceMs.toFixed(0)}ms/${ess.danceRuns}  rhythm ${ess.lastMs.toFixed(0)}ms`,
+          `  ${ess.keyMs.toFixed(0)}ms/${ess.keyRuns}  ${ess.danceMs.toFixed(0)}ms/${ess.danceRuns}  ${f.lufsShortTerm.toFixed(1)} LUFS`,
           6,
           224,
         )

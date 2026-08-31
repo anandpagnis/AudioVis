@@ -64,16 +64,18 @@ function resampleTo441(pcm: Float32Array, fromRate: number): Float32Array {
   return out
 }
 
-function analyzeRhythm(pcm: Float32Array, sampleRate: number) {
+function analyzeRhythm(pcm: Float32Array, sampleRate: number, useMethod: RhythmMethod) {
   const signal = resampleTo441(pcm, sampleRate)
   const vector = essentia.arrayToVector(signal)
   try {
     const t0 = performance.now()
-    const res = essentia.RhythmExtractor2013(vector, 208, method, 40)
+    const res = essentia.RhythmExtractor2013(vector, 208, useMethod, 40)
     const ms = performance.now() - t0
     const bpm: number = res.bpm
     const confidence01 =
-      method === 'multifeature' ? Math.max(0, Math.min(1, res.confidence / CONFIDENCE_RAW_MAX)) : 0
+      useMethod === 'multifeature'
+        ? Math.max(0, Math.min(1, res.confidence / CONFIDENCE_RAW_MAX))
+        : 0
     // VectorFloat outputs are WASM-heap objects — free them or leak the heap.
     res.ticks?.delete?.()
     res.estimates?.delete?.()
@@ -138,9 +140,10 @@ self.onmessage = async (e: MessageEvent<EssentiaRequest>) => {
   try {
     await loadEssentia()
     let out: EssentiaResponse
-    if (req.type === 'rhythm') {
-      const { bpm, confidence01, ms } = analyzeRhythm(req.pcm, req.sampleRate)
-      out = { id: req.id, type: 'rhythm', bpm, confidence01, method, ms }
+    if (req.type === 'rhythm' || req.type === 'rhythm-hq') {
+      const useMethod: RhythmMethod = req.type === 'rhythm-hq' ? 'multifeature' : method
+      const { bpm, confidence01, ms } = analyzeRhythm(req.pcm, req.sampleRate, useMethod)
+      out = { id: req.id, type: 'rhythm', bpm, confidence01, method: useMethod, ms }
     } else if (req.type === 'key') {
       const { key, scale, strength, ms } = analyzeKey(req.pcm, req.sampleRate)
       out = { id: req.id, type: 'key', key, scale, strength, ms }

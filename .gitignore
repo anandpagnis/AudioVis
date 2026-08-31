@@ -14,6 +14,14 @@ testfolder/*.mp3
 testfolder/*.wav
 testfolder/*.flac
 
+# Calibration corpus (MTG-Jamendo, ~1-2k tracks). Same redistribution reasoning
+# as the test audio above. corpus/tracks.json (the id manifest) and the derived
+# corpus/distributions.json + corpus/eval-report.md ARE committed — the audio,
+# decoded frames and reference labels are not. See corpus/README.md.
+corpus/audio/
+corpus/frames/
+corpus/refs/
+
 # Converted TF.js model weights (Essentia, CC BY-NC-SA). Binaries, and
 # reproducible from scripts/convert-essentia-models.md — same reasoning as the
 # test audio above.

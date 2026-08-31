@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeSpectralBands } from '../spectralFeatures'
+import { computeLowBands, computeSpectralBands } from '../spectralFeatures'
 
 const FFT_LEN = 1024 // FFT_SIZE / 2, matching AudioEngine
 const SAMPLE_RATE = 44100
@@ -113,5 +113,123 @@ describe('computeSpectralBands', () => {
 
     const falling = computeSpectralBands(quiet, prevMag, BIN_HZ)
     expect(falling.bassFlux).toBeCloseTo(0, 6)
+  })
+
+  it('golden values: a single loud bin lands only in its band, at exactly 1/(binCount)', () => {
+    // Exact arithmetic the C4 centroid/sparkle work must not perturb: one 0 dB
+    // bin (magnitude 1) amid a -100 dB floor gives band = 1 / (endBin - startBin)
+    // for the one band that owns it, and the noise-floor value (1e-5, averaged)
+    // everywhere else.
+    const BIN = BIN_HZ
+    const bassEnd = Math.ceil(160 / BIN)
+    const midEnd = Math.ceil(2000 / BIN)
+    const presenceEnd = Math.ceil(5000 / BIN)
+    const highEnd = Math.ceil(9000 / BIN)
+
+    // Values carry a tiny +6·1e-5-style term from the -100 dB (1e-5) floor on
+    // the other bins in the band, so compare at 4 digits, not machine epsilon.
+    const bassCase = silentDb()
+    bassCase[5] = 0
+    const rb = computeSpectralBands(bassCase, freshPrevMag(), BIN)
+    expect(rb.bass).toBeCloseTo(1 / (bassEnd - 1), 4)
+    expect(rb.mid).toBeCloseTo(1e-5, 6)
+    expect(rb.high).toBeCloseTo(1e-5, 6)
+
+    const midCase = silentDb()
+    midCase[70] = 0 // ~1.5 kHz
+    const rm = computeSpectralBands(midCase, freshPrevMag(), BIN)
+    expect(rm.mid).toBeCloseTo(1 / (midEnd - bassEnd), 4)
+    expect(rm.bass).toBeCloseTo(1e-5, 6)
+
+    const presCase = silentDb()
+    presCase[160] = 0 // ~3.4 kHz, inside [midEnd, presenceEnd)
+    const rp = computeSpectralBands(presCase, freshPrevMag(), BIN)
+    expect(rp.presence).toBeCloseTo(1 / (presenceEnd - midEnd), 4)
+    // presence overlaps the bottom of `high` by construction (pre-existing), so
+    // the same bin also lands in `high`, diluted across its wider span.
+    expect(rp.high).toBeCloseTo(1 / (highEnd - midEnd), 4)
+  })
+
+  it('centroid now responds to content above the old 9 kHz ceiling', () => {
+    // Same low-frequency energy, but one spectrum also has strong 17 kHz
+    // content. Pre-C4 both read an identical centroid (everything above 9 kHz
+    // was invisible); now the air-heavy one reads brighter.
+    const base = silentDb()
+    base[40] = 0 // a ~860 Hz tone
+    const dull = computeSpectralBands(base, freshPrevMag(), BIN_HZ).centroidRaw
+
+    const airy = silentDb()
+    airy[40] = 0
+    for (let i = 760; i < 1024; i++) airy[i] = -6 // loud 16–22 kHz shelf
+    const bright = computeSpectralBands(airy, freshPrevMag(), BIN_HZ).centroidRaw
+
+    expect(bright).toBeGreaterThan(dull * 2)
+  })
+
+  it('sparkle isolates 16 kHz–Nyquist from air (9–16 kHz) and never leaks into high', () => {
+    const BIN = BIN_HZ
+    const airEnd = Math.ceil(16000 / BIN) // ~744
+
+    const sparkleOnly = silentDb()
+    for (let i = airEnd; i < 1024; i++) sparkleOnly[i] = 0
+    const s = computeSpectralBands(sparkleOnly, freshPrevMag(), BIN)
+    expect(s.sparkle).toBeGreaterThan(0.5)
+    expect(s.air).toBeLessThan(0.01)
+    expect(s.high).toBeLessThan(0.01)
+
+    const airOnly = silentDb()
+    const highEnd = Math.ceil(9000 / BIN)
+    for (let i = highEnd; i < airEnd; i++) airOnly[i] = 0
+    const a = computeSpectralBands(airOnly, freshPrevMag(), BIN)
+    expect(a.air).toBeGreaterThan(0.5)
+    expect(a.sparkle).toBeLessThan(0.01)
+  })
+
+  it('sparkle bins settle instead of spiking every frame (prevMag carried forward)', () => {
+    // Regression guard mirroring the hi-hat one: the sparkle pass must write
+    // prevMag for its bins, or a steady tone up there would look like constant
+    // change to anything that later diffs against it.
+    const prevMag = freshPrevMag()
+    const steady = silentDb()
+    steady[900] = 0 // constant ~19 kHz tone
+    const first = computeSpectralBands(steady, prevMag, BIN_HZ)
+    const second = computeSpectralBands(steady, prevMag, BIN_HZ)
+    // prevMag[900] must equal this frame's magnitude (1.0), not 0.
+    expect(prevMag[900]).toBeCloseTo(1, 6)
+    expect(second.sparkle).toBeCloseTo(first.sparkle, 6)
+  })
+})
+
+describe('computeLowBands', () => {
+  // The dedicated low analyser is fftSize 8192 → 4096 bins spanning Nyquist.
+  const LOW_LEN = 4096
+  const LOW_BIN_HZ = 44100 / 2 / LOW_LEN // ~5.386 Hz/bin
+
+  const lowSilent = () => new Float32Array(LOW_LEN).fill(-100)
+
+  it('isolates sub (<80 Hz) from bass (<160 Hz) on the fine grid', () => {
+    const subEnd = Math.ceil(80 / LOW_BIN_HZ) // ~15
+    const db = lowSilent()
+    for (let i = 1; i < subEnd; i++) db[i] = 0
+    const r = computeLowBands(db, LOW_BIN_HZ)
+    expect(r.sub).toBeGreaterThan(0.5)
+    // bass spans [1,160Hz) which includes the sub bins, so it is non-zero but
+    // diluted by the empty 80–160 Hz bins.
+    expect(r.bass).toBeGreaterThan(0)
+    expect(r.bass).toBeLessThan(r.sub)
+  })
+
+  it('skips DC and divides by the bin count, matching computeSpectralBands', () => {
+    const db = lowSilent()
+    db[0] = 0 // DC — must be ignored
+    const r = computeLowBands(db, LOW_BIN_HZ)
+    expect(r.sub).toBeLessThan(0.01)
+    expect(r.bass).toBeLessThan(0.01)
+  })
+
+  it('returns a reused scratch object (no per-call allocation)', () => {
+    const a = computeLowBands(lowSilent(), LOW_BIN_HZ)
+    const b = computeLowBands(lowSilent(), LOW_BIN_HZ)
+    expect(a).toBe(b)
   })
 })

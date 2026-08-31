@@ -33,9 +33,12 @@ comparable tools react to the last ~20 ms of audio.
 - **Input:** system/tab audio (`getDisplayMedia`), microphone/line-in
   (`getUserMedia`), local file. A `startWithStream(MediaStream)` extension point
   exists for virtual cables.
-- **~65 features** on a single per-frame `AudioFeatures` object: 8 frequency
-  bands (sub/bass/mid/presence/high/vocal/air/energy), RMS, crest factor,
-  spectral centroid / flatness / rolloff / flux, transient envelope.
+- **~65 features** on a single per-frame `AudioFeatures` object: frequency
+  bands (sub/bass/mid/presence/high/vocal/air/sparkle/energy — `sub` off a
+  dedicated 8192-point FFT, `sparkle` = 16 kHz–Nyquist), RMS, crest factor,
+  spectral centroid (whole-spectrum, 9 kHz-referenced) / flatness / rolloff
+  (2–9 kHz) / flux, transient envelope, and a full-Nyquist 1024-bin magnitude
+  spectrum.
 - **Independent drum envelopes** — kick, snare, hi-hat detected separately from
   the broadband onset detector that owns beat timing.
 - **Band-passed lead waveform** (`midWaveform`) exposed as a time-domain buffer
