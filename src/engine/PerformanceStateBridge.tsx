@@ -6,6 +6,7 @@ import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
 import { CAMERA_MODE_SHOT, cutCamera, pickCameraMode, type CameraShotTag } from './CameraDirector'
 import { computeValenceArousal } from './valenceArousal'
+import { advanceBandClocks } from './bandClocks'
 import { exposure, GAIN_MIN } from './exposure'
 import { bloomThreshold } from './bloomParams'
 import { getEffectiveParams } from './moodParams'
@@ -199,6 +200,14 @@ export function PerformanceStateBridge() {
     const va = computeValenceArousal(f, p.visualTension)
     p.valence = va.valence
     p.arousal = va.arousal
+
+    // Per-band clocks (audit c14) — advanced exactly once per frame, here,
+    // for the same reason valence/arousal is computed here rather than by
+    // each reader: a primary, a crossfade partner and multiple composition
+    // layers can be mounted at once, all sharing the same audio, and a clock
+    // advanced per-scene-instance would restart on every mount and drift out
+    // of sync between simultaneously-drawn scenes. See bandClocks.ts.
+    advanceBandClocks(f, f.delta)
 
     // The director's hand on the scene dials. Runs here rather than in
     // PerformanceDirector because that one only fires on section boundaries —

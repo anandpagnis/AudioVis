@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, type ComponentType } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
+import { bandClocks } from './bandClocks'
+import { beatOscillators } from './beatOscillators'
 import { FULLSCREEN_VERT } from './glsl'
 import { createLilimState, updateLilimState, type LilimAudioState } from './lilimState'
 import type { PaletteBlender } from './palettes'
@@ -42,6 +44,39 @@ export const SHADER_SCENE_PRELUDE = /* glsl */ `
   uniform vec3 uMid;
   uniform vec3 uAccent;
   uniform vec3 uGlow;
+
+  /**
+   * Decaying 0..1 envelope per drum (audit c14) — see
+   * audio/PercussionDetector.ts. A shader reads these directly rather than a
+   * scene having to wire its own copy of \`ctx.f.percussion.kick.env\` into a
+   * custom uniform every time it wants a hit to reach the GPU.
+   */
+  uniform float uKick;
+  uniform float uSnare;
+  uniform float uHihat;
+
+  /**
+   * Per-band clocks, in seconds (audit c14) — advance while that band is
+   * loud, hold still while it is not. See engine/bandClocks.ts for why this
+   * is the cheapest substitution available for "make an animation read as
+   * audio-reactive": swap \`uTime\` for one of these in an existing rotation
+   * or drift term and it inherits the music's own rhythm of motion and
+   * stillness for free, at the SAME speed \`uTime\` already ran whenever that
+   * band is at full level.
+   */
+  uniform float uBassClock;
+  uniform float uMidClock;
+  uniform float uHighClock;
+
+  /**
+   * Tempo-locked sine oscillators, -1..1 (audit c14) — see
+   * engine/beatOscillators.ts. \`uBeatSin\` completes one cycle per beat,
+   * \`uBeatSin2\` per two beats, \`uBeatSin4\` per bar. A scene can be IN TIME
+   * with the music without running its own beat detection.
+   */
+  uniform float uBeatSin;
+  uniform float uBeatSin2;
+  uniform float uBeatSin4;
 `
 
 /** What a shader scene's per-frame callback receives. */
@@ -234,6 +269,15 @@ function getSceneMaterial<S>(gl: THREE.WebGLRenderer, spec: ShaderSceneSpec<S>):
       uMid: { value: new THREE.Color() },
       uAccent: { value: new THREE.Color() },
       uGlow: { value: new THREE.Color() },
+      uKick: { value: 0 },
+      uSnare: { value: 0 },
+      uHihat: { value: 0 },
+      uBassClock: { value: 0 },
+      uMidClock: { value: 0 },
+      uHighClock: { value: 0 },
+      uBeatSin: { value: 0 },
+      uBeatSin2: { value: 0 },
+      uBeatSin4: { value: 0 },
       ...spec.uniforms?.(),
     },
   })
@@ -299,6 +343,25 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
 
     elapsed.current += ctx.dt
     u.uTime.value = elapsed.current
+
+    // Audio-reactive prelude uniforms (audit c14) — see SHADER_SCENE_PRELUDE's
+    // own doc on each. Read directly off ctx.f / the band-clock singleton
+    // rather than through the lilim adapter below: these are meant to be
+    // reachable by any scene's shader with no per-scene JS wiring, which is
+    // exactly the gap updateLilimState's JS-side `s.kick`/`s.onKick` etc.
+    // does not close (a scene still has to manually copy those into its own
+    // custom uniform to get them onto the GPU).
+    u.uKick.value = ctx.f.percussion.kick.env
+    u.uSnare.value = ctx.f.percussion.snare.env
+    u.uHihat.value = ctx.f.percussion.hihat.env
+    u.uBassClock.value = bandClocks.bass
+    u.uMidClock.value = bandClocks.mid
+    u.uHighClock.value = bandClocks.high
+    const beats = beatOscillators(ctx.f.beatIndex, ctx.f.beatProgress)
+    u.uBeatSin.value = beats.sin1
+    u.uBeatSin2.value = beats.sin2
+    u.uBeatSin4.value = beats.sin4
+
     updateLilimState(audio, ctx)
     spec.update({
       u,
