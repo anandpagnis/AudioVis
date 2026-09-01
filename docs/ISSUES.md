@@ -5685,6 +5685,33 @@ gone, what remains is visible for the first time.
       time and only posts on an exact fill). No calibration impact.
       `npm run check` green (917 tests).
 
+- [x] **F166 - `danceability` computed every 8 s, consumed nowhere (audit item
+      15)** - `src/audio/MoodEstimator.ts` *(2026-08-31)*
+      "Drop it or wire it." Wired: as `groove`'s club bias in `score()`, but
+      **only when `!f.moodsValid`**. The MusiCNN `party` head (`partyBonus`) is
+      the better club-vs-ambient signal and wins whenever the weights are
+      present; they are CC BY-NC-SA and absent from a commercial build, so the
+      DFA `danceability` - a pure algorithm, licence-clean - is the fallback
+      that stops `groove` collapsing there. `partyBonus` and the new
+      `danceBonus` are mutually exclusive by the `moodsValid` gate, so `groove`
+      never carries two club terms.
+      Guards, all reasoned (not corpus-derived - see below): hard clamp
+      `0 < v < 12` (noise / near-silence read ≈ 97, and the bridge's silence
+      gate doesn't catch quiet-but-not-silent degenerate input), renorm
+      `(v−1)/5`, weight `×0.12` (≤ `partyBonus`'s 0.18 - a shakier signal
+      biases less), energy gate `band(e, 0.35, 1.01)` (can't lift a quiet
+      intro).
+      **Deliberately corpus-blind.** `scripts/calibrate` runs no Essentia
+      worker, so `f.danceability` is identically 0 in every calibrate frame and
+      `npm run calibrate` output is byte-for-byte unchanged by this term. It is
+      therefore *not* part of the item-10/12 recalibration and is validated the
+      same way `partyBonus` is: a unit-test block in `moodSignals.test.ts`
+      (high danceability raises groove only when moods absent; a 97 reading is
+      treated as 0 not +∞; can't alone make a quiet passage groove; no effect
+      when `party` is available) plus real-music listening. A comment in
+      `features.ts` marks the harness path as intentionally inert.
+      `npm run check` green (921 tests).
+
 ---
 
 

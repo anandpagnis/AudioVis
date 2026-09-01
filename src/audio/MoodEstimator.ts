@@ -49,6 +49,29 @@ const BASS_HEAVY_HI = 0.82
  * confidence (F121's octave-flip symptom) can't collapse the whole term or let
  * `peak` edge ahead on a bass-heavy mid-energy passage. */
 const CONF_FLOOR = 0.65
+
+/**
+ * Essentia `danceability` (DFA) as `groove`'s bonus **only when the MusiCNN
+ * `party` head is unavailable** (F166 / audit item 15). `party` is the better
+ * club-vs-ambient discriminator and wins whenever `f.moodsValid`; but its
+ * weights are CC BY-NC-SA and absent from a commercial build, so `danceability`
+ * — a licence-clean pure algorithm — is the fallback that keeps `groove` from
+ * going flat there. Mutually exclusive with `partyBonus` by the `moodsValid`
+ * gate, so `groove` never carries two club terms.
+ *
+ * Constants are REASONED, not corpus-derived: `scripts/calibrate` runs no
+ * Essentia worker so `f.danceability` is identically 0 in every calibrate
+ * frame and this term is invisible to `npm run calibrate`. Only a unit test
+ * and real-music listening validate it — same position as `partyBonus`.
+ *   - raw ≈ 7.8 four-on-floor w/ bass, ≈ 0.6 beatless pad, ≈ 97 on noise /
+ *     near-silence (types.ts). `< DANCE_MAX` throws out the degenerate reads
+ *     that the bridge's silence gate doesn't catch.
+ *   - `DANCE_WEIGHT` ≤ `partyBonus`'s 0.18: a shakier signal biases less.
+ */
+const DANCE_MAX = 12
+const DANCE_LO = 1.0
+const DANCE_SPAN = 5.0
+const DANCE_WEIGHT = 0.12
 /** crestFactor → 0..1 dynamics, calibrated to the corpus (p10 2.19, p90 3.01)
  * rather than the code's old 1..10 assumption. */
 const CREST_LO = 1.9
@@ -295,6 +318,12 @@ export class MoodEstimator {
      * doesn't decide it.
      */
     const partyBonus = f.moodsValid ? f.moods.party * 0.18 * band(e, 0.35, 1.01) : 0
+    // Licence-clean stand-in for partyBonus when the MusiCNN weights are absent
+    // (see the DANCE_* block). Hard-clamped: degenerate input reads ~97.
+    const danceBonus =
+      !f.moodsValid && f.danceability > 0 && f.danceability < DANCE_MAX
+        ? clamp01((f.danceability - DANCE_LO) / DANCE_SPAN) * DANCE_WEIGHT * band(e, 0.35, 1.01)
+        : 0
 
     return {
       // The engine's own call — nothing to add.
@@ -334,7 +363,8 @@ export class MoodEstimator {
           (CONF_FLOOR + (1 - CONF_FLOOR) * beatLock) *
           (0.55 + steady * 0.45) +
         tonal * 0.12 * beatLock +
-        partyBonus,
+        partyBonus +
+        danceBonus,
 
       // Energy actively climbing — a slope, not a level.
       building: (f.buildUp ? 0.55 : 0) + rising * 0.8 + bassRising * 0.4,

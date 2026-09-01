@@ -14,13 +14,18 @@ Status as of 2026-08-30, `dsp-improve` working tree (uncommitted).
   `moodLevel`/`energy`/`bass`/`spectralFlatness`/`crestFactor` p50 all exact;
   octave-flip count unchanged (9 total). See `corpus/eval-report.md`.
 
-**Score: 14 done · 3 partial · 2 not started.**
+**Score: 15 done · 3 partial · 1 not started.**
 
 - **9** (F168) — the 2-tap linear resample in the three Essentia workers is now
   a shared Kaiser-windowed-sinc polyphase filter (≥ 81 dB stopband at every
   target Nyquist). No calibration impact.
 - **11** (F165) — PCM tap block 4096 → 2048 (`TAP_BLOCK`); sample-accurate
   timestamps scoped out with rationale. No calibration impact.
+- **15** (F166) — `danceability` wired as `groove`'s club bias, gated on
+  `!moodsValid` (licence-clean fallback for the MusiCNN `party` head).
+  Corpus-blind — no calibration impact.
+- **10 + 12** (F167 + F169) — one bundled recalibration (shared `energyTarget`
+  surface), blocked on the full-corpus baseline run.
 
 - **16** — the EssentiaBridge scheduler is now pure + tested (this pass); it also
   fixed three latent bugs it turned up. **12** — the BS.1770 K-weighting signal
@@ -280,12 +285,27 @@ things — see items 4 and 6.
 
 ---
 
+- [x] **15 — `danceability` computed every 8 s, consumed nowhere.** (F166)
+  Wired (not dropped) — as `groove`'s club bias in `MoodEstimator.score()`,
+  **gated on `!f.moodsValid`**: the MusiCNN `party` head is the better signal
+  and wins whenever the weights are present, but they're CC BY-NC-SA and absent
+  from a commercial build, so the pure-algorithm `danceability` is the
+  licence-clean fallback that keeps `groove` from going flat there. Mutually
+  exclusive with `partyBonus` by the same gate. Hard-clamped `0 < v < 12`
+  (degenerate input reads ≈97), renormed `(v−1)/5`, capped `×0.12` (≤
+  `partyBonus`'s 0.18), and energy-gated `band(e, 0.35, 1.01)` so it can't lift
+  a quiet passage. **Corpus-blind by construction:** `scripts/calibrate` runs
+  no Essentia worker, so `f.danceability` is 0 in every calibrate frame and
+  `npm run calibrate` output is byte-identical with/without this term — same
+  validation position as `partyBonus` (unit test + listening only). Constants
+  are reasoned, documented as such.
+  Evidence: `src/audio/MoodEstimator.ts` (`DANCE_*`, `danceBonus`),
+  `src/audio/__tests__/moodSignals.test.ts`, `src/audio/types.ts`.
+
+---
+
 ## Not started
 
 - [ ] **10 — `presence` (2–5 kHz) is a strict subset of `high` (2–9 kHz).**
   `high` still accumulates from `midEnd` (2 kHz). `src/audio/spectralFeatures.ts`.
-
-- [ ] **15 — `danceability` computed every 8 s, consumed nowhere.**
-  `EssentiaBridge` still schedules the job; `f.danceability` only reaches the
-  debug/analytics panels. `MoodEstimator` uses `moods.party` for the same job.
-  Either drop it or wire it. `src/audio/essentia/scheduling.ts` (`pickJob`).
+  Bundled with item 12 as one recalibration (shared `energyTarget` surface).

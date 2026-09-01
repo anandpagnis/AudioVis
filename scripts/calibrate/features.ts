@@ -306,6 +306,10 @@ export function runTrack(
     }
 
     // --- Phrase + mood (AudioEngine.ts phraseDetector + moodEstimator) ---
+    // NOTE: no Essentia worker runs here, so f.danceability / f.key / f.moods*
+    // stay at their defaults. MoodEstimator's `danceBonus` term (F166) and
+    // `partyBonus` are both therefore identically 0 in every calibrate frame —
+    // intentional, not a bug. Those two only have effect in the live app.
     phraseDetector.update(now, f)
     moodEstimator.update(f)
 

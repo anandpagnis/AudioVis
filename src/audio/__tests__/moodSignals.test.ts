@@ -75,6 +75,58 @@ describe('mood_party -> groove bonus', () => {
   })
 })
 
+describe('danceability -> groove bonus (F166, MusiCNN-absent fallback)', () => {
+  it('raises groove when danceability is high AND the classifier is absent', () => {
+    const flat = runGrooveLike((f) => {
+      f.moodsValid = false
+      f.danceability = 0
+    })
+    const dancey = runGrooveLike((f) => {
+      f.moodsValid = false
+      f.danceability = 7.5 // solid four-on-floor
+    })
+    expect(dancey.mood.scores.groove).toBeGreaterThan(flat.mood.scores.groove)
+  })
+
+  it('does nothing when the MusiCNN party head is available', () => {
+    // moodsValid -> partyBonus owns the club bias; danceability must not stack.
+    const withDance = runGrooveLike((f) => {
+      f.moodsValid = true
+      f.moods.party = 0
+      f.danceability = 7.5
+    })
+    const withoutDance = runGrooveLike((f) => {
+      f.moodsValid = true
+      f.moods.party = 0
+      f.danceability = 0
+    })
+    expect(withDance.mood.scores.groove).toBeCloseTo(withoutDance.mood.scores.groove, 5)
+  })
+
+  it('treats a degenerate reading (~97 on noise/near-silence) as zero, not +inf', () => {
+    const degenerate = runGrooveLike((f) => {
+      f.moodsValid = false
+      f.danceability = 97
+    })
+    const zero = runGrooveLike((f) => {
+      f.moodsValid = false
+      f.danceability = 0
+    })
+    expect(Number.isFinite(degenerate.mood.scores.groove)).toBe(true)
+    expect(degenerate.mood.scores.groove).toBeCloseTo(zero.mood.scores.groove, 5)
+  })
+
+  it('cannot by itself turn a quiet passage into groove', () => {
+    const quiet = runGrooveLike((f) => {
+      f.energy = 0.05
+      f.bass = 0.05
+      f.moodsValid = false
+      f.danceability = 8
+    })
+    expect(quiet.mood.state).not.toBe('groove')
+  })
+})
+
 describe('voiceFocus -> camera framing', () => {
   const modes = ['orbit', 'locked', 'push', 'cinematic', 'hover'] as const
 
