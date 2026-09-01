@@ -10,6 +10,7 @@ import type {
 } from 'postprocessing'
 import { FeedbackPass } from './FeedbackPass'
 import { GradePass } from './GradePass'
+import { IsfFilterPass } from './IsfFilterPass'
 import type { LensRackState, MirrorRackState } from './opticalRack'
 import { LensPass } from './LensPass'
 import { MirrorPass } from './MirrorPass'
@@ -86,6 +87,16 @@ export function PostFXChain() {
   const feedbackPass = useMemo(() => new FeedbackPass(), [])
   const mirrorPass = useMemo(() => new MirrorPass(), [])
   const lensPass = useMemo(() => new LensPass(), [])
+  /**
+   * The ISF filter slot. Mounted once, permanently, and disabled until
+   * something selects a filter — see `IsfFilterPass`'s header for why the slot
+   * is fixed and `enabled` is the null case rather than mounting on demand.
+   *
+   * `useMemo` with no deps, like every sibling above: constraint 3 says nothing
+   * here may re-render, and a pass rebuilt on a render would be a new object in
+   * the composer's list, which is the structural change constraint 1 forbids.
+   */
+  const isfFilterPass = useMemo(() => new IsfFilterPass(), [])
   const gradePass = useMemo(() => new GradePass(), [])
   const feedbackTint = useRef(new Color(1, 1, 1))
   /** Render scale the composer's buffers were last sized for. */
@@ -94,7 +105,7 @@ export function PostFXChain() {
    *  in the loop, matching this file's no-allocation-per-frame discipline. */
   const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
   const txLens = useRef<LensRackState>({ amount: 0, style: 0 })
-  useDispose(feedbackPass, mirrorPass, lensPass, gradePass)
+  useDispose(feedbackPass, mirrorPass, lensPass, isfFilterPass, gradePass)
   /** F81 guard: warned about a mis-ordered chain at most once per mount. */
   const warnedChainOrder = useRef(false)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
@@ -262,7 +273,7 @@ export function PostFXChain() {
       */}
       {/*
         Chain order is lilim's, and each position is load-bearing:
-        mirror -> feedback -> bloom/CA/vignette -> lens.
+        mirror -> feedback -> bloom/CA -> isf filter -> vignette -> lens -> grade.
 
         Mirror sits ahead of feedback so the trail accumulates THROUGH the fold
         and the pattern compounds into itself; behind it, symmetry would just be
@@ -275,6 +286,28 @@ export function PostFXChain() {
       <Bloom ref={bloomRef} intensity={0.8} luminanceThreshold={0.18} mipmapBlur radius={0.75} />
       <ChromaticAberration ref={caRef} offset={CA_INITIAL_OFFSET} />
       <Vignette ref={vignetteRef} eskil={false} offset={0.18} darkness={0.85} />
+      {/*
+        The ISF filter slot — after bloom, aberration and vignette, so a filter
+        sees the fully-lit composited image, which is what a "look" is applied
+        to.
+
+        It needs no per-frame wiring from this component: `EffectComposer.render`
+        hands every pass the frame delta, and the pass reads its own input size
+        off `inputBuffer`, so it tracks the render-scale governor without a
+        selector here (constraint 3).
+
+        **It sits BELOW `<Vignette>` for a structural reason, not an aesthetic
+        one, so do not "tidy" it upward.** `@react-three/postprocessing` merges
+        only CONSECUTIVE `Effect` children into a single `EffectPass`
+        (`buildPasses` in its EffectComposer). A raw `Pass` placed between
+        ChromaticAberration and Vignette splits one merged effect pass into two
+        — Bloom+CA, then Vignette — and because that split happens at mount it
+        is structural: `enabled = false` does NOT recover it, so the chain would
+        pay an extra fullscreen draw every frame even with no filter selected.
+        Keeping the three effects adjacent costs nothing when the slot is idle.
+        F110 is on record that fullscreen draws dominate this chain.
+      */}
+      <primitive object={isfFilterPass} />
       <primitive object={lensPass} />
       {/*
         LAST, and always enabled. EffectComposer flags the final pass as the one

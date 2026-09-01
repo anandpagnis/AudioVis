@@ -1,0 +1,49 @@
+Third-party notice — vendored ISF filters
+=========================================
+
+The five `.fs` files in this directory are vendored VERBATIM, byte for byte,
+from the Vidvox ISF shader collection:
+
+    https://github.com/Vidvox/ISF-Files        (path: ISF/<name>.fs)
+    Licence: MIT — the full text is in ./LICENSE, copied from that repository.
+
+    Bad TV.fs           CREDIT: by VIDVOX
+                        Adapted upstream from Felix Turner's BadTVShader; that
+                        author's own MIT notice is inside the file and travels
+                        with it. Do not strip it.
+    Broken LCD.fs       CREDIT: VIDVOX
+    Bump Distortion.fs  CREDIT: by carter rosenberg
+    CMYK Halftone.fs    CREDIT: by zoidberg
+    Color Invert.fs     CREDIT: by zoidberg
+
+Not edited. A vendored fixture is only worth having if it is what upstream
+actually ships — the day one of these is "tidied up" it stops proving that the
+adapter reads the real format and starts proving that it reads our idea of it.
+Filenames keep their upstream spelling, spaces included, so the mapping back to
+`ISF/<name>.fs` is exact rather than approximate.
+
+WHY THESE FIVE
+--------------
+Each exercises something the adapter has to get right, and between them they
+cover every ISF image function:
+
+    Bad TV            IMG_NORM_PIXEL, TIME-driven animation, nine float inputs
+    Broken LCD        IMG_PIXEL (with nested-paren arguments), IMG_THIS_PIXEL,
+                      IMG_NORM_PIXEL, a `long` pop-up menu input
+    Bump Distortion   IMG_NORM_PIXEL, point2D input, and the one body in the set
+                      that writes a non-source alpha (`vec4(0.0)` out of bounds)
+    CMYK Halftone     IMG_PIXEL, gl_FragCoord in pixel space, a const array
+    Color Invert      IMG_THIS_PIXEL, and the smallest possible whole filter
+
+NOT SHIPPABLE YET — READ THIS BEFORE WIRING A PICKER
+----------------------------------------------------
+These are imported by tests only. Nothing in `src/engine`, `src/scenes` or
+`src/ui` references them, so they are not in the production bundle and no user
+can select one.
+
+That is deliberate and it is not a to-do we forgot. MIT requires this notice and
+the copyright line to travel with the work, and the product has no surface that
+shows a third-party credit to a viewer. The same question already pulled the
+`heap` scene from the roster. Until it is answered, adding a filter picker would
+ship ~200 MIT works with their attribution left behind in a directory nobody
+opens. See F178 in docs/ISSUES.md.

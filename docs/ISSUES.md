@@ -35,6 +35,17 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       (right now their safety is real but implicit), and it rewrites a test
       (`sceneLicensing.test.ts`) that currently asserts the opposite philosophy on
       purpose. Both are mechanical; neither is done here.
+      **Still not done, and now more urgent than when this was written.** The
+      work was specified and started, then cancelled before it made any edit, so
+      nothing changed. It has since acquired a third part: `SceneMetadata` has no
+      field to record *where* a scene came from, which means `license:
+      'attribution'` is a legal posture with nowhere to store the attribution it
+      legally requires — source URL, author and SPDX live only in prose comments
+      above each descriptor. Add a `provenance` record (`source`, `author`,
+      `spdx`, `noticePath`) as part of inverting the default. The urgency is
+      F179: an import pipeline now exists and is pointed at third-party work,
+      and the whole point of this entry is that an unmarked import currently
+      claims to be ours.
 
 - [x] **F105 · Pre-commercial licence sweep: 12 scenes moved to `DISABLED_SCENES`** —
       `src/scenes/index.ts`. Direct follow-up to F01, run because the product is
@@ -6750,6 +6761,298 @@ end-to-end rather than only in its 52+16 unit tests.
       rung memory) both did exactly what they were built to do: the ladder
       recovered within 260 ms and did not oscillate.
 
+
+## The ISF adapter, and four things the spec carries that the plan did not (2026-09-02)
+
+Phase 1 of the ISF import pipeline landed as `src/engine/isf/` — `parseISF.ts`,
+`transpileISF.ts`, `isfContract.ts`, pure and unit-tested, no registry wiring.
+Four findings came out of reading the spec against a real file
+(`Vidvox/ISF-Files`, MIT, vendored under `src/engine/isf/__tests__/fixtures/`)
+rather than against the plan's summary of it. None blocks Phase 2; all four are
+things a curator will hit and should not have to rediscover.
+
+- [ ] **F174 · `IMPORTED` is a second image dependency, and it is not `INPUTS`** —
+      `src/engine/isf/parseISF.ts`. The plan's refusal list was `PASSES` and
+      `TYPE: "image"`. The spec also defines a top-level `IMPORTED` dictionary
+      that bundles image FILES with the shader and exposes them as samplers, so
+      a file can depend on a texture without declaring a single image input. The
+      parser refuses it for the same reason it refuses `image` — there is no
+      texture loader on the scene path, and an unbound sampler returns black
+      rather than erroring. Refused, not fixed: supporting it means vendoring
+      binary assets alongside the `.fs`, which is the filter-runtime follow-up's
+      problem, not this wave's.
+
+- [ ] **F175 · `DATE` is an auto-declared ISF built-in with no engine source** —
+      `src/engine/isf/transpileISF.ts`. The spec declares six automatic
+      uniforms; the plan named five (`TIME`, `TIMEDELTA`, `RENDERSIZE`,
+      `PASSINDEX`, `FRAMEINDEX`). The sixth is `DATE`, a `vec4` of
+      `[year, month, day, seconds-into-day]`. A shader using it and finding no
+      declaration fails to compile, which on this engine surfaces as a scene
+      that renders nothing from inside a boot `prewarm()` — the exact silent
+      failure the adapter exists to prevent. It is therefore transpiled to a
+      `uIsfDate` uniform like `TIMEDELTA`/`FRAMEINDEX`, and `TranspiledISF.
+      builtinsUsed` names it so a scene author knows their `update()` now owes
+      it a value. **Open because nothing in the engine supplies one**: unlike
+      `dt`, there is no wall-clock date on `SceneFrame`, so a scene using `DATE`
+      has to build the vec4 itself. Worth a prelude uniform only if a shader in
+      the curated set actually uses it; most will not.
+
+- [ ] **F176 · `long` inputs are pop-up MENUS, and menus are what `modes` is
+      for** — `src/engine/isf/isfContract.ts`. An ISF `long` carries `VALUES`
+      (the integers the shader sees) and `LABELS` (the captions), which is
+      structurally the same thing as `SceneContract.modes`: a small set of
+      genuinely different pictures, not a continuum. The adapter currently maps
+      a `long` onto a *parameter*, selecting an entry with `steps()` — correct,
+      and better than interpolating over unevenly-spaced values (a menu of
+      1/2/4/8/16 mapped linearly spends two thirds of the dial inside the last
+      step). But routing it to `modes` instead would give the scene real named
+      modes with the source's own captions, for free, on a header key that
+      already states them. Not done this wave: `modes` changes what the other
+      parameters MEAN, which is a curatorial judgement, and the scene-mode
+      machinery deserves its own pass rather than being inferred.
+
+- [ ] **F177 · `point2D` and `color` inputs cannot reach the closed
+      vocabulary** — `src/engine/isf/isfContract.ts`. The seven canonical param
+      keys are scalars, and `validateContract` rejects an eighth, so a two- or
+      four-component ISF input has nowhere to go: collapsing one onto a single
+      0..1 dial would mean inventing a path through a space the shader's author
+      never described. `buildIsfContract` refuses the mapping outright rather
+      than picking a diagonal. Those inputs are still transpiled and still get
+      their uniform — they are simply written from the scene's own `update()`,
+      which is where they belong anyway (a `color` should come off the live
+      palette, not off a slider). Recorded because it is the one place the
+      contract vocabulary genuinely does not cover what ISF can express, and a
+      curator hitting the refusal should find the reasoning rather than read it
+      as a gap.
+
+
+## Track C — the ISF filter runtime, and the attribution wall in front of it (2026-09-02)
+
+- [~] **F178 · The ISF filter runtime landed; the ~200 filters it can run still cannot ship**
+      `src/engine/IsfFilterPass.ts` (new), `src/engine/isf/parseISF.ts`,
+      `src/engine/isf/transpileISF.ts`, `src/engine/PostFXChain.tsx`,
+      `src/assets/isf/filters/` (new).
+
+      Phase 1 of the adapter deliberately refused `TYPE: "image"`, which is 207
+      of the 327 files in `Vidvox/ISF-Files` and by far the most valuable part
+      of that corpus — MIT post-effects (Bad TV, halftones, bump distortion,
+      glitch) that multiply the variety of scenes already shipped rather than
+      adding new ones. This is the runtime for them.
+
+      **What landed.** `parseISF` and `transpileISF` gained a `kind:
+      'generator' | 'filter'` option, defaulting to `'generator'` so every
+      existing caller and test is untouched. In filter mode exactly one image
+      input named `inputImage` is required and permitted; `PASSES`, `IMPORTED`,
+      audio inputs, a second image, and an image under any other name are all
+      still refused, with the `IsfImportError` discipline intact so a batch
+      importer can still tell "skip this file" from "the adapter is broken".
+      `IsfFilterPass` is ONE permanently-mounted `Pass` that swaps the material
+      it draws, mounted between `ChromaticAberration` and `Vignette`. Verified
+      against the packaged `postprocessing` 6.39.2 source rather than assumed:
+      `EffectComposer.render()` is `for (const pass of this.passes) { if
+      (!pass.enabled) continue; ... }`, so `enabled` is a per-frame skip and
+      never touches `addPass`/`removePass` — which is what makes a permanently
+      mounted, usually-off pass the correct null case under this file's
+      structurally-fixed-effect-list constraint. The material cache follows
+      `createShaderScene`'s `getSceneMaterial` exactly (renderer-keyed
+      `WeakMap`, never disposed, F144) and `prewarm()` does a real draw into a
+      1x1 target rather than trusting `compileAsync` (F145). No
+      `colorspace_fragment` include: the pass writes to an intermediate linear
+      buffer and `GradePass` still does the one conversion, last (F81).
+
+      **The thing the plan did not anticipate, and the reason nothing would
+      have worked without it: ISF defines image-sampling MACROS.** `IMG_PIXEL`,
+      `IMG_NORM_PIXEL`, `IMG_THIS_PIXEL`, `IMG_THIS_NORM_PIXEL` and `IMG_SIZE`
+      account for all 1371 image reads across the corpus — every filter uses
+      them and none uses `texture2D` directly, because the spec says to. The
+      transpiler had no notion of them at all; it refused any `IMG_` identifier
+      outright. They are now emitted as real GLSL FUNCTIONS taking a
+      `sampler2D` parameter (legal in GLSL ES 1.00 §4.1.7) rather than as
+      `#define`s or a regex expansion. That choice is not stylistic: the JS
+      reference implementation expands them with regexes, and its `IMG_PIXEL`
+      pattern mis-splits on a nested paren — `IMG_PIXEL(inputImage,
+      vec2(modCoord.x, 0.0))`, which the vendored `Broken LCD` writes six
+      times. Handing argument parsing to the GLSL compiler is correct by
+      construction, and the existing token-level rename then carries
+      `inputImage` -> `tDiffuse` through the call site for free.
+
+      **Three things in the ISF spec that surprised, recorded so nobody
+      re-derives them.** (1) `IMG_THIS_PIXEL` does NOT mean "in pixel units" —
+      it means "the pixel being rendered", and the reference implementation
+      expands both it and `IMG_THIS_NORM_PIXEL` to the same normalised lookup.
+      Reading the name literally would offset every use by the full resolution.
+      (2) The published docs (docs.isf.video/ref_functions.html) print
+      `IMG_NORM_THIS_PIXEL`; all 104 corpus uses spell it
+      `IMG_THIS_NORM_PIXEL`. Both are accepted, because a shader hand-written
+      against the documentation would otherwise fail to compile for a reason no
+      error message explains. (3) `IMG_SIZE` appears 12 times in 371 files and
+      **not once on a filter this runtime can accept** — every live use asks the
+      size of a *second* image (`cursorImage`, `maskImage`), and the two uses
+      against `inputImage` are commented out. That is structural rather than
+      coincidental: an image's size is only interesting when it differs from the
+      render size, and for the one image a post pass can supply it never does.
+
+      **Deviation from the plan's wet/dry snippet, deliberately.** Filters get
+      no scene prelude — `uFade` is crossfade x slot gain x mood intensity, all
+      three properties of a SCENE, and honouring it in a post pass would dim the
+      whole show every time the director cut — so a separate minimal filter
+      prelude carries `tDiffuse`, `uRes`, `uTime` and the wet/dry uniform, and
+      the wrapper is a mix rather than a multiply. The plan named that uniform
+      `uIsfAmount`. It is `uFilterMix` instead: `uIsf<Name>` is the namespace ISF
+      INPUTS are mapped into, and seven corpus filters declare an input called
+      `amount` — `Chromatic Aberration`, `Twirl`, `v002 Bleach Bypass`,
+      `v002 Dilate`, `v002 Erode`, `v002 Light Leak`, `v002 Technicolor`, which
+      are among the most useful in the set. Taking `uIsfAmount` for the engine's
+      own knob would have made all seven collide with the reserved list and
+      refuse to import. `uFilter*` is unreachable by `isfUniformName`, so the
+      collision is impossible by construction rather than by nobody having tried
+      it yet. The mix is over the whole `vec4` rather than `.rgb`, checked
+      against `Bump Distortion`, which writes `vec4(0.0)` out of bounds — an
+      `.rgb`-only mix would leave that alpha behind at mix 0, so "dialled fully
+      off" would not have been a true pass-through.
+
+      **`FILTER_RESERVED_SYMBOLS` excludes the shared `shaderLib` chunks**,
+      unlike the scene path's `RESERVED_SYMBOLS`, and the asymmetry is
+      load-bearing rather than an oversight: `IsfFilterPass` has no `include:`
+      mechanism, so reserving `fbm`/`map`/`noise` would refuse filters carrying
+      their own helper to prevent a conflict that cannot occur. `Broken LCD`
+      declares both `map()` and `noise()` at file scope and is one of the better
+      filters in the corpus; on the scene path's reserved set it is rejected.
+
+      **Chain position, and the free fullscreen pass it nearly cost.** The
+      filter first landed between `ChromaticAberration` and `Vignette`, to see
+      the fully-lit composited image including bloom.
+      `@react-three/postprocessing` merges only CONSECUTIVE `Effect` children
+      into one `EffectPass` (`buildPasses` in its EffectComposer), so a raw
+      `Pass` there split what was one merged pass into two — Bloom+CA, then
+      Vignette. The split is decided at mount and is structural, so `enabled =
+      false` does not recover it: the chain would have paid an extra fullscreen
+      pass every frame forever, including while nothing selects a filter, and
+      F110 is on record that fullscreen draws dominate this chain. **Moved one
+      line below `<Vignette>`**, which keeps the three effects adjacent, costs
+      nothing while the slot is idle, and satisfies the original reason equally
+      — the filter still runs after everything that lights the frame. The only
+      difference is that it now also sees the vignette, which is arguably
+      righter: the vignette is part of the lit composite.
+
+      The guard is a test on the SPAN rather than on this pass
+      (`isfFilterPass.test.ts`, "does not split the merged EffectPass"): it
+      asserts no `<primitive>` appears between `<Bloom` and `<Vignette` at all,
+      because ANY future raw pass inserted there costs exactly the same and the
+      next person will not have read this entry.
+
+      **Open, and this is the actual blocker: the attribution surface.** Five
+      filters are vendored under `src/assets/isf/filters/` with the upstream MIT
+      `LICENSE` and a `NOTICE`, loaded with `?raw` by tests only. Nothing in
+      `src/engine`, `src/scenes` or `src/ui` imports them, so they are not in
+      the production bundle and no user can select one. **That is not an
+      unfinished wire-up — it is the gate.** MIT requires the copyright notice
+      and permission text travel with the work, and this product has nowhere to
+      show a third-party credit to a viewer. The same question already pulled
+      `heap` from the roster ("a product decision pending where that credit
+      would live") and is an open question in the scene-supply plan. Shipping a
+      picker over ~200 MIT works before answering it would repeat F01 at two
+      hundred times the scale, on a codebase whose own policy says a missing
+      provenance must never be read as permission. The runtime is done; what
+      unblocks it is a product decision, not a code change.
+
+      `npm run typecheck`, `npm run lint` and `npm run build` clean; **1321
+      tests, 1 skipped** (up from 1261/1 — 41 new adapter tests, 19 new pass
+      tests). Not verified against a GPU: the suite runs in `node`, so nothing
+      here proves the emitted GLSL compiles or that `prewarm`'s draw warms an
+      ANGLE/D3D11 program. Both need a browser, and the second needs a session
+      log.
+
+- [ ] **F179 · Scene supply: ISF is a format win, not a corpus win** —
+      strategy, no single file. Recorded because the obvious next move is to go
+      looking for the scene library that this entry establishes does not exist,
+      and re-deriving that costs a day.
+
+      **The measurement.** All 327 files in `Vidvox/ISF-Files` were classified
+      by fetching each header and testing for an input of `TYPE: "image"`:
+
+      | | count |
+      |---|---|
+      | Filters + transitions (take an image) | 288 |
+      | True generators, single-pass | 39 |
+      | True generators, multi-pass | ~10 |
+
+      An earlier pass of this survey tested for an input *named* `inputImage`
+      and reported ~103 single-pass generators. That was wrong — ISF transitions
+      take `startImage`/`endImage`, so the name test misses them entirely. The
+      number was used to justify a plan before it was checked. Anyone re-running
+      this: classify on TYPE, never on name.
+
+      **And 39 overstates it.** The generators are primitives, not
+      compositions — `Solid Color`, `Color Bars`, `Test Pattern Generator`,
+      `Graph Paper`, `Cursor`, `Checkerboard`, `Stripes`, `Triangle`, `Heart`.
+      A VJ toolkit's building blocks. Roughly eight are interesting as scene
+      material (`Truchet Tile`, `Worley Cells`, `Simplex Noise`, `Noise`,
+      `Ridgelines`, `Spiral`, `Sine Warp Gradient`, plus the audio-reactive
+      `Color Organ Polyphonic` / `FFT Color Lines` / `VU Meter`). Against this
+      roster's own scenes — `wireframe`, `malachite`, `kifs`, `maze` — they are
+      not the same category of object. A GitHub survey found no larger permissive
+      ISF corpus: the ecosystem repos are ISF *implementations* (openFrameworks,
+      Godot, Rust, VSCode) plus `Gnomalab/VDMX-ISF-Effects-Suite` (MIT, effects)
+      and `benoitlahoz/isf-transitions` (MIT, transitions).
+
+      **What survives is the format**, which is why F174-F178 were still worth
+      building: MIT spec, the interop standard VDMX / MadMapper / Magic Music
+      Visuals / Synesthesia all speak, and a JSON `INPUTS` block that maps onto
+      `SceneContract` with generated remap curves. It reads filters,
+      transitions, and scenes we author ourselves. It is not a place to go
+      shopping for scenes.
+
+      **A second finding that outranks the first: only 2 of 82 sampled ISF
+      shaders declare any audio input at all.** ISF supplies legally-clean
+      visuals, never audio-reactive ones. Routing against the prelude
+      (`uKick`, `uBassClock`, `uBeatSin`, `s.onKick`) is hand-authored per
+      scene, following `MalachiteScene`'s `update()`, and that cost is identical
+      whether a shader is one pass or four. Pass count is not what makes a scene
+      expensive to adopt.
+
+      **The four remaining supply tracks**, none started:
+
+      - **A · Shadertoy, licence-filtered.** The corpus of genuinely good
+        generative shaders is Shadertoy; only its CC BY-NC-SA default is the
+        problem. A minority of authors attach an explicit MIT/CC0/CC-BY grant.
+        Scan for those and hand a candidate list to a human — the API returns no
+        licence field, so the only signal is prose in the source or description,
+        which makes review the mechanism rather than a formality.
+        **BLOCKED: the API key needs a Silver account and ours is Bronze.**
+        Do not route around this by scraping: the `public+api` flag is one of
+        only two signals of authorial intent available, and harvesting past an
+        opt-out to solve a licensing problem defeats the exercise.
+      - **B · Author originals through the ISF pipeline.** Already the proven
+        channel — 8 of 14 live scenes are `original`, and `malachite` is on
+        record as generated, CC0, credited in source. Cheaper now that the
+        adapter derives contracts, remaps and labels.
+      - **C · The ~200 MIT filters.** Runtime landed (F178). Blocked only on the
+        attribution surface.
+      - **D · gl-transitions.** `benoitlahoz/isf-transitions` (MIT), ~80
+        transitions, feeds `docs/08_Transition_Engine.md` rather than the
+        roster. Needs the adapter to accept `startImage`/`endImage`, which
+        F178 deliberately refuses today.
+
+      **Dropped: Butterchurn / Milkdrop.** MIT engine and MIT preset repo, and
+      tempting for the sheer volume. Rejected on two grounds. Architecturally it
+      honours none of this engine — not the palette slots, `uFade`, slot gains,
+      `CameraDirector`, `pixelBudget`, the GPU timer or the post chain — so it
+      could only ever be an alternate mode bypassing the PerformanceDirector,
+      which is the product thesis. And a repo-level MIT cannot retroactively
+      licence work authored by hundreds of people on Winamp forums across two
+      decades: that is the F01 hazard at four orders of magnitude, in a codebase
+      that already quarantined 14 scenes over exactly this principle.
+
+      **Deferred: multi-pass ISF** (~21% of the corpus — trails, reaction
+      diffusion, fluid, feedback). Two reasons, both structural. Persistent
+      buffers cannot be resized without destroying their state, and
+      `FeedbackPass.setSize()` already accepts that tradeoff only *because
+      resizes are rare* — per-scene feedback under an actively hunting quality
+      governor would reset visibly on every tier change, which is the
+      F111/F116/F157/F162 oscillation pathology with a visual tell. And it is
+      the same render-target-ownership gap that blocked c11a and c12, so it
+      should be scoped with that work rather than against it.
 
 ## Verification status
 
