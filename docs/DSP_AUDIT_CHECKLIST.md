@@ -14,7 +14,11 @@ Status as of 2026-08-30, `dsp-improve` working tree (uncommitted).
   `moodLevel`/`energy`/`bass`/`spectralFlatness`/`crestFactor` p50 all exact;
   octave-flip count unchanged (9 total). See `corpus/eval-report.md`.
 
-**Score: 12 done · 3 partial · 4 not started.**
+**Score: 13 done · 3 partial · 3 not started.**
+
+- **9** (F168) — the 2-tap linear resample in the three Essentia workers is now
+  a shared Kaiser-windowed-sinc polyphase filter (≥ 81 dB stopband at every
+  target Nyquist). No calibration impact.
 
 - **16** — the EssentiaBridge scheduler is now pure + tested (this pass); it also
   fixed three latent bugs it turned up. **12** — the BS.1770 K-weighting signal
@@ -236,13 +240,28 @@ things — see items 4 and 6.
   Evidence: `src/audio/essentia/scheduling.ts`,
   `src/audio/__tests__/essentiaScheduling.test.ts`.
 
+- [x] **9 — Linear (2-tap) resampling to 44.1 k / 22.05 k / 16 k.** (F168)
+  Replaced with one shared Kaiser-windowed-sinc polyphase resampler,
+  `src/audio/essentia/resample.ts`, used by all three workers (rhythm/key →
+  44.1 k, structure → 22.05 k, voice/MusiCNN → 16 k). One low-pass does both
+  anti-image and anti-alias: cutoff between `0.84·min-Nyquist` and
+  `min-Nyquist`. **Key correctness point:** `halfLen` (taps each side, at the
+  *input* rate) scales with the decimation ratio — 35 for 48→44.1, 69 for
+  48→22.05, 95 for 48→16 — because the polyphase inner loop convolves input
+  samples, so the physical FIR runs at `inRate`. The workflow's first draft
+  used a fixed `halfLen 32` for every pair, which gave the two 3:1 decimators
+  only ~35 dB of stopband rejection; the shipped design measures ≥ 81 dB right
+  at the target Nyquist for all five real rate pairs. Per-phase DC-normalised
+  (no gain error on DC), stateless (each call resamples one complete ring
+  window), zero-pad edges. No calibration impact — the harness runs no workers.
+  Evidence: `src/audio/essentia/resample.ts`,
+  `src/audio/essentia/__tests__/resample.test.ts` (stopband probes just above
+  each target Nyquist), `essentia.worker.ts` / `voice.worker.ts` /
+  `structure.worker.ts`.
+
 ---
 
 ## Not started
-
-- [ ] **9 — Linear resampling to 44.1 k / 16 k.**
-  `resampleTo441()` is still 2-tap linear interpolation; same in the structure
-  and voice workers. `src/audio/essentia/essentia.worker.ts`.
 
 - [ ] **10 — `presence` (2–5 kHz) is a strict subset of `high` (2–9 kHz).**
   `high` still accumulates from `midEnd` (2 kHz). `src/audio/spectralFeatures.ts`.

@@ -5627,7 +5627,42 @@ gone, what remains is visible for the first time.
       real `AudioWorkletGlobalScope` (full-scale 1 kHz sine -> -3.00 LUFS).
       **Part B (pending):** wire `f.loudness` into `energyTarget` (swap the
       crude `f.rms` term) - a full recalibration, blocked on the F154 corpus
-      run finishing.
+      run finishing. (Now tracked as **F169**.)
+
+- [x] **F168 - Linear (2-tap) resampling in the three Essentia workers (audit
+      item 9)** - `src/audio/essentia/resample.ts` *(2026-08-31)*
+      `essentia.worker` (→44.1 k), `structure.worker` (→22.05 k) and
+      `voice.worker` (→16 k) each carried their own `if (rate===target) return;
+      else lerp` helper. From a 48 kHz `AudioContext` that is a 1.09:1 / 2.18:1 /
+      3:1 decimation with **no stopband** - everything above the target Nyquist
+      folds straight into the band the Essentia algorithm then reads (onset /
+      HPCP / MFCC / the MusiCNN mel front-end whose top band sits *at* 8 kHz),
+      and the top passband octave droops several dB (`sinc²`).
+      Replaced with one shared **Kaiser-windowed-sinc polyphase** resampler.
+      Rational `L/M` (gcd-reduced: 147/160, 147/320, 1/3, 160/441, 1/2), one
+      low-pass doing both anti-image and anti-alias (cutoff between
+      `0.84·min-Nyquist` and `min-Nyquist`), `O(2·halfLen)` MACs per output
+      (the L-fold signal is never materialised), per-phase DC-normalised,
+      stateless (one ring window per call), zero-pad edges.
+      **The correctness catch:** the polyphase inner loop convolves *input*
+      samples, so the physical FIR runs at `inRate` and `halfLen` (taps each
+      side) has to grow with the decimation ratio - 35 for 48→44.1, 69 for
+      48→22.05, 95 for 48→16. The first draft used a fixed `halfLen 32` for
+      every pair (transition band pinned to a fraction of *min-Nyquist*, not
+      `inRate`), which gave the two 3:1 decimators only ~35 dB of rejection -
+      worse-than-nothing, since it trades a known-honest droop for a
+      confident-looking alias. The shipped design measures **≥ 81 dB right at
+      the target Nyquist** for all five real rate pairs; the test suite probes
+      `[1.03, 1.1, 1.25]·targetNyq` (the fold region the first draft's test
+      skipped) and the per-phase filter shape (an earlier draft dropped one tap
+      on `L-1` of `L` phases).
+      No calibration impact - `scripts/calibrate` runs the real estimators but
+      no workers, so `f.bpm`/`f.key`/`f.danceability`/mood are unmoved in the
+      corpus. Effect on tempo/key/structure accuracy is real but currently
+      unmeasurable offline (no worker path in the harness); the honest claim is
+      "the anti-alias filter now exists and meets spec", verified by the
+      stopband tests, not by a corpus delta.
+      `npm run check` green (916 tests).
 
 ---
 

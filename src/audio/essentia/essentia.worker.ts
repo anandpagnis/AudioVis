@@ -5,6 +5,7 @@
  * never imports essentia.js. See protocol.ts for the message contract.
  */
 import type { EssentiaRequest, EssentiaResponse, RhythmMethod } from './protocol'
+import { resample } from './resample'
 
 const ESSENTIA_SR = 44100 // RhythmExtractor2013 hard-assumes 44.1 kHz
 /** Essentia documents the multifeature confidence scale as 0..5.32. */
@@ -48,20 +49,14 @@ function loadEssentia(): Promise<void> {
   return loading
 }
 
-/** Linear resample — adequate for rhythm features, avoids shipping a DSP lib. */
+/**
+ * Resample the capture-rate window to 44.1 kHz for RhythmExtractor2013 / the
+ * KeyExtractor. Kaiser-windowed-sinc polyphase (see `resample.ts`) — the old
+ * 2-tap linear version folded everything above 22.05 kHz straight back into the
+ * onset / HPCP band. `resample` returns `pcm` untouched when already at 44.1 k.
+ */
 function resampleTo441(pcm: Float32Array, fromRate: number): Float32Array {
-  if (fromRate === ESSENTIA_SR) return pcm
-  const outLen = Math.floor((pcm.length * ESSENTIA_SR) / fromRate)
-  const out = new Float32Array(outLen)
-  const step = fromRate / ESSENTIA_SR
-  for (let i = 0; i < outLen; i++) {
-    const pos = i * step
-    const i0 = Math.floor(pos)
-    const i1 = Math.min(pcm.length - 1, i0 + 1)
-    const frac = pos - i0
-    out[i] = pcm[i0] * (1 - frac) + pcm[i1] * frac
-  }
-  return out
+  return resample(pcm, fromRate, ESSENTIA_SR)
 }
 
 function analyzeRhythm(pcm: Float32Array, sampleRate: number, useMethod: RhythmMethod) {
