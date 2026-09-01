@@ -20,7 +20,19 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "vite.config.ts"],
+  // `src/audio/__tests__/pipelineE2E.test.ts` imports the offline-harness core
+  // (`runTrack` + the procedural fixtures) so a real-audio-shaped pipeline test
+  // can run under `npm run check`. Those two files are pure TS over `src/audio`
+  // — no decoder, no worker — so pulling them into the DOM program is safe and
+  // means they get strict-typechecked like everything else. The rest of
+  // `scripts/calibrate` (the `.calib.ts` suites, `decode.ts`) stays out.
+  "include": [
+    "src",
+    "vite.config.ts",
+    "scripts/calibrate/features.ts",
+    "scripts/calibrate/fft.ts",
+    "scripts/calibrate/fixtures.ts"
+  ],
   // Typechecked separately under the `webworker` lib — see tsconfig.worker.json.
   // TypeScript cannot mix `dom` and `webworker` globals in one program.
   "exclude": ["src/engine/streaming/proceduralGen.worker.ts"]

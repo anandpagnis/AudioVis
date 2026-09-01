@@ -24,8 +24,12 @@ Status as of 2026-08-30, `dsp-improve` working tree (uncommitted).
 - **15** (F166) — `danceability` wired as `groove`'s club bias, gated on
   `!moodsValid` (licence-clean fallback for the MusiCNN `party` head).
   Corpus-blind — no calibration impact.
-- **10 + 12** (F167 + F169) — one bundled recalibration (shared `energyTarget`
-  surface), blocked on the full-corpus baseline run.
+- **17** (F170) — a pure-DSP E2E over procedural fixtures now runs in
+  `npm run check` (`pipelineE2E.test.ts`). Plumbing regression only — explicitly
+  **not** an accuracy gate; real corpus stays a manual step.
+- **10 + 12** (F167 + F169) — split recalibration per the adversarial review
+  (item 12 alone, then item 10), blocked on the full-corpus baseline run.
+  The item-17 E2E green status is **not** a safety signal for it.
 
 - **16** — the EssentiaBridge scheduler is now pure + tested (this pass); it also
   fixed three latent bugs it turned up. **12** — the BS.1770 K-weighting signal
@@ -208,15 +212,38 @@ things — see items 4 and 6.
   checkout. Hosting + licence resolution outstanding.
   Evidence: `src/audio/essentia/VoiceBridge.ts`, `.gitignore` (models block).
 
-- [~] **17 — No real-audio end-to-end test.**
-  `corpus/` + `npm run calibrate` runs the real `src/audio` estimators over a
-  1500-track MTG-Jamendo corpus → `corpus/distributions.json` +
-  `corpus/eval-report.md`. The harness now streams (per-metric flat pools with
-  frame-striding) instead of holding every frame, so a full run no longer
-  OOMs; `CALIB_STRIDE` / `CALIB_LIMIT` / `CALIB_TESTFOLDER_ONLY` knobs give a
-  fast iteration loop. **Still missing:** not in `npm run check`/CI, audio is
-  gitignored, no committed CC0 clips with hard tolerance asserts.
-  Evidence: `scripts/calibrate/`, `vitest.calibration.config.ts`.
+- [~] **17 — No real-audio end-to-end test.** (F170 — plumbing E2E landed;
+  real-corpus-in-CI intentionally not done)
+  **Done:** `src/audio/__tests__/pipelineE2E.test.ts` runs deterministic
+  procedural audio (`scripts/calibrate/fixtures.ts` — seeded synth, four
+  regimes: four-on-floor, half-time, sparse ambient, build+drop) through
+  `runTrack` (the same `AudioEngine.update` mirror the calibrate harness uses)
+  as part of `npm run check`. Asserts: every per-frame feature finite and
+  in its documented range for all four regimes; the beat tracker locks near
+  the fixture tempo (±7, one octave allowed) on a steady groove and does NOT
+  hard-lock on a beatless bed; a `drop` fires once after the build+drop riser
+  and then settles; mood is not frozen on frame 1; same seed → byte-identical
+  PCM → identical frame stream. `runTrack` + `fft.ts` + `fixtures.ts` are now
+  in `tsconfig` `include` so the cross-`src`/`scripts` import is deliberate and
+  strict-typechecked. `unit.calib.ts` reuses the same fixtures.
+  **Scope call — real corpus stays a manual gate.** All audio is gitignored
+  (MTG-Jamendo BY-SA / BY-NC-SA); fetching 1500 tracks in CI is
+  redistribution-adjacent, slow, and flaky. The `npm run calibrate` corpus run
+  remains a **local** step, not a CI job.
+
+  > ⚠️ **The synthetic E2E is a plumbing regression test, NOT an accuracy
+  > gate.** Synthesised kicks/pads do not load `MoodEstimator` /
+  > `detectStructure` like real music (the mood mix they produce is a
+  > `BandNormalizer`-AGC artefact), and the bounds are deliberately loose. **A
+  > green `pipelineE2E.test.ts` run is never evidence that a calibration
+  > constant change is safe** — that judgement comes only from
+  > `npm run calibrate` over the real corpus and a diff of
+  > `corpus/eval-report.md`. This rule applies to the item 10 + 12
+  > recalibration below: `npm run check` staying green throughout it means
+  > nothing about whether the retune is correct.
+
+  Evidence: `src/audio/__tests__/pipelineE2E.test.ts`,
+  `scripts/calibrate/fixtures.ts`, `tsconfig.json`.
 
 ---
 

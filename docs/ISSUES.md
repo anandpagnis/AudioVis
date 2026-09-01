@@ -5712,6 +5712,34 @@ gone, what remains is visible for the first time.
       `features.ts` marks the harness path as intentionally inert.
       `npm run check` green (921 tests).
 
+- [~] **F170 - No real-audio end-to-end test in CI (audit item 17)** -
+      `src/audio/__tests__/pipelineE2E.test.ts` *(2026-08-31)*
+      A pure-DSP E2E now runs under `npm run check`: deterministic procedural
+      audio (`scripts/calibrate/fixtures.ts` - seeded synth, regimes
+      four-on-floor / half-time / sparse-ambient / build-drop) through
+      `runTrack`, the same `AudioEngine.update` mirror the calibrate harness
+      trusts. Asserts every per-frame feature finite + in documented range for
+      all four regimes, the beat tracker locking near the fixture tempo
+      (one-octave tolerance) on a groove and NOT hard-locking on a beatless
+      bed, a `drop` firing once after the build-drop riser then settling, mood
+      not frozen on frame 1, and byte-level determinism. `runTrack` / `fft.ts`
+      / `fixtures.ts` added to `tsconfig` `include` so the cross-`src`/`scripts`
+      import is deliberate and strict-typechecked; `unit.calib.ts` reuses the
+      fixtures.
+      **Deliberately NOT done: the real corpus in CI.** All audio is gitignored
+      (MTG-Jamendo BY-SA / BY-NC-SA); fetching 1500 tracks per CI run is
+      redistribution-adjacent, slow and flaky. `npm run calibrate` stays a
+      local gate.
+      **Written rule (also in `DSP_AUDIT_CHECKLIST.md`):** this test is a
+      *plumbing* regression - synthesised kicks/pads don't load
+      `MoodEstimator`/`detectStructure` like real music and the bounds are
+      loose. **A green run here is never evidence a calibration change is
+      safe.** That matters directly for the F167/F169 recalibration, during
+      which `npm run check` stays green by construction.
+      Item stays `[~]`: the buildable half is built; "real audio in CI" is a
+      scope decision, not an open task.
+      `npm run check` green (931 tests).
+
 ---
 
 
