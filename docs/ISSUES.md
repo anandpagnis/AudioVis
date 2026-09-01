@@ -6500,7 +6500,7 @@ ribbons, both at 112.3 s, both landing on the maze -> chrome request), against
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1124 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1149 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

@@ -482,7 +482,10 @@ export function PerfMonitor() {
       }
     }
 
-    quality.tick(ema.current, clock.elapsedTime, p95.current)
+    // `ms` (this frame's own raw, unsmoothed time) feeds the governor's
+    // consecutive-overbudget emergency path — see quality.ts's own doc on
+    // why the smoothed EMA above cannot substitute for it.
+    quality.tick(ema.current, clock.elapsedTime, p95.current, ms)
 
     // The scale has three inputs and two urgencies (see RENDER_SCALE_HOLD_SEC).
     //

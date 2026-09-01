@@ -579,3 +579,124 @@ describe('quality governor — per-scene rung memory (F164)', () => {
     expect(g.tier).toBe(0)
   })
 })
+
+/**
+ * Consecutive-overbudget emergency path (audit c11, "the move" item 3 —
+ * Unreal's `MaxConsecutiveOverbudgetGPUFrameCount`).
+ *
+ * `emaMs`'s 0.05-alpha smoothing is what makes the mean/p95 axes resistant to
+ * a single stray frame, and it is also what makes them slow: a genuine step
+ * change in load takes on the order of a second to move the EMA far enough to
+ * trip `overloaded`, and every frame in that second is still being dropped.
+ * This path reads the RAW per-frame time instead and reacts to a short,
+ * unbroken run of bad ones well before the smoothed axes would even notice —
+ * see `rawMs`'s own doc on `tick()` for why the two cannot substitute for
+ * each other.
+ */
+describe('quality governor — consecutive-overbudget emergency', () => {
+  // At the default 60 Hz interval (16.667 ms), the emergency ratio (1.1x,
+  // same as the mean axis) puts the line at ~18.33 ms.
+  const BAD_RAW = 25
+
+  it('demotes on 5 consecutive bad raw frames, bypassing SETTLE_SEC entirely', () => {
+    const g = governorAt(2)
+    // All five calls land inside SETTLE_SEC (2s) of `lastChangeAt` (0) and of
+    // each other — the normal mean/p95 path would refuse to act on any of
+    // them. The emergency path is checked before that gate.
+    for (let i = 1; i <= 5; i++) g.tick(8, i * 0.01, 8, BAD_RAW)
+    expect(g.tier).toBe(3)
+  })
+
+  it('does not fire on only four consecutive bad frames', () => {
+    const g = governorAt(2)
+    for (let i = 1; i <= 4; i++) g.tick(8, i * 0.01, 8, BAD_RAW)
+    expect(g.tier).toBe(2)
+  })
+
+  it('a single good frame resets the streak — it must be unbroken', () => {
+    const g = governorAt(2)
+    g.tick(8, 0.01, 8, BAD_RAW)
+    g.tick(8, 0.02, 8, BAD_RAW)
+    g.tick(8, 0.03, 8, BAD_RAW)
+    g.tick(8, 0.04, 8, BAD_RAW) // 4 bad
+    g.tick(8, 0.05, 8, 8) // one good raw frame — resets to 0
+    g.tick(8, 0.06, 8, BAD_RAW)
+    g.tick(8, 0.07, 8, BAD_RAW)
+    g.tick(8, 0.08, 8, BAD_RAW)
+    g.tick(8, 0.09, 8, BAD_RAW) // only 4 since the reset
+    expect(g.tier).toBe(2)
+  })
+
+  it('never fires when rawMs is omitted — every existing caller is unaffected', () => {
+    const g = governorAt(2)
+    // Same cadence and timing as the triggering test above, minus the 4th
+    // argument. If this path were not gated on rawMs being present, this
+    // would demote identically; it must not.
+    for (let i = 1; i <= 20; i++) g.tick(8, i * 0.01, 8)
+    expect(g.tier).toBe(2)
+  })
+
+  it('does not step below the last tier', () => {
+    const g = governorAt(4)
+    for (let i = 1; i <= 5; i++) g.tick(8, i * 0.01, 8, BAD_RAW)
+    expect(g.tier).toBe(4)
+  })
+
+  it('is suspended while a transition discount is active', () => {
+    const g = governorAt(2)
+    g.setTransitionDiscount(1)
+    for (let i = 1; i <= 10; i++) g.tick(8, i * 0.01, 8, BAD_RAW)
+    expect(g.tier).toBe(2) // the crossfade's own expected extra cost, not a crisis
+  })
+
+  it('starts a fresh streak once the transition discount clears', () => {
+    const g = governorAt(2)
+    g.setTransitionDiscount(1)
+    // Bad raw frames while discounted are SUSPENDED, not merely uncounted —
+    // the assertions below only hold if none of these three carried over.
+    g.tick(8, 0.01, 8, BAD_RAW)
+    g.tick(8, 0.02, 8, BAD_RAW)
+    g.tick(8, 0.03, 8, BAD_RAW)
+    g.setTransitionDiscount(0)
+    // If the pre-discount frames had carried over, two more would already be
+    // the 5th (3 + 2). They must not: the tier holds here.
+    g.tick(8, 0.04, 8, BAD_RAW)
+    g.tick(8, 0.05, 8, BAD_RAW)
+    expect(g.tier).toBe(2)
+    // A full run of 5, counted only from the moment the discount cleared.
+    g.tick(8, 0.06, 8, BAD_RAW)
+    g.tick(8, 0.07, 8, BAD_RAW)
+    g.tick(8, 0.08, 8, BAD_RAW)
+    expect(g.tier).toBe(3)
+  })
+
+  it('registers a rung failure exactly like the smoothed path — the back-off still blocks a re-probe', () => {
+    // Climb 2 -> 1, held steady past CLIMB_HOLD_SEC.
+    const g = governorAt(2)
+    g.tick(8, 0, 8)
+    g.tick(8, 10, 8)
+    expect(g.tier).toBe(1)
+    // Fails almost immediately — well inside RUNG_PROOF_SEC — via 5
+    // consecutive bad raw frames rather than a bad mean/p95.
+    for (let i = 1; i <= 5; i++) g.tick(8, 11 + i * 0.01, 8, BAD_RAW)
+    expect(g.tier).toBe(2)
+    // The smoothed path alone would now happily climb straight back to 1 —
+    // that is exactly the immediate-re-failure loop F149 exists to prevent,
+    // and it must be blocked here too since the emergency demote is the
+    // failure this time.
+    g.tick(8, 20, 8)
+    g.tick(8, 30, 8)
+    expect(g.tier).toBe(2)
+  })
+
+  it('a mode/display change clears the streak along with the rest of the rung memory', () => {
+    const g = governorAt(2)
+    g.tick(8, 0.01, 8, BAD_RAW)
+    g.tick(8, 0.02, 8, BAD_RAW)
+    g.tick(8, 0.03, 8, BAD_RAW)
+    g.tick(8, 0.04, 8, BAD_RAW) // 4 bad, one short of firing
+    g.setMode('auto') // PerfMonitor re-runs this on every display change
+    g.tick(8, 0.05, 8, BAD_RAW) // would be the 5th if the streak had survived
+    expect(g.tier).toBe(2)
+  })
+})

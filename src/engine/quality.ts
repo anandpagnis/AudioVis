@@ -318,6 +318,36 @@ const RUNG_BACKOFF_SEC = 20
 const MAX_RUNG_BACKOFF_SEC = 240
 
 /**
+ * Consecutive-overbudget emergency path (audit c11, "the move" item 3).
+ *
+ * ## The gap this closes
+ *
+ * `overloaded` above is computed from `emaMs` (a 0.05-alpha smoothed average
+ * in PerfMonitor.tsx) and a 10 s-windowed p95. Both are deliberately slow —
+ * that is what makes them resistant to a single stray frame — but slow
+ * cuts both ways: a 0.05-alpha EMA takes on the order of a SECOND to react
+ * to a genuine step change in load, and it does so while every one of those
+ * frames is still being dropped. Unreal's dynamic-resolution heuristic
+ * (`MaxConsecutiveOverbudgetGPUFrameCount`) exists for exactly this reason:
+ * a small run of consecutive bad RAW frames is evidence a smoothed estimator
+ * cannot afford to wait out.
+ *
+ * `CONSECUTIVE_OVERBUDGET_RATIO` reuses {@link STEP_DOWN_MEAN_RATIO} rather
+ * than inventing a second threshold with its own justification — "one frame
+ * this late" means the same thing here as it does to the smoothed gate, only
+ * counted instead of averaged. `CONSECUTIVE_OVERBUDGET_FRAMES` is chosen, not
+ * measured (this codebase has no session log with raw per-frame data captured
+ * this way yet — see F162's own `sceneCost.ts` caveats on the difference
+ * between the two): long enough that one compile hitch or GC pause cannot
+ * trigger it, short enough (5 frames is ~83 ms at 60 Hz) to react roughly an
+ * order of magnitude faster than the EMA path above. Revisit against a real
+ * corpus once one exists that captures raw frame times alongside tier events
+ * at this resolution.
+ */
+const CONSECUTIVE_OVERBUDGET_RATIO = STEP_DOWN_MEAN_RATIO
+const CONSECUTIVE_OVERBUDGET_FRAMES = 5
+
+/**
  * Exported for tests only — production code uses the {@link quality} singleton.
  *
  * The governor is deliberately stateful (two hysteresis timers and a tier), so
@@ -366,6 +396,11 @@ export class QualityGovernor {
   /** Rung the last climb entered, and when — the probe being timed. */
   private probeTier = -1
   private probeAt = 0
+  /** Consecutive raw frames over {@link CONSECUTIVE_OVERBUDGET_RATIO} — see
+   *  that constant's doc. Reset on any frame that clears the ratio, and while
+   *  a transition discount is active (a crossfade's own expected extra cost
+   *  must not read as an emergency). */
+  private consecutiveOverbudget = 0
 
   /**
    * Richest tier each scene has actually been observed HOLDING, and the scene
@@ -498,8 +533,14 @@ export class QualityGovernor {
    * two-argument call valid for callers (and tests) that only have a mean, and
    * a caller with no percentile data reproduces exactly the previous behaviour
    * rather than being silently held at a low tier by a missing signal.
+   *
+   * `rawMs`, if given, is THIS frame's own unsmoothed time — see
+   * {@link CONSECUTIVE_OVERBUDGET_FRAMES}'s doc for why the smoothed axes
+   * above cannot substitute for it. Optional and additive: omitted, the
+   * emergency path below never fires and every existing caller/test keeps
+   * its exact previous behaviour.
    */
-  tick(emaMs: number, elapsedSec: number, p95Ms = 0): void {
+  tick(emaMs: number, elapsedSec: number, p95Ms = 0, rawMs?: number): void {
     if (!this.auto) return
     const r = this.refreshMs
     // Steady means BOTH axes clear: riding the refresh interval on average, and
@@ -508,6 +549,39 @@ export class QualityGovernor {
     // Overloaded if EITHER axis is bad — a spiky frame budget needs relief just
     // as much as a uniformly slow one, and only the p95 can see it.
     const overloaded = emaMs > r * STEP_DOWN_MEAN_RATIO || p95Ms > r * STEP_DOWN_P95_RATIO
+
+    // Consecutive-overbudget emergency (see the constants' own doc). Tracked
+    // and actable BEFORE the SETTLE_SEC gate below, on purpose — the whole
+    // point is reacting faster than the normal hysteresis allows, the same
+    // "a crisis earns an escape hatch" argument PerfMonitor's own
+    // SCALE_EMERGENCY_RATIO makes for the render-scale hold. A transition
+    // discount means the frame is EXPECTED to run heavier for about a
+    // second, so the streak is suspended (not merely paused mid-count) for
+    // its duration rather than let a normal crossfade read as a crisis.
+    if (this.discount > 0) {
+      this.consecutiveOverbudget = 0
+    } else if (rawMs !== undefined && Number.isFinite(rawMs)) {
+      if (rawMs > r * CONSECUTIVE_OVERBUDGET_RATIO) {
+        this.consecutiveOverbudget += 1
+      } else {
+        this.consecutiveOverbudget = 0
+      }
+      if (this.consecutiveOverbudget >= CONSECUTIVE_OVERBUDGET_FRAMES && this.tier < TIERS.length - 1) {
+        this.consecutiveOverbudget = 0
+        // A rung failing this fast is failing its probe just as surely as
+        // the smoothed path's own demote does — same back-off bookkeeping.
+        if (this.probeTier === this.tier && elapsedSec - this.probeAt < RUNG_PROOF_SEC) {
+          const n = (this.failures[this.tier] += 1)
+          const wait = Math.min(MAX_RUNG_BACKOFF_SEC, RUNG_BACKOFF_SEC * Math.pow(2, n - 1))
+          this.blockedUntil[this.tier] = elapsedSec + wait
+        }
+        this.probeTier = -1
+        this.setTier(this.tier + 1)
+        this.lastChangeAt = elapsedSec
+        this.goodSince = elapsedSec
+        return
+      }
+    }
 
     // A rung that has survived {@link RUNG_PROOF_SEC} is affordable after all:
     // forgive its failure history rather than letting one bad minute compound
@@ -621,6 +695,7 @@ export class QualityGovernor {
     this.blockedUntil.fill(0)
     this.failures.fill(0)
     this.probeTier = -1
+    this.consecutiveOverbudget = 0
     // F164's record is a claim about a pixel count too — a resized window or a
     // different monitor invalidates "maze cannot hold tier 0" exactly as it
     // invalidates "tier 0 is unaffordable". Cleared on the same signal, for the
