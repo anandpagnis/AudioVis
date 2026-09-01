@@ -902,7 +902,7 @@ class SessionLog {
         L.push(`mean ${gpuMean.toFixed(2)}ms  p95 ${gpuP95.toFixed(2)}ms  (n=${gpuVals.length} samples)`)
         L.push(
           `GPU share of frame time: ${((gpuMean / Math.max(0.001, wallMean)) * 100).toFixed(0)}%` +
-            ' — the rest is JS, driver dispatch, and vsync wait',
+            ' (the rest is JS, driver dispatch, and vsync wait)',
         )
       }
     }

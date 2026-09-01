@@ -6498,6 +6498,82 @@ ribbons, both at 112.3 s, both landing on the maze -> chrome request), against
       the ladder from putting maze somewhere the period is expensive.
 
 
+## The first log since the audit pass: two new instruments confirmed, one mojibake bug, one worth-watching coincidence (2026-09-01)
+
+`audiovis-session-2026-09-01-06-35-50` is the first recording taken since this
+project ran a full pass against a competitive audit (Oklab palettes, VA-driven
+selection, habituation, percentile exposure, camera shot taxonomy,
+boundary-aware transitions, per-band clocks/beat oscillators as scene
+uniforms, three effect scenes, the show-quality telemetry block, GPU timer
+queries, and the consecutive-overbudget emergency demote). None of that had
+been checked against a real track before this. Two things it confirms
+working, one bug it exposed, one coincidence worth a second data point.
+
+**Confirmed working.** The `--- gpu time ---` block reports real numbers for
+the first time (`EXT_disjoint_timer_query_webgl2` is available on this
+machine): mean 1.65 ms, p95 4.22 ms, 10% of frame time. Sane on its face —
+frame time itself is pinned to the 16.7 ms vsync interval nearly the whole
+session (mean 16.7, p50 16.7), so a GPU that is only 10% of that says the
+session was vsync-bound, not GPU-bound, which is exactly the state a healthy
+60 Hz session should be in. The `--- show quality ---` block also reports
+real numbers for the first time: beat hit score 67% (cuts land within an
+eighth note of *some* beat two times in three), beat coverage 5% (of 191
+bars spanned, cuts landed near the *downbeat* specifically on about ten of
+them), mirror duty cycle 18%, lens duty cycle 89%, scene/palette entropy
+0.98/0.83. None of these are judged good or bad here — they exist now, which
+is the whole point of the instrument — but the shapes are all physically
+plausible (a show that is mostly vsync-bound, cuts that favour rhythm loosely
+over hitting the bar precisely, a lens that is nearly always on and a mirror
+that rarely is) rather than degenerate (all-zero, all-100%, NaN), which is
+the first evidence any of c13/c11b's new arithmetic is wired correctly
+end-to-end rather than only in its 52+16 unit tests.
+
+- [x] **F165 · The GPU-share line's only punctuation mark corrupted to "â" in the downloaded report**
+      The one non-ASCII character ever written into a `buildSummary()` line —
+      an em dash in the new `--- gpu time ---` block's "GPU share of frame
+      time: 10% — the rest is..." — came back as "10% â the rest is..." in
+      both the `.txt` and the `summary` field of the `.json`, identically.
+      Checked the source: `sessionLog.ts`'s own bytes are correct UTF-8
+      (`e2 80 94`, confirmed with `xxd`), and every one of the roughly 150
+      other lines `buildSummary()` emits has apparently never used a
+      non-ASCII character before — grepped every `L.push(` call in the file
+      and this em dash was the only one. Whether the corruption happens in
+      `recorder.ts`'s `Blob([summary], { type: 'text/plain' })` (no
+      `charset=utf-8` on the MIME type, though a `Blob` built from a JS
+      string is UTF-8 by spec regardless of the declared type, so this is an
+      unlikely culprit) or somewhere further downstream in how the file was
+      later read back on this Windows machine could not be pinned down
+      without a live repro, and doesn't need to be: the fix is to stop being
+      the first line in the file's history to test that path. Replaced the
+      em dash with a parenthetical, matching the ASCII-only convention every
+      other line in this function already follows by construction rather
+      than by rule. If a future line wants real Unicode, `recorder.ts`'s
+      Blob call is the place to check first, and this entry is why.
+      `npm run check` clean, 1149 tests (the fix touches no logic, only a
+      string literal).
+
+- [ ] **F166 · A climb one point under the reallocation cap still owned the session's worst frame**
+      `MAX_RENDER_SCALE_STEP_UP` (F157, 1.25×) exists to stop a big budget
+      jump from leaping straight to native and cascading demotes. At 111.75s
+      here, `chrome` requested `plasma` with a new `matrix` overlay, and the
+      render scale climbed 0.69 → 0.86 — a ratio of 1.246×, inside the cap —
+      and the session's single worst frame (55.4 ms, more than 3× the 16.7 ms
+      interval) landed seven hundredths of a second later, followed by two
+      tier demotes (0→1, then 1→2) in the next 260 ms. The existing
+      layer-churn telemetry (F150) already explains part of it — `matrix`
+      is logged among the session's "layer desires withdrawn within 1s" at
+      exactly `379ms @ 111.8s` — so this was a scale climb landing in the
+      same instant as a warm-and-immediately-drop overlay mount, not the
+      climb alone. One occurrence in one session is a data point, not a
+      pattern: recorded here so a second session with the same shape (a
+      climb just under 1.25× coinciding with a layer churning inside a
+      second) is recognisable rather than re-discovered from scratch. Not
+      actioned — there is no fix implied by a single sample, and the two
+      already-shipped mitigations (the 1.25× cap itself, and F149/F164's
+      rung memory) both did exactly what they were built to do: the ladder
+      recovered within 260 ms and did not oscillate.
+
+
 ## Verification status
 
 `npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1149 tests**
