@@ -118,6 +118,8 @@ function foldFramesInto(pool: Pool, frames: FrameSample[]) {
     'spectralRolloff',
     'sparkle',
     'crestFactor',
+    'rms',
+    'loudness',
   ] as const
   for (let i = 0; i < frames.length; i += FRAME_STRIDE) {
     const f = frames[i]
