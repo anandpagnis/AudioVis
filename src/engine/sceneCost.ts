@@ -133,15 +133,26 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   synthgrid: [22.35, 16.94, 15.46, 12.91, 9.91],
   torusfold: [0.11, 0.1, 0.1, 0.1, 0.1],
   trail: [0.76, 0.76, 0.7, 0.7, 0.69],
+
+  // --- ESTIMATE, not swept ----------------------------------------------------
+  // `lumen` was ported after both sweeps and has never been through `/bench`.
+  // This row is a reasoned placeholder so the budget can price it at all (the
+  // `high` fallback, 8 ms, would forbid every layer on top of it): modelled as
+  // "a bit heavier per pixel than `kifs`" (metadata says so) but rendered
+  // offscreen at `pixelBudget` 1.5 MP, which pulls the pixel count back below
+  // `kifs`'s full-res draw. Roughly tier-flat — nothing in the shader reads
+  // `quality.knobs` and its budget is a fixed number, same as `wingfold`.
+  // REPLACE with a real sweep; treat these numbers as untrusted until then.
+  lumen: [3.6, 3.5, 3.4, 3.3, 3.2],
 }
 
 /**
  * Price for a scene the sweep never reached.
  *
- * Every scene in `SCENES` is measured today, so nothing in the live roster is
- * priced from here. It is the path for a `DISABLED_SCENES` entry that never got
- * swept (`tunnel`, `panic`) if either is ever promoted, and for any scene added
- * after the sweep.
+ * Every scene in `SCENES` is measured or (for `lumen`) has a reasoned estimate
+ * row, so nothing in the live roster is priced from here. It is the path for a
+ * `DISABLED_SCENES` entry that never got swept (`tunnel`, `panic`) if either is
+ * ever promoted, and for any scene added after the sweep with no estimate.
  *
  * Deliberately **pessimistic** relative to the measured medians of each label:
  * an unmeasured scene should have to earn its way into a composition, not be

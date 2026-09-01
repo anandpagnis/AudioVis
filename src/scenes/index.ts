@@ -840,6 +840,50 @@ export const SCENES: SceneDef[] = [
       // discrete element count or a camera-relative axis for those to bind to.
     },
   },
+  {
+    id: 'lumen',
+    name: 'Lumen Mask',
+    component: LumenMaskScene,
+    metadata: {
+      // Original work — the user confirmed authorship (the pasted source
+      // carries an "AudioVis:"-prefixed porting note, and it was written for
+      // this engine). Moved out of DISABLED_SCENES once that was confirmed.
+      license: 'original',
+      // `zoom` (fill) / `glow` (contrast -> emissive gain) / `detail`
+      // (complexity -> greeble density) / signed framing `tilt`. `speed` runs
+      // the shader's authored 1x clock at neutral. No `shape`/`density` — a
+      // fixed-composition SDF face has no silhouette family or element count.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'detail', fill: 'zoom', tilt: 'framing', contrast: 'glow' },
+        },
+      },
+      // Subject only: a wall + floor + machined head that owns the whole frame,
+      // same as the other full-bleed shader primaries.
+      roles: ['primary'],
+      // Industrial, brutalist, mechanical — the jaw pumps on the kick, the eyes
+      // track mids, the digits extend on highs. Sits in the driving/hard half,
+      // not the calm one; same lane as `kifs`.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT MEASURED. Multi-octave fbm called several times per pixel, a 4-tap
+      // floor reflection that re-runs `wallColor`, and ~40 SDF ops across the
+      // wall + reflection paths. Rendered offscreen at `pixelBudget` 1.5 MP and
+      // upscaled. Heavier than `kifs`; confirm with `/bench`.
+      performanceCost: 'high',
+      compatibleWith: [],
+      // Same 0.6-0.9 band as `kifs`, weighted a touch harder toward the top —
+      // the hard-edged machined look reads more aggressive than a fractal.
+      moodFit: { groove: 0.78, building: 0.82, peak: 0.86, aggressive: 0.84 },
+      // Flat 2D SDF, no camera concept — the shader frames itself. Declared
+      // only for CameraDirector.test.ts's variety invariant, same as `kifs`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
 ]
 
 /**
@@ -1428,56 +1472,6 @@ export const DISABLED_SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
       // No `density` — nothing in an iterated box-fold has a discrete element
       // count for it to bind to, same reasoning as `kifs`/`wingfold`.
-    },
-  },
-  {
-    id: 'lumen',
-    name: 'Lumen Mask',
-    component: LumenMaskScene,
-    metadata: {
-      // HELD OUT ON ARRIVAL, same as `crystalfold`: added from a shader the
-      // user pasted in, written in a Shadertoy idiom (`mainImage` / `iTime` /
-      // `iChannel0` FFT-texture path) with a descriptive header but NO author,
-      // licence or source URL. The header does carry an "AudioVis:"-prefixed
-      // porting note, which suggests it was written for this project — but that
-      // is a style signal, not provenance. Per F01/F02 in docs/ISSUES.md it is
-      // `unverified` (Shadertoy's default for an unmarked upload is CC
-      // BY-NC-SA 3.0) until the user confirms it is their original work or
-      // permissively licensed. Move this entry into `SCENES` when that happens.
-      license: 'unverified',
-      // `zoom` (fill) / `glow` (contrast -> emissive gain) / `detail`
-      // (complexity -> greeble density) / signed framing `tilt`. `speed` runs
-      // the shader's authored 1x clock at neutral. No `shape`/`density` — a
-      // fixed-composition SDF face has no silhouette family or element count.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
-        paramLabels: {
-          '*': { complexity: 'detail', fill: 'zoom', tilt: 'framing', contrast: 'glow' },
-        },
-      },
-      // Subject only: a wall + floor + machined head that owns the whole frame,
-      // same as the other full-bleed shader primaries.
-      roles: ['primary'],
-      // Industrial, brutalist, mechanical — the jaw pumps on the kick, the eyes
-      // track mids, the digits extend on highs. Sits in the driving/hard half,
-      // not the calm one; same lane as `kifs`.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT MEASURED. Multi-octave fbm called several times per pixel, a 4-tap
-      // floor reflection that re-runs `wallColor`, and ~40 SDF ops across the
-      // wall + reflection paths. Rendered offscreen at `pixelBudget` 1.5 MP and
-      // upscaled. Heavier than `kifs`; confirm with `/bench`.
-      performanceCost: 'high',
-      compatibleWith: [],
-      // Same 0.6-0.9 band as `kifs`, weighted a touch harder toward the top —
-      // the hard-edged machined look reads more aggressive than a fractal.
-      moodFit: { groove: 0.78, building: 0.82, peak: 0.86, aggressive: 0.84 },
-      // Flat 2D SDF, no camera concept — the shader frames itself. Declared
-      // only for CameraDirector.test.ts's variety invariant, same as `kifs`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
 ]
