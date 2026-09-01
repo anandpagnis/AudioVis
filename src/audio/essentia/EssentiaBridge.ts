@@ -39,18 +39,38 @@ const RHYTHM_MIN_SEC = RHYTHM_WINDOW_SEC
 
 // The job cadences + the scheduler itself live in ./scheduling.ts (issue 16).
 
-/** Inline AudioWorklet processor: mono mixdown, 4096-sample blocks (~12 msg/s).
+/**
+ * PCM tap block size, in samples (audit item 11 / F165).
+ *
+ * Was 4096 (~85 ms @ 48 k, ~12 msg/s). Halved to 2048 (~43 ms @ 48 k,
+ * ~23 msg/s): the first rhythm/key/structure analysis can start up to ~43 ms
+ * sooner, and a source cut is noticed a block earlier. Must stay a multiple of
+ * the 128-frame render quantum. No point going lower — 1024 is ~10 ms and the
+ * per-message overhead (one postMessage + three synchronous ring copies on the
+ * main thread) starts to dominate the win.
+ *
+ * The audit item also asked for timestamps on each block. Deliberately not
+ * added: every consumer (`pushPcm` into a seconds-sized ring, right-aligned to
+ * "now") treats the newest sample as the present and nothing does cross-stream
+ * sample-accurate alignment, so a per-block frame counter would be dead weight.
+ * If a future feature needs it, `currentFrame` is available in the worklet and
+ * threads through the same three `pushPcm` calls.
+ */
+export const TAP_BLOCK = 2048
+
+/** Inline AudioWorklet processor: mono mixdown, `TAP_BLOCK`-sample blocks.
  * Registered from a Blob URL because Vite has no first-class worklet support. */
 const TAP_PROCESSOR = `
+const TAP_BLOCK = ${TAP_BLOCK}
 class AudioVisTap extends AudioWorkletProcessor {
-  constructor() { super(); this.buf = new Float32Array(4096); this.n = 0 }
+  constructor() { super(); this.buf = new Float32Array(TAP_BLOCK); this.n = 0 }
   process(inputs) {
     const ch = inputs[0]
     if (!ch || !ch[0]) return true
     const L = ch[0], R = ch[1]
     for (let i = 0; i < L.length; i++) {
       this.buf[this.n++] = R ? (L[i] + R[i]) * 0.5 : L[i]
-      if (this.n === 4096) { this.port.postMessage(this.buf); this.buf = new Float32Array(4096); this.n = 0 }
+      if (this.n === TAP_BLOCK) { this.port.postMessage(this.buf); this.buf = new Float32Array(TAP_BLOCK); this.n = 0 }
     }
     return true
   }

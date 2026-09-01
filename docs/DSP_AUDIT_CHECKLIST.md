@@ -14,11 +14,13 @@ Status as of 2026-08-30, `dsp-improve` working tree (uncommitted).
   `moodLevel`/`energy`/`bass`/`spectralFlatness`/`crestFactor` p50 all exact;
   octave-flip count unchanged (9 total). See `corpus/eval-report.md`.
 
-**Score: 13 done · 3 partial · 3 not started.**
+**Score: 14 done · 3 partial · 2 not started.**
 
 - **9** (F168) — the 2-tap linear resample in the three Essentia workers is now
   a shared Kaiser-windowed-sinc polyphase filter (≥ 81 dB stopband at every
   target Nyquist). No calibration impact.
+- **11** (F165) — PCM tap block 4096 → 2048 (`TAP_BLOCK`); sample-accurate
+  timestamps scoped out with rationale. No calibration impact.
 
 - **16** — the EssentiaBridge scheduler is now pure + tested (this pass); it also
   fixed three latent bugs it turned up. **12** — the BS.1770 K-weighting signal
@@ -261,14 +263,27 @@ things — see items 4 and 6.
 
 ---
 
+- [x] **11 — PCM tap granularity 4096 samples (~85 ms @ 48 k).** (F165)
+  `TAP_BLOCK` const, 4096 → 2048 (~43 ms @ 48 k, ~23 msg/s), interpolated once
+  into the worklet blob so the three literal sites can't drift. First analysis
+  can start ~43 ms sooner; a source cut is seen a block earlier. Not lowered
+  further — 1024 (~10 ms) is where the per-message overhead (1 postMessage + 3
+  synchronous ring copies) starts eating the win. **Timestamps deliberately not
+  added:** every consumer pushes into a seconds-sized ring right-aligned to
+  "now" and nothing does cross-stream sample alignment, so a per-block frame
+  counter would be dead weight (`currentFrame` is there in the worklet if a
+  future feature needs it). All three bridge `pushPcm`s are per-sample loops
+  over `block.length` — block-size-agnostic, verified. Sanity test:
+  `TAP_BLOCK % 128 === 0`.
+  Evidence: `src/audio/essentia/EssentiaBridge.ts`,
+  `src/audio/__tests__/essentiaBridge.test.ts`.
+
+---
+
 ## Not started
 
 - [ ] **10 — `presence` (2–5 kHz) is a strict subset of `high` (2–9 kHz).**
   `high` still accumulates from `midEnd` (2 kHz). `src/audio/spectralFeatures.ts`.
-
-- [ ] **11 — PCM tap granularity 4096 samples (~85 ms @ 48 k).**
-  `TAP_PROCESSOR` still posts fixed 4096-sample blocks with no timestamps.
-  `src/audio/essentia/EssentiaBridge.ts`.
 
 - [ ] **15 — `danceability` computed every 8 s, consumed nowhere.**
   `EssentiaBridge` still schedules the job; `f.danceability` only reaches the

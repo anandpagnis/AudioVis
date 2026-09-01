@@ -5664,6 +5664,27 @@ gone, what remains is visible for the first time.
       stopband tests, not by a corpus delta.
       `npm run check` green (916 tests).
 
+- [x] **F165 - PCM tap posts fixed 4096-sample blocks (~85 ms) with no
+      timestamps (audit item 11)** - `src/audio/essentia/EssentiaBridge.ts`
+      *(2026-08-31)*
+      `TAP_BLOCK` const, 4096 → 2048 (~43 ms @ 48 k, ~23 msg/s), interpolated
+      once into the worklet blob so the buffer-alloc / fill-check / re-alloc
+      literals stay in lockstep. The first rhythm/key/structure read can begin
+      ~43 ms sooner and a source cut is noticed a block earlier; per-message
+      cost (one postMessage + three synchronous main-thread ring copies) is
+      unchanged in aggregate bytes, doubled in count - trivial. Not taken lower:
+      1024 is ~10 ms and the message overhead starts to dominate.
+      **Timestamp half of the item scoped out, not dropped:** every consumer
+      (`EssentiaBridge` / `VoiceBridge` / `StructureBridge` `pushPcm`, each a
+      per-sample loop into a seconds-sized ring right-aligned to "now") treats
+      the newest sample as the present, and nothing does cross-stream
+      sample-accurate alignment, so a per-block frame counter is YAGNI.
+      `currentFrame` is available in the worklet and threads through the same
+      three calls if that changes.
+      Sanity test `TAP_BLOCK % 128 === 0` (the worklet fills 128 frames at a
+      time and only posts on an exact fill). No calibration impact.
+      `npm run check` green (917 tests).
+
 ---
 
 

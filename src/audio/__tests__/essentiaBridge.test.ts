@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { essentiaBridge } from '../essentia/EssentiaBridge'
+import { essentiaBridge, TAP_BLOCK } from '../essentia/EssentiaBridge'
 import { createEmptyFeatures } from '../types'
 
 /**
@@ -47,5 +47,13 @@ describe('EssentiaBridge', () => {
     expect(f.key).toBe('')
     expect(f.scale).toBe('')
     expect(f.danceability).toBe(0)
+  })
+
+  it('PCM tap block is a render-quantum multiple, <= the old 4096 (F165)', () => {
+    // The AudioWorklet fills its buffer 128 frames at a time and only posts on
+    // an exact fill, so a non-multiple of 128 would never trigger.
+    expect(TAP_BLOCK % 128).toBe(0)
+    expect(TAP_BLOCK).toBeLessThanOrEqual(4096)
+    expect(TAP_BLOCK).toBeGreaterThanOrEqual(1024)
   })
 })
