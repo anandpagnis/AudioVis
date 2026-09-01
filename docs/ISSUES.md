@@ -5763,6 +5763,49 @@ gone, what remains is visible for the first time.
       the default. Item stays `[~]`.
       `npm run check` green (931 tests).
 
+- [~] **F169 - F156 Part B: wire `f.loudness` into `energyTarget` (audit item
+      12)** - `src/audio/energyTarget.ts` *(2026-08-31)*
+      **Infrastructure landed, the term swap deferred.**
+      - `energyTarget` was a copy-pasted expression in `AudioEngine.ts` AND
+        `scripts/calibrate/features.ts` - the same drift trap the worker
+        `resample` copies had. Extracted to one pure helper
+        (`energyTargetOf` + `stepEnergy`, named `ENERGY_*` weights). Byte-inert:
+        8-track distributions + `structure` firing rates identical before/after.
+      - `features.ts` now runs `OfflineLoudness` per frame, so `f.loudness` is
+        in `corpus/distributions.json`. `CALIB_ENERGY_TERM=loudness` runs the
+        swap A/B.
+      - **The `f.rms` -> `f.loudness` swap is NOT done.** 8-track A/B (chosen
+        over the ~6 h full-corpus split per the user's call): the naive swap
+        moves the *dominant* mood on 3/8 reference tracks - `ambient__1079451`
+        flips ambient->mellow, `hiphop__585146` locks the mood hysteresis onto
+        `silence` for 55 s - because `f.loudness` through a BandNormalizer has
+        no low tail (corpus p10 0.29 vs `f.rms` 0.06), so quiet passages stop
+        reading as low-energy. K-weighting REORDERS which frames are hot, so a
+        monotone `ENERGY_SHAPE_EXP` / `E_*` re-pin can't undo it (the
+        adversarial review predicted exactly this). The real swap needs a
+        distribution-matching remap of `f.loudness` into the blend + a full
+        1500-track re-derivation. Left for a corpus session.
+      `npm run check` green (931 tests).
+
+- [x] **F167 - `presence` (2-5 kHz) was a strict subset of `high` (2-9 kHz)
+      (audit item 10)** - `src/audio/spectralFeatures.ts` *(2026-08-31)*
+      `computeSpectralBands` now sums `high` over `[presenceEnd, highEnd)` =
+      5-9 kHz (was `[midEnd, highEnd)`), divisor `highEnd - presenceEnd`. `high`
+      is a real brilliance band instead of 43 % duplicated `presence`; the two
+      no longer correlate ~1.0 by construction. Golden-value test asserts the
+      new `high` (a 6 kHz bin lands only in `high`, a 3.4 kHz bin only in
+      `presence`); the "six legacy bands byte-identical" source contract now
+      explicitly excludes `high`.
+      8-track A/B: `f.high` p50 -20 % / mean -11 %, but `energy` p50 only -1.5 %
+      (it is ~15 % of the blend), `moodLevel` p50 -1.2 %, and the **dominant
+      mood is unchanged on all 8 tracks** (only a 2nd-place groove<->mellow
+      swap on one hard electronic track). `structure` drop rate 65 -> 62 /hr
+      (~1 event on 8 tracks). Within 8-track noise - no constant re-derivation.
+      A full-corpus pass still owes a check of the `detectStructure` drop rate,
+      `f.high`'s ~10 `audioResponse.high` scene consumers, and whether the freed
+      2-5 kHz wants a small `presence` term in `energyTarget`.
+      `npm run check` green (931 tests).
+
 ---
 
 

@@ -145,9 +145,15 @@ describe('computeSpectralBands', () => {
     presCase[160] = 0 // ~3.4 kHz, inside [midEnd, presenceEnd)
     const rp = computeSpectralBands(presCase, freshPrevMag(), BIN)
     expect(rp.presence).toBeCloseTo(1 / (presenceEnd - midEnd), 4)
-    // presence overlaps the bottom of `high` by construction (pre-existing), so
-    // the same bin also lands in `high`, diluted across its wider span.
-    expect(rp.high).toBeCloseTo(1 / (highEnd - midEnd), 4)
+    // F167: `high` is 5–9 kHz now, so a 3.4 kHz bin lands ONLY in `presence`,
+    // not in `high` — the bands no longer overlap.
+    expect(rp.high).toBeCloseTo(1e-5, 6)
+
+    const highCase = silentDb()
+    highCase[280] = 0 // ~6 kHz, inside [presenceEnd, highEnd)
+    const rh = computeSpectralBands(highCase, freshPrevMag(), BIN)
+    expect(rh.high).toBeCloseTo(1 / (highEnd - presenceEnd), 4)
+    expect(rh.presence).toBeCloseTo(1e-5, 6)
   })
 
   it('centroid now responds to content above the old 9 kHz ceiling', () => {

@@ -14,7 +14,9 @@ Status as of 2026-08-30, `dsp-improve` working tree (uncommitted).
   `moodLevel`/`energy`/`bass`/`spectralFlatness`/`crestFactor` p50 all exact;
   octave-flip count unchanged (9 total). See `corpus/eval-report.md`.
 
-**Score: 15 done · 3 partial · 1 not started.**
+**Score: 16 done · 3 partial · 0 not started.**  (partials: 12 = LUFS Part A +
+F169 infra, term swap deferred to a corpus session · 13 = ML-off UX by user
+decision · 17 = synthetic E2E in CI, real corpus stays manual.)
 
 - **9** (F168) — the 2-tap linear resample in the three Essentia workers is now
   a shared Kaiser-windowed-sinc polyphase filter (≥ 81 dB stopband at every
@@ -27,9 +29,14 @@ Status as of 2026-08-30, `dsp-improve` working tree (uncommitted).
 - **17** (F170) — a pure-DSP E2E over procedural fixtures now runs in
   `npm run check` (`pipelineE2E.test.ts`). Plumbing regression only — explicitly
   **not** an accuracy gate; real corpus stays a manual step.
-- **10 + 12** (F167 + F169) — split recalibration per the adversarial review
-  (item 12 alone, then item 10), blocked on the full-corpus baseline run.
-  The item-17 E2E green status is **not** a safety signal for it.
+- **10** (F167) — `high` narrowed to 5–9 kHz so it no longer contains
+  `presence`. 8-track: dominant mood unchanged on all 8, `energy` −1.5 %. No
+  constant re-derivation needed at 8-track scale; full-corpus confirm owed.
+- **12** (F169) — `energyTarget` extracted to a shared pure helper
+  (`energyTarget.ts`, kills the two-file drift); `f.loudness` now computed in
+  the harness. The `f.rms` → `f.loudness` **term swap is deferred** — the naive
+  8-track swap moved the dominant mood on 3/8 tracks (`f.loudness` has no low
+  tail; K-weighting reorders frames), needs a remap + full corpus.
 
 - **16** — the EssentiaBridge scheduler is now pure + tested (this pass); it also
   fixed three latent bugs it turned up. **12** — the BS.1770 K-weighting signal
@@ -197,12 +204,28 @@ things — see items 4 and 6.
   (BandNormalized momentary K-weighted RMS → invariant 0..1) are on the
   contract; both panels show LUFS. Worklet verified in a real
   `AudioWorkletGlobalScope`: full-scale 1 kHz sine → −3.00 LUFS.
-  **Part B (not done):** wire `f.loudness` into `energyTarget` (swap the crude
-  `f.rms` term) — a full F121/F154-class recalibration (mirror in
-  `features.ts`, 8-track re-derive, full corpus). Blocked on the F154 corpus
-  run finishing (one calibrate at a time).
-  Evidence: `src/audio/loudness.ts`, `src/audio/AudioEngine.ts`
-  (`LOUDNESS_PROCESSOR`, `attachLoudnessTap`), `src/audio/__tests__/loudness.test.ts`.
+  **Part B — infrastructure landed (F169), the term swap DEFERRED:**
+  - `src/audio/energyTarget.ts` — the `energyTarget` blend is now one shared
+    pure helper (`energyTargetOf` + `stepEnergy`), imported by both
+    `AudioEngine.ts` and `scripts/calibrate/features.ts`. Kills the
+    copy-pasted-expression drift the two files carried (the same bug class the
+    worker `resample` copies had). Byte-inert: 8-track distributions +
+    `structure` firing rates identical before/after.
+  - `features.ts` now computes `f.loudness` every frame via `OfflineLoudness`,
+    so it is in `corpus/distributions.json` for analysis
+    (`CALIB_ENERGY_TERM=loudness` runs the swap A/B).
+  - **The `f.rms` → `f.loudness` swap is NOT done.** The 8-track A/B: the naive
+    swap moves the *dominant* mood on 3/8 tracks — an ambient track flips to
+    `mellow`, and a quiet-intro track locks the mood hysteresis onto `silence`
+    for 55 s — because `f.loudness` through a BandNormalizer has no low tail
+    (corpus p10 ≈ 0.29 vs `f.rms` ≈ 0.06). K-weighting *reorders* which frames
+    are hot, so no monotone constant re-derivation restores it. The real swap
+    needs a distribution-matching remap of `f.loudness` into the blend **plus**
+    a full 1500-track re-derivation of every `E_*` / `detectStructure` /
+    `ENERGY_SHAPE_EXP` constant. Left for a session with the corpus.
+  Evidence: `src/audio/energyTarget.ts`, `src/audio/loudness.ts`,
+  `scripts/calibrate/features.ts` (energy-blend comment),
+  `src/audio/__tests__/loudness.test.ts`.
 
 - [~] **13 — Voice/mood ML models ship disabled.** (F171 — partial by decision)
   Consumption fully wired (`VoiceBridge` + `voice.worker.ts`, `f.moods` /
@@ -341,8 +364,18 @@ things — see items 4 and 6.
 
 ---
 
-## Not started
-
-- [ ] **10 — `presence` (2–5 kHz) is a strict subset of `high` (2–9 kHz).**
-  `high` still accumulates from `midEnd` (2 kHz). `src/audio/spectralFeatures.ts`.
-  Bundled with item 12 as one recalibration (shared `energyTarget` surface).
+- [x] **10 — `presence` (2–5 kHz) was a strict subset of `high` (2–9 kHz).** (F167)
+  `computeSpectralBands` now accumulates `high` over `[presenceEnd, highEnd)` =
+  5–9 kHz (was `[midEnd, highEnd)` = 2–9 kHz), divisor `highEnd - presenceEnd`.
+  `high` and `presence` no longer overlap; `f.high` is a real brilliance band
+  instead of 43 % duplicated `presence`. The golden-value test asserts the new
+  `high` (its "six bands byte-identical" contract now explicitly excludes
+  `high`). 8-track A/B: `f.high` p50 −20 %, but `energy` p50 only −1.5 % (it is
+  ~15 % of the blend) and the **dominant mood is unchanged on all 8 tracks**;
+  `structure` drop rate −5 % (65 → 62 /hr, ≈1 event on 8 tracks). No constant
+  re-derivation — the shift is within 8-track noise. A full-corpus pass should
+  still confirm the `detectStructure` drop rate and `f.high`'s ~10 scene
+  consumers (`audioResponse.high`), and decide whether the freed 2–5 kHz wants
+  a small `presence` term in `energyTarget` — left for the corpus session.
+  Evidence: `src/audio/spectralFeatures.ts` (`computeSpectralBands`),
+  `src/audio/__tests__/spectralFeatures.test.ts`.
