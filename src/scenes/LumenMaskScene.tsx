@@ -467,7 +467,12 @@ export const LumenMaskScene = createShaderScene<LumenMaskState>({
   id: 'lumen',
   frag: FRAG,
   state: () => ({ t: 0 }),
-  blending: THREE.AdditiveBlending,
+  // Opaque, full-bleed subject — REPLACE the target, don't add to it. Matches
+  // `malachite` / `maze`. (`BlendedLayer` still forces the on-screen blit to
+  // additive as a primary; this governs the offscreen render. `lumen` is also
+  // in MIRROR_TRAILS_EXCLUDED_SCENES so the FeedbackPass can't accumulate its
+  // non-zero wall floor to a white-out — see PerformanceStateBridge.)
+  blending: THREE.NoBlending,
   // Heavy: fbm x several, 4-tap floor reflection re-running wallColor, ~40 SDF
   // ops per pixel across wall + reflection. Render offscreen and upscale.
   pixelBudget: 1.5,

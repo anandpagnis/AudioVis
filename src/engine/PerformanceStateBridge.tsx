@@ -22,13 +22,21 @@ import { useStore } from '../store'
 
 /**
  * Scenes the mirror rack and trails sit out entirely (F131, explicit
- * request). All three are already kaleidoscopic or heavily patterned by
- * their own geometry — `kifs` is a mandala, `maze` a nested fractal grid,
- * `wingfold` a folded Julia set — so a standing mirror-segment fold or a
- * history-persistence trail on top of them doubles up on the same gesture
- * rather than adding one, and reads as noise over the fractal's own detail.
+ * request). `kifs` / `maze` / `wingfold` are already kaleidoscopic or heavily
+ * patterned by their own geometry — a mandala, a nested fractal grid, a folded
+ * Julia set — so a standing mirror-segment fold or a history-persistence trail
+ * on top doubles up on the same gesture and reads as noise over the fractal's
+ * own detail.
+ *
+ * `lumen` is here for a harder reason: it is a full-bleed scene whose darkest
+ * pixel (the concrete wall) is a small NON-ZERO value, not black. Fed through
+ * the `FeedbackPass` at a trail weight of ~0.9 that floor accumulates
+ * geometrically (`x / (1 - 0.9)` ≈ 10x) and the frame washes to white over a
+ * second or two and never recovers. The other primaries render bright detail
+ * ON black, so their trail decays to nothing between hits; a scene that fills
+ * every pixel must opt out.
  */
-const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
+const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold', 'lumen'])
 
 /**
  * Phrases (16-beat windows) a mirror look may hold before it is force-refreshed
