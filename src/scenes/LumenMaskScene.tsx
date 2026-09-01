@@ -168,7 +168,8 @@ float sdEmissive(vec2 p){
     d = min(d, max(B(le, 0.0, 0.0, 0.010, 0.046 - 0.030*gMid, 0.005),
                    gBlink*0.60));                        // pupil slit
     vec2 tk = rot(gT*0.35)*le;                           // bezel index ticks
-    tk = vec2(length(tk), atan(tk.y, tk.x)*0.1592);
+    // atan(0,0) is undefined — nudge the exact eye-centre pixel off zero.
+    tk = vec2(length(tk), atan(tk.y, tk.x + (abs(tk.x) + abs(tk.y) < 1e-6 ? 1e-5 : 0.0))*0.1592);
     d = min(d, max(abs(tk.x - 0.176) - 0.010,
                    abs(mod(tk.y*12.0 + 0.5, 1.0) - 0.5) - 0.14) + gBlink*0.6);
 
@@ -432,10 +433,17 @@ vec3 renderScene(vec2 frag){
 
     // palette tint: pull the fixed cold blue-white lighting toward the live
     // five-slot palette hue, brightness preserved.
-    vec3 pt = mix(normalize(uAccent + 1e-4), normalize(uGlow + 1e-4), 0.5) * 1.7320508;
-    col *= mix(vec3(1.0), pt, uPalMix);
+    vec3 acc = max(uAccent, vec3(0.0)) + 1e-3;
+    vec3 glw = max(uGlow, vec3(0.0)) + 1e-3;
+    vec3 pt = mix(normalize(acc), normalize(glw), 0.5) * 1.7320508;
+    col *= mix(vec3(1.0), pt, clamp(uPalMix, 0.0, 1.0));
 
-    return clamp(col, 0.0, 1.0);
+    // Sanitise: a NaN anywhere upstream makes clamp() undefined and some GPUs
+    // resolve it to 1.0 — i.e. a white screen. NaN fails both comparisons.
+    if (!(col.x >= 0.0) && !(col.x <= 0.0)) col = vec3(0.0);
+    if (!(col.y >= 0.0) && !(col.y <= 0.0)) col = vec3(0.0);
+    if (!(col.z >= 0.0) && !(col.z <= 0.0)) col = vec3(0.0);
+    return clamp(min(col, vec3(64.0)), 0.0, 1.0);
 }
 
 void main(){
