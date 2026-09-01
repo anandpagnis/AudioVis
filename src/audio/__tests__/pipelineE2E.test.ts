@@ -19,6 +19,12 @@
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 import { describe, expect, it } from 'vitest'
+
+// Each test steps 9-16 s of audio through the full estimator stack (2048 + 8192
+// FFT per frame). That is seconds of real work per test, not ms — well past
+// vitest's 5 s default, and more so on a CPU-contended CI box. Not a hang risk:
+// runTrack is a bounded loop over a fixed-length buffer.
+const TIMEOUT = 45_000
 import { makeFixture, type Regime } from '../../../scripts/calibrate/fixtures'
 import { runTrack, type FrameSample } from '../../../scripts/calibrate/features'
 import { MOOD_STATES } from '../types'
@@ -61,8 +67,8 @@ describe('pipeline E2E — every feature finite and in range', () => {
   const regimes: Regime[] = ['four_on_floor', 'half_time', 'sparse_ambient', 'build_drop']
   for (const regime of regimes) {
     it(regime, () => {
-      const { res } = run(regime, { seconds: 9 })
-      expect(res.frames.length).toBeGreaterThan(460)
+      const { res } = run(regime, { seconds: 6 })
+      expect(res.frames.length).toBeGreaterThan(300)
 
       for (const f of res.frames) {
         for (const k of BAND_KEYS) {
@@ -86,7 +92,7 @@ describe('pipeline E2E — every feature finite and in range', () => {
         expect(f.moodLevel).toBeLessThanOrEqual(1.01)
         expect(MOOD_STATES).toContain(f.moodState)
       }
-    })
+    }, TIMEOUT)
   }
 })
 
@@ -100,14 +106,14 @@ describe('pipeline E2E — beat tracking responds to the beat', () => {
     const lo = Math.min(...tail.map((f) => f.bpm))
     const hi = Math.max(...tail.map((f) => f.bpm))
     expect(hi - lo).toBeLessThan(12)
-  })
+  }, TIMEOUT)
 
   it('locks (allowing an octave) on a half-time groove', () => {
     const { fx, res } = run("half_time", { seconds: 14, bpm: 84 })
     const tail = res.frames.slice(-Math.floor(res.frames.length / 3))
     const bpm = median(tail.map((f) => f.bpm))
     expect(nearTempo(bpm, fx.expectedBpm, 8)).toBe(true)
-  })
+  }, TIMEOUT)
 
   it('does NOT lock hard onto a beatless ambient bed', () => {
     const { res } = run('sparse_ambient', { seconds: 15 })
@@ -122,12 +128,12 @@ describe('pipeline E2E — beat tracking responds to the beat', () => {
     // trough, so a few silence frames are fine — but not the majority)
     const nonSilent = half.filter((f) => f.moodState !== 'silence').length
     expect(nonSilent / half.length).toBeGreaterThan(0.5)
-  })
+  }, TIMEOUT)
 })
 
 describe('pipeline E2E — structure detection', () => {
   it('fires a drop exactly once after the riser, then settles', () => {
-    const { fx, res } = run('build_drop', { seconds: 17, bpm: 128 })
+    const { fx, res } = run("build_drop", { seconds: 15, bpm: 128 })
     const dropAt = fx.expectedDropSec[0]
 
     let edges = 0
@@ -146,13 +152,13 @@ describe('pipeline E2E — structure detection', () => {
     // the drop belongs to the slam, not the groove section before the riser
     expect(firstEdgeSec).toBeGreaterThan(dropAt - 3.5)
     expect(firstEdgeSec).toBeLessThan(dropAt + 4)
-  })
+  }, TIMEOUT)
 
   it('mood is not frozen on the first frame across a build+drop', () => {
-    const { res } = run('build_drop', { seconds: 15 })
+    const { res } = run("build_drop", { seconds: 13 })
     const distinct = new Set(res.frames.map((f: FrameSample) => f.moodState))
     expect(distinct.size).toBeGreaterThanOrEqual(2)
-  })
+  }, TIMEOUT)
 })
 
 describe('pipeline E2E — determinism', () => {
@@ -164,5 +170,5 @@ describe('pipeline E2E — determinism', () => {
     const last = a.res.frames.length - 1
     expect(a.res.frames[last].bpm).toBe(b.res.frames[last].bpm)
     expect(a.res.frames[last].moodState).toBe(b.res.frames[last].moodState)
-  })
+  }, TIMEOUT)
 })

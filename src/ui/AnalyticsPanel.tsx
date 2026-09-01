@@ -244,7 +244,9 @@ export function AnalyticsPanel() {
         ctx.fillStyle = 'rgba(255,255,255,0.35)'
         ctx.fillText(
           vs.error
-            ? `voice: ${vs.missing ? 'models not fetched (see scripts/)' : vs.error.slice(0, 34)}`
+            ? vs.missing
+              ? 'ML: off (no weights) — CC BY-NC-SA, see HANDOFF §6'
+              : `ML: error — ${vs.error.slice(0, 30)}`
             : 'voice: (awaiting first classification)',
           6,
           238,

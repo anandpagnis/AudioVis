@@ -182,7 +182,11 @@ export function DebugPanel() {
         )
       } else if (vs.error) {
         ctx.fillStyle = 'rgba(255, 138, 101, 0.75)'
-        ctx.fillText(`voice: ${vs.missing ? 'models not fetched' : vs.error.slice(0, 34)}`, 6, 108)
+        ctx.fillText(
+          vs.missing ? 'ML: off (no weights)' : `ML: error ${vs.error.slice(0, 28)}`,
+          6,
+          108,
+        )
       }
       // Song structure — latched section read + the async analyzer's health.
       const ss = f.songSection

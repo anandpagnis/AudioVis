@@ -5740,6 +5740,29 @@ gone, what remains is visible for the first time.
       scope decision, not an open task.
       `npm run check` green (931 tests).
 
+- [~] **F171 - Voice/mood ML weights ship disabled (audit item 13)** -
+      `src/ui/*`, `docs/HANDOFF.md` *(2026-08-31)*
+      Scoped down by the user's call (2026-08-31): do the ML-off UX + the
+      HANDOFF blocker note, defer the hosting decision.
+      The adversarial review surfaced the reason to defer: the weights are
+      Essentia's MusiCNN heads, **CC BY-NC-SA 4.0** (NonCommercial +
+      ShareAlike). Committing them to this repo *anywhere in history, Git LFS
+      included*, is redistribution that (a) drags the NC clause onto a repo the
+      user has said is heading commercial and (b) via ShareAlike tries to
+      copyleft it. So the earlier "Git LFS for the weights" plan is off - they
+      stay gitignored and out of history by design.
+      Landed: `DebugPanel` (`D`) and `AnalyticsPanel` (`Y`) now show
+      **`ML: off (no weights)`** vs **`ML: error …`** off
+      `voiceBridge.status.missing`; `HANDOFF.md` §6 gains a MusiCNN
+      licence-blocker subsection next to the existing scene-licence one -
+      ML-off is the shipping default, `f.moodsValid` gates every consumer, the
+      product is fully functional without weights, and a release build must
+      (eventually, gate TBD) assert `public/models/` is clean.
+      Deferred: hosting/fetch for a permissively-licensed or self-trained
+      replacement, and the release assertion itself. Not blocking - ML-off is
+      the default. Item stays `[~]`.
+      `npm run check` green (931 tests).
+
 ---
 
 

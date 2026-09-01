@@ -204,13 +204,23 @@ things — see items 4 and 6.
   Evidence: `src/audio/loudness.ts`, `src/audio/AudioEngine.ts`
   (`LOUDNESS_PROCESSOR`, `attachLoudnessTap`), `src/audio/__tests__/loudness.test.ts`.
 
-- [~] **13 — Voice/mood ML models ship disabled.**
+- [~] **13 — Voice/mood ML models ship disabled.** (F171 — partial by decision)
   Consumption fully wired (`VoiceBridge` + `voice.worker.ts`, `f.moods` /
-  `f.moodsValid` / `f.vocalPresence` read by `MoodEstimator` `partyBonus`,
-  `AutoPilot`, `PerformanceStateBridge`, debug panels). **Still missing:** the
-  weights are gitignored (CC BY-NC-SA), so `moodsValid` is `false` in a fresh
-  checkout. Hosting + licence resolution outstanding.
-  Evidence: `src/audio/essentia/VoiceBridge.ts`, `.gitignore` (models block).
+  `f.moodsValid` / `f.vocalPresence` read by `MoodEstimator` `partyBonus` +
+  `danceBonus`, `AutoPilot`, `PerformanceStateBridge`, debug panels).
+  **F171 (this pass):** the two dev panels now read **`ML: off (no weights)`**
+  (vs `ML: error …`) when `voiceBridge.status.missing`, and `docs/HANDOFF.md`
+  §6 has a MusiCNN licence-blocker subsection: the weights are CC BY-NC-SA 4.0
+  (NonCommercial + ShareAlike), committing them anywhere in history — Git LFS
+  included — is redistribution that poisons a commercial build, so they stay
+  gitignored by design; ML-off is the shipping default and the product is fully
+  functional there.
+  **Deferred by decision (user, 2026-08-31):** the hosting mechanism for a
+  *permissively-licensed / self-trained* replacement, a release-build assertion
+  that `public/models/` is clean, and any fetch/convert automation. None of it
+  blocks today because ML-off is the default. Item stays `[~]`.
+  Evidence: `src/ui/DebugPanel.tsx`, `src/ui/AnalyticsPanel.tsx`,
+  `docs/HANDOFF.md` §6, `.gitignore` (models block).
 
 - [~] **17 — No real-audio end-to-end test.** (F170 — plumbing E2E landed;
   real-corpus-in-CI intentionally not done)

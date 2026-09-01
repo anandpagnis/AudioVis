@@ -516,6 +516,34 @@ Only `heap` is presently confirmed shippable. The other four are unmarked in met
 they are *not* currently excluded by `nonCommercialSceneIds()`) because guessing would be as
 wrong as ignoring it — they need someone to actually check, then mark.
 
+### ⚠️ Licence blocker — MusiCNN mood / voice weights (`public/models/`) are CC BY-NC-SA 4.0
+
+The voice-presence and mood-head classifiers (`voice.worker.ts`) run on TF.js graphs converted
+from Essentia's model zoo (`msd-musicnn-1` + five heads, ~3.4 MB). Essentia's models are
+**CC BY-NC-SA 4.0 — NonCommercial + ShareAlike**. They cannot ship in a commercial build, and
+committing them to this repo — Git LFS included — is redistribution that drags the NC clause,
+and via ShareAlike a copyleft obligation, onto the whole codebase. They are gitignored and
+absent from history **by design**; do not "fix" that by adding an LFS store.
+
+- A fresh checkout has no weights → `f.moodsValid` is `false` and every consumer
+  (`MoodEstimator.partyBonus`, the new `danceBonus` fallback (F166), `AutoPilot`,
+  `PerformanceStateBridge`, camera framing) is additive-neutral on that. **The product is
+  fully functional with ML off — that is the default and the shipping configuration.**
+- The dev panels distinguish the two failure modes: `D` (DebugPanel) and `Y` (AnalyticsPanel)
+  show **`ML: off (no weights)`** when `voiceBridge.status.missing`, vs a truncated error
+  string otherwise.
+- Getting ML locally is a manual step (needs an Essentia + TensorFlow + Python env to run
+  `tensorflowjs_converter`; see `scripts/convert-essentia-models.md`). There is no fetch
+  script and, per the licence, there should not be a `postinstall` one.
+- A release build MUST assert `public/models/` holds nothing matching the known-NC weights.
+  That gate does not exist yet — same status as `commerciallyShippableScenes()` above.
+- Shipping mood ML commercially requires a permissively-licensed or self-trained replacement.
+  The consumption side is fully built and `moodsValid`-gated, so that swap is weights-only.
+
+(Audit item 13 / F171. The hosting decision — how a *permissively-licensed* replacement would
+be distributed — is deferred; nothing about it is blocking today because ML-off is the
+shipping default.)
+
 - The bundle is code-split (scenes, AI layer, vendor chunks); the remaining >500 kB warning is
   three.js itself, which is expected and long-cacheable. Further shrinking would require a
   custom three build or tree-shaken imports.
