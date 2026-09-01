@@ -13,6 +13,7 @@ import {
   type SilenceConfig,
 } from './bandNormalizer'
 import { computeLowBands, computeSpectralBands, writeLinearSpectrum } from './spectralFeatures'
+import { energyTargetOf, stepEnergy } from './energyTarget'
 import { meanSquareToLufs } from './loudness'
 import { SectionTracker } from './SectionTracker'
 import { createEmptyFeatures, type AudioFeatures } from './types'
@@ -28,9 +29,6 @@ export type SourceKind = 'system' | 'mic' | 'file'
  * hovering at the boundary must not chatter it.
  */
 const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
-
-/** Sum of the `energyTarget` band weights below — keeps energy in 0..1. */
-const ENERGY_WEIGHT_SUM = 0.5 + 0.3 + 0.2 + 0.3
 
 /** Age-based length of the onset-flux ring — see {@link AudioEngine.fluxHistory}. */
 const FLUX_WINDOW_SEC = 1.0
@@ -913,16 +911,19 @@ class AudioEngine {
     f.spectralRolloff += (spectral.spectralRolloff - f.spectralRolloff) * Math.min(1, delta * 8)
     // Slower smoothing: crest factor is a "character" cue, not a fast envelope.
     f.crestFactor += (crestRaw - f.crestFactor) * Math.min(1, delta * 4)
-    // Weights are divided by their own sum rather than clipped with min(1).
-    // Before the normalizer fix the bands were crushed so the sum rarely
-    // reached 1 and the clip was inert; with the bands using their real range
-    // it clipped constantly (measured p99 = 0.9999), and a saturated `energy`
-    // silently breaks drop detection — `recent > before * 1.55` cannot be met
-    // once both sides are pinned at the ceiling. Same relative weighting, full
-    // 0..1 range, no clipping.
-    const energyTarget =
-      (f.bass * 0.5 + f.mid * 0.3 + f.high * 0.2 + f.rms * 0.3) / ENERGY_WEIGHT_SUM
-    f.energy += (energyTarget - f.energy) * Math.min(1, delta * (energyTarget > f.energy ? 14 : 4))
+    // Energy blend — see `energyTarget.ts` (shared with the calibrate harness).
+    // Weights are divided by their own sum rather than clipped with min(1): a
+    // saturated `energy` silently breaks drop detection (`recent > before * K`
+    // cannot be met once both sides pin at the ceiling).
+    //
+    // The broadband term is still `f.rms`. F171 was meant to swap it for the
+    // K-weighted `f.loudness`, but an 8-track A/B in the calibrate harness
+    // showed the naive swap shifts the dominant mood on 3/8 tracks (see
+    // `features.ts`): `f.loudness` (BandNormalized momentary K-weighted RMS)
+    // has no low tail, so quiet passages stop reading as low-energy. The swap
+    // needs a distribution-matching remap + a full-corpus re-derivation, which
+    // is not done. `f.loudness` is still computed above for the panels / LUFS.
+    f.energy = stepEnergy(f.energy, energyTargetOf(f.bass, f.mid, f.high, f.rms), delta)
 
     // --- Independent drum hits + broadband onset ---
     // Both are flux-diff detectors, so they only make sense on a frame where the

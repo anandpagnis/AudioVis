@@ -377,6 +377,11 @@ export interface AudioFeatures {
    * noise and near-silence both read ≈97. The bridge skips analysis during
    * silence for that reason, but anything consuming this must clamp/guard
    * rather than assume the documented range.
+   *
+   * Consumed by `MoodEstimator.score()` as `groove`'s club bias **only when
+   * `moodsValid` is false** (F168) — i.e. the licence-clean fallback for the
+   * CC BY-NC-SA MusiCNN `party` head in a commercial build. Otherwise
+   * panel-readout only.
    */
   danceability: number
 

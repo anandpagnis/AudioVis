@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import { frequencyDataDb } from './fft'
 import { runTrack } from './features'
+import { makeFixture } from './fixtures'
 import { octaveStats, percentile, percentileTable, secondsPerMood } from './report'
 import type { FrameSample } from './features'
 
@@ -95,19 +96,11 @@ describe('report aggregation', () => {
 })
 
 describe('runTrack', () => {
-  it('produces a frame stream from a synthetic 120 BPM kick pattern', () => {
-    const sampleRate = 48000
-    const seconds = 20
-    const pcm = new Float32Array(sampleRate * seconds)
-    const period = 0.5 // 120 BPM
-    for (let beat = 0; beat * period < seconds; beat++) {
-      const start = Math.floor(beat * period * sampleRate)
-      for (let i = 0; i < 2000 && start + i < pcm.length; i++) {
-        const env = Math.exp(-i / 400)
-        pcm[start + i] = Math.sin((2 * Math.PI * 60 * i) / sampleRate) * env * 0.8
-      }
-    }
-    const run = runTrack(pcm, sampleRate)
+  it('produces a frame stream from a synthetic four-on-floor fixture', () => {
+    // Same procedural fixtures as src/audio/__tests__/pipelineE2E.test.ts (the
+    // `npm run check` version of this). Here it is only a harness smoke test.
+    const fx = makeFixture({ regime: 'four_on_floor', seconds: 18, bpm: 120 })
+    const run = runTrack(fx.pcm, fx.sampleRate)
     expect(run.frames.length).toBeGreaterThan(600)
     const last = run.frames[run.frames.length - 1]
     expect(last.bpm).toBeGreaterThan(90)

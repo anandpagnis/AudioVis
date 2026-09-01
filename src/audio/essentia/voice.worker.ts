@@ -18,6 +18,7 @@ import { loadGraphModel, type GraphModel } from '@tensorflow/tfjs-converter'
 import { setWasmPaths } from '@tensorflow/tfjs-backend-wasm'
 import '@tensorflow/tfjs-backend-wasm'
 import type { MoodScores, VoiceRequest, VoiceResponse } from './voiceProtocol'
+import { resample as sincResample } from './resample'
 
 // MusiCNN's declared input rate — NOT the 44.1 kHz the Essentia DSP
 // algorithms assume. Feeding it 44.1 k silently degrades every prediction.
@@ -107,20 +108,15 @@ async function loadAll(): Promise<void> {
   return loading
 }
 
-/** Linear resample to MusiCNN's 16 kHz. */
+/**
+ * Resample the capture-rate window to MusiCNN's 16 kHz. This is a 3:1 decimation
+ * from a 48 kHz context, so a real anti-alias low-pass matters most here: the
+ * mel front-end's top band sits right at the 8 kHz Nyquist, and 2-tap linear
+ * gave it ~35 dB of rejection. Kaiser-windowed-sinc polyphase (see
+ * `resample.ts`) holds > 80 dB. Returns `pcm` untouched when already at 16 k.
+ */
 function resample(pcm: Float32Array, fromRate: number): Float32Array {
-  if (fromRate === MODEL_SR) return pcm
-  const outLen = Math.floor((pcm.length * MODEL_SR) / fromRate)
-  const out = new Float32Array(outLen)
-  const step = fromRate / MODEL_SR
-  for (let i = 0; i < outLen; i++) {
-    const pos = i * step
-    const i0 = Math.floor(pos)
-    const i1 = Math.min(pcm.length - 1, i0 + 1)
-    const frac = pos - i0
-    out[i] = pcm[i0] * (1 - frac) + pcm[i1] * frac
-  }
-  return out
+  return sincResample(pcm, fromRate, MODEL_SR)
 }
 
 /** One 187x96 log-mel patch, flattened. */

@@ -14,7 +14,29 @@ Status as of 2026-08-30, `dsp-improve` working tree (uncommitted).
   `moodLevel`/`energy`/`bass`/`spectralFlatness`/`crestFactor` p50 all exact;
   octave-flip count unchanged (9 total). See `corpus/eval-report.md`.
 
-**Score: 12 done · 3 partial · 4 not started.**
+**Score: 16 done · 3 partial · 0 not started.**  (partials: 12 = LUFS Part A +
+F171 infra, term swap deferred to a corpus session · 13 = ML-off UX by user
+decision · 17 = synthetic E2E in CI, real corpus stays manual.)
+
+- **9** (F170) — the 2-tap linear resample in the three Essentia workers is now
+  a shared Kaiser-windowed-sinc polyphase filter (≥ 81 dB stopband at every
+  target Nyquist). No calibration impact.
+- **11** (F167) — PCM tap block 4096 → 2048 (`TAP_BLOCK`); sample-accurate
+  timestamps scoped out with rationale. No calibration impact.
+- **15** (F168) — `danceability` wired as `groove`'s club bias, gated on
+  `!moodsValid` (licence-clean fallback for the MusiCNN `party` head).
+  Corpus-blind — no calibration impact.
+- **17** (F172) — a pure-DSP E2E over procedural fixtures now runs in
+  `npm run check` (`pipelineE2E.test.ts`). Plumbing regression only — explicitly
+  **not** an accuracy gate; real corpus stays a manual step.
+- **10** (F169) — `high` narrowed to 5–9 kHz so it no longer contains
+  `presence`. 8-track: dominant mood unchanged on all 8, `energy` −1.5 %. No
+  constant re-derivation needed at 8-track scale; full-corpus confirm owed.
+- **12** (F171) — `energyTarget` extracted to a shared pure helper
+  (`energyTarget.ts`, kills the two-file drift); `f.loudness` now computed in
+  the harness. The `f.rms` → `f.loudness` **term swap is deferred** — the naive
+  8-track swap moved the dominant mood on 3/8 tracks (`f.loudness` has no low
+  tail; K-weighting reorders frames), needs a remap + full corpus.
 
 - **16** — the EssentiaBridge scheduler is now pure + tested (this pass); it also
   fixed three latent bugs it turned up. **12** — the BS.1770 K-weighting signal
@@ -182,30 +204,79 @@ things — see items 4 and 6.
   (BandNormalized momentary K-weighted RMS → invariant 0..1) are on the
   contract; both panels show LUFS. Worklet verified in a real
   `AudioWorkletGlobalScope`: full-scale 1 kHz sine → −3.00 LUFS.
-  **Part B (not done):** wire `f.loudness` into `energyTarget` (swap the crude
-  `f.rms` term) — a full F121/F154-class recalibration (mirror in
-  `features.ts`, 8-track re-derive, full corpus). Blocked on the F154 corpus
-  run finishing (one calibrate at a time).
-  Evidence: `src/audio/loudness.ts`, `src/audio/AudioEngine.ts`
-  (`LOUDNESS_PROCESSOR`, `attachLoudnessTap`), `src/audio/__tests__/loudness.test.ts`.
+  **Part B — infrastructure landed (F171), the term swap DEFERRED:**
+  - `src/audio/energyTarget.ts` — the `energyTarget` blend is now one shared
+    pure helper (`energyTargetOf` + `stepEnergy`), imported by both
+    `AudioEngine.ts` and `scripts/calibrate/features.ts`. Kills the
+    copy-pasted-expression drift the two files carried (the same bug class the
+    worker `resample` copies had). Byte-inert: 8-track distributions +
+    `structure` firing rates identical before/after.
+  - `features.ts` now computes `f.loudness` every frame via `OfflineLoudness`,
+    so it is in `corpus/distributions.json` for analysis
+    (`CALIB_ENERGY_TERM=loudness` runs the swap A/B).
+  - **The `f.rms` → `f.loudness` swap is NOT done.** The 8-track A/B: the naive
+    swap moves the *dominant* mood on 3/8 tracks — an ambient track flips to
+    `mellow`, and a quiet-intro track locks the mood hysteresis onto `silence`
+    for 55 s — because `f.loudness` through a BandNormalizer has no low tail
+    (corpus p10 ≈ 0.29 vs `f.rms` ≈ 0.06). K-weighting *reorders* which frames
+    are hot, so no monotone constant re-derivation restores it. The real swap
+    needs a distribution-matching remap of `f.loudness` into the blend **plus**
+    a full 1500-track re-derivation of every `E_*` / `detectStructure` /
+    `ENERGY_SHAPE_EXP` constant. Left for a session with the corpus.
+  Evidence: `src/audio/energyTarget.ts`, `src/audio/loudness.ts`,
+  `scripts/calibrate/features.ts` (energy-blend comment),
+  `src/audio/__tests__/loudness.test.ts`.
 
-- [~] **13 — Voice/mood ML models ship disabled.**
+- [~] **13 — Voice/mood ML models ship disabled.** (F173 — partial by decision)
   Consumption fully wired (`VoiceBridge` + `voice.worker.ts`, `f.moods` /
-  `f.moodsValid` / `f.vocalPresence` read by `MoodEstimator` `partyBonus`,
-  `AutoPilot`, `PerformanceStateBridge`, debug panels). **Still missing:** the
-  weights are gitignored (CC BY-NC-SA), so `moodsValid` is `false` in a fresh
-  checkout. Hosting + licence resolution outstanding.
-  Evidence: `src/audio/essentia/VoiceBridge.ts`, `.gitignore` (models block).
+  `f.moodsValid` / `f.vocalPresence` read by `MoodEstimator` `partyBonus` +
+  `danceBonus`, `AutoPilot`, `PerformanceStateBridge`, debug panels).
+  **F173 (this pass):** the two dev panels now read **`ML: off (no weights)`**
+  (vs `ML: error …`) when `voiceBridge.status.missing`, and `docs/HANDOFF.md`
+  §6 has a MusiCNN licence-blocker subsection: the weights are CC BY-NC-SA 4.0
+  (NonCommercial + ShareAlike), committing them anywhere in history — Git LFS
+  included — is redistribution that poisons a commercial build, so they stay
+  gitignored by design; ML-off is the shipping default and the product is fully
+  functional there.
+  **Deferred by decision (user, 2026-08-31):** the hosting mechanism for a
+  *permissively-licensed / self-trained* replacement, a release-build assertion
+  that `public/models/` is clean, and any fetch/convert automation. None of it
+  blocks today because ML-off is the default. Item stays `[~]`.
+  Evidence: `src/ui/DebugPanel.tsx`, `src/ui/AnalyticsPanel.tsx`,
+  `docs/HANDOFF.md` §6, `.gitignore` (models block).
 
-- [~] **17 — No real-audio end-to-end test.**
-  `corpus/` + `npm run calibrate` runs the real `src/audio` estimators over a
-  1500-track MTG-Jamendo corpus → `corpus/distributions.json` +
-  `corpus/eval-report.md`. The harness now streams (per-metric flat pools with
-  frame-striding) instead of holding every frame, so a full run no longer
-  OOMs; `CALIB_STRIDE` / `CALIB_LIMIT` / `CALIB_TESTFOLDER_ONLY` knobs give a
-  fast iteration loop. **Still missing:** not in `npm run check`/CI, audio is
-  gitignored, no committed CC0 clips with hard tolerance asserts.
-  Evidence: `scripts/calibrate/`, `vitest.calibration.config.ts`.
+- [~] **17 — No real-audio end-to-end test.** (F172 — plumbing E2E landed;
+  real-corpus-in-CI intentionally not done)
+  **Done:** `src/audio/__tests__/pipelineE2E.test.ts` runs deterministic
+  procedural audio (`scripts/calibrate/fixtures.ts` — seeded synth, four
+  regimes: four-on-floor, half-time, sparse ambient, build+drop) through
+  `runTrack` (the same `AudioEngine.update` mirror the calibrate harness uses)
+  as part of `npm run check`. Asserts: every per-frame feature finite and
+  in its documented range for all four regimes; the beat tracker locks near
+  the fixture tempo (±7, one octave allowed) on a steady groove and does NOT
+  hard-lock on a beatless bed; a `drop` fires once after the build+drop riser
+  and then settles; mood is not frozen on frame 1; same seed → byte-identical
+  PCM → identical frame stream. `runTrack` + `fft.ts` + `fixtures.ts` are now
+  in `tsconfig` `include` so the cross-`src`/`scripts` import is deliberate and
+  strict-typechecked. `unit.calib.ts` reuses the same fixtures.
+  **Scope call — real corpus stays a manual gate.** All audio is gitignored
+  (MTG-Jamendo BY-SA / BY-NC-SA); fetching 1500 tracks in CI is
+  redistribution-adjacent, slow, and flaky. The `npm run calibrate` corpus run
+  remains a **local** step, not a CI job.
+
+  > ⚠️ **The synthetic E2E is a plumbing regression test, NOT an accuracy
+  > gate.** Synthesised kicks/pads do not load `MoodEstimator` /
+  > `detectStructure` like real music (the mood mix they produce is a
+  > `BandNormalizer`-AGC artefact), and the bounds are deliberately loose. **A
+  > green `pipelineE2E.test.ts` run is never evidence that a calibration
+  > constant change is safe** — that judgement comes only from
+  > `npm run calibrate` over the real corpus and a diff of
+  > `corpus/eval-report.md`. This rule applies to the item 10 + 12
+  > recalibration below: `npm run check` staying green throughout it means
+  > nothing about whether the retune is correct.
+
+  Evidence: `src/audio/__tests__/pipelineE2E.test.ts`,
+  `scripts/calibrate/fixtures.ts`, `tsconfig.json`.
 
 ---
 
@@ -236,22 +307,75 @@ things — see items 4 and 6.
   Evidence: `src/audio/essentia/scheduling.ts`,
   `src/audio/__tests__/essentiaScheduling.test.ts`.
 
+- [x] **9 — Linear (2-tap) resampling to 44.1 k / 22.05 k / 16 k.** (F170)
+  Replaced with one shared Kaiser-windowed-sinc polyphase resampler,
+  `src/audio/essentia/resample.ts`, used by all three workers (rhythm/key →
+  44.1 k, structure → 22.05 k, voice/MusiCNN → 16 k). One low-pass does both
+  anti-image and anti-alias: cutoff between `0.84·min-Nyquist` and
+  `min-Nyquist`. **Key correctness point:** `halfLen` (taps each side, at the
+  *input* rate) scales with the decimation ratio — 35 for 48→44.1, 69 for
+  48→22.05, 95 for 48→16 — because the polyphase inner loop convolves input
+  samples, so the physical FIR runs at `inRate`. The workflow's first draft
+  used a fixed `halfLen 32` for every pair, which gave the two 3:1 decimators
+  only ~35 dB of stopband rejection; the shipped design measures ≥ 81 dB right
+  at the target Nyquist for all five real rate pairs. Per-phase DC-normalised
+  (no gain error on DC), stateless (each call resamples one complete ring
+  window), zero-pad edges. No calibration impact — the harness runs no workers.
+  Evidence: `src/audio/essentia/resample.ts`,
+  `src/audio/essentia/__tests__/resample.test.ts` (stopband probes just above
+  each target Nyquist), `essentia.worker.ts` / `voice.worker.ts` /
+  `structure.worker.ts`.
+
 ---
 
-## Not started
+- [x] **11 — PCM tap granularity 4096 samples (~85 ms @ 48 k).** (F167)
+  `TAP_BLOCK` const, 4096 → 2048 (~43 ms @ 48 k, ~23 msg/s), interpolated once
+  into the worklet blob so the three literal sites can't drift. First analysis
+  can start ~43 ms sooner; a source cut is seen a block earlier. Not lowered
+  further — 1024 (~10 ms) is where the per-message overhead (1 postMessage + 3
+  synchronous ring copies) starts eating the win. **Timestamps deliberately not
+  added:** every consumer pushes into a seconds-sized ring right-aligned to
+  "now" and nothing does cross-stream sample alignment, so a per-block frame
+  counter would be dead weight (`currentFrame` is there in the worklet if a
+  future feature needs it). All three bridge `pushPcm`s are per-sample loops
+  over `block.length` — block-size-agnostic, verified. Sanity test:
+  `TAP_BLOCK % 128 === 0`.
+  Evidence: `src/audio/essentia/EssentiaBridge.ts`,
+  `src/audio/__tests__/essentiaBridge.test.ts`.
 
-- [ ] **9 — Linear resampling to 44.1 k / 16 k.**
-  `resampleTo441()` is still 2-tap linear interpolation; same in the structure
-  and voice workers. `src/audio/essentia/essentia.worker.ts`.
+---
 
-- [ ] **10 — `presence` (2–5 kHz) is a strict subset of `high` (2–9 kHz).**
-  `high` still accumulates from `midEnd` (2 kHz). `src/audio/spectralFeatures.ts`.
+- [x] **15 — `danceability` computed every 8 s, consumed nowhere.** (F168)
+  Wired (not dropped) — as `groove`'s club bias in `MoodEstimator.score()`,
+  **gated on `!f.moodsValid`**: the MusiCNN `party` head is the better signal
+  and wins whenever the weights are present, but they're CC BY-NC-SA and absent
+  from a commercial build, so the pure-algorithm `danceability` is the
+  licence-clean fallback that keeps `groove` from going flat there. Mutually
+  exclusive with `partyBonus` by the same gate. Hard-clamped `0 < v < 12`
+  (degenerate input reads ≈97), renormed `(v−1)/5`, capped `×0.12` (≤
+  `partyBonus`'s 0.18), and energy-gated `band(e, 0.35, 1.01)` so it can't lift
+  a quiet passage. **Corpus-blind by construction:** `scripts/calibrate` runs
+  no Essentia worker, so `f.danceability` is 0 in every calibrate frame and
+  `npm run calibrate` output is byte-identical with/without this term — same
+  validation position as `partyBonus` (unit test + listening only). Constants
+  are reasoned, documented as such.
+  Evidence: `src/audio/MoodEstimator.ts` (`DANCE_*`, `danceBonus`),
+  `src/audio/__tests__/moodSignals.test.ts`, `src/audio/types.ts`.
 
-- [ ] **11 — PCM tap granularity 4096 samples (~85 ms @ 48 k).**
-  `TAP_PROCESSOR` still posts fixed 4096-sample blocks with no timestamps.
-  `src/audio/essentia/EssentiaBridge.ts`.
+---
 
-- [ ] **15 — `danceability` computed every 8 s, consumed nowhere.**
-  `EssentiaBridge` still schedules the job; `f.danceability` only reaches the
-  debug/analytics panels. `MoodEstimator` uses `moods.party` for the same job.
-  Either drop it or wire it. `src/audio/essentia/scheduling.ts` (`pickJob`).
+- [x] **10 — `presence` (2–5 kHz) was a strict subset of `high` (2–9 kHz).** (F169)
+  `computeSpectralBands` now accumulates `high` over `[presenceEnd, highEnd)` =
+  5–9 kHz (was `[midEnd, highEnd)` = 2–9 kHz), divisor `highEnd - presenceEnd`.
+  `high` and `presence` no longer overlap; `f.high` is a real brilliance band
+  instead of 43 % duplicated `presence`. The golden-value test asserts the new
+  `high` (its "six bands byte-identical" contract now explicitly excludes
+  `high`). 8-track A/B: `f.high` p50 −20 %, but `energy` p50 only −1.5 % (it is
+  ~15 % of the blend) and the **dominant mood is unchanged on all 8 tracks**;
+  `structure` drop rate −5 % (65 → 62 /hr, ≈1 event on 8 tracks). No constant
+  re-derivation — the shift is within 8-track noise. A full-corpus pass should
+  still confirm the `detectStructure` drop rate and `f.high`'s ~10 scene
+  consumers (`audioResponse.high`), and decide whether the freed 2–5 kHz wants
+  a small `presence` term in `energyTarget` — left for the corpus session.
+  Evidence: `src/audio/spectralFeatures.ts` (`computeSpectralBands`),
+  `src/audio/__tests__/spectralFeatures.test.ts`.

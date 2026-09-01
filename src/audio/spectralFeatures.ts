@@ -3,7 +3,10 @@ export interface SpectralBandsResult {
   sub: number
   bass: number
   mid: number
+  /** Presence / upper-mid, ~2–5 kHz. */
   presence: number
+  /** Brilliance, ~5–9 kHz. Non-overlapping with `presence` since F169 (was
+   * 2–9 kHz, i.e. `presence` was a strict subset — audit item 10). */
   high: number
   vocal: number
   /** High-frequency "air" content above `high` (~9-16 kHz) — shimmer, cymbal wash, breath. */
@@ -77,12 +80,13 @@ const result: SpectralBandsResult = {
  * cues (flatness/rolloff/air/sparkle). Extracted from AudioEngine.update() so it
  * can be unit-tested against synthetic spectra without a real AudioContext.
  *
- * Reproduces the original inline loop's math exactly for the six legacy bands
- * (sub/bass/mid/presence/high/vocal), the three drum-flux bands, `bassFlux`,
- * `spectralFlatness` and `spectralRolloff` — those are BYTE-IDENTICAL, and a
- * golden-value test locks them. What changed: `centroidRaw` now accumulates
- * over the whole spectrum instead of stopping at 9 kHz (so brightness above
- * `high` finally registers), and a new `sparkle` cue reads 16 kHz–Nyquist.
+ * Reproduces the original inline loop's math for `sub/bass/mid/presence/vocal`,
+ * the three drum-flux bands, `bassFlux`, `spectralFlatness` and
+ * `spectralRolloff` — those stay BYTE-IDENTICAL and a golden-value test locks
+ * them. Two bands deliberately changed: `centroidRaw` now accumulates over the
+ * whole spectrum instead of stopping at 9 kHz (F154), and `high` was narrowed
+ * from 2–9 kHz to 5–9 kHz so it no longer contains `presence` (F169, audit
+ * item 10) — the golden test asserts the new `high` value.
  *
  * `prevMag` is mutated in place — it carries flux state frame-to-frame and is
  * owned by the caller (same buffer AudioEngine already allocates once).
@@ -132,7 +136,11 @@ export function computeSpectralBands(
     const mag = Math.pow(10, freqDb[i] / 20)
     if (i < bassEnd) bass += mag
     else if (i < midEnd) mid += mag
-    else high += mag
+    // `high` is [presenceEnd, highEnd) = 5–9 kHz — the "brilliance" band, NOT
+    // overlapping `presence` (2–5 kHz). Before F169 it ran [midEnd, highEnd) so
+    // its lower 43 % of bins duplicated `presence` and `f.high` / `f.presence`
+    // were ~1.0 correlated by construction (audit item 10).
+    else if (i >= presenceEnd) high += mag
     if (i < subEnd) sub += mag
     if (i >= vocalStart && i < presenceEnd) vocal += mag
     if (i >= midEnd && i < presenceEnd) presence += mag
@@ -157,7 +165,7 @@ export function computeSpectralBands(
   mid /= Math.max(1, midEnd - bassEnd)
   sub /= Math.max(1, subEnd - 1)
   presence /= Math.max(1, presenceEnd - midEnd)
-  high /= Math.max(1, highEnd - midEnd)
+  high /= Math.max(1, highEnd - presenceEnd) // F169: 5–9 kHz, was 2–9 kHz
   vocal /= Math.max(1, presenceEnd - vocalStart)
 
   // Flatness: geometric mean / arithmetic mean of magnitude — ~1 for a

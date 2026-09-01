@@ -23,6 +23,8 @@ import { MoodEstimator } from '../../src/audio/MoodEstimator'
 import { PercussionDetector } from '../../src/audio/PercussionDetector'
 import { PhraseDetector } from '../../src/audio/PhraseDetector'
 import { computeLowBands, computeSpectralBands } from '../../src/audio/spectralFeatures'
+import { energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
+import { OfflineLoudness } from '../../src/audio/loudness'
 import { createEmptyFeatures, type AudioFeatures } from '../../src/audio/types'
 import { frequencyDataDb } from './fft'
 
@@ -31,7 +33,16 @@ const FFT_SIZE = 2048
 const LOW_FFT_SIZE = 8192 // dedicated sub/bass analyser — f.sub only
 const FLUX_WINDOW_SEC = 1.0
 const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
-const ENERGY_WEIGHT_SUM = 0.5 + 0.3 + 0.2 + 0.3
+
+/**
+ * Dev A/B knob for the broadband energy term (F171). `loudness` runs the blend
+ * with `f.loudness` (K-weighted) instead of `f.rms`; default is `f.rms`, which
+ * matches the live app. Read once — this file is typechecked under the DOM
+ * tsconfig (no `@types/node`), hence the `globalThis` access.
+ */
+const ENERGY_TERM_MODE =
+  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+    ?.CALIB_ENERGY_TERM ?? 'rms'
 
 /** Optional per-frame hook for a synthetic model tempo read (Essentia stand-in). */
 export interface StepHooks {
@@ -52,6 +63,8 @@ export interface TrackRunResult {
 export interface FrameSample {
   t: number
   rms: number
+  /** BS.1770 K-weighted momentary loudness, BandNormalized (F171). */
+  loudness: number
   energy: number
   sub: number
   bass: number
@@ -112,7 +125,13 @@ export function runTrack(
     air: new BandNormalizer(),
     sparkle: new BandNormalizer(),
     flux: new BandNormalizer(),
+    loudness: new BandNormalizer(),
   }
+  // BS.1770 K-weighted loudness over the contiguous PCM — the offline stand-in
+  // for AudioEngine's `audiovis-loudness` worklet (F156 Part A / F171). Fed
+  // incrementally up to each frame's right edge.
+  const offlineLoud = new OfflineLoudness(sampleRate)
+  let loudFed = 0
   const programLevel = new ProgramLevel()
   const bpmEstimator = new BpmEstimator()
   const phraseDetector = new PhraseDetector()
@@ -211,14 +230,30 @@ export function runTrack(
     f.air = norm(bands.air, spectral.air)
     f.sparkle = norm(bands.sparkle, spectral.sparkle)
     f.flux = norm(bands.flux, spectral.bassFlux)
+    // K-weighted momentary loudness -> BandNormalizer, mirroring AudioEngine's
+    // `f.loudness = norm(bands.loudness, sqrt(lastLoudMsMom))`. `end` is the
+    // "now" sample; feed the filter everything up to it, once.
+    if (end > loudFed) {
+      offlineLoud.push(pcm, loudFed, Math.min(end, pcm.length))
+      loudFed = Math.min(end, pcm.length)
+    }
+    f.loudness = norm(bands.loudness, Math.sqrt(offlineLoud.read().momentary))
     f.transient += (Math.min(1, f.flux * 1.5) - f.transient) * Math.min(1, delta * 20)
     f.centroid += (Math.min(1, spectral.centroidRaw * 2.1) - f.centroid) * Math.min(1, delta * 8)
     f.spectralFlatness += (spectral.spectralFlatness - f.spectralFlatness) * Math.min(1, delta * 8)
     f.spectralRolloff += (spectral.spectralRolloff - f.spectralRolloff) * Math.min(1, delta * 8)
     f.crestFactor += (crestRaw - f.crestFactor) * Math.min(1, delta * 4)
-    const energyTarget =
-      (f.bass * 0.5 + f.mid * 0.3 + f.high * 0.2 + f.rms * 0.3) / ENERGY_WEIGHT_SUM
-    f.energy += (energyTarget - f.energy) * Math.min(1, delta * (energyTarget > f.energy ? 14 : 4))
+    // F171: the broadband energy term is still `f.rms`. Flipping it to
+    // `f.loudness` (K-weighted) is deferred — an 8-track A/B showed the naive
+    // swap moves the dominant mood on 3/8 tracks (ambient->mellow on genuinely
+    // ambient material; a hysteresis lock-up to 'silence' on a quiet intro)
+    // because `f.loudness` via BandNormalizer has no low tail (corpus p10 0.29
+    // vs `f.rms` 0.06), and a monotone constant re-derivation can't undo a
+    // frame REORDERING. The real swap needs a distribution-matching remap of
+    // `f.loudness` into the blend + a full 1500-track re-derivation.
+    // `CALIB_ENERGY_TERM=loudness` runs that A/B; default stays `f.rms`.
+    const loudTerm = ENERGY_TERM_MODE === 'loudness' ? f.loudness : f.rms
+    f.energy = stepEnergy(f.energy, energyTargetOf(f.bass, f.mid, f.high, loudTerm), delta)
 
     // --- Percussion + broadband onset (AudioEngine.ts: gated on fftAdvanced) ---
     if (fftAdvanced) {
@@ -306,12 +341,17 @@ export function runTrack(
     }
 
     // --- Phrase + mood (AudioEngine.ts phraseDetector + moodEstimator) ---
+    // NOTE: no Essentia worker runs here, so f.danceability / f.key / f.moods*
+    // stay at their defaults. MoodEstimator's `danceBonus` term (F168) and
+    // `partyBonus` are both therefore identically 0 in every calibrate frame —
+    // intentional, not a bug. Those two only have effect in the live app.
     phraseDetector.update(now, f)
     moodEstimator.update(f)
 
     frames.push({
       t: now,
       rms: f.rms,
+      loudness: f.loudness,
       energy: f.energy,
       sub: f.sub,
       bass: f.bass,

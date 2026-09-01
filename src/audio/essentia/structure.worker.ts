@@ -14,6 +14,7 @@
  */
 import { segment, riserScore, type BeatCell } from './structureDsp'
 import type { StructureRequest, StructureResponse, StructureSegment } from './structureProtocol'
+import { resample as sincResample } from './resample'
 
 const ESSENTIA_SR = 22050 // enough harmonic content for HPCP, half the data of 44.1k
 const FRAME = 4096
@@ -49,20 +50,16 @@ function loadEssentia(): Promise<void> {
   return loading
 }
 
-/** Linear resample — adequate for section-scale features. */
+/**
+ * Resample the capture-rate window to 22.05 kHz. Kaiser-windowed-sinc polyphase
+ * (see `resample.ts`); the old 2-tap linear version aliased content above
+ * 11 kHz back into the MFCC / HPCP range the segmenter reads. This is the
+ * longest window (120 s) so it is also the priciest resample — ~139 taps per
+ * output — but it runs once per structure job and StructureBridge's cadence
+ * self-tunes off the measured job cost. Returns `pcm` untouched at 22.05 k.
+ */
 function resample(pcm: Float32Array, fromRate: number): Float32Array {
-  if (fromRate === ESSENTIA_SR) return pcm
-  const outLen = Math.floor((pcm.length * ESSENTIA_SR) / fromRate)
-  const out = new Float32Array(outLen)
-  const step = fromRate / ESSENTIA_SR
-  for (let i = 0; i < outLen; i++) {
-    const pos = i * step
-    const i0 = Math.floor(pos)
-    const i1 = Math.min(pcm.length - 1, i0 + 1)
-    const frac = pos - i0
-    out[i] = pcm[i0] * (1 - frac) + pcm[i1] * frac
-  }
-  return out
+  return sincResample(pcm, fromRate, ESSENTIA_SR)
 }
 
 interface RawFrame {

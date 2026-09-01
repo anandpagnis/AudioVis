@@ -6,25 +6,28 @@ or `npm run corpus:fetch`.
 
 | track | dur | octave flips | half-tempo % | mood (top 3, s) | moodConf p50/p90/max | gate-pass % |
 | --- | --- | --- | --- | --- | --- | --- |
-| ambient-instrumental-no-voice__1079451 | 143s | 2 | 0% | ambient 131, mellow 9.6, silence 2.2 | 0.6602/0.7131/0.8782 | 87% |
-| ambient-instrumental-no-voice__783235 | 120s | 0 | 0% | groove 78.1, mellow 18.9, ambient 10.2 | 0.5124/0.7782/0.9169 | 48% |
-| electronic__1112048 | 84s | 5 | 0% | peak 33.5, groove 17, mellow 12.9 | 0.3521/0.5596/0.6858 | 18% |
-| electronic__948191 | 166s | 0 | 0% | groove 114.9, mellow 23.2, aggressive 18.2 | 0.6357/0.7885/0.9135 | 66% |
-| hiphop-vocals__1137250 | 123s | 0 | 0% | mellow 57.4, aggressive 54.9, silence 11 | 0.4393/0.7594/0.8376 | 37% |
-| hiphop-vocals__585146 | 72s | 0 | 0% | mellow 56.4, ambient 12.8, silence 2.2 | 0.5538/0.8094/0.9583 | 49% |
-| rock-pop-vocals__1071484 | 171s | 2 | 0% | mellow 92.6, ambient 71.4, silence 7 | 0.5873/0.8037/0.9562 | 60% |
-| rock-pop-vocals__875003 | 169s | 0 | 0% | groove 81.1, mellow 58.6, ambient 14.5 | 0.5034/0.757/0.8736 | 43% |
+| ambient-instrumental-no-voice__1079451 | 143s | 2 | 0% | ambient 130.5, mellow 10.1, silence 2.2 | 0.6618/0.7133/0.8778 | 90% |
+| ambient-instrumental-no-voice__783235 | 120s | 0 | 0% | groove 83.8, mellow 22.9, ambient 10.4 | 0.542/0.8012/0.9058 | 52% |
+| electronic__1112048 | 84s | 5 | 0% | peak 38.1, mellow 20.3, aggressive 12.1 | 0.3683/0.58/0.7539 | 20% |
+| electronic__948191 | 166s | 0 | 0% | groove 111.9, mellow 26.2, aggressive 18.2 | 0.6314/0.7828/0.9129 | 66% |
+| hiphop-vocals__1137250 | 123s | 0 | 0% | mellow 57.4, aggressive 54.9, silence 11 | 0.4385/0.7567/0.8305 | 38% |
+| hiphop-vocals__585146 | 72s | 0 | 0% | mellow 56.4, ambient 12.8, silence 2.2 | 0.5576/0.811/0.9583 | 49% |
+| rock-pop-vocals__1071484 | 171s | 2 | 0% | mellow 93.7, ambient 70.5, silence 6.8 | 0.5942/0.8058/0.9562 | 61% |
+| rock-pop-vocals__875003 | 169s | 0 | 0% | groove 79.1, mellow 61.9, ambient 14.5 | 0.508/0.7675/0.8743 | 44% |
 
 ## Cross-track distributions (see corpus/distributions.json)
 
-- **moodLevel**: p10 0.1755 · p50 0.3237 · p90 0.5039 · mean 0.3391
-- **energy**: p10 0.121 · p50 0.3373 · p90 0.5444 · mean 0.3401
-- **sub**: p10 0.0086 · p50 0.2041 · p90 0.6654 · mean 0.2712
-- **bass**: p10 0.0138 · p50 0.212 · p90 0.5874 · mean 0.26
-- **high**: p10 0.0133 · p50 0.1704 · p90 0.6092 · mean 0.2445
-- **centroid**: p10 0.1551 · p50 0.5448 · p90 0.8454 · mean 0.5128
-- **spectralFlatness**: p10 0.072 · p50 0.32 · p90 0.5379 · mean 0.3087
-- **spectralRolloff**: p10 0.1043 · p50 0.3988 · p90 0.6311 · mean 0.3806
-- **sparkle**: p10 0.0007 · p50 0.0811 · p90 1 · mean 0.2399
-- **crestFactor**: p10 2.1905 · p50 2.5691 · p90 3.0091 · mean 2.5794
-- **energyVelAbs**: p10 0.0184 · p50 0.1066 · p90 0.3221 · mean 0.1452
+- **moodLevel**: p10 0.1692 · p50 0.3196 · p90 0.5068 · mean 0.3349
+- **energy**: p10 0.1167 · p50 0.3318 · p90 0.5415 · mean 0.3358
+- **sub**: p10 0.0087 · p50 0.2043 · p90 0.6667 · mean 0.2713
+- **bass**: p10 0.0138 · p50 0.2116 · p90 0.5849 · mean 0.2596
+- **high**: p10 0.0067 · p50 0.1365 · p90 0.579 · mean 0.2191
+- **centroid**: p10 0.155 · p50 0.5442 · p90 0.8454 · mean 0.5126
+- **spectralFlatness**: p10 0.072 · p50 0.3191 · p90 0.5373 · mean 0.3086
+- **spectralRolloff**: p10 0.1043 · p50 0.3983 · p90 0.6313 · mean 0.3805
+- **sparkle**: p10 0.0006 · p50 0.0811 · p90 1 · mean 0.24
+- **crestFactor**: p10 2.1896 · p50 2.5702 · p90 3.0088 · mean 2.579
+- **rms**: p10 0.058 · p50 0.3769 · p90 0.7451 · mean 0.3931
+- **loudness**: p10 0.286 · p50 0.8383 · p90 0.9975 · mean 0.7318
+- **energyVelAbs**: p10 0.0183 · p50 0.1045 · p90 0.3213 · mean 0.1447
+- **structure**: dropShare 0.01043 · buildShare 0 · drop/hr 61.82 · build/hr 0

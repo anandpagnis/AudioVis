@@ -118,6 +118,8 @@ function foldFramesInto(pool: Pool, frames: FrameSample[]) {
     'spectralRolloff',
     'sparkle',
     'crestFactor',
+    'rms',
+    'loudness',
   ] as const
   for (let i = 0; i < frames.length; i += FRAME_STRIDE) {
     const f = frames[i]
@@ -131,6 +133,16 @@ describe.skipIf(tracks.length === 0)('calibration harness', () => {
   it(`analyses ${tracks.length} track(s) and writes corpus/{distributions.json,eval-report.md}`, async () => {
     const pool: Pool = {}
     let poolFrames = 0
+    // Structure firing rates — the detectStructure constants are rate-matched,
+    // so a swap in the energy blend (F160 Part B) has to hold these. `*Share` is
+    // the latched-flag frame share (f.drop is held ~0.6 s); `*PerHr` counts
+    // rising edges, a cleaner event rate.
+    let liveFrames = 0
+    let dropFrames = 0
+    let buildFrames = 0
+    let dropEvents = 0
+    let buildEvents = 0
+    let audioSec = 0
     const lines: string[] = [
       '# Calibration eval report',
       '',
@@ -149,6 +161,20 @@ describe.skipIf(tracks.length === 0)('calibration harness', () => {
 
       foldFramesInto(pool, run.frames)
       poolFrames += run.frames.length
+
+      audioSec += run.durationSec
+      let prevDrop = false
+      let prevBuild = false
+      for (const fr of run.frames) {
+        if (fr.silence) continue
+        liveFrames++
+        if (fr.drop) dropFrames++
+        if (fr.buildUp) buildFrames++
+        if (fr.drop && !prevDrop) dropEvents++
+        if (fr.buildUp && !prevBuild) buildEvents++
+        prevDrop = fr.drop
+        prevBuild = fr.buildUp
+      }
 
       const refBpm = loadReferenceBpm(t.id, t.referenceBpm)
       const oct = octaveStats(run.frames, refBpm)
@@ -173,6 +199,12 @@ describe.skipIf(tracks.length === 0)('calibration harness', () => {
 
     const dist: Record<string, unknown> = { n: poolFrames }
     for (const [k, v] of Object.entries(pool)) dist[k] = percentileTable(v)
+    dist.structure = {
+      dropShare: liveFrames ? Math.round((dropFrames / liveFrames) * 1e5) / 1e5 : 0,
+      buildShare: liveFrames ? Math.round((buildFrames / liveFrames) * 1e5) / 1e5 : 0,
+      dropPerHr: audioSec ? Math.round((dropEvents / audioSec) * 3600 * 100) / 100 : 0,
+      buildPerHr: audioSec ? Math.round((buildEvents / audioSec) * 3600 * 100) / 100 : 0,
+    }
 
     mkdirSync(OUT_DIR, { recursive: true })
     writeFileSync(
@@ -191,10 +223,14 @@ describe.skipIf(tracks.length === 0)('calibration harness', () => {
 
     lines.push('', '## Cross-track distributions (see corpus/distributions.json)', '')
     for (const [k, v] of Object.entries(dist)) {
-      if (typeof v === 'number') continue
+      if (typeof v === 'number' || k === 'structure') continue
       const t = v as Record<string, number>
       lines.push(`- **${k}**: p10 ${t.p10} · p50 ${t.p50} · p90 ${t.p90} · mean ${t.mean}`)
     }
+    const st = dist.structure as Record<string, number>
+    lines.push(
+      `- **structure**: dropShare ${st.dropShare} · buildShare ${st.buildShare} · drop/hr ${st.dropPerHr} · build/hr ${st.buildPerHr}`,
+    )
     writeFileSync(join(OUT_DIR, 'eval-report.md'), lines.join('\n') + '\n')
 
     expect(analysed).toBeGreaterThan(0)
