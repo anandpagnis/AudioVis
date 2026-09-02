@@ -159,6 +159,84 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   shock: [0.08, 0.08, 0.08, 0.08, 0.08],
   flare: [0.1, 0.1, 0.1, 0.1, 0.1],
   spark: [0.07, 0.07, 0.07, 0.07, 0.07],
+
+  // `snowflake` (ISF port, "claude-opus-4-8" witnessed generation) — also NOT
+  // /bench-measured. Priced a notch above shock/flare/spark: it is still a
+  // single closed-form fullscreen pass, but it carries one `atan`, a constant
+  // 6-iteration `seg()` loop (~14 sqrt) and three more `length()` terms, so it
+  // is a few times their op count — and still an order of magnitude below
+  // `wireframe` (0.63-0.78 ms, real 3D line geometry). Flat across tiers: it
+  // reads no `quality.knobs` (same as `matrix`/`ribbons`/`wireframe`), so the
+  // only tier lever is the resolution solve, priced separately. Deliberately
+  // pessimistic and NOT run through {@link SCENE_COST_MODEL}; replace with a
+  // real /bench sweep when one is possible.
+  snowflake: [0.45, 0.45, 0.44, 0.43, 0.42],
+
+  // `harkonnen` (Shadertoy "Fortress Harkonnen" port) — also NOT
+  // /bench-measured, and a much rougher estimate than the rows above: this one
+  // has real inner loops. The source's ~118 fractal iterations/px (a 25-iter
+  // field sampled 4x for the normal, no early-out) were cut to a 3-tap normal +
+  // `complexity`-controlled 10..16 iters + two `pow`->mul swaps, then rendered
+  // offscreen via `pixelBudget` (1.4 MP tiers 0-1, 0.8 MP below). At the
+  // neutral `complexity` that is ~52 iters/px. Priced by comparison against
+  // `wingfold` (2.54 ms, escape-time WITH an early-out, native res) and `kifs`
+  // (2.97 ms): denser per-iteration and no early-out, offset by the lower
+  // internal resolution. The tier-0/1 vs tier-2+ step is the `pixelBudget`
+  // drop, not an iteration change (iterations are the user's dial, never
+  // tier-gated). NOT run through {@link SCENE_COST_MODEL}. If a real /bench
+  // puts tier 0 at or above `sceneBudget(0)/2` (~4 ms) this scene has to move
+  // to DISABLED_SCENES or take further cuts — it is live on an estimate.
+  harkonnen: [3.5, 3.2, 2.4, 2.0, 1.6],
+
+  // `beats` (mrange's "4D Beats", Shadertoy CC0) — NOT /bench-measured, and
+  // this row is a fabricated CEILING rather than an estimate. The scene is a
+  // 77-step 4D raymarch with NO early ray termination — every pixel runs the
+  // full march accumulating glow — so op-count against `kifs` (2.97 ms at
+  // tier 0, ~20 iters WITH an escape that spares most pixels) says the true
+  // tier-0 cost is likely 2-4x the 3.8 below. 3.8 is the largest value that
+  // still clears `slotBudget.test.ts`'s tier-0 `< sceneBudget(0)/2` (~4 ms)
+  // bar; it exists so the scene can be forced live by request, NOT because it
+  // is believed. The tier taper tracks the two levers that do move: `uMaxSteps`
+  // off `quality.knobs.raymarchSteps` (96/72/54/40/28), and the `pixelBudget`
+  // step (1.2 MP tiers 0-1, 0.7 MP below). NOT run through {@link
+  // SCENE_COST_MODEL}. ACTION: run `/bench`; if tier 0 lands at or above ~4 ms,
+  // cut the step count hard or move `beats` back to DISABLED_SCENES.
+  beats: [3.8, 3.0, 1.9, 1.4, 1.0],
+
+  // `web` (mrange's "Oversaturated web", Shadertoy CC0, deriv. of BigWing's
+  // `lscczl`) — NOT /bench-measured. Estimate, not a fabricated ceiling like
+  // `beats`, because it was made cheaper first: the source's 36 cubic-bezier
+  // distance solves/px (6 planes x 6 hex-neighbour strands, each with `acos` +
+  // `pow(,1/3)`) is cut to `density`-controlled strands (default 4) x
+  // `complexity`-controlled planes (default 5), rendered offscreen at 0.8 MP
+  // (tiers 0-1) / 0.5 MP below — glow output upscales invisibly — and the
+  // sine-based hash (called ~36x/px) swapped for a sine-free one. At the
+  // neutral dials that is ~20 bezier solves/px pre-upscale. Priced between
+  // `kifs` (2.97 ms) and the raymarchers: heavier per-strand than a segment
+  // SDF, lighter overall than a full march, minus the resolution cut. The
+  // tier-0/1 vs tier-2+ step is the `pixelBudget` drop (strands/planes are
+  // user dials, never tier-gated). NOT run through {@link SCENE_COST_MODEL}.
+  // Run `/bench`; if tier 0 is at/over `sceneBudget(0)/2` (~4 ms), drop the
+  // `density`/`complexity` defaults, set `#define USE_BEZIER 0`, or move `web`
+  // to DISABLED_SCENES.
+  web: [3.4, 3.1, 2.1, 1.6, 1.2],
+
+  // `travelling` (mrange's "Moving without travelling", Shadertoy CC0) — NOT
+  // /bench-measured, and this row is off by MORE than any other estimate in
+  // this file: ~5-7x. It is the heaviest shader in the roster. Per pixel it
+  // steps 4 planes, and each plane runs one `warp()` plus a 4-tap
+  // finite-difference `normal()` (= 5 warps), where every `warp()` is an eye
+  // SDF + a kaleidoscope fold + 5 `fbm()` (4 octaves). ~100 fbm + ~24 eye SDFs
+  // per pixel. Against `kifs` (2.97 ms at tier 0, ~160 heavy ops/px) the true
+  // tier-0 cost is ~20-30 ms, ~10-15 ms even at the survival tier. 3.9 is a
+  // CEILING that clears `slotBudget.test.ts` and nothing more — the budget
+  // model WILL over-pick this and the governor claws back after the transition.
+  // `compatibleWith: []` bounds it to that one mis-schedule. Taper tracks the
+  // `pixelBudget` step (1.0 MP tiers 0-1, 0.6 MP below) and `uOctaves`
+  // (governor 4->2). NOT run through {@link SCENE_COST_MODEL}. ACTION: cut
+  // `normal()` to a 2-tap, drop `furthest` 4->2, then /bench — or move
+  // `travelling` to DISABLED_SCENES.
+  travelling: [3.9, 3.6, 2.6, 2.0, 1.6],
 }
 
 /**
