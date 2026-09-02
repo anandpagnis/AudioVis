@@ -211,6 +211,54 @@ export function pickPalette(
 }
 
 /**
+ * Prefer recalling an earlier palette for a repeated structural segment over
+ * a fresh {@link pickPalette} weighted pick.
+ *
+ * `repetitionLabel` (`SongSectionMomentum`'s own doc: "this segment's feature
+ * profile matches an earlier one") is a PREFERENCE, not an override — it must
+ * not defeat the appropriateness checks `pickPalette` already enforces:
+ *
+ *  - The recalled id must still be a member of `moodPalettes`, the SAME pool
+ *    `pickPalette` itself filters against internally. A palette recorded
+ *    during an earlier, differently-moody segment sharing this label is not
+ *    let through just because the label matches — mood ownership of the list
+ *    still wins, exactly as it does for every other candidate.
+ *  - The recalled id must differ from `current`, matching `pickPalette`'s own
+ *    "never returns the palette already showing" guarantee — a recall that
+ *    would be a visible no-op falls through to a fresh pick instead.
+ *
+ * Deliberately checked BEFORE the key-family/VA-weighted logic inside
+ * `pickPalette` runs at all, rather than blended with it: `repetitionLabel`
+ * is a structural, song-level fact ("we are back on the A section"), which is
+ * a stronger and rarer signal than the moment-to-moment key/VA read that
+ * `pickPalette` weighs on every OTHER call. When it fires, it is deliberately
+ * the whole decision.
+ *
+ * Pure and exported like `pickPalette` itself — `recallMap` is the only
+ * mutation, and it is passed in rather than owned here so the caller can hold
+ * it in whatever ref/state form matches its own lifecycle (AutoPilot holds
+ * one per mount, cleared on a new source alongside its other palette refs).
+ */
+export function pickPaletteWithRecall(
+  moodPalettes: string[],
+  current: string,
+  keyFamily: string,
+  lastPick: string,
+  rotation: number,
+  repetitionLabel: string,
+  recallMap: Map<string, string>,
+  currentVA?: ValenceArousal,
+): string | null {
+  const recalled = repetitionLabel ? recallMap.get(repetitionLabel) : undefined
+  const pick =
+    recalled && recalled !== current && moodPalettes.includes(recalled)
+      ? recalled
+      : pickPalette(moodPalettes, current, keyFamily, lastPick, rotation, currentVA)
+  if (pick && repetitionLabel) recallMap.set(repetitionLabel, pick)
+  return pick
+}
+
+/**
  * Mood-driven auto-VJ. Watches the committed mood (and its prediction) and
  * requests scene/palette changes through the normal pipeline. Switching is
  * purely event-driven — a mood change, an imminent predicted transition, or a
@@ -226,6 +274,13 @@ export function AutoPilot() {
   const prevDrop = useRef(false)
   const lastPaletteAt = useRef(-Infinity)
   const lastPalettePick = useRef('')
+  /** `repetitionLabel -> paletteId` recall — see {@link pickPaletteWithRecall}.
+   *  A plain mutable ref, matching this component's other palette-cadence
+   *  state (`lastPalettePick`, `paletteRotation`) rather than a module-level
+   *  singleton like `keyPaletteTracker`: unlike key-family voting, nothing
+   *  outside this component's own palette pick needs to read or test this
+   *  map's contents directly, so it stays local. */
+  const repetitionPalette = useRef<Map<string, string>>(new Map())
   /** Last time any trigger below set a target — see STALE_TARGET_SEC. */
   const lastAutoTriggerAt = useRef(-Infinity)
   /** Deterministic cycle position — not random, so a recorded set repeats. */
@@ -258,6 +313,11 @@ export function AutoPilot() {
     if (f.time < lastPaletteAt.current) {
       lastPaletteAt.current = -Infinity
       lastPalettePick.current = ''
+      // A new source restarts SectionTracker too, so its A/B/C… labels are
+      // free to be reused for structurally unrelated segments — a stale
+      // mapping recorded against the previous track's "A" must not leak into
+      // a recall for this one.
+      repetitionPalette.current.clear()
     }
     if (f.time < lastAutoTriggerAt.current) lastAutoTriggerAt.current = -Infinity
 
@@ -279,7 +339,24 @@ export function AutoPilot() {
     // point of the build is that the look should stay put until the drop. The
     // drop path (`dropEdge`) is exempt, and `pendingChange` still latches so a
     // mood change that lands mid-build fires the frame the build releases.
-    const inBuild = f.structureValid && f.songSection.isBuild
+    //
+    // `isSustain`, not `isBuild`: SectionTracker.ts sets
+    // `s.dropExpected = buildConfirmed` and `s.isSustain = s.isBuild ||
+    // s.dropExpected`, and `s.isBuild` IS `buildConfirmed` — so today the two
+    // fields are literally identical every frame (`isSustain === isBuild`),
+    // and this swap is a behavior-preserving no-op right now. It is still the
+    // more correct read to hold: `isSustain`'s own doc on SongSectionMomentum
+    // defines it as `isBuild || dropExpected` — "hold discretionary
+    // transitions" — which is a name and an intent this call site's own
+    // comment already assumed, not something `isBuild` alone ever promised.
+    // Should `dropExpected` ever gain a source independent of
+    // `buildConfirmed` (its own field doc leaves room: "a drop is coming —
+    // hold the current look", which is a slightly broader claim than "we are
+    // mid-build"), this site keeps holding for the right reason instead of
+    // silently falling one field behind. The same duplicated
+    // `structureValid && isBuild` check also existed at
+    // PerformanceDirector.tsx:194 and got the identical swap.
+    const inSustain = f.structureValid && f.songSection.isSustain
 
     // Abandon a stale pre-arm — the projected drop never arrived.
     if (preArmed.current && f.beatIndex - preArmBeat.current > 24) preArmed.current = false
@@ -304,7 +381,7 @@ export function AutoPilot() {
         m.beatsTillTransition >= 0 &&
         m.beatsTillTransition < 4 &&
         m.confidence > MOOD_PREDICT_MIN_CONFIDENCE
-      if (inBuild) {
+      if (inSustain) {
         // hold — no discretionary target while the riser runs
       } else if (imminent && prefetchedFor.current !== m.predictedState) {
         target = m.predictedState
@@ -352,12 +429,17 @@ export function AutoPilot() {
       // from the new mood's list, and the lists overlap heavily — `aurora`
       // alone sits in ambient, mellow, groove AND building, so a whole arc
       // could pass without a single switch.
-      const pick = pickPalette(
+      const pick = pickPaletteWithRecall(
         MOOD_PALETTES[paletteMood] ?? [],
         s.paletteId,
         keyPaletteTracker.family,
         lastPalettePick.current,
         paletteRotation.current++,
+        // Only a validated structure read carries a trustworthy label — same
+        // gate `inSustain`/`structureRecolour` already apply to the rest of
+        // `f.songSection` below.
+        f.structureValid ? f.songSection.repetitionLabel : '',
+        repetitionPalette.current,
         { valence: performanceState.valence, arousal: performanceState.arousal },
       )
       if (pick) {
@@ -373,7 +455,7 @@ export function AutoPilot() {
     // drop instead of a beat after it. Only with a real structure read, only
     // once per build, and only when nothing is already in flight.
     if (
-      inBuild &&
+      inSustain &&
       !preArmed.current &&
       !s.pendingSceneId &&
       f.songSection.beatsTillDrop >= 1 &&

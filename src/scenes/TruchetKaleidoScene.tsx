@@ -46,12 +46,17 @@ import { drastic } from '../engine/sceneParams'
  *
  *   speed dial + mids  -> flythrough rate
  *   onKick             -> uShock: Truchet line-width bloom + brightness punch
+ *   sub                -> Truchet arc radius (per-plane `r` in `plane()`):
+ *                         the tile pattern itself swells with the bass,
+ *                         distinct from `uLw`'s line-weight dial and uShock's
+ *                         transient line-width bloom
  *   energy             -> plane + sky brightness
  *   highs              -> a bright-area shimmer
  *
  * ## Band routing
  *
  *   onKick  -> uShock: line bloom + brightness (decaying)
+ *   sub     -> Truchet cell arc radius (continuous swell)
  *   mids    -> flythrough rate
  *   energy  -> overall luminance / sky glow
  *   highs   -> highlight shimmer
@@ -62,6 +67,7 @@ export const FRAG = /* glsl */ `
   uniform float uShock;    // decaying kick envelope
   uniform float uEnergy;
   uniform float uHighs;
+  uniform float uBass;     // s.sub -> Truchet cell arc radius (continuous)
   uniform float uKRep;     // complexity dial -> kaleidoscope symmetry multiplier
   uniform float uLw;       // density dial -> Truchet line weight
   uniform float uFov;      // fill dial -> field of view
@@ -249,7 +255,11 @@ export const FRAG = /* glsl */ `
     p /= z;
     p+=0.5+floor(h1*1000.0);
     float tl = tanh_approx(0.33*l);
-    float r = mix(0.30, 0.45, PCOS(0.1*n));
+    // sub-bass swells the arc radius itself, not just the stroke around it --
+    // the tile pattern breathes with the bass. Capped at +10%: cells are unit
+    // size and the source's own radius already reaches 0.45, so any more
+    // would start clipping arcs into their neighbouring cell.
+    float r = mix(0.30, 0.45, PCOS(0.1*n)) * (1.0 + uBass*0.10);
     vec2 d2 = truchet_df(r, p);
     d2 *= z;
     float d = d2.x;
@@ -373,6 +383,7 @@ export const TruchetKaleidoScene = createShaderScene<TruchetState>({
     uShock: { value: 0 },
     uEnergy: { value: 0 },
     uHighs: { value: 0 },
+    uBass: { value: 0 },
     uKRep: { value: 1 },
     uLw: { value: 1 },
     uFov: { value: 1 },
@@ -391,6 +402,7 @@ export const TruchetKaleidoScene = createShaderScene<TruchetState>({
     u.uShock.value = st.shock
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
+    u.uBass.value = s.sub
 
     // Piecewise so each dial's neutral 0.5 lands on the source's authored look:
     // symmetry x1, line weight x1, fov x1, roll 0.

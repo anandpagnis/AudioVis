@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
@@ -37,6 +37,17 @@ import { effectEnvelope } from './effectEnvelope'
  * Driven entirely by `slotProgress` (0..1), not elapsed seconds — the ring's
  * radius is `slotProgress * MAX_RADIUS`, so it always finishes its expansion
  * exactly when the effect retires, regardless of `durationSec`.
+ *
+ * ## Band routing: hit strength, captured once
+ *
+ * `bass` + `energy` set how hard THIS drop reads, not how the ring moves —
+ * same discipline as `TransientSparkScene`'s seed: sampled once on the rising
+ * edge into the `effect` role (`wasEffect` -> `!wasEffect`) and held for the
+ * whole firing, not re-read every frame. A continuous read would fight the
+ * ring's own timing (`slotProgress`-driven, not audio-driven) and reshape it
+ * mid-expansion; a one-shot capture instead answers "how hard was the hit
+ * that fired this" and scales the ring's brightness and band width by it —
+ * loud stays loud and quiet stays quiet for the ring's whole 4s lifetime.
  */
 
 const MAX_RADIUS = 1.55
@@ -54,6 +65,8 @@ export const FRAG = /* glsl */ `
   uniform float uRadius;
   /** 0..1 slotProgress, for the central flash's own decay. */
   uniform float uProgress;
+  /** Hit strength (bass+energy), captured once on the firing's rising edge. */
+  uniform float uStrength;
   uniform float uFade;
 
   void main(){
@@ -62,10 +75,12 @@ export const FRAG = /* glsl */ `
     float d = length(uv);
 
     float ringDelta = d - uRadius;
-    float ring = exp(-(ringDelta * ringDelta) * ${RING_SHARPNESS.toFixed(1)});
+    // Dividing sharpness by uStrength widens the band on a hard hit — a
+    // bigger-reading ring without disturbing the slotProgress-locked radius.
+    float ring = exp(-(ringDelta * ringDelta) * (${RING_SHARPNESS.toFixed(1)} / uStrength));
     float flash = exp(-(uProgress * uProgress) * ${FLASH_SHARPNESS.toFixed(1)}) * exp(-d * d * 3.0);
 
-    vec3 color = uColor * (ring * 2.4 + flash * 0.85);
+    vec3 color = uColor * (ring * 2.4 * uStrength + flash * 0.85);
     gl_FragColor = vec4(color * uFade, 1.0);
   }
 `
@@ -73,6 +88,9 @@ export const FRAG = /* glsl */ `
 export function ShockRingScene() {
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
+  const wasEffect = useRef(false)
+  /** Captured hit strength, held for the whole firing — see header. */
+  const strength = useRef(1)
 
   const material = useMemo(
     () =>
@@ -88,6 +106,7 @@ export function ShockRingScene() {
           uColor: { value: new THREE.Color('#ffffff') },
           uRadius: { value: 0 },
           uProgress: { value: 0 },
+          uStrength: { value: 1 },
           uFade: { value: 0 },
         },
       }),
@@ -101,7 +120,7 @@ export function ShockRingScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ col, vis, role, slotProgress }) => {
+  useSceneFrame(({ b, col, vis, role, slotProgress }) => {
     const u = material.uniforms
 
     // Colour: the glow slot in the palette reads brightest against a busy
@@ -110,10 +129,23 @@ export function ShockRingScene() {
     u.uRadius.value = slotProgress * MAX_RADIUS
     u.uProgress.value = slotProgress
 
+    // Re-sample exactly once per firing — the rising edge into the effect
+    // role — same discipline as TransientSparkScene's seed capture. bass +
+    // energy are the declared bands: how hard the drop reads, sampled once
+    // so the ring doesn't reshape mid-expansion as the mix moves underneath
+    // it. 0.7..1.4, neutral-ish at a moderate hit.
+    const isEffect = role === 'effect'
+    if (isEffect && !wasEffect.current) {
+      const raw = Math.min(1, b.bass * 0.6 + b.energy * 0.6)
+      strength.current = 0.7 + raw * 0.7
+    }
+    wasEffect.current = isEffect
+    u.uStrength.value = strength.current
+
     // Same discipline as OrbitGlowScene: `slotProgress` is only meaningful in
     // the effect role, and `effectEnvelope` is zero at slotProgress 0, so a
     // scene that read it unconditionally would be invisible outside `effect`.
-    u.uFade.value = role === 'effect' ? vis * effectEnvelope(slotProgress) : vis
+    u.uFade.value = isEffect ? vis * effectEnvelope(slotProgress) : vis
   })
 
   return (

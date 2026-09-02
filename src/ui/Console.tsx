@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { SCENES } from '../scenes'
+import { SCENES, canHoldRole } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
+
+/**
+ * The scenes a user may pick as the SUBJECT, from this surface.
+ *
+ * `SCENES` also holds `effect`-role scenes — punctuation `EffectDirector`
+ * fires on a musical trigger, pinned as idle entries so a firing costs no
+ * shader compile. `requestScene` already refuses them (F180), so a tile here
+ * for one would press and do nothing, silently, forever. See `HUD.tsx`'s own
+ * `PICKABLE_SCENES`, which this mirrors — the fix landed there first because
+ * that surface was the one actually reported broken, and this one carries the
+ * identical `SCENES.map` + `requestScene` pattern.
+ */
+const PICKABLE_SCENES = SCENES.filter((s) => canHoldRole(s.id, 'primary'))
 import { PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { useStore } from '../store'
 import { AnalyticsPanel } from './AnalyticsPanel'
@@ -272,7 +285,7 @@ function SceneGrid() {
   return (
     <>
       <div className="tile-grid">
-        {SCENES.map((s) => (
+        {PICKABLE_SCENES.map((s) => (
           <button
             key={s.id}
             // Two states, because a scene press is not instant: the switch is
@@ -410,7 +423,12 @@ function LayerSlots() {
             onChange={(e) => useStore.getState().setLayer(role, e.target.value || null)}
           >
             <option value="">none</option>
-            {SCENES.map((sc) => (
+            {/* Same eligibility check `setLayer` itself now enforces (F180's
+                pattern extended to layers) — an option this select offered but
+                the store declined would sit selected in the dropdown, showing
+                whatever the LAST accepted scene actually was, which reads as
+                the click having silently failed. */}
+            {SCENES.filter((sc) => canHoldRole(sc.id, role)).map((sc) => (
               <option key={sc.id} value={sc.id}>
                 {sc.name}
               </option>

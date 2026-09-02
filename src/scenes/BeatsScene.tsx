@@ -16,26 +16,50 @@ import { drastic } from '../engine/sceneParams'
  * (alphabetical) @byt3_m3chanic, @FabriceNeyret2, @iq, @shane, @XorDev; kept
  * here so the provenance is not lost the way mrange worries minishaders lose it.
  *
- * ## HELD OUT in DISABLED_SCENES — pending a real /bench
+ * ## FORCED LIVE by explicit request — pending a real /bench
  *
  * This is a 77-step 4D raymarch with **no early ray termination** — every pixel
  * runs the full march, accumulating glow, there is no hit test that breaks the
  * loop. Op-count comparison against the measured roster (`kifs` 2.97 ms at
  * tier 0, ~20 KIFS iterations *with* an escape) puts this several times dearer
- * per pixel, so it is not expected to clear `slotBudget.test.ts`'s tier-0
- * `< sceneBudget(0)/2 = 4 ms` layer-funding bar as-is, and `/bench` (the only
- * instrument) cannot run from CI. `uMaxSteps` is wired to the quality governor
- * so a bench can sweep each tier. Promotion = move the object literal in
- * `index.ts` into `SCENES` + add a measured `SCENE_COST_MS` row.
+ * per pixel, so it was not expected to clear `slotBudget.test.ts`'s tier-0
+ * `< sceneBudget(0)/2 = 4 ms` layer-funding bar honestly priced — and `/bench`
+ * (the only instrument that could settle it) cannot run from CI. It is
+ * registered live in `index.ts`'s `SCENES` array anyway, by explicit request,
+ * not because the cost is known to be safe. Its `SCENE_COST_MS` row in
+ * `sceneCost.ts` is set to the worst-case tier-0 number that row's own comment
+ * states (2-4x the old fabricated-ceiling value, at the 4x end) rather than a
+ * fabricated ceiling built to clear the test — so `slotBudget.test.ts`'s
+ * "no live scene dear enough to forbid a layer" check now fails honestly for
+ * this scene instead of passing on a number nobody believed. `uMaxSteps` is
+ * wired to the quality governor so a bench can sweep each tier. Closing this
+ * out = run `/bench`, replace the estimate in `sceneCost.ts` with a
+ * measurement, and either it clears the budget for real or the scene needs a
+ * lower `pixelBudget` / a hard cut to step count / a move back to
+ * `DISABLED_SCENES`.
+ *
+ * A later audit (see "Beat lock, spin, and kick placement" below) fixed three
+ * audio-wiring bugs in this scene (beat lock, spin/mids scaling, kick
+ * placement) that were independent of this cost question — none of the three
+ * touch iteration count or per-iteration op cost, so this section's numbers
+ * and status are UNCHANGED by them. `uMaxSteps`'s tier gate was reviewed as
+ * part of that same audit (Finding 4) and kept as-is, deliberately, with the
+ * real visual tradeoff documented at its computation in `update()` below
+ * rather than silently assumed free — see that comment for why cutting steps
+ * here is not the "nearly free" case `MazeFlightScene` found for its own
+ * march.
  *
  * ## Port notes (Shadertoy -> AudioVis prelude)
  *
  *   iResolution           -> uRes
  *   iChannelTime[0]*1.9    -> uBeats — the source multiplied audio playback
  *                            seconds by 1.9 (= 114 BPM / 60) to get "beats
- *                            elapsed"; here uBeats IS beats, accumulated in
- *                            update() from ctx.f.bpm, so it stays right at any
- *                            tempo instead of being pinned to one track.
+ *                            elapsed"; here uBeats IS beats, read each frame
+ *                            from `ctx.f.beatIndex + ctx.f.beatProgress` (the
+ *                            engine's own phase-locked beat grid, not a JS
+ *                            integral of `bpm` — see "Beat lock" below), so it
+ *                            stays right at any tempo instead of being pinned
+ *                            to one track.
  *   mainImage()            -> main() / gl_FragColor, final * uFade
  *   round(x)               -> floor(x + 0.5)   (round() is GLSL ES 3.00 only)
  *   tanh(x)                -> tanh4() polyfill (ES 1.00 has no tanh)
@@ -51,10 +75,12 @@ import { drastic } from '../engine/sceneParams'
  *
  * ## What was added (the source is beat-timed only, no band routing)
  *
- *   speed  + energy  -> beat-rate multiplier (drastic dial, energy on top)
+ *   speed  + energy  -> beat-POSITION multiplier (drastic dial, energy on
+ *                       top of the real beat grid — see "Beat lock" below)
  *   onKick           -> uKick: recharges the per-beat brightness flash, decaying
  *   sub / bass       -> uSphere: swells the per-cell 4D sphere
- *   mids             -> spin rate of the XW/YW/ZW rotation
+ *   mids             -> spin rate of the XW/YW/ZW rotation (JS-accumulated,
+ *                       see "Beat lock" below)
  *   highs            -> uEdge: thins the lattice box walls (hats crisp the grid)
  *
  * ## Band routing
@@ -63,18 +89,87 @@ import { drastic } from '../engine/sceneParams'
  *   sub     -> lattice sphere radius
  *   mids    -> 4D rotation rate
  *   highs   -> box-wall thinness
- *   energy  -> beat-rate throttle
+ *   energy  -> beat-position throttle
+ *
+ * ## Beat lock, spin, and kick placement (audit fixes)
+ *
+ * Three things below `uBeats`, `uMids`, and `uKick` were wrong in a way that
+ * only shows up over a live session, not in a single frame:
+ *
+ * 1. **`uBeats` was free-running off `bpm`'s RATE, not the engine's actual
+ *    beat POSITION.** The old `update()` integrated `st.beats += dt *
+ *    (bpm/60) * ...` from 0 at mount — a JS clock guessing at the tempo. But
+ *    `ctx.f.bpm` is only the rate; `ctx.f.beatIndex + ctx.f.beatProgress` is
+ *    the real, self-correcting beat position the engine already tracks (it
+ *    snaps on a tempo re-lock; the JS integral never received that
+ *    correction and drifted from the track's real kicks). Now `uBeats` reads
+ *    the grid directly each frame — `grid * (1 + energy*0.4) * drastic(speed)`
+ *    — the same fix TunnelDriftScene's `uBeatPhase` uses (see that scene's
+ *    header, "The glow phase, and why it is not `b.pulse` directly"), with
+ *    speed/energy kept as a multiplier ON the grid position rather than the
+ *    sole driver of it. At neutral (energy 0, speed dial 0.5) `uBeats` tracks
+ *    the real beat position exactly; away from neutral it runs faster/slower
+ *    than the track on purpose, same as the old dial did — only the baseline
+ *    it scales changed, from a guess to the truth.
+ *
+ * 2. **The XW/YW/ZW spin multiplied live `uMids` against the raw, ever-growing
+ *    beat count.** `cos(t * (0.1 + uMids*0.08) + ...)` fed live mids noise
+ *    into an argument whose OTHER factor (`t`) grows for the life of the
+ *    scene, so the same frame-to-frame mids wobble swings the rotation by
+ *    more and more radians the longer the scene has been live — imperceptible
+ *    at mount, a multi-radian jump minutes in. Every sibling scene instead
+ *    folds a band term into the RATE of a JS-accumulated phase (KifsRoseScene
+ *    `st.phase += dt * rate * (1 + s.mids*0.5) * drastic(P.speed)`,
+ *    MazeFlightScene/MalachiteScene/NeonJungleScene all the same shape), so
+ *    this scene now does too: `uSpin` (replacing `uMids` as a shader uniform)
+ *    is JS-accumulated in `update()` from `dt`, not multiplied against a
+ *    growing GLSL value, so the sensitivity to a given mids wobble stays
+ *    constant regardless of session length.
+ *
+ * 3. **The kick flash sat inside the 77-step accumulation loop.** `uKick` and
+ *    `F` are per-pixel CONSTANTS across the march, so `exp(uKick*1.4)` was
+ *    being evaluated (and its constant factor re-applied) on every one of 77
+ *    iterations for a value that only needs it once — every sibling raymarch
+ *    applies its kick/flash burst ONCE per pixel after the loop instead
+ *    (MazeFlightScene's `light` used once inside `shade()`, NeonJungleScene's
+ *    `col += NEON*exp(...)*uPortalFlash` one-shot after the march,
+ *    KifsRoseScene's `glowAmt` computed once post-loop). The glow term is now
+ *    accumulated WITHOUT the kick factor inside the loop, and `exp(uKick*1.4)`
+ *    is computed once and applied once to that accumulated subtotal after the
+ *    loop — algebraically the same result (the factor is constant, so it was
+ *    always mathematically equivalent to pulling it out of the sum), but one
+ *    `exp()` per pixel instead of 77, and it now matches the house convention
+ *    of "burst applied once" instead of reading as compounding per-step.
+ *
+ * `uMaxSteps` truncation at low quality tiers is a separate, still-open
+ * question — see the ACTION note above and the comment at its computation
+ * in `update()` below (Finding 4: this march has no hit test, so cutting
+ * steps changes what the lattice reads as, not just how expensive it is;
+ * the decision made here is documented at the call site rather than acted on
+ * blind).
  */
 
 export const FRAG = /* glsl */ `
   uniform float uBeats;    // musical time in BEATS (replaces iChannelTime[0]*1.9)
-  uniform float uMids;     // s.mids -> spin rate
+  uniform float uSpin;     // JS-accumulated XW/YW/ZW rotation phase (s.mids folded
+                            // into its RATE in update(), not multiplied here against
+                            // a growing GLSL value — see the header's "Beat lock,
+                            // spin, and kick placement" note, point 2)
   uniform float uSphere;   // 0.2 + bass -> per-cell 4D sphere radius
   uniform float uEdge;     // 0.05 - highs -> lattice box-wall thickness
   uniform float uInv;      // 9 * density -> @mla inversion strength
   uniform float uRoll;     // tilt -> static 4D angle offset
   uniform float uClip;     // contrast -> tanh divisor (clip point)
-  uniform float uKick;     // s.onKick -> per-beat flash recharge (decaying)
+  // uKick is NOT declared here — SHADER_SCENE_PRELUDE already declares
+  // uniform float uKick; (createShaderScene.tsx's "decaying envelope per
+  // drum" block, alongside uSnare/uHihat), and the factory concatenates
+  // PRELUDE + FRAG as plain strings with no dedup. A second declaration here
+  // compiled fine as JS (no typecheck/lint/vitest ever invokes the GL
+  // compiler) but GLSL rejects it as a duplicate at global scope, so the
+  // shader failed to link and the scene rendered a silent black frame. The
+  // uniform is still used below (uKick * 1.4) and still set from JS via the
+  // uniforms: () => ({ uKick: ... }) factory call — only the redundant
+  // declaration is gone.
   uniform float uMaxSteps; // quality x complexity -> march early-break
 
   // GLSL ES 1.00 has no tanh(). mrange bundles a tanh_approx; this is the exact
@@ -100,15 +195,27 @@ export const FRAG = /* glsl */ `
     float t = floor(uBeats) + sqrt(F);
 
     // mrange's not-quite-rotation: a mat2 built from cos() of a vec4 of phase
-    // offsets (11., 33. — from 11.*U.wxzw with U=vec4(1,2,3,0)). mids widen the
-    // spin; tilt adds a static offset.
-    vec4 rr = cos(t * (0.1 + uMids * 0.08) + uRoll + vec4(0.0, 11.0, 33.0, 0.0));
+    // offsets (11., 33. — from 11.*U.wxzw with U=vec4(1,2,3,0)). uSpin is the
+    // JS-accumulated phase (mids widen its rate in update(), not here); tilt
+    // adds a static offset.
+    vec4 rr = cos(uSpin + uRoll + vec4(0.0, 11.0, 33.0, 0.0));
     mat2 R = mat2(rr.x, rr.y, rr.z, rr.w);
 
     // ray dir is constant across the march — hoisted out of the loop
     vec3 rd = normalize(vec3(C - 0.5 * uRes, uRes.y));
 
     float z = 0.0, d = 0.0, k = 0.0;
+
+    // Kick burst factor, hoisted out of the march (Finding 3): uKick is a
+    // per-pixel constant, so exp(uKick*1.4) is the same value on every one of
+    // up to 77 iterations. Computing it once here and applying it once to the
+    // glow subtotal after the loop is the exact same result — the constant
+    // factor always distributed linearly out of the sum — for one exp() per
+    // pixel instead of 77, and it now reads as a one-shot burst (matching
+    // MazeFlightScene/NeonJungleScene/KifsRoseScene's own kick/flash terms)
+    // instead of looking like it compounds per step.
+    float kickGlow = exp(uKick * 1.4);
+    vec3 glow = vec3(0.0);
 
     for(int iter = 0; iter < 77; iter++){
       if(float(iter) > uMaxSteps) break;
@@ -150,13 +257,18 @@ export const FRAG = /* glsl */ `
       vec4 ph = 1.0 + sin(P.z + log2(k) + vec4(0.0, 1.0, 2.0, 0.0));
       vec3 tint = uShadow + uMid * ph.x + uAccent * ph.y + uGlow * ph.z;
 
-      // accumulate: a beat-synced flash (kick recharges it, decays over the
-      // beat via 6.*F) in the glow colour, plus the structural term
-      o += uGlow * exp(0.7 * k - 6.0 * F + uKick * 1.4)
-         + ph.w * tint / max(d, 1e-3);
+      // accumulate: a beat-synced flash (decays over the beat via 6.*F) in the
+      // glow colour, tracked separately from the structural term so the kick
+      // burst (kickGlow, constant across the march) can be applied once,
+      // after the loop, instead of per-iteration — see Finding 3 above.
+      glow += uGlow * exp(0.7 * k - 6.0 * F);
+      o += ph.w * tint / max(d, 1e-3);
 
       z += 0.8 * d + 1e-3;
     }
+
+    // Kick burst applied once to the accumulated glow subtotal (Finding 3).
+    o += glow * kickGlow;
 
     // mrange's tone map: tanh, then /0.9 for a deliberate slight clip. Then the
     // one edit every ported shader owes the compositor.
@@ -165,11 +277,42 @@ export const FRAG = /* glsl */ `
   }
 `
 
+/**
+ * Beat position for `uBeats` — phase-locked to the engine's real beat grid
+ * (`beatIndex + beatProgress`) rather than integrated from `bpm` alone
+ * (Finding 1). Pure and exported so the lock invariant is unit-testable
+ * without a GL context: see `__tests__/BeatsScene.test.ts`.
+ *
+ * At `mult === 1` (energy 0, `drastic(P.speed)` at its neutral 1) this
+ * returns the grid position exactly — the phase-lock the fix exists for.
+ * Away from 1, `mult` scales how fast the beat position moves relative to
+ * the real grid, same as the old free-running dial did, but now multiplying
+ * the correct baseline instead of a JS clock guessing at the tempo.
+ */
+export function beatsPosition(beatIndex: number, beatProgress: number, mult: number): number {
+  return (beatIndex + beatProgress) * mult
+}
+
+/**
+ * Per-frame rate for the JS-accumulated spin phase (`uSpin`, Finding 2) —
+ * tempo-scaled so the rotation keeps its original beat-relative cadence
+ * (same `bpm > 0 ? bpm : 120` fallback `uBeats` uses), with `mids` widening
+ * the RATE rather than being multiplied against a raw, ever-growing GLSL
+ * value. Reproduces the source's authored `0.1 .. 0.18` coefficient range at
+ * `mids` 0..1 (`0.1 * (1 + 1*0.8) = 0.18`).
+ */
+export function beatsSpinRate(bpm: number, mids: number): number {
+  const effectiveBpm = bpm > 0 ? bpm : 120
+  return (effectiveBpm / 60) * 0.1 * (1 + mids * 0.8)
+}
+
 interface BeatsState {
-  /** Musical time in BEATS, accumulated so a changing tempo/rate stays continuous. */
+  /** Current phase-locked beat position (recomputed from the grid each frame — see {@link beatsPosition}). */
   beats: number
   /** Per-beat flash charge, kicked up by onKick, decaying. */
   kick: number
+  /** XW/YW/ZW rotation phase, JS-accumulated so mids doesn't multiply against an ever-growing beat count (Finding 2). */
+  spin: number
 }
 
 export const BeatsScene = createShaderScene<BeatsState>({
@@ -184,7 +327,7 @@ export const BeatsScene = createShaderScene<BeatsState>({
   pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.2 : 0.7),
   uniforms: () => ({
     uBeats: { value: 0 },
-    uMids: { value: 0 },
+    uSpin: { value: 0 },
     uSphere: { value: 0.2 },
     uEdge: { value: 0.05 },
     uInv: { value: 9 },
@@ -193,21 +336,29 @@ export const BeatsScene = createShaderScene<BeatsState>({
     uKick: { value: 0 },
     uMaxSteps: { value: 77 },
   }),
-  state: () => ({ beats: 0, kick: 0 }),
+  state: () => ({ beats: 0, kick: 0, spin: 0 }),
   update({ u, s, P, st, dt, ctx }) {
-    // T advances in BEATS. The source froze without an audio texture; here it
-    // free-runs at the engine's tempo (120 default before a lock) so a track
-    // with no beat grid still turns rather than sitting dead — the roster's
-    // "frozen reads as broken" rule (cf. KaleidoPulseScene).
-    const bpm = ctx.f.bpm > 0 ? ctx.f.bpm : 120
-    st.beats += dt * (bpm / 60) * (1 + s.energy * 0.4) * drastic(P.speed)
+    // Beat position, phase-locked to the engine's real beat grid rather than
+    // integrated from `bpm` alone (Finding 1 — see the header's "Beat lock,
+    // spin, and kick placement" note). `ctx.f.beatIndex + ctx.f.beatProgress`
+    // free-runs at the engine's own 120-BPM default before a tempo locks (see
+    // `createEmptyFeatures`'s own comment: "the beat grid free-runs at a sane
+    // default ... so idle motion is musical rather than frozen"), so a track
+    // with no beat grid still turns — the roster's "frozen reads as broken"
+    // rule (cf. KaleidoPulseScene) — with no separate fallback needed here.
+    st.beats = beatsPosition(ctx.f.beatIndex, ctx.f.beatProgress, (1 + s.energy * 0.4) * drastic(P.speed))
+
+    // Rotation phase (Finding 2): JS-accumulated from `dt` at a tempo-scaled
+    // rate, mids widening the RATE rather than being multiplied against
+    // `st.beats` in the shader — see `beatsSpinRate`.
+    st.spin += dt * beatsSpinRate(ctx.f.bpm, s.mids) * drastic(P.speed)
 
     if (s.onKick > 0) st.kick = Math.min(1.5, st.kick + s.onKick)
     st.kick *= Math.exp(-dt * 3.5)
 
     u.uBeats.value = st.beats
     u.uKick.value = st.kick
-    u.uMids.value = s.mids
+    u.uSpin.value = st.spin
     // Neutral (no audio) reproduces the source constants: sphere 0.2, edge 0.05.
     u.uSphere.value = 0.2 + s.sub * 0.14
     u.uEdge.value = Math.max(0.015, 0.05 - s.highs * 0.03)
@@ -221,6 +372,33 @@ export const BeatsScene = createShaderScene<BeatsState>({
 
     // The one quality lever: break the march early. quality.knobs.raymarchSteps
     // peaks at 96 (tier 0); complexity rides on top, 0.5 leaving the full 77.
+    //
+    // Finding 4 (audit): kept deliberately, not switched to MazeFlightScene's
+    // "never tier-gate the march" convention, because the two scenes' marches
+    // are not the same shape. MazeFlightScene's march has a HIT TEST (`if (d <
+    // 0.0013*(...) || t > uTMax) break;`) — most pixels converge and stop well
+    // under its step cap on their own, which is exactly why that scene's own
+    // profiling found cutting steps "nearly free" (96->48 ~5%) and moved the
+    // cut to `pixelBudget` instead. This march has NO hit test: every pixel
+    // always runs every step it's given, each one both adding to the glow
+    // accumulator (`o`/`glow` above) AND advancing how far into the 4D lattice
+    // `z` reaches (`p *= k = uInv/dot(p,p)` folds fresh lattice cells in at
+    // every step). Cutting `uMaxSteps` from 77 to the 20-step floor (26%) is
+    // not a softer version of the same image the way a hit-test march's cut
+    // is — it is fewer lattice cells actually visited, i.e. less of the
+    // structure the shader is supposed to be drawing, plus (per Finding 3) a
+    // proportionally smaller `glow` subtotal for `kickGlow` to multiply, so
+    // the kick flash reads weaker on the same beat at low tiers too. That is
+    // a real, visible cost of running this scene at a low tier, not a free
+    // resolution trade — disclosed here rather than fixed blind, per this
+    // scene's own house convention of stating a tradeoff plainly instead of
+    // hiding it behind a number (cf. `sceneCost.ts`'s "estimate, not
+    // measured" header). Reducing real per-tier cost without this visual
+    // consequence would mean removing/cheapening per-iteration ops (the
+    // `dot()`/inversion/min-tree work), not cutting how many of the 77 steps
+    // run — a shader rewrite outside this fix's scope, and one that needs a
+    // rendered A/B to trust, not a guess. Left as `/bench`'s job (see the
+    // header's FORCED LIVE section); `SCENE_COST_MS.beats` is unchanged.
     const qFrac = Math.min(1, quality.knobs.raymarchSteps / 96)
     u.uMaxSteps.value = Math.max(
       20,

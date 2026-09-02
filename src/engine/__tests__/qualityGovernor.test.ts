@@ -700,3 +700,62 @@ describe('quality governor — consecutive-overbudget emergency', () => {
     expect(g.tier).toBe(2)
   })
 })
+
+/**
+ * A commit's own transition must not disqualify a climb (F182).
+ *
+ * `SceneManager` calls `setTransitionDiscount` every frame a crossfade or a
+ * warming candidate is on screen, and `emaMs`/`p95Ms` genuinely run heavier for
+ * that ~0.7-2 s window — TRANSITION_DISCOUNT_TIERS only cuts shader complexity,
+ * it does not make two primaries cost one. Before this fix that reading landed
+ * in the dead zone between `STEP_UP_MEAN_RATIO` and `STEP_DOWN_MEAN_RATIO` (or
+ * worse) and fell into `tick()`'s unconditional `else { goodSince = elapsedSec }`
+ * — so on a show whose scene commits land closer together than
+ * `SETTLE_SEC + CLIMB_HOLD_SEC` (6 s), the climb clock was rearmed by every
+ * single transition and never accumulated the run it needed, however healthy
+ * the machine's steady-state frame time actually was. A real session recording
+ * (123 s, tier 4 throughout, mean 16.7 ms / p95 18.0 ms, zero climbs) is exactly
+ * that signature.
+ */
+describe('quality governor — a transition does not block the climb clock (F182)', () => {
+  it('accumulates steady credit across a transition instead of losing it', () => {
+    const g = governorAt(4)
+    // Steady, well inside SETTLE_SEC of the fresh governor's t=0 clocks.
+    g.tick(16.6, 2.5, 16.7)
+    expect(g.tier).toBe(4) // not yet — only 2.5s of credit, CLIMB_HOLD_SEC is 4
+    // A commit's transition begins: two primaries on screen, discount engaged.
+    // The reading is worse than STEP_UP but not bad enough to demote — the
+    // exact dead-zone signature a crossfade produces.
+    g.setTransitionDiscount(1)
+    g.tick(17.8, 3.0, 21.0)
+    g.tick(17.9, 3.5, 21.5)
+    expect(g.tier).toBe(4) // holding, not climbing — but not reset either
+    // Transition ends; steady resumes. The credit banked before t=3.0 must
+    // still count, so this is 4.5 - 0 = 4.5s > CLIMB_HOLD_SEC, not 4.5 - 3.5.
+    g.setTransitionDiscount(0)
+    g.tick(16.6, 4.5, 16.7)
+    expect(g.tier).toBe(3)
+  })
+
+  it('the pre-fix behaviour for comparison: an UNDISCOUNTED dead-zone reading still resets the clock', () => {
+    // Same shape, minus setTransitionDiscount — proves the dead-zone ticks
+    // themselves are what used to cost the climb, not something else about the
+    // sequence, and that the fix is scoped to the discounted case only.
+    const g = governorAt(4)
+    g.tick(16.6, 2.5, 16.7)
+    g.tick(17.8, 3.0, 21.0)
+    g.tick(17.9, 3.5, 21.5)
+    g.tick(16.6, 4.5, 16.7)
+    expect(g.tier).toBe(4) // still floor: 4.5 - 3.5 = 1s, nowhere near CLIMB_HOLD_SEC
+  })
+
+  it('a genuinely overloaded reading still demotes during a transition — closing this gap must not reopen F116', () => {
+    // Redundant with "survives a tier change while discounting" above by
+    // design: this is the specific invariant the F182 fix must not touch, so
+    // it gets its own explicit assertion here too.
+    const g = governorAt(1)
+    g.setTransitionDiscount(1)
+    g.tick(30, 10, 40)
+    expect(g.tier).toBe(2)
+  })
+})

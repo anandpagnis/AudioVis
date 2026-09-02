@@ -56,7 +56,10 @@ describe('committedMs', () => {
     frameLoad.layers = 3
     frameLoad.effects = 1
     frameLoad.fixed = FIXED
-    expect(committedMs()).toBe(11)
+    // Written against FIXED rather than a bare literal (matches the pattern
+    // already used below at "8 + POST_CHAIN_MS") so this stays correct across
+    // whatever the fixed-cost constants are calibrated to next — see F182.
+    expect(committedMs()).toBe(4 + 3 + 1 + FIXED)
   })
 
   it('counts the second primary during a crossfade', () => {
@@ -105,13 +108,20 @@ describe('the tier ladder survives honest accounting', () => {
     expect(remainingMs(TIER_BUDGET_MS[0])).toBeGreaterThanOrEqual(1)
   })
 
-  it('still runs a heavy primary solo at the bottom tier', () => {
-    // Tier 4's budget is 2 and the fixed cost alone is 3, so a heavy subject is
-    // already over — which is the correct reading: at survival quality the
-    // frame has nothing spare, and layers should be refused.
+  it('leaves a little real headroom for a heavy primary at the bottom tier', () => {
+    // Before F182 this asserted `toBe(0)` — the fixed reservation alone (3 ms,
+    // POST_CHAIN_MS=2 + FEEDBACK_MS=1) already exceeded what a heavy primary
+    // left of tier 4's 6.5 ms budget, so this test *enshrined* the bug the rest
+    // of that investigation fixed: a scene never got to spend a single ms of
+    // tier 4's wallet on a layer or effect, no matter how cheap. F182
+    // recalibrated the fixed reservation against two real sessions' measured
+    // whole-frame GPU cost (never more than ~1.7 ms mean, chain included) down
+    // to POST_CHAIN_MS=0.6 + FEEDBACK_MS=0.3, so a 4 ms primary now genuinely
+    // leaves ~1.6 ms rather than reporting a budget that was never real.
     frameLoad.fixed = FIXED
     frameLoad.primary = 4
-    expect(remainingMs(TIER_BUDGET_MS[4])).toBe(0)
+    expect(remainingMs(TIER_BUDGET_MS[4])).toBe(TIER_BUDGET_MS[4] - (4 + FIXED))
+    expect(remainingMs(TIER_BUDGET_MS[4])).toBeGreaterThan(0)
   })
 
   it('treats a running feedback pass as a real cost', () => {
@@ -209,7 +219,9 @@ describe('applyFrameLoad — attribution', () => {
       ],
       FIXED,
     )
-    expect(committedMs()).toBe(14)
+    // Written against FIXED (see the note above) rather than the literal 14
+    // this summed to under the pre-F182 constants.
+    expect(committedMs()).toBe(4 + 4 + 3 + FIXED)
     expect(remainingMs(TIER_BUDGET_MS[0])).toBe(0)
   })
 })

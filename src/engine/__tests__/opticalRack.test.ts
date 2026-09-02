@@ -6,6 +6,7 @@ import {
   isMirrorActive,
   lensBeatMode,
   lensStyleName,
+  MIRROR_MIX_DEFAULT,
   resolveLensStyle,
   type MirrorRackState,
 } from '../opticalRack'
@@ -53,6 +54,32 @@ describe('isMirrorActive', () => {
     // produce the frame it was given.
     expect(isMirrorActive({ ...inert, tiles: 1 })).toBe(false)
     expect(isMirrorActive({ ...inert, tiles: 2 })).toBe(true)
+  })
+
+  it('defaults `mix` to fully visible when omitted — every existing caller unaffected', () => {
+    // `MirrorRackState.mix` is optional; PostFXChain's transition-rack burst
+    // never sets it and was always instant before this field existed, so "no
+    // opinion" has to mean "fully on", not "off".
+    expect(MIRROR_MIX_DEFAULT).toBe(1)
+    expect(isMirrorActive({ ...inert, segments: 1 })).toBe(true)
+    expect(isMirrorActive({ ...inert, segments: 1, mix: undefined })).toBe(true)
+  })
+
+  it('goes inert once `mix` has fully decayed, even with a shape still set', () => {
+    // The whole point of the fade: `segments` holds its last engaged value
+    // while `mix` eases out, so the pass has to stay gated on `mix` reaching
+    // ~0 rather than on `segments` — which this codebase's fade logic never
+    // zeroes on the way out.
+    expect(isMirrorActive({ ...inert, segments: 1, mix: 0 })).toBe(false)
+    expect(isMirrorActive({ ...inert, twist: 0.5, mix: 0 })).toBe(false)
+  })
+
+  it('stays active while `mix` is still mid-fade', () => {
+    expect(isMirrorActive({ ...inert, segments: 1, mix: 0.3 })).toBe(true)
+  })
+
+  it('mix alone, with no shape at all, is still inert', () => {
+    expect(isMirrorActive({ ...inert, mix: 1 })).toBe(false)
   })
 })
 

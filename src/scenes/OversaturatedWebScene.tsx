@@ -50,6 +50,10 @@ import { drastic } from '../engine/sceneParams'
  * ## Band routing
  *
  *   onKick  -> uShock: strand + node glow surge, brightness punch (decaying)
+ *   sub     -> strand/node glow RADIUS: bias into the bezier/segment and node
+ *              distance fields (`plane()`'s `dd`/`cd`) so the web reads as
+ *              physically swelling thicker on bass, not just brighter --
+ *              distinct from uShock's additive brightness punch above
  *   mids    -> flythrough rate
  *   energy  -> overall luminance / glow gain
  *   highs   -> hex-cell edge glow
@@ -60,6 +64,7 @@ export const FRAG = /* glsl */ `
   uniform float uShock;
   uniform float uEnergy;
   uniform float uHighs;
+  uniform float uBass;      // s.sub -> strand/node glow radius (continuous)
   uniform float uFov;       // fill dial
   uniform float uRoll;      // tilt dial -> static roll, radians
   uniform float uExposure;  // contrast dial -> pre-aces exposure
@@ -242,6 +247,12 @@ export const FRAG = /* glsl */ `
   #else
       float dd = segment(hp, p0, p1);
   #endif
+      // sub-bass biases INTO the distance field itself (not just the glow
+      // multiplier below) -- the strand's effective radius grows with the
+      // bass, so the web reads as physically swelling rather than merely
+      // brightening. Kept well under the node-spacing scale so strands don't
+      // fuse into their neighbours at full bass.
+      dd = max(dd - uBass*0.012, 0.0);
       float gd = abs(dd);
       gd *= sqrt(gd);
       gd = max(gd, 0.0005);
@@ -249,7 +260,7 @@ export const FRAG = /* glsl */ `
     }
 
     {
-      float cd = length(hp-p0);
+      float cd = max(length(hp-p0) - uBass*0.02, 0.0);   // node swells with bass too
       float gd = max(abs(cd)*abs(cd), 0.0005);
       col += 0.0025*sqrt(bcol)/(gd) * (1.0 + uShock*2.0);
     }
@@ -349,6 +360,7 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
     uShock: { value: 0 },
     uEnergy: { value: 0 },
     uHighs: { value: 0 },
+    uBass: { value: 0 },
     uFov: { value: 1 },
     uRoll: { value: 0 },
     uExposure: { value: 1 },
@@ -367,6 +379,7 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
     u.uShock.value = st.shock
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
+    u.uBass.value = s.sub
 
     // Piecewise so slider centre is near the authored look (which is 6 planes,
     // 6 strands, fov 1, roll 0). `complexity`/`density` default a touch under

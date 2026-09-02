@@ -2492,13 +2492,30 @@ export function isSteerable(id: string): boolean {
 }
 
 /**
- * May this scene be made the SUBJECT?
+ * May this scene hold the given role?
  *
- * Deliberately NOT `getScene(id).metadata.roles.includes('primary')`: `getScene`
- * falls back to `SCENES[0]` for an unknown id, and `SCENES[0]` is primary-capable
- * by invariant — so that spelling answers `true` for every typo, which is the
- * opposite of what a guard is for. An id that names no registered scene cannot
- * hold any role.
+ * Deliberately NOT `getScene(id).metadata.roles.includes(role)`: `getScene`
+ * falls back to `SCENES[0]` for an unknown id, so that spelling answers
+ * whatever `SCENES[0]`'s own roles happen to be for every typo — true for
+ * `'primary'` specifically, since that fallback is primary-capable by
+ * invariant, which is the opposite of what a guard is for. An id that names no
+ * registered scene cannot hold any role.
+ *
+ * The one shared check behind every scene picker in the UI (the subject grid,
+ * the layer dropdowns) and behind `store.requestScene`/`setLayer`. A single
+ * function here, rather than each surface re-deriving "is this scene eligible"
+ * its own way, is what keeps them from being able to disagree — see F180,
+ * where exactly that disagreement (a picker offering a scene the store would
+ * refuse) was the bug.
+ */
+export function canHoldRole(id: string, role: SceneRole): boolean {
+  const def = SCENES.find((s) => s.id === id)
+  return def !== undefined && def.metadata.roles.includes(role)
+}
+
+/**
+ * May this scene be made the SUBJECT? `canHoldRole(id, 'primary')`, named for
+ * the call site — every caller here means "can this become the show".
  *
  * Exists because promoting a non-primary scene into the subject slot fails
  * SILENTLY and spectacularly. `effect` scenes are pinned in `SceneManager` as
@@ -2510,8 +2527,7 @@ export function isSteerable(id: string): boolean {
  * caller passes through and is where this is enforced.
  */
 export function canHoldPrimary(id: string): boolean {
-  const def = SCENES.find((s) => s.id === id)
-  return def !== undefined && def.metadata.roles.includes('primary')
+  return canHoldRole(id, 'primary')
 }
 
 /**

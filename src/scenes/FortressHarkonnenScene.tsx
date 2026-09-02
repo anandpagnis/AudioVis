@@ -52,6 +52,11 @@ import { drastic } from '../engine/sceneParams'
  * ## Band routing
  *
  *   onKick  -> uShock: specular pop + overall brightness punch (decaying)
+ *   sub     -> lighting bulge: deepens the fake height term light direction
+ *              is computed from, so the relief reads as pushing toward camera
+ *              on bass (see `gp` in main() — safe hook: it only feeds the two
+ *              light directions, never the fractal field or normal, so it
+ *              cannot destabilise `nfield`'s tuned recursion)
  *   mids    -> zoom/flythrough rate
  *   energy  -> luminance + the `f.z` accent glow
  *   highs   -> tighter, brighter key-light specular
@@ -62,6 +67,7 @@ export const FRAG = /* glsl */ `
   uniform float uShock;    // decaying kick envelope
   uniform float uEnergy;
   uniform float uHighs;
+  uniform float uBass;     // s.sub -> lighting bulge (see main()'s gp)
   uniform float uZoom;     // fill dial
   uniform float uRoll;     // tilt dial -> static frame rotation, radians
   uniform float uContrast; // contrast dial -> S-curve strength
@@ -194,7 +200,12 @@ export const FRAG = /* glsl */ `
     p *= (0.25 + (0.005*timeInPeriod) + pow(1.35, currentPeriod)) * uZoom;
     vec2 c = vec2(-0.5, -0.35);
 
-    vec3 gp = vec3(p.x, 1.0*tanh_approx(1.0 - (length(p))), p.y);
+    // gp is a fake height field used ONLY to aim the two light directions
+    // below -- it never touches nfield/normal, so swelling it with the
+    // sub-bass level is safe: the relief's actual carved geometry is
+    // untouched, but the light rakes across it as though it bulged toward
+    // camera on the bass, reading as the fortress pressing outward on a hit.
+    vec3 gp = vec3(p.x, (1.0 + uBass*0.6)*tanh_approx(1.0 - (length(p))), p.y);
     vec3 lp1 = vec3(-1.0, 1.5, 1.0);
     vec3 ld1 = normalize(lp1 - gp);
     vec3 lp2 = vec3(1.0, 1.5, 1.0);
@@ -253,6 +264,7 @@ export const FortressHarkonnenScene = createShaderScene<HarkonnenState>({
     uShock: { value: 0 },
     uEnergy: { value: 0 },
     uHighs: { value: 0 },
+    uBass: { value: 0 },
     uZoom: { value: 1 },
     uRoll: { value: 0 },
     uContrast: { value: 0.4 },
@@ -271,6 +283,7 @@ export const FortressHarkonnenScene = createShaderScene<HarkonnenState>({
     u.uShock.value = st.shock
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
+    u.uBass.value = s.sub
 
     // Piecewise so slider centre reproduces the authored look: zoom x1,
     // roll 0, contrast S-curve strength 0.4 (the source's baked constant).

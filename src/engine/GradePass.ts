@@ -3,9 +3,10 @@ import { Pass } from 'postprocessing'
 import { FULLSCREEN_VERT } from './glsl'
 import { renderScale } from './renderScale'
 import { exposure } from './exposure'
-import { performanceState } from './performanceState'
+import { approach, performanceState } from './performanceState'
 import { getPalette } from './palettes'
 import { useStore } from '../store'
+import { audioEngine } from '../audio/AudioEngine'
 
 /**
  * The finishing stage: one multiply on the composited frame, driven by the
@@ -263,6 +264,18 @@ const GRADE_FRAG = /* glsl */ `
 `
 
 /**
+ * Absolute ceiling on `uSharpen`, from any combination of sources.
+ *
+ * Past this point CAS stops recovering detail and starts manufacturing edges
+ * of its own (see {@link sharpenForScale}'s own header) — a false edge on a
+ * wireframe scene reads far worse than a soft true one. Named and exported so
+ * every contributor to `uSharpen` (the render-scale ramp below, and the
+ * `sparkle`-driven shimmer term in {@link GradePass.render}) clamps against
+ * the SAME number rather than two copies of `0.85` silently drifting apart.
+ */
+export const CAS_SHARPEN_CEILING = 0.85
+
+/**
  * How hard to sharpen, given the scale the frame was rendered at (F122).
  *
  * Pure and exported because it is the whole tuning surface of the upscale, and
@@ -278,7 +291,56 @@ const GRADE_FRAG = /* glsl */ `
  */
 export function sharpenForScale(scale: number): number {
   if (!isFinite(scale) || scale >= 1) return 0
-  return Math.min(0.85, Math.max(0, (1 - scale) * 1.4))
+  return Math.min(CAS_SHARPEN_CEILING, Math.max(0, (1 - scale) * 1.4))
+}
+
+/**
+ * Ease rate for the `sparkle`-driven shimmer term below — see the render()
+ * comment for why this exists at all. `sparkle` is already adaptively
+ * normalized per-band (BandNormalizer's own attack/release), but that
+ * smoothing is tuned for "does the visualizer feel responsive", not for "is
+ * this a stable input to a sharpening filter" — a filter parameter that moves
+ * every frame reads as texture crawl on a static-looking scene. Matches the
+ * ballpark of `performanceState.approach`'s own camera-distance rate (3) —
+ * fast enough to feel tied to the music within well under a second, slow
+ * enough that a single loud transient can't spike it.
+ */
+const SPARKLE_SHARPEN_EASE_RATE = 4
+
+/**
+ * Ceiling on how much of {@link CAS_SHARPEN_CEILING}'s headroom the `sparkle`
+ * shimmer term may spend, on top of whatever `sharpenForScale` already
+ * contributed. Small on purpose: this is a cosmetic cue, not
+ * a substitute for the reconstruction sharpening exists to do, and the total
+ * is still hard-clamped to `CAS_SHARPEN_CEILING` in `render()` regardless —
+ * this cap is what keeps that clamp from ever being the thing doing the work
+ * (a term that only ever matters via the outer clamp is a term whose own
+ * number is meaningless).
+ */
+const SPARKLE_SHARPEN_MAX = 0.15
+
+/**
+ * Combine the render-scale sharpen base with the sparkle shimmer term.
+ *
+ * Pure and exported for the same reason `sharpenForScale` is: this is the
+ * part of the shimmer feature that actually carries the design — the additive
+ * (not multiplicative) combination, and the fact that the total is clamped to
+ * `CAS_SHARPEN_CEILING` regardless of how each input got there — and it is
+ * checkable with no GPU. `easedSparkle01` is taken already eased toward 0..1:
+ * the raw-value guard and the temporal easing both live in `render()`,
+ * against the live `audioEngine`/`approach` singletons, which is the part
+ * that genuinely needs a frame loop and is deliberately not re-tested here
+ * (see isfFilterPass.test.ts's header for this file's own precedent on
+ * stating rather than faking the GPU-bound half). Still total against a
+ * non-finite/out-of-range input, same discipline as `sharpenForScale` and
+ * `computeValenceArousal` — a NaN reaching a shader uniform is a permanently
+ * blank/broken frame, not a one-frame glitch.
+ */
+export function sharpenWithSparkle(scaleBase: number, easedSparkle01: number): number {
+  const sparkleIn = Number.isFinite(easedSparkle01) ? easedSparkle01 : 0
+  const sparkleTerm = Math.min(1, Math.max(0, sparkleIn)) * SPARKLE_SHARPEN_MAX
+  const baseIn = Number.isFinite(scaleBase) ? scaleBase : 0
+  return Math.min(CAS_SHARPEN_CEILING, Math.max(0, baseIn) + sparkleTerm)
 }
 
 export class GradePass extends Pass {
@@ -286,6 +348,10 @@ export class GradePass extends Pass {
   private readonly fsScene: THREE.Scene
   private readonly quadGeometry: THREE.PlaneGeometry
   private readonly orthoCamera: THREE.OrthographicCamera
+  /** Eased copy of `f.sparkle` for the shimmer term — see render()'s comment
+   *  on why the raw per-frame band value is never read straight into a
+   *  visual parameter. */
+  private easedSparkle = 0
 
   constructor() {
     super('GradePass')
@@ -316,8 +382,15 @@ export class GradePass extends Pass {
     renderer: THREE.WebGLRenderer,
     inputBuffer: THREE.WebGLRenderTarget | null,
     outputBuffer: THREE.WebGLRenderTarget | null,
+    deltaTime?: number,
   ): void {
     if (!inputBuffer) return
+    // deltaTime is optional on the base Pass signature (same guard FeedbackPass
+    // uses for its own wobble clock) — a backgrounded-tab resume or a
+    // context-restore frame can hand back something non-finite, and letting
+    // that poison `easedSparkle` would leave the shimmer term stuck at
+    // whatever it last eased toward for the rest of the session.
+    const dt = Number.isFinite(deltaTime) ? (deltaTime as number) : 0
     // Read the servo here rather than being pushed a value: this pass is the
     // only consumer, and going through the singleton means a context loss that
     // resets exposure reaches the shader on the very next frame.
@@ -340,7 +413,44 @@ export class GradePass extends Pass {
     // the most reconstruction. Capped below 1 deliberately: past about 0.85 CAS
     // stops recovering detail and starts drawing its own edges, and a false
     // edge on a wireframe scene is worse than a soft real one.
-    u.uSharpen.value = sharpenForScale(renderScale.applied)
+    //
+    // A small `sparkle`-driven shimmer term rides on top of this same uniform
+    // rather than getting its own pass or its own uniform.
+    // `sparkle` (AudioFeatures.sparkle — mean magnitude 16 kHz-Nyquist) was
+    // computed every frame and read only by the debug/analytics panels; CAS's
+    // negative-lobe unsharp is, by construction, a HIGH-FREQUENCY-DETAIL
+    // emphasis filter, so nudging it from a literal high-frequency-energy
+    // reading is a more honest "shimmer" cue than it might look at first
+    // glance — turning up the same knob that already exists to recover high
+    // frequencies, in response to there being more of them in the source.
+    //
+    // Reusing `uSharpen` rather than introducing a new uniform/pass keeps this
+    // inside the file's no-new-GLSL, no-new-fullscreen-draw discipline (see
+    // this file's own header on F110/F122). The alternative this bundle's
+    // brief also sanctioned — nudging Bloom's `luminanceThreshold` in
+    // PostFXChain.tsx — was rejected: that uniform is a DIRECTOR-owned dial
+    // (`performanceState.bloomThreshold`, single-writer by convention, see
+    // performanceState.ts's header), so an audio-reactive nudge would need to
+    // land inside PostFXChain's own useFrame and read as a second, competing
+    // writer on the same value the director layer already claims outright.
+    // `uSharpen` has no such owner — GradePass computes 100% of it already —
+    // so adding a second additive contributor here is a strictly local change
+    // with no cross-layer contract to reason about.
+    //
+    // Raw `sparkle` is clamped defensively (BandNormalizer's own doc gives no
+    // hard ceiling) and eased locally via `approach` before it ever reaches a
+    // visual parameter — see SPARKLE_SHARPEN_EASE_RATE's own doc for why a
+    // per-band-normalized value still isn't smooth enough for this use. The
+    // additive term is capped at SPARKLE_SHARPEN_MAX (0.15) and the TOTAL is
+    // still hard-clamped to CAS_SHARPEN_CEILING (0.85, the same ceiling
+    // `sharpenForScale` itself never exceeds) — so a native-resolution frame
+    // (base 0) can pick up at most a gentle 0.15 of shimmer, and the frame
+    // already at the render-scale ramp's own cap can add nothing further.
+    const rawSparkle = Number.isFinite(audioEngine.features.sparkle)
+      ? Math.min(1, Math.max(0, audioEngine.features.sparkle))
+      : 0
+    this.easedSparkle = approach(this.easedSparkle, rawSparkle, SPARKLE_SHARPEN_EASE_RATE, dt)
+    u.uSharpen.value = sharpenWithSparkle(sharpenForScale(renderScale.applied), this.easedSparkle)
     ;(u.uTexel.value as THREE.Vector2).set(1 / inputBuffer.width, 1 / inputBuffer.height)
     this.material.uniforms.tDiffuse.value = inputBuffer.texture
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)

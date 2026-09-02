@@ -108,6 +108,38 @@ describe('computeValenceArousal — valence axis', () => {
     expect(mostPositive).toBeLessThanOrEqual(1)
     expect(mostNegative).toBeGreaterThanOrEqual(-1)
   })
+
+  it('reads more positive when moodsValid and moods.happy is high', () => {
+    const base = { scale: '' as const, centroid: 0.5, spectralFlatness: 0.5 }
+    const happy = computeValenceArousal(
+      f({ ...base, moodsValid: true, moods: { happy: 1, aggressive: 0, party: 0, relaxed: 0 } }),
+    ).valence
+    const neutral = computeValenceArousal(f(base)).valence
+    expect(happy).toBeGreaterThan(neutral)
+  })
+
+  it('ignores moods.happy while moodsValid is false — absent classifier costs nothing', () => {
+    // Same F168 contract MoodEstimator's partyBonus already relies on: a
+    // stale/zeroed moods object must not silently read as "sad" nor a
+    // leftover high `happy` from before the worker died read as "happy".
+    const base = { scale: '' as const, centroid: 0.5, spectralFlatness: 0.5 }
+    const withStaleHappy = computeValenceArousal(
+      f({ ...base, moodsValid: false, moods: { happy: 1, aggressive: 0, party: 0, relaxed: 0 } }),
+    ).valence
+    const withoutMoods = computeValenceArousal(f(base)).valence
+    expect(withStaleHappy).toBeCloseTo(withoutMoods, 10)
+  })
+
+  it('keeps the happy term smaller than the mode term at full deflection', () => {
+    // Bundle C's design constraint: a second, softer vote on the same axis,
+    // not a co-equal one — see VALENCE_HAPPY_WEIGHT's own doc.
+    const base = { scale: '' as const, centroid: 0.5, spectralFlatness: 0.5 }
+    const happyOnly = computeValenceArousal(
+      f({ ...base, moodsValid: true, moods: { happy: 1, aggressive: 0, party: 0, relaxed: 0 } }),
+    ).valence
+    const majorOnly = computeValenceArousal(f({ ...base, scale: 'major' })).valence
+    expect(happyOnly).toBeLessThan(majorOnly)
+  })
 })
 
 describe('computeValenceArousal — totality', () => {

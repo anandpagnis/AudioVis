@@ -45,18 +45,37 @@ import { isFeedbackActive } from './feedbackParams'
  * each is cheap individually but they are all fullscreen-derived, and the chain
  * runs whatever else is on screen.
  *
- * **ESTIMATE — not measured.** `/bench` deliberately excludes the post chain so
- * that scene costs compare cleanly, which means the one constant cost in every
- * frame is the one number never measured. Measuring it is the obvious next
- * benchmark task; see F43 and F90 in docs/ISSUES.md.
+ * **ESTIMATE — still not a `/bench` measurement.** `/bench` deliberately
+ * excludes the post chain so that scene costs compare cleanly; see F43 and F90
+ * in docs/ISSUES.md for actually measuring it.
  *
- * 2 ms is the old `medium` unit reading carried across at the exchange rate the
- * rest of the ladder now uses (tier 0 was 11 units and is 11 ms). Sanity check
- * against the sweep: `plasma` renders a full particle field for 0.87 ms on this
- * GPU, so 2 ms buys roughly two fullscreen-equivalents — about right for a
- * nine-level mip pyramid plus two cheap passes, and deliberately not generous.
+ * ## Recalibrated downward (F182), against two real session-log GPU traces
+ *
+ * The old value (2 ms) was the pre-F90 `medium` unit reading carried across
+ * unchanged — reasoned from a single scene's GPU cost (`plasma` at 0.87 ms),
+ * never checked against a measured POST CHAIN cost because none existed. Two
+ * session recordings now give one: the GPU timer brackets the *entire* frame
+ * (`GPU_TIMER_BEGIN/END_PRIORITY` in PerfMonitor.tsx span every pass, scene
+ * included), and across both sessions that whole-frame GPU cost — scene, post
+ * chain, feedback and any live racks together — never averaged more than
+ * 1.70 ms:
+ *
+ *     session A (123 s, tier 4 throughout): mean gpuMs 1.45, p95 3.12, GPU
+ *       share of frame time 9% (wall-clock mean 16.7 ms, almost entirely CPU)
+ *     session B (154 s, climbed to tier 3): mean gpuMs 1.70, GPU share 10%
+ *
+ * The old reservation for the fixed chain ALONE (`POST_CHAIN_MS + FEEDBACK_MS
+ * = 3`) already exceeded the ENTIRE measured frame's GPU cost, scene included,
+ * in both sessions — which is what let `frameLoad.fixed` alone (4.7 ms after
+ * `fillScale`) consume most of tier 4's 6.5 ms wallet before a scene was even
+ * considered. `POST_CHAIN_MS` is set here so the fixed chain claims roughly
+ * half of session B's mean whole-frame GPU cost (the higher and more recent of
+ * the two figures, so the estimate stays conservative rather than optimistic),
+ * leaving the other half-plus for the scene itself and any optical racks — the
+ * things this reservation is not supposed to be pricing. Still deliberately
+ * not generous: real measurement (F90) may yet show it should be lower still.
  */
-export const POST_CHAIN_MS = 2
+export const POST_CHAIN_MS = 0.6
 
 /**
  * Internal megapixels every fixed-cost constant in this file is quoted at.
@@ -111,9 +130,11 @@ export function fillScale(internalMP: number): number {
  * excludes the whole post chain today (see the caveat above), and this pass
  * did not exist when that decision was made. A warp-sample fullscreen pass is
  * lighter than bloom's nine-tap mip pyramid, and the copy draw is close to
- * free — hence half the post chain's reservation.
+ * free — hence half {@link POST_CHAIN_MS}'s reservation, same ratio kept
+ * across F182's recalibration of the pair against the two sessions' measured
+ * GPU traces documented on that constant.
  */
-export const FEEDBACK_MS = 1
+export const FEEDBACK_MS = 0.3
 
 /**
  * The feedback pass's reservation for a given `trails` value.

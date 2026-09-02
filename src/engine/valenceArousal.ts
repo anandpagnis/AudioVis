@@ -57,9 +57,17 @@ import type { AudioFeatures } from '../audio/types'
  * (major/minor — the textbook valence correlate, and the most direct one
  * available; contributes 0 when undetected rather than guessing), spectral
  * centroid (bright reads positive, dark reads negative — the second most
- * common MER valence feature after mode), and spectral flatness inverted
+ * common MER valence feature after mode), spectral flatness inverted
  * (tonal/harmonic content reads more positive than noisy/distorted content —
- * a texture cue independent of loudness or brightness).
+ * a texture cue independent of loudness or brightness), and a small
+ * `moods.happy` nudge from the MusiCNN mood head (`moodsValid`-gated —
+ * absent-classifier reads 0, the same additive-with-neutral-fallback contract
+ * `moods.party` already uses in `MoodEstimator`'s `partyBonus`). Kept
+ * deliberately smaller than the mode term: mode is a direct, well-established
+ * MER correlate backed by music theory, while a mood classifier's "happy"
+ * head is a second, softer opinion on the same axis this function already
+ * estimates from scale/centroid/flatness — a corroborating vote, not a
+ * co-equal one.
  *
  * Every weight below is a judgement call, not a fitted parameter — there is
  * no labelled dataset behind it, unlike `MoodEstimator`'s corpus-calibrated
@@ -94,6 +102,18 @@ const VALENCE_MODE_MAGNITUDE = 0.35
 const VALENCE_BRIGHTNESS_WEIGHT = 0.5
 /** Valence contribution range from spectral flatness (texture), inverted. */
 const VALENCE_HARMONICITY_WEIGHT = 0.35
+/**
+ * Valence contribution from `moods.happy` (0..1, MusiCNN mood head).
+ *
+ * Deliberately well under `VALENCE_MODE_MAGNITUDE` (0.35): this is a second,
+ * softer read on the same axis the mode/centroid/flatness terms already
+ * estimate, not an independent axis of its own — see the module header. Also
+ * small enough that even at every term maxed in the same direction the
+ * pre-existing `clamp11` below is doing the only bounding needed; this term
+ * cannot by itself push valence anywhere the other three terms don't already
+ * reach.
+ */
+const VALENCE_HAPPY_WEIGHT = 0.2
 
 function clamp01(x: number): number {
   return Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0
@@ -135,8 +155,13 @@ export function computeValenceArousal(f: AudioFeatures, tension = 0): ValenceAro
   const modeTerm = f.scale === 'major' ? VALENCE_MODE_MAGNITUDE : f.scale === 'minor' ? -VALENCE_MODE_MAGNITUDE : 0
   const brightnessTerm = (centroid - 0.5) * 2 * VALENCE_BRIGHTNESS_WEIGHT
   const harmonicityTerm = (0.5 - flatness) * 2 * VALENCE_HARMONICITY_WEIGHT
+  // moodsValid-gated, additive-with-neutral-fallback (F168's contract, same as
+  // `moods.party` in MoodEstimator's partyBonus): 0 until the voice worker's
+  // classifier has produced a real read, so an absent/not-yet-loaded model
+  // costs this axis nothing rather than reading as "unhappy".
+  const happyTerm = f.moodsValid ? clamp01(f.moods.happy) * VALENCE_HAPPY_WEIGHT : 0
 
-  const valence = clamp11(modeTerm + brightnessTerm + harmonicityTerm)
+  const valence = clamp11(modeTerm + brightnessTerm + harmonicityTerm + happyTerm)
 
   return { valence, arousal }
 }

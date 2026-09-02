@@ -191,7 +191,17 @@ export function PerformanceDirector() {
     // exactly the "transitions when it doesn't need to" complaint. The drop
     // itself (`songSection.boundaryChanged` on the build→drop commit) still
     // gets through below.
-    if (f.structureValid && f.songSection.isBuild && !f.songSection.boundaryChanged) return
+    //
+    // `isSustain`, not `isBuild`: SectionTracker.ts sets
+    // `s.dropExpected = buildConfirmed` and `s.isSustain = s.isBuild ||
+    // s.dropExpected`, so today the two fields are identical every frame and
+    // this is a behavior-preserving no-op — but `isSustain`'s own doc on
+    // SongSectionMomentum defines it as "hold discretionary transitions",
+    // which is this call site's own intent, not something `isBuild` alone
+    // ever promised. Should `dropExpected` gain a source independent of
+    // `buildConfirmed`, this keeps holding for the right reason. Same fix
+    // applied at AutoPilot.tsx:360, for the identical reason.
+    if (f.structureValid && f.songSection.isSustain && !f.songSection.boundaryChanged) return
 
     // With a real structure read, a latched boundary replaces the blind
     // 16-beat timer; without one, the timer is the degraded fallback.

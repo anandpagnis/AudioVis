@@ -635,9 +635,42 @@ export class QualityGovernor {
         this.lastChangeAt = elapsedSec
         this.goodSince = elapsedSec
       }
-    } else {
+    } else if (this.discount <= 0) {
       this.goodSince = elapsedSec
     }
+    // While `this.discount > 0` this tick falls into neither branch above —
+    // hold `goodSince` exactly where it was rather than resetting it (F182).
+    //
+    // ## A commit's own transition was silently disqualifying every climb
+    //
+    // `frameSampler.ts` exists specifically so the governor "never measures a
+    // known one-off" — a scene commit's crossfade is real load and the display
+    // still reports it, but it is not evidence about STEADY-STATE cost, which
+    // is the only thing this axis should respond to. That rule was wired into
+    // the p95 input (`FrameSampler.suspend`) and into the raw-frame emergency
+    // path above (`if (this.discount > 0) { this.consecutiveOverbudget = 0 }`)
+    // — but never into this smoothed path. `emaMs` is computed in
+    // `PerfMonitor.tsx` as a plain EMA over every frame with no knowledge of
+    // `frameSampler`'s suspension at all, so a crossfade's doubled fill cost
+    // (TRANSITION_DISCOUNT_TIERS only halves the shader-complexity half of
+    // that, not the fact that two primaries are drawing) reliably lands `emaMs`
+    // in the dead zone between `STEP_UP_MEAN_RATIO` and `STEP_DOWN_MEAN_RATIO`
+    // for roughly `crossfadeDuration` (0.7-2 s) around every single commit —
+    // which used to fall straight into the `else` above and reset `goodSince`.
+    //
+    // A session recording (`audiovis-session-2026-08-31-*`, 123 s, all
+    // `appliedTier: 4`, **zero climbs the entire session**) is exactly this: it
+    // measured `mean 16.7 ms / p95 18.0 ms / effective fps 59.8` — genuinely
+    // steady, comfortably inside `STEP_UP_MEAN_RATIO`'s ~17.5 ms line — and
+    // `mean gpuMs 1.45 / p95 3.12`, a GPU share of only 9% of the frame. There
+    // was nothing overloaded to shed and nothing forcing it back to the floor;
+    // it simply never accumulated `CLIMB_HOLD_SEC` (4 s) of uninterrupted
+    // "steady" between scene changes, because every commit's own transition
+    // re-armed the clock before it got there. The demote branch above is left
+    // untouched on purpose — `quality governor — transition discount ›
+    // "survives a tier change while discounting"` pins that a genuinely bad
+    // reading must still shed load even mid-crossfade; only the false-negative
+    // that blocked CLIMBING is closed here.
   }
 
   /**

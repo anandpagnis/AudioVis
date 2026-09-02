@@ -19,7 +19,9 @@ import {
   lensForSection,
   MIRROR_OFF,
   mirrorForSection,
+  shouldRepickMirror,
   trailsTarget,
+  visualTensionFloor,
   type MirrorTarget,
 } from './opticalDirector'
 import { quality } from './quality'
@@ -46,6 +48,45 @@ const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
  * pair that never budges, not the normal exit; see the re-decision guard below.
  */
 const MIRROR_MAX_PHRASES = 3
+
+/**
+ * Phrases an ENGAGED mirror pick must hold before a `tensionMoved`-only
+ * signal is allowed to re-decide it downward — see `shouldRepickMirror`'s doc
+ * for why `tensionMoved` specifically needs this and `sectionChange`/`stale`/
+ * `moodMoved` do not. 1 means the pick survives the very next phrase edge
+ * unconditionally (the one a drop's brief tension spike would otherwise hit,
+ * since the spike is long gone by then) and becomes eligible for a
+ * tension-triggered re-decision from the phrase edge after that — i.e. it is
+ * guaranteed at least one full held phrase (~7-8s at typical tempos) before
+ * tension alone can end it, well short of the `MIRROR_MAX_PHRASES` backstop
+ * above.
+ */
+const MIRROR_MIN_HOLD_PHRASES = 1
+
+/**
+ * `approach()` rate for `p.mirror.mix` — the fold's VISIBILITY, as distinct
+ * from `segments`/`tiles` (counts, still snapped) and `twist`/`slice`
+ * (already-eased magnitudes at rate 0.9, ~1.1s time constant). `approach()`
+ * is `1 - exp(-delta * rate)`, so the time constant is `1 / rate`: 1/0.45 ≈
+ * 2.2s, in the middle of a natural ~2-3s fade in and out. Slower than
+ * `twist`/`slice` deliberately — those are a physical quantity (radians of
+ * swirl) easing itself back to nothing, `mix` is the whole effect's presence
+ * fading, which reads better held a bit longer.
+ */
+const MIRROR_MIX_RATE = 0.45
+
+/**
+ * Minimum `f.songSection.sectionConfidence` (see `SectionTracker.ts`; ranges
+ * roughly 0.45-0.9 once `structureValid`, lower while stale) before a
+ * drop/breakdown read is trusted enough to force the dramatic `dipToBlack`/
+ * `smear` transition style. Below it, a section-boundary transition falls
+ * through to the normal/default style instead of a forced dramatic one on a
+ * noisy read. 0.5 sits above the ~0.45 a session's first-ever section read
+ * gets (still uncertain — nothing has been confirmed by a repeat yet) and
+ * comfortably below what a track accrues after even one prior boundary
+ * (~0.6), so it filters early/stale reads without touching an established one.
+ */
+const SECTION_BOUNDARY_MIN_CONFIDENCE = 0.5
 
 /**
  * Arousal above which the camera earns an EXTRA re-pick every phrase, on top
@@ -189,9 +230,16 @@ export function PerformanceStateBridge() {
     // structure read is absent.
     const structureTension =
       f.structureValid && f.songSection.isBuild ? 0.45 + f.songSection.buildProgress * 0.5 : 0
+    // A small floor tied to overall mood intensity, not gated on build/predict/
+    // structure like the three terms above — see visualTensionFloor's doc.
+    // Without it a session that never reaches `building` mood sits at
+    // visualTension ~0 for its entire runtime and the mirror/lens eligibility
+    // gates (opticalDirector.ts) essentially never open outside `hot` moods.
+    const baselineTension = visualTensionFloor(m.level)
     p.visualTension = Math.min(
       1,
-      Math.max(buildTension, predictionTension, structureTension) + (f.drop ? 0.5 : 0),
+      Math.max(buildTension, predictionTension, structureTension, baselineTension) +
+        (f.drop ? 0.5 : 0),
     )
 
     // Continuous valence/arousal, published once here for every downstream
@@ -274,6 +322,11 @@ export function PerformanceStateBridge() {
         // of the mood's own top preference rather than being steered away
         // from it by the previous scene's unrelated framing.
         sceneChanged ? null : lastCameraShot.current,
+        // Danceability narrows how often the rotation window re-samples —
+        // see pickCameraMode's own doc for why this and AROUSAL_CUT_THRESHOLD
+        // above are deliberately two separate knobs on either side of the
+        // same "when does a re-pick happen" question.
+        f.danceability,
       )
       lastCameraShot.current = CAMERA_MODE_SHOT[p.cameraMode]
       // A section boundary is the one moment a hard angle jump reads as
@@ -384,13 +437,22 @@ export function PerformanceStateBridge() {
       // `isBreakdown` here mean "we just entered a drop/breakdown", not
       // "we are generally in one". No structure read at all degrades to the
       // original behaviour: every section change forces dipToBlack.
-      lastBoundaryType.current = !f.structureValid
-        ? 'generic'
-        : f.songSection.isDrop
-          ? 'drop'
-          : f.songSection.isBreakdown
-            ? 'breakdown'
-            : 'generic'
+      //
+      // Also gated on `sectionConfidence`: a low-confidence read (the very
+      // first section of a set, or a stale analyzer — see SectionTracker.ts)
+      // forcing the dramatic dipToBlack/smear style on what might not
+      // actually be a drop/breakdown reads as a noise-driven jarring cut, not
+      // a musical one. Below the threshold this falls through to 'generic' —
+      // the same "no strong signal" path an absent structure read already
+      // takes — rather than forcing the dramatic style on a guess.
+      lastBoundaryType.current =
+        !f.structureValid || f.songSection.sectionConfidence < SECTION_BOUNDARY_MIN_CONFIDENCE
+          ? 'generic'
+          : f.songSection.isDrop
+            ? 'drop'
+            : f.songSection.isBreakdown
+              ? 'breakdown'
+              : 'generic'
     }
     // A section boundary is an instant; the scene change that should punctuate it
     // commits on the next downbeat, up to a bar later. So the override is a
@@ -452,13 +514,30 @@ export function PerformanceStateBridge() {
       // beat-to-beat jitter — bucketed to a fifth), or it has already run the
       // backstop's worth of phrases with neither moving. That is what makes
       // "ends on a proper change in mood or energy" true instead of aspirational.
+      //
+      // A `tensionMoved` trigger specifically is also held back for at least
+      // `MIRROR_MIN_HOLD_PHRASES` phrases while a pick is engaged — see
+      // shouldRepickMirror's doc. Without it, a drop's brief tension spike
+      // (0.6s) decays well before the NEXT phrase edge, so `tensionMoved`
+      // fires there too and tears the engagement the drop just caused right
+      // back down one phrase later.
       const tensionBucket = Math.round(p.visualTension * 5)
       const moodMoved = m.state !== mirrorMoodAtPick.current
       const tensionMoved = tensionBucket !== mirrorTensionAtPick.current
       mirrorPhrasesHeld.current++
       const stale = mirrorPhrasesHeld.current >= MIRROR_MAX_PHRASES
       const nothingToInterrupt = mirrorTarget.current.mode === 'off'
-      if (f.sectionChange || nothingToInterrupt || moodMoved || tensionMoved || stale) {
+      const repick = shouldRepickMirror({
+        sectionChange: f.sectionChange,
+        nothingToInterrupt,
+        moodMoved,
+        tensionMoved,
+        stale,
+        currentlyEngaged: !nothingToInterrupt,
+        phrasesHeld: mirrorPhrasesHeld.current,
+        minHoldPhrases: MIRROR_MIN_HOLD_PHRASES,
+      })
+      if (repick) {
         // The whole rack, not just the segment count. `tiles`, `twist` and
         // `slice` were previously written by nothing but the debug panel, so
         // three of the mirror's five controls were dead in a running show.
@@ -493,13 +572,46 @@ export function PerformanceStateBridge() {
     // come on screen — mid-section, if that is when the scene change lands —
     // rather than waiting out whatever the previous scene's section chose.
     const mt = mirrorTarget.current
-    p.mirror.segments = rackSuppressed ? 0 : mt.segments
-    p.mirror.tiles = rackSuppressed ? 0 : mt.tiles
+    const mirrorVisible = !rackSuppressed && mt.mode !== 'off'
+    // `segments`/`tiles` still snap rather than ease — that part of the old
+    // comment was right, a fractional segment count means nothing. What was
+    // wrong is snapping them to ZERO the instant a re-decision picks
+    // MIRROR_OFF: that made the fold vanish in the exact frame the decision
+    // changed, with nothing eased at all. Now they only snap to a NEW shape
+    // when there is one (`mt.mode !== 'off'`); when a re-decision goes to
+    // off, they hold their last engaged value and `mix` below alone fades the
+    // fold out — once `mix` reaches 0 the blend is the untouched frame
+    // regardless of what `segments` is still sitting at underneath, so
+    // nothing downstream needs to know it was never actually reset.
+    // `rackSuppressed` stays instant for both, unchanged from before: F131's
+    // whole point is that an excluded scene drops the rack immediately, not
+    // over a multi-second fade that would double up on the scene's own
+    // kaleidoscopic geometry for a couple of seconds.
+    if (rackSuppressed) {
+      p.mirror.segments = 0
+      p.mirror.tiles = 0
+    } else if (mt.mode !== 'off') {
+      p.mirror.segments = mt.segments
+      p.mirror.tiles = mt.tiles
+    }
     p.mirror.twist = approach(p.mirror.twist, rackSuppressed ? 0 : mt.twist, 0.9, f.delta)
     p.mirror.slice = approach(p.mirror.slice, rackSuppressed ? 0 : mt.slice, 0.9, f.delta)
     // Spin scales with level on top of the section's base, so a kaleidoscope
-    // breathes with the music rather than turning at a constant rate.
+    // breathes with the music rather than turning at a constant rate. Already
+    // snaps to 0 the instant MIRROR_OFF is picked (spin: 0 there), which is
+    // fine and not part of this fade: a frozen-orientation fold fading out
+    // via `mix` below reads better than one still visibly spinning while it
+    // dissolves, and even if it kept turning, `mix` approaching 0 hides
+    // whatever it would contribute — see MirrorPass's `mix(original,
+    // mirrored, uMix)`.
     p.mirror.spin = rackSuppressed ? 0 : mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
+    // The fold's VISIBILITY, eased independently of the counts/magnitudes
+    // above — see MIRROR_MIX_RATE's doc for the ~2.2s time constant this
+    // gives a rise and a fall. `rackSuppressed` is instant here too, for the
+    // same F131 reason as `segments`/`tiles`.
+    p.mirror.mix = rackSuppressed
+      ? 0
+      : approach(p.mirror.mix ?? 0, mirrorVisible ? 1 : 0, MIRROR_MIX_RATE, f.delta)
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human drag a value in the debug panel and see it,
@@ -523,6 +635,9 @@ export function PerformanceStateBridge() {
       p.mirror.twist = dbg.mirrorTwist
       p.mirror.slice = dbg.mirrorSlice
       p.mirror.spin = dbg.mirrorSpin
+      // A human dragging a slider should see it immediately — not wait out
+      // whatever the autonomous fade above happened to leave `mix` at.
+      p.mirror.mix = 1
       p.lens.amount = dbg.lensAmount
       p.lens.style = dbg.lensStyle
       // The style for the NEXT change. SceneManager captures it at commit, so

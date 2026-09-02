@@ -3,7 +3,10 @@ import {
   lensAmountTarget,
   lensForSection,
   mirrorForSection,
+  MIRROR_TENSION_FLOOR_WEIGHT,
+  shouldRepickMirror,
   trailsTarget,
+  visualTensionFloor,
 } from '../opticalDirector'
 import { LENS_STYLES } from '../opticalRack'
 import type { MoodState } from '../../audio/types'
@@ -365,5 +368,112 @@ describe('the lens rack — habituation (audit c1)', () => {
     for (let seed = 0; seed < 20; seed++) {
       expect(lensForSection('silence', seed, FRESH)).toBe(-1)
     }
+  })
+})
+
+/**
+ * The mirror/lens gates read `p.visualTension`, and the build/predict/
+ * structure terms feeding it are all GATED — a session that never reaches
+ * `building` mood sat at visualTension ~0 for its whole runtime, and the
+ * mirror's mood gate (mellow > 0.3, warm > 0.08, everything else > 0.4)
+ * essentially never opened outside `hot` moods. This floor is the fix; these
+ * tests are about its SHAPE, not just its existence — it has to help without
+ * trivializing.
+ */
+describe('visualTensionFloor', () => {
+  it('is zero at zero level', () => {
+    expect(visualTensionFloor(0)).toBe(0)
+  })
+
+  it('rises with level', () => {
+    expect(visualTensionFloor(1)).toBeGreaterThan(visualTensionFloor(0.5))
+    expect(visualTensionFloor(0.5)).toBeGreaterThan(visualTensionFloor(0))
+  })
+
+  it('clears the warm gate (0.08) on its own once level is meaningfully up', () => {
+    // groove/building at a real, if unremarkable, intensity — not a quiet passage.
+    expect(visualTensionFloor(0.5)).toBeGreaterThan(0.08)
+  })
+
+  it('never clears the mellow gate (0.3) on its own, even at maximum level', () => {
+    // The whole point: this term widens `warm`'s low bar without making
+    // `mellow` or the catch-all "everything else" gate (0.4) trivially true —
+    // those still need a real build/prediction/structure signal alongside it.
+    expect(visualTensionFloor(1)).toBeLessThan(0.3)
+  })
+
+  it('stays in range for any input, including nonsense', () => {
+    for (const level of [-1, 0, 0.5, 1, 4, NaN, Infinity, -Infinity]) {
+      const v = visualTensionFloor(level)
+      expect(v, `level ${level}`).toBeGreaterThanOrEqual(0)
+      expect(v, `level ${level}`).toBeLessThanOrEqual(MIRROR_TENSION_FLOOR_WEIGHT)
+    }
+  })
+})
+
+/**
+ * The min-hold guard on the mirror's phrase-edge re-decision (F134 already
+ * gated the re-decision itself on sectionChange/moodMoved/tensionMoved/stale;
+ * this is a narrower gate on `tensionMoved` alone). User complaint this
+ * exists to fix: the mirror "doesn't hold — it disappears fast", traced to a
+ * drop's brief `+0.5` visualTension spike (0.6s) decaying well before the
+ * NEXT phrase edge, so `tensionMoved` fires again there and tears the
+ * engagement the drop just caused right back down one phrase later.
+ */
+describe('shouldRepickMirror', () => {
+  const base = {
+    sectionChange: false,
+    nothingToInterrupt: false,
+    moodMoved: false,
+    tensionMoved: false,
+    stale: false,
+    currentlyEngaged: true,
+    phrasesHeld: 2,
+    minHoldPhrases: 1,
+  }
+
+  it('sectionChange always repicks, even mid-hold', () => {
+    expect(shouldRepickMirror({ ...base, sectionChange: true, phrasesHeld: 1 })).toBe(true)
+  })
+
+  it('stale always repicks, even mid-hold', () => {
+    expect(shouldRepickMirror({ ...base, stale: true, phrasesHeld: 1 })).toBe(true)
+  })
+
+  it('moodMoved always repicks, even mid-hold', () => {
+    expect(shouldRepickMirror({ ...base, moodMoved: true, phrasesHeld: 1 })).toBe(true)
+  })
+
+  it('nothingToInterrupt (off -> on) always repicks', () => {
+    expect(
+      shouldRepickMirror({ ...base, nothingToInterrupt: true, currentlyEngaged: false, phrasesHeld: 0 }),
+    ).toBe(true)
+  })
+
+  it('the exact drop-tearing-down case: tensionMoved alone, one phrase after engaging, is held', () => {
+    // phrasesHeld is post-increment: 1 means "this is the first phrase edge
+    // since the pick that just engaged" — exactly the edge a drop's spike
+    // decays before.
+    expect(shouldRepickMirror({ ...base, tensionMoved: true, phrasesHeld: 1 })).toBe(false)
+  })
+
+  it('tensionMoved alone repicks once the minimum hold has actually passed', () => {
+    expect(shouldRepickMirror({ ...base, tensionMoved: true, phrasesHeld: 2 })).toBe(true)
+  })
+
+  it('does not hold back tensionMoved when nothing is currently engaged', () => {
+    // No live look to protect — this mirrors nothingToInterrupt's own carve-out.
+    expect(
+      shouldRepickMirror({
+        ...base,
+        tensionMoved: true,
+        currentlyEngaged: false,
+        phrasesHeld: 1,
+      }),
+    ).toBe(true)
+  })
+
+  it('with nothing moved and not stale, holds', () => {
+    expect(shouldRepickMirror({ ...base, phrasesHeld: 1 })).toBe(false)
   })
 })

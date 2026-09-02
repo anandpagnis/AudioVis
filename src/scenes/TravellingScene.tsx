@@ -434,6 +434,7 @@ export const FRAG = /* glsl */ `
     vec3 col = effect(p, q);
     col += smoothstep(3.0, 0.0, TIME);
     col = postProcess(col, q);
+    col *= 1.0 + uKick * 0.5;              // onKick -> brightness pop
 
     gl_FragColor = vec4(col*uFade, 1.0);
   }

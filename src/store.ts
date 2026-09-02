@@ -6,7 +6,7 @@ import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
 import { startRecording, stopRecording } from './engine/recorder'
-import { canHoldPrimary, getSceneContract, preloadScene, resolveSceneMode } from './scenes'
+import { canHoldPrimary, canHoldRole, getSceneContract, preloadScene, resolveSceneMode } from './scenes'
 import {
   resolveSceneParams,
   sanitizeSceneParams,
@@ -775,6 +775,16 @@ export const useStore = create<AppState>()(
 
       setLayer: (role, id, opts) => {
         if (id === get().sceneId) id = null
+        // A scene not authored for this role must never be mounted in it.
+        // `effect` scenes aren't the black-frame risk here (a layer mount uses
+        // the ROLE passed in, not the scene's own declared role, so `slotProgress`
+        // stays 0 and `effectEnvelope` never even enters it — see F180's
+        // `role === 'effect'` branch) — the risk here is a scene rendering
+        // unbudgeted and out of visual grammar: `shock`'s ring is authored to
+        // flash and vanish, not sit as a permanent background wash, and it was
+        // never priced or profiled for that. Same choke-point pattern as
+        // `requestScene`'s `canHoldPrimary` guard.
+        if (id !== null && !canHoldRole(id, role)) return
         const s = get()
         if (s.layerSceneIds[role] === id) return // no-op; don't restamp the dwell
         // Minimum dwell for automatic changes, mirroring requestScene's floor

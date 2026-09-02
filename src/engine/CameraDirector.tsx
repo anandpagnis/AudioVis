@@ -191,6 +191,43 @@ export function sameShot(a: CameraShotTag | null | undefined, b: CameraShotTag |
 const DEFAULT_MODES: CameraMode[] = ['hover']
 
 /**
+ * Beats between a mode-rotation re-pick at zero/unreadable danceability —
+ * one phrase, and the value this file used unconditionally before this
+ * constant existed. Every existing caller (every test in
+ * CameraDirector.test.ts/moodSignals.test.ts, and PerformanceStateBridge's
+ * live call, none of which pass `danceability`) is therefore bit-for-bit
+ * unaffected by the parameter below.
+ */
+const MODE_ROTATION_PERIOD_BEATS = 16
+/** Narrowest the rotation window may go, at the top of the observed
+ *  danceability range — half a phrase, so a highly danceable passage still
+ *  reads as a rotation, not a strobe. */
+const MODE_ROTATION_PERIOD_BEATS_MIN = 8
+
+/**
+ * Degenerate-read guard and empirical normalization range for the RAW
+ * Essentia `danceability` read (`AudioFeatures.danceability` — its own doc:
+ * "raw Essentia DFA, NOT renormalized"). Mirrors MoodEstimator.ts's own
+ * `DANCE_*` block value-for-value, which derived these numbers from the same
+ * measured corpus (~7.8 for a four-on-the-floor beat with bass, ~0.6 for a
+ * beatless pad, ~97 on white noise / near-silence) — duplicated here rather
+ * than imported because those constants are private to that module's own
+ * `groove` mood bonus, and exporting them solely to share three numbers would
+ * imply a coupling between "biases a mood score" and "narrows a camera
+ * rotation cadence" that doesn't actually exist.
+ */
+const DANCE_DEGENERATE_CEILING = 12
+const DANCE_LO = 1.0
+const DANCE_SPAN = 5.0
+
+/** Raw danceability -> 0..1, 0 for unreadable/degenerate input. See the
+ *  constants' own doc above. */
+function normalizedDanceability(raw: number): number {
+  if (!Number.isFinite(raw) || raw <= 0 || raw >= DANCE_DEGENERATE_CEILING) return 0
+  return Math.min(1, Math.max(0, (raw - DANCE_LO) / DANCE_SPAN))
+}
+
+/**
  * Choose how to shoot the current scene.
  *
  * Pure and exported for tests: this decides the whole look of a section and,
@@ -218,6 +255,21 @@ export function pickCameraMode(
    * unaffected by leaving this unset).
    */
   avoidShot?: CameraShotTag | null,
+  /**
+   * RAW `AudioFeatures.danceability`. Narrows the `beatIndex` rotation window
+   * below — see {@link MODE_ROTATION_PERIOD_BEATS} — so a highly danceable
+   * passage re-samples its top two framing fits more often than a calm one
+   * holding the same mood for a whole section, the same "more motion for more
+   * energy" idea PerformanceStateBridge.tsx's own `AROUSAL_CUT_THRESHOLD`
+   * already applies to WHETHER a re-pick happens at all. That gate lives on
+   * the other side of the seam (PerformanceStateBridge.tsx decides WHEN to
+   * call this function; this parameter only changes what a call does once it
+   * fires) — PerformanceStateBridge.tsx's own call site now passes
+   * `f.danceability` through. Normalized locally via
+   * {@link normalizedDanceability} rather than trusted raw. Defaults to 0, so
+   * any OTHER caller that doesn't pass it stays a no-op.
+   */
+  danceability = 0,
 ): CameraMode {
   const declared = modes && modes.length > 0 ? modes : DEFAULT_MODES
   const tense = tension > TENSION_THRESHOLD && !TENSION_EXEMPT.includes(mood)
@@ -229,7 +281,12 @@ export function pickCameraMode(
 
   const ranked = preference.filter((mode) => declared.includes(mode))
   if (ranked.length === 0) return declared[0]
-  const rotated = ranked[Math.floor(Math.max(0, beatIndex) / 16) % Math.min(2, ranked.length)]
+  const danceNorm = normalizedDanceability(danceability)
+  const rotationPeriod = Math.round(
+    MODE_ROTATION_PERIOD_BEATS -
+      danceNorm * (MODE_ROTATION_PERIOD_BEATS - MODE_ROTATION_PERIOD_BEATS_MIN),
+  )
+  const rotated = ranked[Math.floor(Math.max(0, beatIndex) / rotationPeriod) % Math.min(2, ranked.length)]
   if (!avoidShot || !sameShot(CAMERA_MODE_SHOT[rotated], avoidShot)) return rotated
   // The natural pick would repeat the on-screen framing. Take the first
   // ranked candidate (in the mood's own preference order, not the rotation)

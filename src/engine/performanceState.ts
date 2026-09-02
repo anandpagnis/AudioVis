@@ -326,7 +326,7 @@ export const performanceState: PerformanceState = {
   vignette: 0.85,
   fog: 0,
   trails: 0,
-  mirror: { segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 },
+  mirror: { segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0, mix: 0 },
   lens: { amount: 0, style: 0 },
   rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0 },
   transitionStyle: 'dissolve',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sharpenForScale } from '../GradePass'
+import { CAS_SHARPEN_CEILING, sharpenForScale, sharpenWithSparkle } from '../GradePass'
 
 describe('sharpenForScale', () => {
   it('sharpens nothing at native resolution', () => {
@@ -31,5 +31,42 @@ describe('sharpenForScale', () => {
       expect(Number.isFinite(v)).toBe(true)
       expect(v).toBeGreaterThanOrEqual(0)
     }
+  })
+})
+
+describe('sharpenWithSparkle — Bundle C1 shimmer term', () => {
+  it('adds nothing at zero sparkle, on any base', () => {
+    expect(sharpenWithSparkle(0, 0)).toBe(0)
+    expect(sharpenWithSparkle(0.5, 0)).toBe(0.5)
+  })
+
+  it('rises monotonically with the eased sparkle read', () => {
+    const at = [0, 0.25, 0.5, 0.75, 1].map((s) => sharpenWithSparkle(0, s))
+    for (let i = 1; i < at.length; i++) expect(at[i]).toBeGreaterThan(at[i - 1])
+  })
+
+  it('caps its own contribution well under the ceiling on a native (zero-base) frame', () => {
+    // A native frame has a render-scale base of 0 — sparkle alone must stay a
+    // gentle cue, not sharpen a frame that had nothing to reconstruct up to
+    // the same intensity a heavily-downscaled frame would need.
+    expect(sharpenWithSparkle(0, 1)).toBeLessThan(0.2)
+  })
+
+  it('never exceeds CAS_SHARPEN_CEILING even at both inputs maxed', () => {
+    expect(sharpenWithSparkle(CAS_SHARPEN_CEILING, 1)).toBeLessThanOrEqual(CAS_SHARPEN_CEILING)
+    expect(sharpenWithSparkle(10, 10)).toBeLessThanOrEqual(CAS_SHARPEN_CEILING)
+  })
+
+  it('clamps an out-of-range or non-finite sparkle read rather than propagating it', () => {
+    for (const bad of [-5, 2, NaN, Infinity, -Infinity]) {
+      const v = sharpenWithSparkle(0.2, bad)
+      expect(Number.isFinite(v)).toBe(true)
+      expect(v).toBeGreaterThanOrEqual(0)
+      expect(v).toBeLessThanOrEqual(CAS_SHARPEN_CEILING)
+    }
+  })
+
+  it('never returns a negative amount even on a negative base', () => {
+    expect(sharpenWithSparkle(-1, 0)).toBe(0)
   })
 })

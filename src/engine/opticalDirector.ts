@@ -113,6 +113,38 @@ export const MIRROR_OFF: MirrorTarget = {
 }
 
 /**
+ * A visual-tension floor tied to overall mood intensity, folded into
+ * `p.visualTension` alongside the build / predicted-peak / song-structure
+ * terms (`PerformanceStateBridge`, where `visualTension` is computed). Those
+ * three are all GATED — building mood, a predicted peak, a confirmed
+ * song-structure build — so a session that never reaches `building` mood
+ * sits at `visualTension` ~0 for its entire runtime, and the mirror/lens
+ * eligibility gates below (`mellow` > 0.3, `groove`/`building` > 0.08,
+ * everything else > 0.4) essentially never open outside `hot` moods — see the
+ * "mirror/lens racks are also starved" open item.
+ *
+ * `level` is `MoodMomentum.level` — slow-smoothed overall intensity, already
+ * 0..1 and already read in that same frame for `mirror.spin` and `trails`, so
+ * this adds no new signal to the frame, only a new use of one already there.
+ *
+ * The weight is deliberately small: at `level` == 1 the term tops out at
+ * `MIRROR_TENSION_FLOOR_WEIGHT`, which sits BELOW the `mellow` threshold
+ * (0.3) — so on its own this floor can never clear `mellow`'s gate or the
+ * catch-all "everything else" gate (0.4), only combine with a real
+ * build/prediction/structure term to do that. It only ever clears the LOW
+ * `warm` threshold (0.08) by itself, and only once `level` is above roughly
+ * 0.32 — a genuinely energised passage, not a quiet one. That is the intended
+ * shape: widen eligibility for the moods that were structurally starved
+ * without making every mood behave like `peak`.
+ */
+export const MIRROR_TENSION_FLOOR_WEIGHT = 0.25
+
+export function visualTensionFloor(level: number): number {
+  const l = Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : 0
+  return l * MIRROR_TENSION_FLOOR_WEIGHT
+}
+
+/**
  * The mirror rack's whole state for a section.
  *
  * ## Why this returns five fields and not one
@@ -237,6 +269,63 @@ export function mirrorForSection(
     default:
       return MIRROR_OFF
   }
+}
+
+/**
+ * The phrase-edge re-decision GUARD for the mirror rack (F134 established the
+ * re-decision itself — see `PerformanceStateBridge`'s phrase-edge block —
+ * this is a narrower gate inside it). `sectionChange` and `stale` stay
+ * immediate, unconditional triggers: a section boundary is the one
+ * unambiguous "the music changed" signal, and the staleness backstop exists
+ * specifically for a mood/tension pair that never budges — neither should be
+ * held back. `moodMoved` also stays immediate: mood is comparatively slow and
+ * stable, so a genuine mood change is a real reason to reconsider.
+ * `nothingToInterrupt` (off -> on) stays immediate too — there is no live
+ * look to cut short by committing to one.
+ *
+ * `tensionMoved` is the one gated, because it is the noisy, fast-moving
+ * signal — especially right after a drop. `f.drop`'s `+0.5` visualTension
+ * spike lasts 0.6s (see `EffectDirector`/`dropCommit.test.ts`), well under
+ * one phrase (16 beats, a handful of seconds at any normal tempo), so by the
+ * NEXT phrase edge the spike that likely just caused an engagement has
+ * already decayed — the tension bucket check reads as "tension moved" again,
+ * and without this guard that tears the engagement straight back down one
+ * phrase after the drop that caused it. So a `tensionMoved`-only trigger is
+ * ignored while the current pick is engaged (`mode !== 'off'`) and has held
+ * for `minHoldPhrases` phrases or fewer. The caller reuses the same
+ * `mirrorPhrasesHeld` counter `stale` reads — it already tracks "phrases
+ * since the last pick", which is exactly "phrases since this engagement
+ * began" whenever that pick engaged the rack — so no second counter is
+ * needed.
+ */
+export function shouldRepickMirror(input: {
+  sectionChange: boolean
+  /** The current pick (before this decision) is `MIRROR_OFF` — nothing live to hold. */
+  nothingToInterrupt: boolean
+  moodMoved: boolean
+  tensionMoved: boolean
+  /** `mirrorPhrasesHeld` has reached the backstop (`MIRROR_MAX_PHRASES`). */
+  stale: boolean
+  /** Whether the CURRENT pick (before this decision) is engaged — `mode !== 'off'`. */
+  currentlyEngaged: boolean
+  /** `mirrorPhrasesHeld`, post-increment — the same counter `stale` is computed from. */
+  phrasesHeld: number
+  /** Phrases an engaged pick must hold before `tensionMoved` alone can re-decide it. */
+  minHoldPhrases: number
+}): boolean {
+  const {
+    sectionChange,
+    nothingToInterrupt,
+    moodMoved,
+    tensionMoved,
+    stale,
+    currentlyEngaged,
+    phrasesHeld,
+    minHoldPhrases,
+  } = input
+  const heldMinimum = !currentlyEngaged || phrasesHeld > minHoldPhrases
+  const tensionMovedTrigger = tensionMoved && heldMinimum
+  return sectionChange || nothingToInterrupt || moodMoved || tensionMovedTrigger || stale
 }
 
 /**

@@ -295,6 +295,55 @@ describe('CAMERA_MODE_SHOT — the shot taxonomy (audit c5)', () => {
   })
 })
 
+describe('pickCameraMode — danceability-narrowed rotation cadence (Bundle C2)', () => {
+  // 'groove' ranks orbit ahead of hover among these two declared modes (see
+  // MODE_PREFERENCE.groove), so the rotation alternates between exactly them.
+  const modes: CameraMode[] = ['orbit', 'hover']
+
+  it('is unaffected when danceability is omitted or zero — every existing call site', () => {
+    for (const beat of [0, 8, 16, 24, 32]) {
+      expect(pickCameraMode(modes, 'groove', 0, beat)).toBe(
+        pickCameraMode(modes, 'groove', 0, beat, 0, null, 0),
+      )
+    }
+  })
+
+  it('narrows the rotation period so beat 8 already flips at high danceability', () => {
+    // At the default 16-beat period, beat 8 is still inside the FIRST window
+    // (floor(8/16) === 0). A highly danceable read must narrow far enough
+    // that beat 8 falls in the SECOND window instead — the two picks differ.
+    const calm = pickCameraMode(modes, 'groove', 0, 8, 0, null, 0)
+    const danceable = pickCameraMode(modes, 'groove', 0, 8, 0, null, 6)
+    expect(calm).toBe('orbit')
+    expect(danceable).toBe('hover')
+  })
+
+  it('never narrows the rotation past the eight-beat floor', () => {
+    // Beyond raw 6.0 (DANCE_LO + DANCE_SPAN) the normalization is already
+    // saturated at 1, so a much hotter reading must land on the exact same
+    // pick as 6.0 rather than narrowing further.
+    const atSaturation = pickCameraMode(modes, 'groove', 0, 8, 0, null, 6)
+    const wellPastSaturation = pickCameraMode(modes, 'groove', 0, 8, 0, null, 11.9)
+    expect(wellPastSaturation).toBe(atSaturation)
+  })
+
+  it('treats a degenerate or non-finite reading as unreadable — falls back to the default cadence', () => {
+    // Matches AudioFeatures.danceability's own doc: white noise / near-silence
+    // reads ~97, which must not be trusted as "extremely danceable".
+    for (const bad of [97, -5, NaN, Infinity, 0]) {
+      expect(pickCameraMode(modes, 'groove', 0, 8, 0, null, bad)).toBe('orbit')
+    }
+  })
+
+  it('never returns a mode outside the declared list at any danceability reading', () => {
+    for (const dance of [0, 1, 6, 12, 97, -3, NaN]) {
+      for (const beat of [0, 8, 16, 24]) {
+        expect(modes).toContain(pickCameraMode(modes, 'groove', 0, beat, 0, null, dance))
+      }
+    }
+  })
+})
+
 describe('sameShot', () => {
   it('is true only when both size and angle match', () => {
     expect(sameShot({ size: 'medium', angle: 'eye' }, { size: 'medium', angle: 'eye' })).toBe(true)

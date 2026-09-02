@@ -188,20 +188,25 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // to DISABLED_SCENES or take further cuts — it is live on an estimate.
   harkonnen: [3.5, 3.2, 2.4, 2.0, 1.6],
 
-  // `beats` (mrange's "4D Beats", Shadertoy CC0) — NOT /bench-measured, and
-  // this row is a fabricated CEILING rather than an estimate. The scene is a
+  // `beats` (mrange's "4D Beats", Shadertoy CC0) — NOT /bench-measured. This
+  // row now reflects the worst-case estimate the scene's own prior comment
+  // already stated, not a fabricated pass-the-test ceiling: the scene is a
   // 77-step 4D raymarch with NO early ray termination — every pixel runs the
   // full march accumulating glow — so op-count against `kifs` (2.97 ms at
   // tier 0, ~20 iters WITH an escape that spares most pixels) says the true
-  // tier-0 cost is likely 2-4x the 3.8 below. 3.8 is the largest value that
-  // still clears `slotBudget.test.ts`'s tier-0 `< sceneBudget(0)/2` (~4 ms)
-  // bar; it exists so the scene can be forced live by request, NOT because it
-  // is believed. The tier taper tracks the two levers that do move: `uMaxSteps`
-  // off `quality.knobs.raymarchSteps` (96/72/54/40/28), and the `pixelBudget`
-  // step (1.2 MP tiers 0-1, 0.7 MP below). NOT run through {@link
-  // SCENE_COST_MODEL}. ACTION: run `/bench`; if tier 0 lands at or above ~4 ms,
-  // cut the step count hard or move `beats` back to DISABLED_SCENES.
-  beats: [3.8, 3.0, 1.9, 1.4, 1.0],
+  // tier-0 cost is likely 2-4x the old fabricated 3.8. Priced at the 4x end of
+  // that stated range (15.2), with the rest of the row scaled by the same 4x
+  // factor rather than re-guessed, so the taper still tracks the two levers
+  // that actually move it: `uMaxSteps` off `quality.knobs.raymarchSteps`
+  // (96/72/54/40/28), and the `pixelBudget` step (1.2 MP tiers 0-1, 0.7 MP
+  // below). Still NOT run through {@link SCENE_COST_MODEL} — that requires a
+  // real multi-resolution measurement, and this is still a guess, just an
+  // honest one. ACTION: run `/bench` and replace this with a measurement; at
+  // 15.2 ms tier 0 it already fails `slotBudget.test.ts`'s
+  // `< sceneBudget(0)/2` (~4 ms) admission bar (see that test's failure for
+  // the real consequence) — cut the step count hard, drop `pixelBudget`
+  // further, or move `beats` back to DISABLED_SCENES.
+  beats: [15.2, 12.0, 7.6, 5.6, 4.0],
 
   // `web` (mrange's "Oversaturated web", Shadertoy CC0, deriv. of BigWing's
   // `lscczl`) — NOT /bench-measured. Estimate, not a fabricated ceiling like
@@ -222,21 +227,29 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   web: [3.4, 3.1, 2.1, 1.6, 1.2],
 
   // `travelling` (mrange's "Moving without travelling", Shadertoy CC0) — NOT
-  // /bench-measured, and this row is off by MORE than any other estimate in
-  // this file: ~5-7x. It is the heaviest shader in the roster. Per pixel it
-  // steps 4 planes, and each plane runs one `warp()` plus a 4-tap
-  // finite-difference `normal()` (= 5 warps), where every `warp()` is an eye
-  // SDF + a kaleidoscope fold + 5 `fbm()` (4 octaves). ~100 fbm + ~24 eye SDFs
-  // per pixel. Against `kifs` (2.97 ms at tier 0, ~160 heavy ops/px) the true
-  // tier-0 cost is ~20-30 ms, ~10-15 ms even at the survival tier. 3.9 is a
-  // CEILING that clears `slotBudget.test.ts` and nothing more — the budget
-  // model WILL over-pick this and the governor claws back after the transition.
-  // `compatibleWith: []` bounds it to that one mis-schedule. Taper tracks the
-  // `pixelBudget` step (1.0 MP tiers 0-1, 0.6 MP below) and `uOctaves`
-  // (governor 4->2). NOT run through {@link SCENE_COST_MODEL}. ACTION: cut
-  // `normal()` to a 2-tap, drop `furthest` 4->2, then /bench — or move
-  // `travelling` to DISABLED_SCENES.
-  travelling: [3.9, 3.6, 2.6, 2.0, 1.6],
+  // /bench-measured. This row now reflects the worst-case estimate the
+  // scene's own prior comment already stated, not a fabricated pass-the-test
+  // ceiling. It is the heaviest shader in the roster: per pixel it steps 4
+  // planes, and each plane runs one `warp()` plus a 4-tap finite-difference
+  // `normal()` (= 5 warps), where every `warp()` is an eye SDF + a
+  // kaleidoscope fold + 5 `fbm()` (4 octaves) — ~100 fbm + ~24 eye SDFs per
+  // pixel. Against `kifs` (2.97 ms at tier 0, ~160 heavy ops/px) the prior
+  // comment put the true cost at ~20-30 ms at tier 0, ~10-15 ms even at the
+  // survival tier — this row now uses the worst end of both: 30 at tier 0, 15
+  // at tier 4, with tiers 1-3 interpolated between them on a taper shape
+  // (front-loaded drop, easing toward the floor) matched to the other heavy,
+  // pixelBudget/quality-knob-gated rows this file actually measured (`plasma`,
+  // `pointcloud`), not a bare linear guess. `compatibleWith: []` still bounds
+  // the damage to one bad transition — the budget model will still over-pick
+  // this at a tier that no longer admits it (see `slotBudget.test.ts`'s
+  // failure for the real consequence) and the governor claws back after.
+  // Taper tracks the `pixelBudget` step (1.0 MP tiers 0-1, 0.6 MP below) and
+  // `uOctaves` (governor 4->2). Still NOT run through {@link
+  // SCENE_COST_MODEL} — that requires a real multi-resolution measurement,
+  // and this is still a guess, just an honest one. ACTION: cut `normal()` to
+  // a 2-tap, drop `furthest` 4->2, then /bench — or move `travelling` to
+  // DISABLED_SCENES.
+  travelling: [30.0, 27.0, 22.0, 18.0, 15.0],
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PALETTE_VA, pickPalette } from '../AutoPilot'
+import { PALETTE_VA, pickPalette, pickPaletteWithRecall } from '../AutoPilot'
 
 /**
  * The bug this guards: palette used to change only when the current one was
@@ -127,6 +127,61 @@ describe('pickPalette — VA-weighted rotation (audit c8)', () => {
     // a foreign id rather than throwing.
     const pool = ['aurora', 'made-up-id']
     expect(() => pickPalette(pool, 'violet', '', '', 0, PALETTE_VA.solar)).not.toThrow()
+  })
+})
+
+describe('pickPaletteWithRecall — repetitionLabel structure recall', () => {
+  it('recalls a palette recorded earlier under the same label instead of a fresh pick', () => {
+    const map = new Map<string, string>()
+    // First visit to "A": no recall yet, falls through to a fresh pick, and
+    // that pick is recorded under the label.
+    const first = pickPaletteWithRecall(GROOVE, 'aurora', '', '', 0, 'A', map)
+    expect(first).not.toBeNull()
+    expect(map.get('A')).toBe(first)
+
+    // Later, on a different current palette, the label recurs — recall should
+    // win over whatever the rotation would otherwise pick at this index.
+    const other = GROOVE.find((id) => id !== first)!
+    const recalled = pickPaletteWithRecall(GROOVE, other, '', '', 5, 'A', map)
+    expect(recalled).toBe(first)
+  })
+
+  it('never recalls the palette already showing — falls through instead', () => {
+    const map = new Map<string, string>([['A', 'aurora']])
+    const pick = pickPaletteWithRecall(GROOVE, 'aurora', '', '', 0, 'A', map)
+    expect(pick).not.toBe('aurora')
+  })
+
+  it('refuses to recall a palette outside the current mood pool (appropriateness gate)', () => {
+    // "solar" was recorded under "A" while some earlier, hotter mood pool was
+    // active; the pool passed in now (AMBIENT) does not contain it, so the
+    // recall must not leak an inappropriate palette through.
+    const map = new Map<string, string>([['A', 'solar']])
+    const pick = pickPaletteWithRecall(AMBIENT, 'ocean', '', '', 0, 'A', map)
+    expect(pick).not.toBe('solar')
+    expect(AMBIENT).toContain(pick)
+  })
+
+  it('falls through to a fresh pick, unaffected, when the label is empty', () => {
+    const map = new Map<string, string>()
+    const withRecall = pickPaletteWithRecall(GROOVE, 'aurora', '', '', 3, '', map)
+    const bare = pickPalette(GROOVE, 'aurora', '', '', 3)
+    expect(withRecall).toBe(bare)
+    expect(map.size).toBe(0)
+  })
+
+  it('records the fresh pick under a new label for next time', () => {
+    const map = new Map<string, string>()
+    const pick = pickPaletteWithRecall(GROOVE, 'aurora', '', '', 2, 'B', map)
+    expect(map.get('B')).toBe(pick)
+  })
+
+  it('keeps separate labels independent', () => {
+    const map = new Map<string, string>()
+    const a = pickPaletteWithRecall(GROOVE, 'aurora', '', '', 0, 'A', map)
+    const b = pickPaletteWithRecall(GROOVE, 'aurora', '', '', 1, 'B', map)
+    expect(map.get('A')).toBe(a)
+    expect(map.get('B')).toBe(b)
   })
 })
 

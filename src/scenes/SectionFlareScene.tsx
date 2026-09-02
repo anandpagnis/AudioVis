@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
@@ -27,6 +27,14 @@ import { effectEnvelope } from './effectEnvelope'
  * across one axis multiplied by a slow exponential falloff along the other,
  * which is the standard closed-form way to draw a soft directional beam
  * without a loop or a raymarch.
+ *
+ * ## Band routing: energy, captured once
+ *
+ * `energy` sets how bright THIS flare reads, sampled once on the rising edge
+ * into the `effect` role — same discipline as `ShockRingScene` / the seed
+ * capture in `TransientSparkScene` — and held for the whole 1.8s firing so it
+ * doesn't reshape as the mix moves underneath it mid-flare. A section change
+ * during a loud passage flares harder than one during a quiet one.
  */
 
 const CORE_SHARPNESS = 9.0
@@ -39,6 +47,8 @@ export const FRAG = /* glsl */ `
 
   uniform vec2 uRes;
   uniform vec3 uColor;
+  /** Section-change loudness (energy), captured once on the rising edge. */
+  uniform float uStrength;
   uniform float uFade;
 
   void main(){
@@ -53,7 +63,7 @@ export const FRAG = /* glsl */ `
     float beamV = exp(-(uv.x * uv.x) * ${STREAK_CROSS_SHARPNESS.toFixed(1)})
                 * exp(-abs(uv.y) * ${STREAK_ALONG_FALLOFF.toFixed(2)});
 
-    vec3 color = uColor * (core * 1.5 + (beamH + beamV) * 1.15);
+    vec3 color = uColor * (core * 1.5 + (beamH + beamV) * 1.15) * uStrength;
     gl_FragColor = vec4(color * uFade, 1.0);
   }
 `
@@ -61,6 +71,9 @@ export const FRAG = /* glsl */ `
 export function SectionFlareScene() {
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
+  const wasEffect = useRef(false)
+  /** Captured energy strength, held for the whole firing — see header. */
+  const strength = useRef(1)
 
   const material = useMemo(
     () =>
@@ -74,6 +87,7 @@ export function SectionFlareScene() {
         uniforms: {
           uRes: { value: new THREE.Vector2(1, 1) },
           uColor: { value: new THREE.Color('#ffffff') },
+          uStrength: { value: 1 },
           uFade: { value: 0 },
         },
       }),
@@ -87,10 +101,22 @@ export function SectionFlareScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ col, vis, role, slotProgress }) => {
+  useSceneFrame(({ b, col, vis, role, slotProgress }) => {
     const u = material.uniforms
     u.uColor.value.copy(col.accent)
-    u.uFade.value = role === 'effect' ? vis * effectEnvelope(slotProgress) : vis
+
+    // Re-sample exactly once per firing — the rising edge into the effect
+    // role — same discipline as ShockRingScene / TransientSparkScene's seed
+    // capture. energy is the declared band: how loud this section change
+    // reads. 0.7..1.4, neutral-ish at a moderate level.
+    const isEffect = role === 'effect'
+    if (isEffect && !wasEffect.current) {
+      strength.current = 0.7 + Math.min(1, b.energy) * 0.7
+    }
+    wasEffect.current = isEffect
+    u.uStrength.value = strength.current
+
+    u.uFade.value = isEffect ? vis * effectEnvelope(slotProgress) : vis
   })
 
   return (

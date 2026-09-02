@@ -25,12 +25,21 @@ import { drastic } from '../engine/sceneParams'
  *
  *   speed dial + mids   -> turn rate (was a fixed TIME*spin)
  *   onKick              -> glint burst + a brief line-width bloom, decaying
+ *   sub                 -> hub swell (the crystal's central anchor point)
  *   energy              -> crystal brightness + arm-length swell
  *   highs               -> glint amplitude + more sparkle in the star dust
+ *
+ * `sub` had nowhere to go until now — every arm/branch dimension in this SDF
+ * is either a dial or a decaying kick burst. The hub ring (`r - 0.09`, the
+ * point all six arms spring from) is the one feature with no dial bound to it
+ * at all, so a continuous bass level swelling it reads as "the crystal's
+ * heart breathing with the bass" instead of competing with `onKick`'s existing
+ * stroke-width flash or `energy`'s arm-length swell.
  *
  * ## Band routing
  *
  *   onKick  -> uShock: glint flash + line bloom (decaying)
+ *   sub     -> hub ring radius (continuous swell, distinct from uShock)
  *   mids    -> turn rate
  *   energy  -> crystal / arm swell
  *   highs   -> glints + snow-dust sparkle
@@ -48,6 +57,7 @@ export const FRAG = /* glsl */ `
   uniform float uTint;     // contrast dial -> ice colour
   uniform float uEnergy;
   uniform float uHighs;
+  uniform float uBass;     // s.sub -> hub ring swell (continuous)
   uniform float uShock;    // decaying kick envelope
 
   #define PI 3.14159265
@@ -86,10 +96,13 @@ export const FRAG = /* glsl */ `
       float bl = uBranch * 0.22 * (1.0 - bx / armLen);
       d = min(d, seg(p, vec2(bx, 0.0), vec2(bx, 0.0) + bdir * bl));
     }
-    // hexagonal plates along the arm, and the central hub
+    // hexagonal plates along the arm, and the central hub -- the one feature
+    // with no dial of its own, so the sub-bass level swells its radius: the
+    // crystal's anchor point breathes continuously with the bass, distinct
+    // from uShock's transient stroke-width bloom below.
     d = min(d, abs(length(p - vec2(0.34, 0.0)) - 0.05));
     d = min(d, abs(length(p - vec2(0.6, 0.0)) - 0.035));
-    d = min(d, abs(r - 0.09));
+    d = min(d, abs(r - (0.09 + uBass * 0.05)));
 
     // a kick briefly widens the strokes, so the whole flake blooms on the hit
     float w = 0.012 * (1.0 + uShock * 0.6);
@@ -133,6 +146,7 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
     uTint: { value: 0.5 },
     uEnergy: { value: 0 },
     uHighs: { value: 0 },
+    uBass: { value: 0 },
     uShock: { value: 0 },
   }),
   state: () => ({ angle: 0, shock: 0 }),
@@ -150,6 +164,7 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
     u.uShock.value = st.shock
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
+    u.uBass.value = s.sub
 
     // Piecewise so each dial's neutral 0.5 lands on the source's authored
     // default: arms 6, branch 0.6, zoom 1.0, tint 0.5.

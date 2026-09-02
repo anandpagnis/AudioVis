@@ -7186,6 +7186,209 @@ things a curator will hit and should not have to rediscover.
       paths. Neither models a human clicking a chip, which is the one path that
       bypassed role entirely.
 
+- [x] **F181a · `beats` rendered a black frame — duplicate `uniform float uKick;`** —
+      `src/scenes/BeatsScene.tsx`.
+
+      `BeatsScene.tsx`'s own `FRAG` string declared `uniform float uKick;`,
+      already declared by `createShaderScene.tsx`'s `SHADER_SCENE_PRELUDE`
+      (its "decaying envelope per drum" block, alongside `uSnare`/`uHihat`).
+      The factory concatenates `PRELUDE + include + FRAG` as plain strings
+      with no dedup, so the compiled fragment shader had `uniform float
+      uKick;` twice at global scope. GLSL rejects that as a duplicate
+      declaration; the shader failed to compile and the scene rendered a
+      silent black frame — no JS error, invisible to typecheck/lint/build/
+      vitest, since none of them invoke the GL compiler. Fixed by deleting
+      the redundant declaration from `BeatsScene.tsx`; the uniform is still
+      used in the shader body and still bound from JS via the scene's
+      `uniforms: () => ({ uKick: ... })` factory call, both untouched.
+
+- [ ] **F181b · `beats` and `travelling`'s honestly-priced `SCENE_COST_MS`
+      rows now fail `slotBudget.test.ts`'s tier-0 admission bar — their true
+      cost genuinely does not fit** — `src/engine/sceneCost.ts:209` (`beats`),
+      `src/engine/sceneCost.ts:252` (`travelling`),
+      `src/engine/__tests__/slotBudget.test.ts:79-88`.
+
+      Both rows' own comments admitted they were fabricated to clear
+      `slotBudget.test.ts`'s tier-0 `< sceneBudget(0)/2` (~4 ms) admission
+      bar, not measured or honestly estimated — `beats` was pinned at 3.8 ms
+      ("the largest value that still clears" the test) against a comment
+      saying the true cost is "likely 2-4x" that, and `travelling` was pinned
+      at 3.9 ms against a comment saying the true cost is "~20-30 ms" at
+      tier 0. Replaced both with the worst-case number each comment already
+      stated: `beats` -> `[15.2, 12.0, 7.6, 5.6, 4.0]` (4x the old ceiling,
+      taper scaled proportionally), `travelling` -> `[30.0, 27.0, 22.0, 18.0,
+      15.0]` (tier 0/tier 4 endpoints from the comment's own range, middle
+      tiers interpolated on a taper shape matched to `plasma`/`pointcloud`'s
+      measured rows).
+
+      Consequence, not a regression to paper over:
+      `slotBudget.test.ts`'s `has no live scene dear enough to forbid a
+      layer` test (`slotCostMs > has no live scene dear enough to forbid a
+      layer`) now fails — `beats` solo at tier 0 is 15.2 ms against an 8 ms
+      composition budget (`sceneBudget(0)/2` = 4 ms), and `travelling` at 30
+      ms fails the same bar even harder (the loop throws on `beats` first,
+      alphabetically earlier in `SCENES`' registration order, so
+      `travelling`'s failure isn't separately observed by this test, but the
+      arithmetic is the same). This is the real finding the fabricated-low
+      numbers were hiding: at an honest price, neither scene is admittable
+      as a lone tier-0 layer under the current budget model. The test was
+      deliberately left as-is (not weakened) per the investigation that
+      produced this fix.
+
+      Not actioned here — out of scope for the file set this fix touched
+      (`src/scenes/index.ts` is being edited concurrently by other work).
+      Candidate fixes, for whoever picks this up: give `beats`/`travelling` an
+      explicit lower `pixelBudget` in their `src/scenes/index.ts` registry
+      entries (metadata only, cheaper than a shader rewrite) so their
+      resolved cost drops under the tier-0 bar; cut `uMaxSteps`/`normal()`
+      cost per each scene's own header comment's ACTION note
+      (`src/scenes/BeatsScene.tsx`, `src/scenes/TravellingScene.tsx`); or
+      accept they are not tier-0-viable and move them back to
+      `DISABLED_SCENES` until a real `/bench` sweep replaces the estimate.
+      Either way, `/bench` — currently cannot run from CI — is the only
+      instrument that actually settles this.
+
+      **2026-09-02 follow-up (`beats` only, `travelling` untouched — out of
+      this pass's scope):** a separate audit found and fixed four real
+      audio-wiring bugs in `src/scenes/BeatsScene.tsx` — `uBeats` was
+      free-running off `bpm`'s rate instead of reading the engine's real
+      phase-locked beat grid (`ctx.f.beatIndex + ctx.f.beatProgress`) and
+      drifting from the track's actual kicks over a session; the XW/YW/ZW
+      spin multiplied live `mids` against that same ever-growing beat count
+      instead of folding it into a JS-accumulated rate, so ordinary mids
+      wobble swung the rotation by more radians the longer the scene ran; and
+      the kick flash term sat inside the 77-step accumulation loop instead of
+      being applied once after it. All three are fixed (see the header's "Beat
+      lock, spin, and kick placement" note in `BeatsScene.tsx`), with unit
+      tests added in `src/scenes/__tests__/BeatsScene.test.ts` for the two
+      extracted pure helpers.
+
+      A fourth question — whether to stop tier-gating `uMaxSteps` (this
+      march has no hit test, so cutting steps truncates the lattice itself,
+      not just resolution, unlike `MazeFlightScene`'s march) — was decided in
+      favour of keeping the gate and documenting the real visual tradeoff at
+      its computation site, rather than attempting an unverified shader
+      rewrite to cheapen it. **None of the four changes touch iteration count
+      or per-iteration op cost**, so they do not change this scene's real
+      GPU cost — `SCENE_COST_MS.beats` in `sceneCost.ts` is deliberately left
+      unchanged (still `[15.2, 12.0, 7.6, 5.6, 4.0]`), and this row of
+      `slotBudget.test.ts`'s "no live scene dear enough to forbid a layer"
+      assertion still fails, exactly as before. This item stays open for
+      `beats`; the fix only closes the audio-correctness bugs, not the cost
+      question, which still needs `/bench`.
+
+- [x] **F182 · A show whose scene commits landed closer together than
+      `SETTLE_SEC + CLIMB_HOLD_SEC` (6 s) could sit at the survival tier for
+      the entire session with zero climbs, however much real headroom the
+      machine had** — `src/engine/quality.ts`, `src/engine/frameLoad.ts`.
+
+      Two real session-log GPU traces made this legible. Session A: 123 s, tier
+      4 (survival) the entire time, **zero climbs**, `tier changes: 0` — yet
+      `mean 16.7 ms / p95 18.0 ms / effective fps 59.8` (genuinely steady) and
+      `mean gpuMs 1.45 / p95 3.12`, a GPU share of only 9% of the frame. Session
+      B (154 s) climbed 35 times and reached tier 3, so the ladder's climb path
+      is not broken in general — something about session A's specific
+      conditions blocked it completely.
+
+      **Root cause, traced rather than guessed (`quality.ts`'s own history —
+      F111/F116/F149/F157/F162 — made a wrong guess here expensive).**
+      `QualityGovernor.tick()`'s smoothed axis resets `goodSince` (the climb
+      clock `CLIMB_HOLD_SEC` measures against) on any tick that is neither a
+      demotion nor clean enough to be `steady`. `SceneManager` calls
+      `quality.setTransitionDiscount()` every frame a crossfade or a warming
+      candidate is on screen (`~0.7-2 s` per commit,
+      `TRANSITION_DISCOUNT_TIERS`'s own doc), and that window genuinely runs
+      `emaMs`/`p95Ms` heavier — the discount cuts shader complexity, not the
+      fact that two primaries are drawing. That reading reliably lands in the
+      dead zone between `STEP_UP_MEAN_RATIO` and `STEP_DOWN_MEAN_RATIO`, which
+      used to fall straight into `tick()`'s unconditional
+      `else { this.goodSince = elapsedSec }` — so on a show whose commits
+      landed more often than the 6 s a clean climb needs, **every single
+      transition rearmed the clock before it ever reached `CLIMB_HOLD_SEC`**,
+      independent of the tier or of how good the steady-state frame time
+      actually was. `frameSampler.ts` already documents this exact class of
+      failure ("the governor never measures a known one-off... a scene
+      commit's shader compile and crossfade... [is] not evidence about
+      steady-state load") and already wires the rule into the p95 input
+      (`FrameSampler.suspend`) and into the raw-frame emergency path
+      (`if (this.discount > 0) { this.consecutiveOverbudget = 0 }`) — it was
+      simply never wired into this smoothed path, which is the one
+      `CLIMB_HOLD_SEC` actually reads.
+
+      Two hypotheses this ruled out rather than assumed: (a) `enterScene`
+      resetting the clock on every commit — traced and false once already
+      parked at the floor tier, since its cap-down logic no-ops when
+      `cap <= this.tier` and tier 4 is the ladder's last rung; (b) the climb
+      threshold being structurally unreachable at a ~16.67 ms display period —
+      already disproved by the existing
+      `snapToRefreshInterval › "never lets a perfect 60 fps frame read as
+      overloaded"` regression, which climbs a clean synthetic signal to tier 0
+      in 200 ticks.
+
+      **Fix, in `quality.ts`'s `tick()`:** the smoothed `else` branch now only
+      resets `goodSince` when `this.discount <= 0`. While a transition is
+      active, a tick that is neither a demotion nor clean enough to be steady
+      simply holds `goodSince` where it was, so credit banked before the
+      transition survives it. The demote branch is untouched and fires exactly
+      as before regardless of discount — pinned by both the pre-existing
+      `quality governor — transition discount ›
+      "survives a tier change while discounting"` test and a new explicit one,
+      because a genuinely overloaded reading must still shed load mid-crossfade
+      (that is the F116 invariant, and closing this gap must not reopen it).
+      Three new tests in `qualityGovernor.test.ts` (`quality governor — a
+      transition does not block the climb clock (F182)`) pin: credit
+      accumulates across a transition instead of resetting; the same sequence
+      *without* the discount engaged still resets exactly as before (proves the
+      fix is scoped to the discounted case only); and a bad reading still
+      demotes mid-transition.
+
+      **Recalibrated `POST_CHAIN_MS`/`FEEDBACK_MS` downward in `frameLoad.ts`**,
+      against the same two sessions' GPU traces. The GPU timer in
+      `PerfMonitor.tsx` brackets the *entire* frame (scene included), and that
+      whole-frame cost never averaged more than 1.70 ms in either session — yet
+      the old fixed reservation for the post chain and feedback pass ALONE
+      (`POST_CHAIN_MS=2 + FEEDBACK_MS=1 = 3`) already exceeded it, before a
+      scene was even priced in. That is what let `frameLoad.fixed` (4.7 ms
+      after `fillScale`, from the reported red `4.0+0.0+0.0+0.0+4.7 =
+      8.7/6.5ms` line) combine with `beats`'s now-honest tier-4 cost (4.0 ms,
+      F181b) to blow tier 4's entire 6.5 ms wallet by itself, forcing the
+      emergency-shed path (zero layers/effects, forced 0.2 s dissolve) on a
+      machine with real headroom. New values — `POST_CHAIN_MS=0.6`,
+      `FEEDBACK_MS=0.3` (same 2:1 ratio kept, sum ≈ half of session B's mean
+      whole-frame GPU cost, leaving the rest for the scene itself) — applied to
+      the exact same reported red-line moment: `fixed` drops from 4.7 ms to
+      ≈1.41 ms, so `beats` at tier 4 now reads `4.0 + 1.41 ≈ 5.41` against
+      6.5 ms — inside budget, with headroom left for a layer or effect, instead
+      of forcing the emergency path by itself.
+
+      `TIER_BUDGET_MS` (`slotBudget.ts`) deliberately left untouched. Once the
+      fixed-cost reservation is corrected to real measured magnitudes the
+      arithmetic above already fits inside the existing 6.5 ms tier-4 ceiling
+      without moving it — and `slotBudget.ts` is this codebase's
+      highest-incident-rate file (F84, F157, F160-F162 all trace back to this
+      ladder), so a change here that is not itself forced by evidence is a
+      worse trade than leaving it alone. All quality/slotBudget/oscillation
+      regression suites (`qualityGovernor.test.ts`, `slotBudget.test.ts`,
+      `frameLoad.test.ts`, `renderScale.test.ts`) still pass after the change.
+
+      Three assertions in `frameLoad.test.ts` had literal expected sums baked
+      in against the old `FIXED = POST_CHAIN_MS + FEEDBACK_MS = 3` and needed
+      updating, not loosening: `committedMs` › "sums every contributor" and
+      `applyFrameLoad` › "reports a realistic worst case honestly" were pure
+      arithmetic checks, now written against `FIXED` symbolically instead of a
+      bare literal (matching the pattern the file already used elsewhere).
+      The third, `the tier ladder survives honest accounting ›
+      "still runs a heavy primary solo at the bottom tier"`, asserted
+      `remainingMs(TIER_BUDGET_MS[4])` was exactly `0` for a 4 ms primary —
+      under the old inflated fixed cost that was true and its comment called it
+      "the correct reading," but it was asserting the bug this investigation
+      exists to fix: a scene could never spend a single ms of tier 4's whole
+      budget on anything else. Renamed to "leaves a little real headroom for a
+      heavy primary at the bottom tier" and rewritten to assert the honest
+      value (`TIER_BUDGET_MS[4] - (4 + FIXED)` ≈ 1.6 ms, and
+      `.toBeGreaterThan(0)`) with the reasoning inline — a deliberate behaviour
+      change, not a workaround.
+
 ## Verification status
 
 `npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1330 tests**

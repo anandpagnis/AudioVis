@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import HUD_SRC from '../../ui/HUD.tsx?raw'
-import { SCENES, canHoldPrimary, getEffectScenes } from '../index'
+import CONSOLE_SRC from '../../ui/Console.tsx?raw'
+import { LAYER_ROLES } from '../../store'
+import { SCENES, canHoldPrimary, canHoldRole, getEffectScenes } from '../index'
 
 /**
  * The subject slot will not accept a scene that cannot hold it.
@@ -82,5 +84,69 @@ describe('the HUD picker', () => {
     // chip that `requestScene` silently declines — which looks exactly like the
     // original bug to anyone using it.
     expect(HUD_SRC).toMatch(/PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*roles\.includes\('primary'\)/s)
+  })
+})
+
+/**
+ * `Console.tsx` is a second, independent surface with the exact same shape of
+ * bug: a scene grid calling `requestScene` and a per-layer `<select>` listing
+ * every scene as an `<option>`. Both were unfiltered — the HUD fix (above)
+ * covered only the surface that had actually been clicked and reported broken.
+ * `store.requestScene`'s guard made the grid harmless (a press silently did
+ * nothing) but not correct: a dead tile is still a bug the operator sees.
+ * `setLayer` had NO guard at all, so a layer `<select>` could mount `shock` as
+ * a permanent background wash — not a black frame (a layer mount uses the ROLE
+ * passed in, not the scene's declared role, so `effectEnvelope` never enters
+ * it), but a scene never priced or profiled for running continuously.
+ */
+describe('the Console picker', () => {
+  it('offers PICKABLE_SCENES for the subject grid, not the raw registry', () => {
+    expect(CONSOLE_SRC).toContain('PICKABLE_SCENES.map(')
+    expect(CONSOLE_SRC).not.toMatch(/\{SCENES\.map\(/)
+  })
+
+  it("derives PICKABLE_SCENES from canHoldRole, so it can't drift from the store's own guard", () => {
+    expect(CONSOLE_SRC).toMatch(
+      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*canHoldRole\(.*'primary'\)/s,
+    )
+  })
+
+  it('filters each layer <select> by eligibility for that role', () => {
+    expect(CONSOLE_SRC).toMatch(/SCENES\.filter\(.*canHoldRole\(.*role\)/s)
+  })
+})
+
+describe('canHoldRole', () => {
+  it('agrees with canHoldPrimary for the primary role', () => {
+    for (const s of SCENES) {
+      expect(canHoldRole(s.id, 'primary'), s.id).toBe(canHoldPrimary(s.id))
+    }
+  })
+
+  it('refuses an unknown id for every role, not just primary', () => {
+    for (const role of [...LAYER_ROLES, 'primary', 'effect'] as const) {
+      expect(canHoldRole('no-such-scene', role)).toBe(false)
+    }
+  })
+
+  it('agrees with the scene\'s own declared roles for every layer role', () => {
+    for (const s of SCENES) {
+      for (const role of LAYER_ROLES) {
+        expect(canHoldRole(s.id, role), `${s.id} / ${role}`).toBe(
+          s.metadata.roles.includes(role),
+        )
+      }
+    }
+  })
+
+  it('leaves at least one scene eligible for every layer role that appears in the roster', () => {
+    // Mirrors HUD's own "a slot with no scenes authored for it gets no
+    // control" comment — not a requirement that every role be filled, only
+    // that if a scene declares itself for a role, `canHoldRole` can see it.
+    for (const role of LAYER_ROLES) {
+      const anyDeclared = SCENES.some((s) => s.metadata.roles.includes(role))
+      const anyEligible = SCENES.some((s) => canHoldRole(s.id, role))
+      expect(anyEligible, role).toBe(anyDeclared)
+    }
   })
 })

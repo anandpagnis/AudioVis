@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
 import { FULLSCREEN_VERT } from './glsl'
-import { isMirrorActive, type MirrorRackState } from './opticalRack'
+import { isMirrorActive, MIRROR_MIX_DEFAULT, type MirrorRackState } from './opticalRack'
 
 /**
  * The mirror rack: bilateral / quad / n-fold kaleidoscopic symmetry, plus
@@ -40,11 +40,18 @@ const MIRROR_FRAG = /* glsl */ `
   uniform float uTiles;
   uniform float uTwist;
   uniform float uSlice;
+  // 0..1 blend between the untouched frame and the mirrored one — see
+  // MirrorRackState.mix's doc. Lets the fold's VISIBILITY fade in and out
+  // even though segments/tiles are counts and still snap to their target.
+  uniform float uMix;
   varying vec2 vUv;
 
   float hash1(float n) { return fract(sin(n * 127.1) * 43758.5453); }
 
   void main() {
+    // Sampled before uv is mutated below, so it is the untouched frame — the
+    // blend target on the way out and the whole answer once uMix is 0.
+    vec4 original = texture2D(tDiffuse, vUv);
     vec2 uv = vUv;
 
     // slice: alternating shear slabs — architectural, not glitch. Deterministic
@@ -101,7 +108,8 @@ const MIRROR_FRAG = /* glsl */ `
     // lilim shipped that bug (its comment records the upside-down analyser);
     // the constant is copied deliberately, not incidentally.
     uv = abs(fract(uv * 0.5 + 0.5) * 2.0 - 1.0);
-    gl_FragColor = texture2D(tDiffuse, uv);
+    vec4 mirrored = texture2D(tDiffuse, uv);
+    gl_FragColor = mix(original, mirrored, uMix);
   }
 `
 
@@ -132,6 +140,7 @@ export class MirrorPass extends Pass {
         uTiles: { value: 0 },
         uTwist: { value: 0 },
         uSlice: { value: 0 },
+        uMix: { value: 0 },
       },
     })
     this.fsScene = new THREE.Scene()
@@ -162,6 +171,7 @@ export class MirrorPass extends Pass {
     u.uTiles.value = m.tiles
     u.uTwist.value = m.twist
     u.uSlice.value = m.slice
+    u.uMix.value = m.mix ?? MIRROR_MIX_DEFAULT
   }
 
   render(

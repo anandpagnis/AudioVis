@@ -40,6 +40,14 @@ import { effectEnvelope } from './effectEnvelope'
  * `amt / d` (a true singularity at the spark centre, tamed only by an
  * external clamp in `OrbitGlowScene`). At `d = 0` this reads exactly `amt`;
  * no clamp needed because there is nothing to clamp.
+ *
+ * ## Band routing: transient strength, captured once
+ *
+ * `high` + `energy` set how bright THIS pop reads, sampled in the exact same
+ * rising-edge block that already seeds the three positions — one read of `b`
+ * alongside the existing read of `f.beatIndex`/`f.beatProgress`, held for the
+ * whole 1.2s firing. A sharp, loud transient now pops visibly brighter than a
+ * soft one, not just at a different spot.
  */
 
 const GOLDEN_ANGLE = 2.399963
@@ -57,6 +65,8 @@ export const FRAG = /* glsl */ `
   uniform vec2 uPos1;
   uniform vec2 uPos2;
   uniform vec2 uPos3;
+  /** Transient strength (high+energy), captured once on the firing's rising edge. */
+  uniform float uStrength;
   uniform float uFade;
 
   vec3 spark(vec2 uv, vec2 pos, vec3 c){
@@ -69,7 +79,7 @@ export const FRAG = /* glsl */ `
     vec2 uv = (fragCoord - 0.5 * uRes) / min(uRes.x, uRes.y);
 
     vec3 color = spark(uv, uPos1, uCol1) + spark(uv, uPos2, uCol2) + spark(uv, uPos3, uCol3);
-    gl_FragColor = vec4(color * uFade, 1.0);
+    gl_FragColor = vec4(color * uStrength * uFade, 1.0);
   }
 `
 
@@ -77,6 +87,8 @@ export function TransientSparkScene() {
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
   const wasEffect = useRef(false)
+  /** Captured transient strength, held for the whole firing — see header. */
+  const strength = useRef(1)
 
   const material = useMemo(
     () =>
@@ -95,6 +107,7 @@ export function TransientSparkScene() {
           uPos1: { value: new THREE.Vector2(0, 0) },
           uPos2: { value: new THREE.Vector2(0, 0) },
           uPos3: { value: new THREE.Vector2(0, 0) },
+          uStrength: { value: 1 },
           uFade: { value: 0 },
         },
       }),
@@ -108,12 +121,15 @@ export function TransientSparkScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ f, col, vis, role, slotProgress }) => {
+  useSceneFrame(({ f, b, col, vis, role, slotProgress }) => {
     const u = material.uniforms
 
     // Re-seed exactly once per firing — the rising edge into the effect
     // role — so the three points hold still for the whole burst rather than
-    // drifting as beatProgress advances underneath them.
+    // drifting as beatProgress advances underneath them. Same edge also
+    // captures how bright this pop reads: high + energy are the declared
+    // bands, sampled once so the spark doesn't reshape mid-burst. 0.7..1.4,
+    // neutral-ish at a moderate transient.
     const isEffect = role === 'effect'
     if (isEffect && !wasEffect.current) {
       const seed = f.beatIndex + f.beatProgress
@@ -124,8 +140,12 @@ export function TransientSparkScene() {
       set(u.uPos1.value, 0)
       set(u.uPos2.value, 1)
       set(u.uPos3.value, 2)
+
+      const raw = Math.min(1, b.high * 0.6 + b.energy * 0.6)
+      strength.current = 0.7 + raw * 0.7
     }
     wasEffect.current = isEffect
+    u.uStrength.value = strength.current
 
     u.uCol1.value.copy(col.mid)
     u.uCol2.value.copy(col.accent)
