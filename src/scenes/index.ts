@@ -50,6 +50,13 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   flare: () => import('./SectionFlareScene').then((m) => ({ default: m.SectionFlareScene })),
   spark: () => import('./TransientSparkScene').then((m) => ({ default: m.TransientSparkScene })),
   lumen: () => import('./LumenMaskScene').then((m) => ({ default: m.LumenMaskScene })),
+  neonjungle: () => import('./NeonJungleScene').then((m) => ({ default: m.NeonJungleScene })),
+  snowflake: () => import('./SnowflakeScene').then((m) => ({ default: m.SnowflakeScene })),
+  truchet: () => import('./TruchetKaleidoScene').then((m) => ({ default: m.TruchetKaleidoScene })),
+  beats: () => import('./BeatsScene').then((m) => ({ default: m.BeatsScene })),
+  harkonnen: () => import('./FortressHarkonnenScene').then((m) => ({ default: m.FortressHarkonnenScene })),
+  travelling: () => import('./TravellingScene').then((m) => ({ default: m.TravellingScene })),
+  web: () => import('./OversaturatedWebScene').then((m) => ({ default: m.OversaturatedWebScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -150,6 +157,13 @@ const ShockRingScene = lazyScene('shock')
 const SectionFlareScene = lazyScene('flare')
 const TransientSparkScene = lazyScene('spark')
 const LumenMaskScene = lazyScene('lumen')
+const NeonJungleScene = lazyScene('neonjungle')
+const SnowflakeScene = lazyScene('snowflake')
+const TruchetKaleidoScene = lazyScene('truchet')
+const BeatsScene = lazyScene('beats')
+const FortressHarkonnenScene = lazyScene('harkonnen')
+const TravellingScene = lazyScene('travelling')
+const OversaturatedWebScene = lazyScene('web')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -941,6 +955,277 @@ export const SCENES: SceneDef[] = [
     },
   },
   {
+    id: 'snowflake',
+    name: 'Snowflake',
+    component: SnowflakeScene,
+    metadata: {
+      // Supplied directly by the requester as an ISF shader, credited in-source
+      // to "claude-opus-4-8" — same provenance basis as `malachite` (a
+      // witnessed generation, no upstream to audit) — so `license: 'original'`.
+      license: 'original',
+      // `shape` -> arm count (steps 4..8). `complexity` -> branch/fern length.
+      // `speed` -> turn rate (drastic). `fill` -> zoom. `tilt` -> a static
+      // rotation offset. `contrast` -> ice tint. No `density` — the six side
+      // branches are fixed geometry with nothing discrete to bind.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, shape: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { shape: 'arms', complexity: 'branching', fill: 'zoom', tilt: 'angle', contrast: 'tint' },
+        },
+      },
+      // Subject only — a centred crystal on its own cold field, same as the
+      // other full-bleed 2D shader primaries (`kifs`, `wingfold`).
+      roles: ['primary'],
+      // Slow, serene, glinting — sits in the calm half. The kick-bloom and
+      // energy swell give it just enough to also hold a `building` section.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      // `bass` stands in for the kick-onset routing (`s.onKick` -> glint burst
+      // + line-width bloom), same convention as `malachite` / `matrix`.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'calm',
+      // NOT /bench-measured — documented op-count estimate (see sceneCost.ts).
+      // A closed-form 2D SDF: one `atan`, a 6-iteration `seg()` loop (~14
+      // sqrt), three more `length()` terms, one hash. A notch above the
+      // `shock`/`flare`/`spark` estimates (pure `exp()`), still an order of
+      // magnitude under `wireframe` (0.63-0.78 ms, real geometry). Confirm
+      // with /bench.
+      performanceCost: 'low',
+      compatibleWith: [],
+      moodFit: { ambient: 0.84, mellow: 0.8, groove: 0.64, building: 0.6 },
+      // Flat 2D, no camera concept — declared only for CameraDirector.test.ts's
+      // variety invariant, same as `kifs` / `wingfold`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'harkonnen',
+    name: 'Fortress Harkonnen',
+    component: FortressHarkonnenScene,
+    metadata: {
+      // Shadertoy shader "Fortress Harkonnen", header declares `// License CC0`.
+      // SABS credited to ollj; the escape formula is from fractalforums (public).
+      // Reads as mrange's. CC0 -> `license: 'original'`, same basis as `maze` /
+      // `malachite` / `truchet`. Credit + source link kept in the .tsx header.
+      license: 'original',
+      // LIVE, unlike `neonjungle` / `truchet` / `beats` — but its cost is an
+      // ESTIMATE, not a /bench measurement. The source ran a 25-iter field
+      // sampled 4x for the normal (~118 iters/px, no early-out); this port cuts
+      // that to a 3-tap normal + `complexity`-controlled 10..16 iters + two
+      // `pow`->mul swaps + an offscreen `pixelBudget`, which plausibly lands it
+      // ~3.5 ms at tier 0 (under slotBudget.test.ts's ~4 ms bar). Run `/bench`
+      // and re-price the SCENE_COST_MS row; if it lands over the bar, move this
+      // object to DISABLED_SCENES or cut further. See FortressHarkonnenScene.tsx.
+      //
+      // `speed` -> zoom/macro-cycle rate (drastic + mids). `complexity` ->
+      // fractal iteration depth (user dial only, never tier-gated — kifs F129 /
+      // maze F139). `fill` -> zoom scale. `tilt` -> static frame roll.
+      // `contrast` -> the postProcess S-curve strength. No `shape`/`density`.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'iterations', fill: 'zoom', tilt: 'roll', contrast: 'grade' },
+        },
+      },
+      // Subject only — a full-frame lit fractal relief, same as `kifs` /
+      // `wingfold`.
+      roles: ['primary'],
+      // A slow, monumental zoom — architectural, not frantic. Sits mid-range;
+      // the kick-pop and energy swell carry it up to `peak`.
+      moods: ['mellow', 'groove', 'building', 'peak'],
+      // `bass` stands in for the kick-onset routing (`s.onKick` -> specular pop
+      // + brightness punch), same convention as `malachite` / `matrix`.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT /bench-MEASURED — documented op-count estimate (see sceneCost.ts).
+      // ~52 fractal iterations/px at the neutral `complexity`, rendered
+      // offscreen and upscaled. Heavier than `wingfold`; confirm with /bench.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed fractal relief.
+      compatibleWith: [],
+      moodFit: { mellow: 0.66, groove: 0.78, building: 0.84, peak: 0.8 },
+      // The shader frames itself — flat screen-space fractal math, no engine
+      // camera. Declared only for CameraDirector.test.ts's variety invariant,
+      // same as `kifs` / `wingfold`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'beats',
+    name: '4D Beats',
+    component: BeatsScene,
+    metadata: {
+      // mrange's minishader "4D Beats" (Shadertoy). Header declares `// CC0` and
+      // reads as mrange's — who releases everything CC0 — so `license:
+      // 'original'`, same basis as `truchet` / `maze` / `malachite`. CC0 line +
+      // mrange's shader-dev credit list kept in BeatsScene.tsx's header.
+      //
+      // FORCED LIVE by explicit request, and its SCENE_COST_MS row is a
+      // fabricated CEILING, not an estimate: this is a 77-step 4D raymarch with
+      // NO early ray termination (every pixel runs the whole march). Op-count
+      // against the measured roster (`kifs` 2.97 ms at tier 0, ~20 iters WITH an
+      // escape) says the true tier-0 cost is materially higher — likely 2-4x —
+      // than the sub-4 ms number sitting in sceneCost.ts to clear
+      // slotBudget.test.ts. `uMaxSteps` is wired to the quality governor.
+      // ACTION: run `/bench`; if tier 0 is over ~4 ms, either cut the step
+      // count hard or move this back to DISABLED_SCENES. Same posture as
+      // `harkonnen`, one notch riskier (that one has an early-out, this doesn't).
+      //
+      // `speed` -> beat-rate multiplier (drastic + energy). `complexity` ->
+      // march depth (rides on the quality tier). `density` -> @mla inversion
+      // strength (the source's constant 9). `tilt` -> static 4D angle offset.
+      // `contrast` -> tanh clip point. No `shape`/`fill` — an inversion-folded
+      // 4D lattice has no silhouette family or coverage dial to bind them to.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, density: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'depth', density: 'inversion', tilt: '4D angle', contrast: 'clip' },
+        },
+      },
+      // Subject only — a full-frame 4D lattice flythrough that owns the whole
+      // frame, same as `kifs` / `wingfold` / `truchet`.
+      roles: ['primary'],
+      // Beat-locked by construction (floor(T)+sqrt(F) IS the animation), so it
+      // starts at `groove` and tops out at `aggressive`. Overlaps `truchet` /
+      // `kifs` territory; the moodFit peaks below are pulled apart so they trade
+      // rather than substitute.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT /bench-MEASURED — see the CEILING note above. A 77-step 4D march,
+      // ~10 length()/transcendental ops per step, no early-out. Heavier
+      // per-pixel than `kifs`; lighter than `neonjungle`.
+      performanceCost: 'high',
+      compatibleWith: [],
+      // Peaks at `building` — a locking, tightening lattice reads as a build —
+      // where `truchet` peaks at `peak` and `wingfold` at `aggressive`.
+      moodFit: { groove: 0.72, building: 0.86, peak: 0.8, aggressive: 0.74 },
+      // Flat screen-space 4D math, no engine-camera concept — declared only for
+      // CameraDirector.test.ts's variety invariant, same as `kifs` / `truchet`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'travelling',
+    name: 'Moving Without Travelling',
+    component: TravellingScene,
+    metadata: {
+      // mrange's Shadertoy "Moving without travelling". Header declares
+      // `// License CC0`; bundled helpers are IQ (MIT) + mercury/hg_sdf (MIT
+      // option) + trivial public snippets — consistent with CC0 -> `license:
+      // 'original'`, same basis as `truchet` / `maze` / `malachite`. Credit +
+      // helper licences spelled out in TravellingScene.tsx's header.
+      //
+      // FORCED LIVE by explicit request. Its SCENE_COST_MS row is a FABRICATED
+      // ceiling (3.9), off by ~5-7x: this is the heaviest shader in the roster
+      // by a wide margin — 4 stacked planes, each running one `warp()` plus a
+      // 4-tap finite-difference `normal()` (= 5 warps/plane), each warp being an
+      // eye SDF + a kaleidoscope fold + 5 fbm. True tier-0 cost is ~20-30 ms,
+      // ~10-15 ms at the bottom tier. The budget model will mis-schedule this;
+      // `compatibleWith: []` keeps the damage to one bad transition.
+      // ACTION: cut `normal()` to a 2-tap, drop to 2 planes, let the governor
+      // pull `uOctaves` to 2, then `/bench` — or move to DISABLED_SCENES.
+      //
+      // `speed` -> flythrough rate (drastic + energy). `complexity` -> fbm
+      // octave count (2..4, governor-capped). `density` -> kaleidoscope
+      // repetitions (source const 50). `tilt` -> static frame roll. `contrast`
+      // -> postProcess saturation. No `shape`/`fill` — a plane-stack flythrough
+      // has no silhouette family or coverage dial to bind them to.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, density: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': {
+            complexity: 'octaves',
+            density: 'symmetry',
+            tilt: 'roll',
+            contrast: 'saturation',
+          },
+        },
+      },
+      // Subject only — a full-bleed flythrough that owns the whole frame and its
+      // own camera, same as `maze` / `neonjungle` / `truchet`.
+      roles: ['primary'],
+      // A slow hypnotic drift, never frantic — starts at `mellow`, and the
+      // kick-pop + energy throttle carry it to `peak`.
+      moods: ['mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT /bench-MEASURED — see the CEILING note above. The dearest shader in
+      // the roster: ~100 fbm + ~24 eye SDFs per pixel, ~5-7x the tier-0 budget
+      // bar. `/bench` + an optimisation pass before this is anything but manual.
+      performanceCost: 'high',
+      compatibleWith: [],
+      moodFit: { mellow: 0.7, groove: 0.8, building: 0.82, peak: 0.76 },
+      // The shader drives its own camera path and never reads the engine's —
+      // declared only for CameraDirector.test.ts's variety invariant, same as
+      // `maze` / `neonjungle`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'web',
+    name: 'Oversaturated Web',
+    component: OversaturatedWebScene,
+    metadata: {
+      // Shadertoy "Oversaturated web", header declares CC0 — a derivative of
+      // BigWing's https://www.shadertoy.com/view/lscczl. Reads as mrange's.
+      // CC0 -> `license: 'original'`, same basis as `truchet` / `maze`.
+      license: 'original',
+      // LIVE on an ESTIMATE (see sceneCost.ts). The source is 36 cubic-bezier
+      // distance solves/px (6 planes x 6 strands) + 6 hextile + ~36 hashes —
+      // heavier than `truchet`, over the tier-0 bar at native res. This port
+      // keeps the curves but makes it fundable: `density` dial = strands/node
+      // (2..6, default 4), `complexity` dial = plane count (3..6, default 5,
+      // NOT tier-gated per kifs F129 / maze F139), an aggressive `pixelBudget`
+      // (glow upscales invisibly), sine-free hash. `#define USE_BEZIER 0` in
+      // the .tsx swaps to straight strands for more headroom. Run /bench; if
+      // tier 0 is at/over ~4 ms, drop the defaults or move to DISABLED_SCENES.
+      //
+      // `speed` -> flythrough rate. `complexity` -> plane depth. `density` ->
+      // strands per node. `fill` -> fov. `tilt` -> static roll. `contrast` ->
+      // pre-aces exposure. No `shape`.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'depth', density: 'strands', fill: 'fov', tilt: 'roll', contrast: 'exposure' },
+        },
+      },
+      // Subject only — a full-bleed glow flythrough that owns its own camera,
+      // same as `truchet` / `maze` / `neonjungle`.
+      roles: ['primary'],
+      // Saturated, pulsing, relentless forward motion — driving/hard half,
+      // overlapping `truchet` / `kifs` territory.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      // `bass` stands in for the kick-onset routing (`s.onKick` -> strand/node
+      // glow surge), same convention as `malachite` / `matrix`.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT /bench-MEASURED — documented estimate (see sceneCost.ts). ~20
+      // bezier solves/px at neutral dials, rendered offscreen and upscaled.
+      // Priced by comparison against `kifs` (2.97 ms) / `truchet` — confirm
+      // with /bench.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed glow flythrough.
+      compatibleWith: [],
+      moodFit: { groove: 0.76, building: 0.82, peak: 0.86, aggressive: 0.8 },
+      // The shader frames itself — flat screen-space math, no engine camera.
+      // Declared only for CameraDirector.test.ts's variety invariant, same as
+      // `kifs` / `truchet`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
     id: 'shock',
     name: 'Shock Ring',
     component: ShockRingScene,
@@ -1728,6 +2013,112 @@ export const DISABLED_SCENES: SceneDef[] = [
       moodFit: { groove: 0.78, building: 0.82, peak: 0.86, aggressive: 0.84 },
       // Flat 2D SDF, no camera concept — the shader frames itself. Declared
       // only for CameraDirector.test.ts's variety invariant, same as `kifs`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'neonjungle',
+    name: 'Neon Jungle',
+    component: NeonJungleScene,
+    metadata: {
+      // Ported from glslop "NEON // JUNGLE v7" (ISF), credited in-source to
+      // "Craig". CC0-1.0 — same provenance basis as `maze` (`gstbkfmm`) and
+      // `malachite`: platform generation, no fork lineage — so `original`, not
+      // `unverified`. The in-source credit is kept in NeonJungleScene.tsx's
+      // header. NOTE: the plan's `SceneProvenance` field (source URL / author /
+      // SPDX / credit string) would replace this comment; it does not exist yet.
+      license: 'original',
+      // HELD OUT ON ARRIVAL, not moved out. This is a full two-world volumetric
+      // raymarcher — STEPS 190 primary march PLUS a second RSTEPS 60 reflection
+      // march on every water/puddle pixel, per-step volumetric integration in
+      // both, calcNormal(4x)/calcAO(5x)/softShadow(up to 20x) each re-running
+      // the whole scene SDF. It will NOT clear slotBudget.test.ts's tier-0
+      // `< sceneBudget(0)/2 ≈ 4ms` bar as-is, and `/bench` (the only
+      // instrument) cannot run from CI. Move into SCENES once an optimised pass
+      // benches under that bar AND a SCENE_COST_MS row is measured for it.
+      //
+      // `speed` -> flight rate (drastic + energy). `complexity` -> the D1/D2/D3
+      // detail tiers. `fill` -> lens width. `tilt` -> sun azimuth. `contrast`
+      // -> neon gain. No `shape`/`density` — a scripted flythrough has no
+      // silhouette family or element count to bind them to.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'detail', fill: 'lens', tilt: 'sun', contrast: 'neon' },
+        },
+      },
+      // Subject only: a first-person flythrough that owns the whole frame and
+      // its own camera, same as `maze`/`tunnel`/`crystalfold`.
+      roles: ['primary'],
+      // Starts at `mellow` for the lagoon leg, tops out at `peak` — the neon
+      // city + rain + transit flashes are the loud half. Sits in `kifs`/`maze`
+      // territory but the lagoon side pulls its low end down.
+      moods: ['mellow', 'groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT MEASURED — see the licence note above. Heavier than every disabled
+      // raymarcher (`tunnel`, `crystalfold`): two full SDF worlds, a second
+      // reflection march, per-step volumetrics. `/bench` before promotion.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a first-person flythrough.
+      compatibleWith: [],
+      // Held inside the roster's 0.6-0.9 band, weighted toward the build.
+      moodFit: { mellow: 0.62, groove: 0.78, building: 0.84, peak: 0.8 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera — declared only for CameraDirector.test.ts's variety invariant,
+      // same as `maze`/`tunnel`/`crystalfold`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'truchet',
+    name: 'Truchet Kaleidoscope',
+    component: TruchetKaleidoScene,
+    metadata: {
+      // Shadertoy shader "Truchet + Kaleidoscope FTW". Header declares CC0; the
+      // bundled helpers are MIT (iq) / "MIT OR CC-BY-NC-4.0" (mercury, MIT
+      // option applies) / trivial "Unknown" utility snippets — consistent with
+      // CC0, so `original`. HELD OUT ON ARRIVAL pending (1) the shader author
+      // confirmed (reads as mrange's, who releases CC0) and (2) a real /bench:
+      // `color()` accumulates up to 6 kaleidoscope + Truchet planes per pixel
+      // with a dual-ray AA — no march loop but unmeasured, and it may not clear
+      // slotBudget.test.ts's tier-0 `< sceneBudget(0)/2 ≈ 4ms` bar. `uPlanes`
+      // is wired to the quality governor so a bench can run per tier. Move into
+      // SCENES + add a SCENE_COST_MS row once both are settled.
+      license: 'original',
+      // `speed` -> flythrough rate. `complexity` -> kaleidoscope symmetry.
+      // `density` -> Truchet line weight. `fill` -> field of view. `tilt` ->
+      // static roll. No `shape` (nothing to switch) / `contrast` (the grade
+      // curve doesn't take a clean 0..1 dial).
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, tilt: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'symmetry', density: 'line weight', fill: 'fov', tilt: 'roll' },
+        },
+      },
+      // Subject only — a full-bleed flythrough that owns its own camera, same
+      // as `maze` / `neonjungle` / `tunnel`.
+      roles: ['primary'],
+      // Relentless forward motion through a strobing pattern — driving/hard
+      // half, overlapping `maze` / `wingfold` territory.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT MEASURED — see the licence note. 6-plane per-pixel accumulation +
+      // dual-ray AA, each plane a kaleidoscope fold + Truchet distance field.
+      // No march loop, so likely lighter than the raymarchers, but confirm
+      // with /bench before trusting it near the tier-0 layer-funding bar.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed flythrough.
+      compatibleWith: [],
+      moodFit: { groove: 0.74, building: 0.82, peak: 0.84, aggressive: 0.8 },
+      // The shader drives its own path/camera and never reads the engine's —
+      // declared only for CameraDirector.test.ts's variety invariant, same as
+      // `maze` / `kifs`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
