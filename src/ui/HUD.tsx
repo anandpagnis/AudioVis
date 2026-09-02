@@ -10,6 +10,19 @@ import {
   type Quality,
 } from '../store'
 import { SCENES, getScene, getSceneContract } from '../scenes'
+/**
+ * The scenes a user may pick as the SUBJECT.
+ *
+ * `SCENES` also holds `effect`-role scenes, which are punctuation fired by
+ * `EffectDirector` on a musical trigger and cannot hold the subject slot — see
+ * `canHoldPrimary`. Offering them here listed three chips that retired the
+ * running scene and rendered a black frame. `requestScene` refuses them now, so
+ * this is about not presenting an action that silently declines.
+ *
+ * Module scope, not a `useMemo`: `SCENES` is a static registry and this is the
+ * same array on every render.
+ */
+const PICKABLE_SCENES = SCENES.filter((s) => s.metadata.roles.includes('primary'))
 import {
   liveParamKeys,
   paramLabel,
@@ -127,7 +140,7 @@ export function HUD() {
       const s = useStore.getState()
       if (/^[0-9]$/.test(e.key)) {
         const idx = e.key === '0' ? 9 : Number(e.key) - 1
-        if (idx < SCENES.length) s.requestScene(SCENES[idx].id)
+        if (idx < PICKABLE_SCENES.length) s.requestScene(PICKABLE_SCENES[idx].id)
       } else if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen()
       } else if (e.key === 'h' || e.key === 'H') {
@@ -458,7 +471,7 @@ export function HUD() {
                 'Scene & palette',
                 <>
                   <div className="menu-chips">
-                    {SCENES.map((s) => (
+                    {PICKABLE_SCENES.map((s) => (
                       <button
                         key={s.id}
                         className={`chip ${s.id === sceneId ? 'active' : ''} ${s.id === pendingSceneId ? 'pending' : ''}`}

@@ -16,7 +16,7 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
 
 ## Blockers
 
-- [~] **F01 · Absent licence defaults to "shippable"** — `src/scenes/index.ts`
+- [x] **F01 · Absent licence defaults to "shippable"** — `src/scenes/index.ts`
       `nonCommercialSceneIds()` treats a missing `license` field as `original`, so 15
       scenes with no declared provenance pass the commercial filter. The type's own
       doc comment says the opposite: *"anything not marked original or attribution
@@ -46,6 +46,80 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       F179: an import pipeline now exists and is pointed at third-party work,
       and the whole point of this entry is that an unmarked import currently
       claims to be ours.
+
+      **Done. The default is now `unverified`.** `isNonCommercial()` reads
+      `?? 'unverified'`, so a scene that declares no `license` is restricted —
+      silence is no longer a claim of authorship. `nonCommercialSceneIds()` no
+      longer carries its own copy of the condition (it filters on the exported
+      predicate), because a second spelling of a licence rule is a place for the
+      rule to drift, and that copy is the one that would have kept saying
+      "absent is fine" after the real one stopped. The same duplicate lived in
+      `contract.test.ts`'s `sceneContracts` assertion, which spelled shippable
+      as `undefined || original || attribution`; it now calls the predicate too.
+      The precondition this entry named was real and is met: `wireframe`,
+      `plasma`, `dissolve`, `chrome`, `ribbons` and `pointcloud` each gained an
+      explicit `license: 'original'`. **No scene's posture changed** — all six
+      were verified against their own file headers first (in-repo authorship,
+      no ported shader, no external asset; `pointcloud`'s "LIDAR scan" is a
+      seeded procedural field, not a captured point cloud) — the only thing that
+      changed is that their safety is now written down instead of inferred from
+      a default. All 14 live scenes declare a licence explicitly, which is what
+      makes the strict default affordable rather than a roster-wide outage.
+
+      `SceneMetadata.provenance` (`source` / `author?` / `spdx` / `noticePath?`)
+      is the third part, and `heap` is the case that justifies it: CC BY 4.0
+      obliges this project to credit Tor Ringstad and indicate modification, and
+      until now that obligation lived in a prose comment no credits screen or
+      packaging step can read. Populated where the existing headers substantiate
+      it — `heap` (CC-BY-4.0, real URL), `network` (CC-BY-NC-SA-3.0, "The
+      Universe Within", Martijn Steinrucken), `tunnel` (the one recorded
+      Shadertoy URL), `inversion` (Kali), `juliawings` (@christinacoffin),
+      `kaleido` (kishimisu, palette after Quilez). `spdx` uses SPDX's own
+      `NOASSERTION` where the work is identified but carried no licence, which
+      keeps "looked, found nothing" distinguishable from "never looked".
+
+      **Eight quarantined scenes have no provenance and cannot get one**, which
+      is the finding rather than a gap to close later. `foldpath`, `torusfold`,
+      `orbs` and `trail` came from pastes naming no author, title or URL;
+      `crystalfold` and `lumen` from pastes with no external attribution at all;
+      `panic` and `synthgrid` name a licence but not the work it belongs to —
+      `synthgrid`'s source states CC BY-NC-SA 3.0 outright and there is still
+      nothing to point at that it covers. Nothing truthful goes in those
+      records, and a fabricated URL would satisfy the check while destroying the
+      only thing the field is for. They are permanently unclearable in their
+      current state, and that is the actual cost of not recording provenance at
+      the moment of import — the reason the new field exists is that F179's
+      pipeline will otherwise manufacture eight more of them.
+
+      The gate is `sceneLicensing.test.ts`, not a separate packaging step. The
+      test that deliberately pinned the old philosophy ("unmarked means
+      unrestricted, marking is opt-IN") now pins its inverse against the real
+      predicate, constructed rather than filtered — every live scene declares a
+      licence now, so a filter over `SCENES` would find nothing and pass while
+      asserting about the empty set. Added alongside it: any live scene whose
+      licence is not `original` must carry a `provenance` record with a non-empty
+      `source` and `spdx`. That is the tripwire for the ISF import — an import
+      landing as `attribution` with nowhere to store the credit fails the suite
+      instead of shipping. It is scoped to `SCENES` on purpose; asserting it over
+      `DISABLED_SCENES` would only invite someone to invent a source to turn the
+      bar green. A weaker companion checks that any record which *does* exist,
+      quarantine included, is well-formed. `KNOWN_NC_SOURCE_IDS` is untouched and
+      no scene moved between the two arrays.
+
+      One drift noticed and deliberately not acted on: `CrystalFoldScene.tsx`
+      and `LumenMaskScene.tsx` both argue in their headers for
+      `license: 'original'` while their descriptors declare `unverified`. The
+      conservative marking is the one in force and the one that matters, but the
+      two texts contradict each other and a future reader will have to
+      re-litigate it. Not changed here — this entry was about the default, and
+      reclassifying a scene is a licence decision, not a mechanical one.
+
+      `npm run typecheck`, `npm run lint`, `npm run build` clean; **1330 tests
+      passed, 1 skipped**. Note the arithmetic: this entry's own baseline was
+      1322/1, and the working tree already carried uncommitted `canHoldPrimary`
+      work worth 6 tests when this landed — 1322 + 6 + 2 new licensing tests.
+      Not verified in a browser, and nothing here needs to be: the whole change
+      is registry metadata and a predicate.
 
 - [x] **F105 · Pre-commercial licence sweep: 12 scenes moved to `DISABLED_SCENES`** —
       `src/scenes/index.ts`. Direct follow-up to F01, run because the product is
@@ -7024,7 +7098,8 @@ things a curator will hit and should not have to rediscover.
         only two signals of authorial intent available, and harvesting past an
         opt-out to solve a licensing problem defeats the exercise.
       - **B · Author originals through the ISF pipeline.** Already the proven
-        channel — 8 of 14 live scenes are `original`, and `malachite` is on
+        channel — all 14 live scenes are `original` (8 said so explicitly when
+        this was written; F01 made the other 6 say it too), and `malachite` is on
         record as generated, CC0, credited in source. Cheaper now that the
         adapter derives contracts, remaps and labels.
       - **C · The ~200 MIT filters.** Runtime landed (F178). Blocked only on the
@@ -7054,9 +7129,66 @@ things a curator will hit and should not have to rediscover.
       the same render-target-ownership gap that blocked c11a and c12, so it
       should be scoped with that work rather than against it.
 
+- [x] **F180 · Picking an effect scene as the subject blacked the show out** —
+      `src/store.ts`, `src/engine/SceneManager.tsx`, `src/ui/HUD.tsx`,
+      `src/scenes/index.ts`.
+
+      Selecting `Shock Ring`, `Section Flare` or `Transient Spark` from the HUD
+      chips or the number-key shortcuts retired the running scene and rendered a
+      black frame. No error was logged anywhere.
+
+      **All three shaders are correct**, and two of the three never read
+      `slotProgress` in GLSL at all — which is why reading them explains
+      nothing. The failure was four individually-correct behaviours composing:
+
+      1. `effect` scenes are PINNED in `SceneManager` as idle entries
+         (`dir === 0`) so a firing costs no shader compile. They are mounted for
+         the whole show, not on demand.
+      2. The commit path promoted a pre-warmed entry found **by id alone**, so a
+         requested `shock` matched its own pinned *effect* entry.
+      3. Promotion sets `dir = 1` and never touches `role`. The entry went live
+         as the subject still declaring `role: 'effect'` — and the outgoing
+         primary had already been retired to make room for it.
+      4. `slotProgress` is 0 outside a live firing (`sceneFrame.ts`), and every
+         effect scene multiplies its output by `effectEnvelope(slotProgress)`,
+         which is 0 at 0 **by contract** — the slot requires visual zero at both
+         ends, since `SceneManager` retires an effect at 1 without fading it.
+
+      So the promoted scene did exactly what the effect contract tells it to and
+      drew nothing, over a stage whose subject had just been removed.
+
+      **Fixed at three levels, deliberately.** `store.requestScene` refuses a
+      scene that cannot hold `primary` — it is the choke point every caller
+      passes through (HUD chips, number keys, cue playback, AutoPilot,
+      PerformanceDirector), and `false` was already its "declined" return.
+      `SceneManager`'s warm-entry lookup now matches on `role === 'primary'` as
+      well as id, keeping the invariant next to the code that depends on it
+      rather than resting on a caller. `HUD` filters both the chips and the
+      shortcut through `PICKABLE_SCENES`, so the UI stops offering an action
+      that silently declines.
+
+      New `canHoldPrimary()` in the registry, and NOT spelled
+      `getScene(id).metadata.roles.includes('primary')`: `getScene` falls back to
+      `SCENES[0]` for an unknown id and `SCENES[0]` is primary-capable by
+      invariant, so that spelling answers `true` for every typo.
+
+      **What the tests do and do not cover.** Six new tests in
+      `canHoldPrimary.test.ts`, including one asserting the HUD's filter and the
+      store's guard cannot drift apart — if they disagree the UI offers a chip
+      that silently declines, which presents exactly as the original bug. The
+      `SceneManager` promotion itself is NOT covered: it needs a live GL context
+      the suite does not have. The regression is guarded at the choke point, not
+      at the mechanism, and that gap is real rather than an oversight.
+
+      **Why nothing caught this.** `registry.test.ts` checks that every mood has
+      a primary-capable scene, and `roleSelection.test.ts` checks the directors
+      never *choose* a layer-only scene for the subject. Both test the automatic
+      paths. Neither models a human clicking a chip, which is the one path that
+      bypassed role entirely.
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1322 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1330 tests**
 (1 skipped, see F108), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

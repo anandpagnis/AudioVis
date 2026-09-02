@@ -22,6 +22,7 @@ import {
 import {
   SCENES,
   getSceneContract,
+  isNonCommercial,
   resolveSceneMode,
   sceneContracts,
   validateSceneDef,
@@ -404,10 +405,12 @@ describe('sceneContracts — the marketplace/connector view', () => {
     const ids = listed.map((s) => s.id)
     expect(ids.length).toBeGreaterThan(0)
     for (const scene of SCENES) {
-      const shippable =
-        scene.metadata.license === undefined ||
-        scene.metadata.license === 'original' ||
-        scene.metadata.license === 'attribution'
+      // `!isNonCommercial` rather than a re-spelled licence condition. The
+      // hand-written version here treated `undefined` as shippable, which was
+      // the old default and is now the opposite of it (F01) — a second copy of
+      // a licence rule is a place for the rule to drift, and this is the copy
+      // that would have kept saying "absent is fine" after the real one stopped.
+      const shippable = !isNonCommercial(scene)
       if (scene.metadata.contract && shippable) expect(ids).toContain(scene.id)
       if (!shippable) expect(ids).not.toContain(scene.id)
     }

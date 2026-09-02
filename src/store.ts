@@ -6,7 +6,7 @@ import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
 import { startRecording, stopRecording } from './engine/recorder'
-import { getSceneContract, preloadScene, resolveSceneMode } from './scenes'
+import { canHoldPrimary, getSceneContract, preloadScene, resolveSceneMode } from './scenes'
 import {
   resolveSceneParams,
   sanitizeSceneParams,
@@ -746,6 +746,22 @@ export const useStore = create<AppState>()(
       requestScene: (id, opts) => {
         if (!opts?.auto) set({ lastManualAt: audioEngine.features.time })
         if (id === get().sceneId) return false
+        // A scene that cannot hold `primary` must never become the subject.
+        //
+        // This is a correctness guard, not tidiness. `effect`-role scenes are
+        // PINNED in SceneManager as idle entries (`dir === 0`) so a firing costs
+        // no compile — and the commit path looks for a warm entry to promote by
+        // id alone. Requesting one as the subject therefore found its pinned
+        // EFFECT entry, promoted it with `role` still `'effect'`, and retired the
+        // real primary: the scene then read `slotProgress` (0 outside a live
+        // firing), multiplied by `effectEnvelope(0)` — which is 0 by contract —
+        // and rendered nothing. A black screen, and no error anywhere.
+        //
+        // Guarded here rather than only at the picker because every caller comes
+        // through this function: the HUD chips, the number-key shortcuts, cue
+        // playback, AutoPilot and PerformanceDirector. `false` is already this
+        // function's "declined" return, so callers need no new handling.
+        if (!canHoldPrimary(id)) return false
         // Minimum dwell, enforced HERE rather than in either director because
         // both of them request subjects and the floor has to bind on the pair.
         // Manual picks are exempt (the user asked for it), and so are drops:

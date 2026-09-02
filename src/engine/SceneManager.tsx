@@ -731,7 +731,18 @@ export function SceneManager() {
         )
         force((n) => n + 1)
       }
-      if (!entriesRef.current.some((e) => e.dir === 0 && e.id === pendingSceneId)) {
+      // `role === 'primary'` is part of the match, not decoration. Effects are
+      // PINNED as idle entries (`dir === 0`) so a firing costs no compile, so an
+      // id alone can match an entry that is not a subject and never can be.
+      // Adopting one promotes it with its role unchanged, which retires the real
+      // primary in favour of a scene that renders nothing — see `canHoldPrimary`.
+      // `requestScene` now refuses those upstream; this keeps the invariant local
+      // to the code that depends on it rather than resting on a caller.
+      if (
+        !entriesRef.current.some(
+          (e) => e.dir === 0 && e.role === 'primary' && e.id === pendingSceneId,
+        )
+      ) {
         entriesRef.current.push(makeEntry(pendingSceneId, 'primary', 0))
         force((n) => n + 1)
       }
@@ -759,7 +770,9 @@ export function SceneManager() {
       // because the one thing worse than a late cut is a compile stall exactly
       // on the drop — the very hitch the warm-up machinery exists to prevent.
       // In practice prewarm resolves in a few frames, so this lands ~50 ms in.
-      const pendingWarm = entriesRef.current.find((e) => e.dir === 0 && e.id === pendingSceneId)
+      const pendingWarm = entriesRef.current.find(
+        (e) => e.dir === 0 && e.role === 'primary' && e.id === pendingSceneId,
+      )
       const { commit, immediate } = resolveCommit({
         gridTrusted,
         onDownbeat,

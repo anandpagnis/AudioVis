@@ -185,6 +185,12 @@ export interface SceneEffectSpec {
  * no explicit licence header must be treated as non-commercial until its author
  * is actually contacted. Anything not marked `original` or `attribution` should
  * be assumed unshippable.
+ *
+ * The absent case now agrees with that sentence: a scene that declares no
+ * `license` reads as `unverified`, not as `original` (F01). It used to read as
+ * `original`, which meant this doc comment and the code it documented said
+ * opposite things — and the code won, silently, for any scene nobody
+ * remembered to mark.
  */
 export type SceneLicense =
   /** Written for this project. No restriction. */
@@ -275,13 +281,72 @@ export interface SceneMetadata {
   moodFit?: Partial<Record<MoodState, number>>
 
   /**
-   * Licence posture of the scene's source material. Absent means `original`.
+   * Licence posture of the scene's source material. **Absent means
+   * `unverified`** — declaring shippability is opt-IN.
    *
    * Anything other than `original` or `attribution` is excluded from
    * {@link commerciallyShippableScenes}, which is what a packaging step should
    * build from.
+   *
+   * The default is the safe one, and it is the same argument
+   * {@link SceneMetadata.fillBound} makes for its own: a scene that declares
+   * nothing — an ISF import, a pasted shader, a plugin registration — is
+   * assumed to be somebody else's until someone says otherwise out loud. The
+   * old default was `original`, which read a missing field as a positive claim
+   * of authorship and let an unmarked import ship as ours. Inverting it costs
+   * the roster one line per scene; getting it wrong the other way costs a
+   * takedown.
    */
   license?: SceneLicense
+
+  /**
+   * Where the source material actually came from — the record that makes a
+   * {@link SceneMetadata.license} claim checkable by someone who was not in
+   * the room when the scene arrived.
+   *
+   * The licence field is a posture; this is the evidence for it, and the two
+   * gaps it closes are different. `attribution` is a legal *obligation* to
+   * credit a named person, and until this existed there was nowhere in the
+   * data to put the credit: the author's name lived in a prose comment above
+   * the descriptor, which no packaging step, credits screen or marketplace
+   * listing can read. Separately, the moment to record where a shader came
+   * from is the moment it lands — a week before launch the browser tab is
+   * closed, the paste is gone, and a scene that was perfectly traceable on
+   * arrival has become permanently `unverified`.
+   *
+   * Absent means "nothing was recorded", never "nothing to record". A scene
+   * that is not `original` and carries no provenance is a gap, and
+   * `sceneLicensing.test.ts` fails the live roster over it. Leaving the gap
+   * visible is the point: a fabricated source URL would satisfy the check
+   * while destroying the only thing this field is for.
+   */
+  provenance?: {
+    /**
+     * The most specific pointer to the upstream work that genuinely exists: a
+     * URL where the port recorded one, otherwise the title/platform it was
+     * cited by. Never reconstruct a URL from a title — a plausible link that
+     * resolves to the wrong shader is worse than prose, because it reads as
+     * verified and nobody checks it twice.
+     */
+    source: string
+    /** Upstream credit line, verbatim where the licence requires crediting. */
+    author?: string
+    /**
+     * SPDX identifier for the upstream grant — `MIT`, `CC0-1.0`, `CC-BY-4.0`,
+     * `CC-BY-NC-SA-3.0`. Use SPDX's own `NOASSERTION` when the source is known
+     * but carried no licence at all: that is the honest reading of an unmarked
+     * Shadertoy paste, and it stays distinguishable from a grant that was
+     * simply never looked up.
+     */
+    spdx: string
+    /**
+     * Repo-relative path to the vendored licence text, where one is actually
+     * checked in (see `src/assets/isf/filters/LICENSE`). A licence whose text
+     * ships with the build is a different thing from one named in a comment,
+     * and only the first satisfies most attribution terms.
+     */
+    noticePath?: string
+  }
 
   /**
    * Where this scene can be looked at — subject centre, comfortable distance,
@@ -369,6 +434,16 @@ export const SCENES: SceneDef[] = [
     name: 'Wireframe Hero',
     component: WireframeHeroScene,
     metadata: {
+      // Written for this project against three's Wireframe/WireframeGeometry2 —
+      // no ported source, nothing pasted, no upstream to credit.
+      //
+      // Stated rather than left absent (F01): the six genuinely-original live
+      // scenes were all relying on `?? 'original'` to pass the commercial
+      // filter, so their safety was real but invisible — indistinguishable, to
+      // the code, from a scene someone forgot to mark. Now that absent means
+      // `unverified`, each of them says it. Nothing about their posture
+      // changed; it was only ever written down in the header comments.
+      license: 'original',
       // Subject only. Dropping `accent` stops the engine compositing this over
       // another subject — with both roles, `primary: chrome` + `accent:
       // wireframe` was a legal composition and the director produced it, which
@@ -406,6 +481,10 @@ export const SCENES: SceneDef[] = [
     name: 'Plasma Filament',
     component: PlasmaFilamentScene,
     metadata: {
+      // Original: closed-form curl-noise advection written here, on this
+      // project's own CURL_NOISE_GLSL. See `wireframe` for why this is now
+      // stated instead of inferred.
+      license: 'original',
       roles: ['primary', 'accent', 'overlay'],
       moods: ['groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'high', 'energy'],
@@ -429,6 +508,9 @@ export const SCENES: SceneDef[] = [
     name: 'Dissolve Cage',
     component: DissolveCageScene,
     metadata: {
+      // Original: a composition of `wireframe`'s edge cage and `plasma`'s curl
+      // field, both of which are this project's own.
+      license: 'original',
       roles: ['primary'],
       moods: ['mellow', 'groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'energy'],
@@ -445,6 +527,9 @@ export const SCENES: SceneDef[] = [
     name: 'Chrome Form',
     component: ChromeFormScene,
     metadata: {
+      // Original: a torus knot under three's own PMREM environment lighting
+      // and this project's LightRig. No shader was ported in.
+      license: 'original',
       contract: {
         version: 1,
         params: { speed: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.85 },
@@ -467,6 +552,9 @@ export const SCENES: SceneDef[] = [
     name: 'Flow Ribbons',
     component: FlowRibbonScene,
     metadata: {
+      // Original: the ribbon spine is a closed-form function authored here and
+      // displaced by this engine's own `features.midWaveform`.
+      license: 'original',
       roles: ['accent', 'overlay'],
       // Peak dropped. Coverage, not fit, was making this the layer that appeared
       // most: it was the only calm layer tagged for `peak`, so it had a
@@ -503,6 +591,10 @@ export const SCENES: SceneDef[] = [
     name: 'PCD LIDAR Scan',
     component: PointCloudScanScene,
     metadata: {
+      // Original: a procedurally seeded field (fixed SEED, no asset loaded —
+      // the "LIDAR scan" is generated, not a captured point cloud) with
+      // shaders written here.
+      license: 'original',
       // Exclusively primary as requested, serving as the central visual subject
       roles: ['primary'],
       moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
@@ -949,6 +1041,19 @@ export const SCENES: SceneDef[] = [
  * worked on. Note `panic` is ALSO non-commercial; see KNOWN_NC_SOURCE_IDS,
  * which deliberately tracks licence independently of whether a scene is
  * currently in the roster.
+ *
+ * **Six of these carry no `provenance` and that is the finding, not an
+ * oversight.** `foldpath`, `torusfold`, `orbs` and `trail` were ported from
+ * Shadertoy pastes that named no author, title or URL; `panic` and `synthgrid`
+ * name a licence but not the work it belongs to (`synthgrid`'s source states
+ * CC BY-NC-SA 3.0 outright, and there is still nothing to point at that it
+ * covers); `crystalfold` and `lumen` were pasted in with no external
+ * attribution at all. Nothing truthful goes in a `provenance` record for those,
+ * and a plausible-looking one would only make the gap harder to find later.
+ * They are permanently unclearable in their current state, which is the real
+ * cost of not recording provenance at the moment of import — and the reason
+ * the tripwire in `sceneLicensing.test.ts` guards the live roster, where new
+ * imports actually land.
  */
 export const DISABLED_SCENES: SceneDef[] = [
   {
@@ -961,6 +1066,14 @@ export const DISABLED_SCENES: SceneDef[] = [
       // treated as non-commercial until confirmed otherwise, independent of
       // why it is disabled (which is look/quality, not licensing).
       license: 'unverified',
+      // The one quarantined scene whose port recorded an actual URL, so this
+      // is the only one where "confirm with the author" is a task somebody can
+      // start rather than a dead end. `NOASSERTION` because the source page
+      // carried no licence — not because nobody looked.
+      provenance: {
+        source: 'https://www.shadertoy.com/view/MfVfz3',
+        spdx: 'NOASSERTION',
+      },
       // Subject only. A fullscreen flythrough owns the whole frame by
       // construction — there is no ground to sit behind it and nothing sensible
       // to composite over a moving tunnel.
@@ -1043,6 +1156,15 @@ export const DISABLED_SCENES: SceneDef[] = [
       // Source states an explicit non-commercial licence. See
       // KNOWN_NC_SOURCE_IDS and docs/ISSUES.md for the audit this came from.
       license: 'noncommercial',
+      // The strongest provenance in the quarantine: a named work, a named
+      // author and a licence the source states itself, rather than Shadertoy's
+      // presumed default. No URL was recorded by the port, and one is not
+      // invented here — the citation is what exists.
+      provenance: {
+        source: '"The Universe Within" (Shadertoy) — no URL recorded by the port',
+        author: 'Martijn Steinrucken (BigWings)',
+        spdx: 'CC-BY-NC-SA-3.0',
+      },
       // Now primary-capable: a fullscreen procedural network shader, bold
       // enough to stand alone rather than only composite under/over another
       // scene.
@@ -1089,6 +1211,15 @@ export const DISABLED_SCENES: SceneDef[] = [
       // is treated as non-commercial until someone actually confirms otherwise
       // with the original author -- not a neutral "maybe fine".
       license: 'unverified',
+      // Title and author both recorded by the port; no URL and no licence
+      // were. A named author is what separates this from `foldpath`/`torusfold`
+      // below, which carry no provenance at all because there is nothing
+      // truthful to put in one.
+      provenance: {
+        source: '"The Inversion Machine" (Shadertoy) — no URL recorded by the port',
+        author: 'Kali',
+        spdx: 'NOASSERTION',
+      },
       // The first true raymarched-SDF scene in the roster: a sphere-inversion
       // fractal, dense and alien enough to carry a frame on its own.
       roles: ['primary'],
@@ -1201,6 +1332,13 @@ export const DISABLED_SCENES: SceneDef[] = [
       // is treated as non-commercial until someone actually confirms otherwise
       // with the original author -- not a neutral "maybe fine".
       license: 'unverified',
+      // Handle and date are all the source gave; JuliaWingsScene's header
+      // quotes its description verbatim. No title, no URL, no licence.
+      provenance: {
+        source: 'Shadertoy, 2015-05-07 ("1st version, need to optim and do some proper AA") — no URL recorded by the port',
+        author: '@christinacoffin',
+        spdx: 'NOASSERTION',
+      },
       // Vivid and dense enough to hold a frame alone — deliberately not
       // accent/overlay: this one was explicitly tuned brighter than the
       // roster's usual budget (see JuliaWingsScene's BRIGHTNESS comment),
@@ -1241,6 +1379,18 @@ export const DISABLED_SCENES: SceneDef[] = [
       // crediting the author. Held out anyway on request, pending a decision
       // on where that credit would live (about/credits screen).
       license: 'attribution',
+      // The record that makes `attribution` mean something. CC BY 4.0 obliges
+      // this project to credit the author and to indicate modification, and
+      // until this field existed the only place that credit lived was a prose
+      // comment in HeapCorruptionScene.tsx — unreadable to the credits screen
+      // that decision is waiting on. `noticePath` is absent because the licence
+      // text is not vendored: naming CC BY 4.0 is not the same as shipping it,
+      // and that gap is part of what "pending where the credit lives" means.
+      provenance: {
+        source: 'https://www.pvv.ntnu.no/~torhr/shaders/',
+        author: 'Tor Ringstad, 2026 — "Heap Corruption"',
+        spdx: 'CC-BY-4.0',
+      },
       // Subject only. It fills the frame with a dense, high-contrast grid, so
       // compositing anything over it — or it over anything — just fights.
       roles: ['primary'],
@@ -1335,6 +1485,15 @@ export const DISABLED_SCENES: SceneDef[] = [
       // is treated as non-commercial until someone actually confirms otherwise
       // with the original author -- not a neutral "maybe fine".
       license: 'unverified',
+      // Two upstreams, neither licensed in the source given: the structure is
+      // kishimisu's teaching shader, and `palette()` is Quilez's cosine
+      // palette, which does have a URL. Recorded as the tutorial rather than
+      // the article because the article covers one function, not the scene.
+      provenance: {
+        source: 'kishimisu, "An Introduction to Shader Art Coding" — no URL recorded by the port',
+        author: 'kishimisu; palette() after Inigo Quilez (https://iquilezles.org/articles/palettes)',
+        spdx: 'NOASSERTION',
+      },
       // Subject only. A centred mandala owns the middle of the frame by
       // construction; composited over another subject the two symmetries fight,
       // and behind one it is entirely hidden by its own dark centre.
@@ -1602,17 +1761,26 @@ export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic']
  * than duplicating the condition or depending on the live roster happening to
  * contain a restricted scene, which will not always be true — the whole point
  * of the roster is to drive that count toward zero.
+ *
+ * **An absent `license` reads as `unverified`, so it is restricted** (F01).
+ * The previous default was `original`, which inverted the type's own stated
+ * policy: a scene added with no licence field passed the commercial filter by
+ * saying nothing, and saying nothing is exactly what an unattributed paste or
+ * an ISF import does. The failure was silent in both directions that matter —
+ * nothing in development surfaces it, and the build it breaks is the one being
+ * sold. Every live scene now declares a licence explicitly, which is what makes
+ * this default affordable.
  */
 export function isNonCommercial(scene: SceneDef): boolean {
-  const l = scene.metadata.license ?? 'original'
+  const l = scene.metadata.license ?? 'unverified'
   return l !== 'original' && l !== 'attribution'
 }
 
 export function nonCommercialSceneIds(): string[] {
-  return SCENES.filter((s) => {
-    const l = s.metadata.license ?? 'original'
-    return l !== 'original' && l !== 'attribution'
-  }).map((s) => s.id)
+  // Deliberately `isNonCommercial` rather than a second copy of the condition:
+  // the two defaults drifting apart would be a licence bug that every test
+  // exercising the exported predicate would still pass.
+  return SCENES.filter(isNonCommercial).map((s) => s.id)
 }
 
 /** The complement: scenes safe to include in a commercial build. */
@@ -1930,6 +2098,29 @@ export function getSceneContract(id: string): SceneContract | undefined {
 /** True if this scene can be steered through the shared vocabulary. */
 export function isSteerable(id: string): boolean {
   return getSceneContract(id) !== undefined
+}
+
+/**
+ * May this scene be made the SUBJECT?
+ *
+ * Deliberately NOT `getScene(id).metadata.roles.includes('primary')`: `getScene`
+ * falls back to `SCENES[0]` for an unknown id, and `SCENES[0]` is primary-capable
+ * by invariant — so that spelling answers `true` for every typo, which is the
+ * opposite of what a guard is for. An id that names no registered scene cannot
+ * hold any role.
+ *
+ * Exists because promoting a non-primary scene into the subject slot fails
+ * SILENTLY and spectacularly. `effect` scenes are pinned in `SceneManager` as
+ * idle entries so a firing costs no shader compile, and the commit path promotes
+ * a warm entry found BY ID — so requesting one as the subject adopted its pinned
+ * effect entry with `role` still `'effect'`, retired the real primary, and left a
+ * scene reading `slotProgress` at 0 through `effectEnvelope`, which is 0 there by
+ * contract. Black frame, no error. `store.requestScene` is the choke point every
+ * caller passes through and is where this is enforced.
+ */
+export function canHoldPrimary(id: string): boolean {
+  const def = SCENES.find((s) => s.id === id)
+  return def !== undefined && def.metadata.roles.includes('primary')
 }
 
 /**
