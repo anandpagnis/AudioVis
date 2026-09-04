@@ -27,6 +27,7 @@ import {
   fillScale,
   feedbackMsFor,
   frameLoad,
+  isfFilterMsFor,
   lensRackMs,
   mirrorRackMs,
   POST_CHAIN_MS,
@@ -955,7 +956,8 @@ export function SceneManager() {
       POST_CHAIN_MS +
       feedbackMsFor(performanceState.trails) +
       mirrorRackMs(performanceState.mirror) +
-      lensRackMs(performanceState.lens)
+      lensRackMs(performanceState.lens) +
+      isfFilterMsFor(performanceState.filter)
     const budgetTier = quality.tier
     // Same fix as the overlap test above: price every slot at the resolution
     // the frame is actually carrying, not the one its tier implies alone.
@@ -1118,7 +1120,8 @@ export function SceneManager() {
       (POST_CHAIN_MS +
         feedbackMsFor(performanceState.trails) +
         mirrorRackMs(performanceState.mirror) +
-        lensRackMs(performanceState.lens)) *
+        lensRackMs(performanceState.lens) +
+        isfFilterMsFor(performanceState.filter)) *
         fillScale(renderScale.internalMP(renderScale.applied)),
     )
     // Everything on screen shares one framebuffer at one internal resolution, so

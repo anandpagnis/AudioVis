@@ -55,16 +55,24 @@ const advance = (over: Partial<Parameters<typeof advanceEffects>[0]>) =>
  * the role unclaimed is the one a future effect scene will also forget.
  */
 describe('the effect roster', () => {
-  it('has content again — three licensed scenes, one per trigger family', () => {
+  it('has content again — four licensed scenes, and drop now has two answers', () => {
     // `orbs` was the only effect scene (F20), and F105 quarantined it as
     // unverified Shadertoy provenance, reopening F20 the same day. The
     // ledger's prescribed fix was "a LICENSED scene willing to claim the
     // role" — the pattern `malachite` already used for `background` — rather
-    // than reinstating `orbs`. `shock`/`flare`/`spark` are that: written
-    // directly for this slot, `license: 'original'`, one each for the drop,
-    // section-change/build-peak, and transient trigger families.
+    // than reinstating `orbs`. `shock`/`flare`/`spark` were that first close:
+    // written directly for this slot, `license: 'original'`, one each for the
+    // drop, section-change/build-peak, and transient trigger families.
+    //
+    // `strobe` (roster-completion pass) is a second `drop`-triggered scene,
+    // added deliberately rather than by omission — `EffectDirector.tsx`'s own
+    // `advanceEffects` comment already states the intent this relies on: "two
+    // different effects can both answer one drop while a single effect
+    // cannot machine-gun." `pickVariedScene` decides which one fires; see
+    // `effectScenes.test.ts` for the trigger-coverage assertions this
+    // addition changed.
     const ids = getEffectScenes().map((s) => s.id).sort()
-    expect(ids).toEqual(['flare', 'shock', 'spark'])
+    expect(ids).toEqual(['flare', 'shock', 'spark', 'strobe'])
   })
 
   it('gives every effect scene a trigger and a finite lifetime', () => {

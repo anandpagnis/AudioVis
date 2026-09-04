@@ -160,6 +160,45 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   flare: [0.1, 0.1, 0.1, 0.1, 0.1],
   spark: [0.07, 0.07, 0.07, 0.07, 0.07],
 
+  // --- Second background/silence/effect wave, NOT /bench-MEASURED ----------
+  // Same posture as the c6 effect scenes above and snowflake/harkonnen/beats/
+  // web below: documented op-count estimates, not fabricated pass-the-test
+  // numbers, each with its own comparison against a REAL measured row. Every
+  // one of the four's own scene-file header carries the full reasoning this
+  // summarizes. Replace all four with real /bench sweeps once possible.
+
+  // `nebula` — 3 fbm calls x <=3 octaves (<=9 noise() samples/px) against
+  // malachite's 5 fbm calls x <=5 octaves (<=25 samples/px, measured row
+  // below) — roughly a third of malachite's per-pixel noise cost, plus one
+  // small FIXED paletteRamp/Oklab term that does not scale with octaves.
+  // Priced near-flat, same shape as malachite's own row, at ~0.4x plus that
+  // fixed overhead. pixelBudget 1.6 vs malachite's 1.3 (~1.23x the pixels)
+  // is already folded into the estimate below rather than left for the
+  // resolution solve to double-count.
+  nebula: [0.34, 0.33, 0.32, 0.31, 0.3],
+
+  // `dustfield` — 3 fixed dustLayer() calls, no loop, no fbm; each ~ one
+  // octave of malachite's noise() (5 hash() + 2 smoothstep(), no
+  // interpolated noise() call at all). Roughly 3/25 of malachite's per-pixel
+  // noise-sample count with a cheaper per-sample op, so priced well under
+  // nebula's own row. Declares no quality.knobs response (no loop/octave
+  // count to gate) — flat across every tier, same convention wireframe/
+  // ribbons/wingfold use for the same reason.
+  dustfield: [0.18, 0.18, 0.18, 0.18, 0.18],
+
+  // `hold` — two closed-form scalar ops per pixel (one sin, one exp), no
+  // loop, no texture read, no fbm. Below even `orbs`'s measured 0.06ms floor
+  // (three length() + three divides) in op count. Flat across every tier —
+  // the scene's own header states plainly there is no quality-tier response
+  // to make, since there is no expensive term to gate in the first place.
+  hold: [0.05, 0.05, 0.05, 0.05, 0.05],
+
+  // `strobe` — a floor/fract bar pattern plus three smoothstep()s, no loop,
+  // no noise, no division, no uRes/aspect correction (bar position only
+  // reads vUv.x). Cheaper than shock/flare/spark's own exp()-based falloffs
+  // just above, so priced at their floor rather than above it.
+  strobe: [0.06, 0.06, 0.06, 0.06, 0.06],
+
   // `snowflake` (ISF port, "claude-opus-4-8" witnessed generation) — also NOT
   // /bench-measured. Priced a notch above shock/flare/spark: it is still a
   // single closed-form fullscreen pass, but it carries one `atan`, a constant

@@ -212,6 +212,19 @@ export interface PerformanceState {
   lens: LensRackState
 
   /**
+   * The selected ISF post-processing filter, if any, and its wet/dry value.
+   * See engine/isfFilterRoster.ts (filter ids) and engine/IsfFilterPass.ts.
+   * `mix` is already shaped/eased by the writer — same convention as
+   * `p.vignette`/`p.trails`/`p.mirror.twist` in PerformanceStateBridge.tsx,
+   * which call `approach()` (or a hand-authored envelope) themselves and
+   * publish the resulting value directly, rather than a raw target the
+   * executor smooths on its own. `PostFXChain` reads this and passes it
+   * straight to `IsfFilterPass.setFilter()`/`.setMix()` with no further
+   * easing, exactly as it does for those other fields.
+   */
+  filter: { id: string | null; mix: number }
+
+  /**
    * Raw-ish audio the optical racks need, published here rather than read
    * directly by the executor.
    *
@@ -328,6 +341,7 @@ export const performanceState: PerformanceState = {
   trails: 0,
   mirror: { segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0, mix: 0 },
   lens: { amount: 0, style: 0 },
+  filter: { id: null, mix: 0 },
   rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0 },
   transitionStyle: 'dissolve',
   transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1 },

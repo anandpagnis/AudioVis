@@ -146,7 +146,18 @@ import { drastic } from '../engine/sceneParams'
  * in `update()` below (Finding 4: this march has no hit test, so cutting
  * steps changes what the lattice reads as, not just how expensive it is;
  * the decision made here is documented at the call site rather than acted on
- * blind).
+ * blind). **Finding 5** (reported live, from screenshot: large regions
+ * visibly going black on a demotion — the "black bezels" report — root cause
+ * is Finding 4's step cut ALSO cutting how many terms `o`'s accumulator
+ * sums, so a demoted frame was measurably under-exposed, not just coarser)
+ * is fixed at the accumulator itself, in FRAG, right before the tone-map —
+ * see that comment for why an exposure compensation is the right minimal
+ * response and doesn't touch step count or per-tier cost.
+ *
+ * Also per direct request: `beatsSpinRate`'s base coefficient was lowered
+ * (0.1 -> 0.08) to slow the lattice's rotation slightly. `beatsPosition`'s
+ * phase-lock multiplier was deliberately left alone — see that function's
+ * own comment for why the beat-lurch rate is not the safe knob to turn down.
  */
 
 export const FRAG = /* glsl */ `
@@ -270,6 +281,22 @@ export const FRAG = /* glsl */ `
     // Kick burst applied once to the accumulated glow subtotal (Finding 3).
     o += glow * kickGlow;
 
+    // Step-truncation exposure compensation (Finding 5) — see the header's
+    // "black bezels" note and Finding 4 in update() below. o is a SUM over
+    // however many of the 77 iterations actually ran (no hit test, so every
+    // iteration always contributes), so at a demoted tier's cut uMaxSteps the
+    // sum is a fraction of its full-march total — not "the same image at
+    // lower detail", genuinely LESS LIGHT gathered, and large regions fell
+    // toward black. This does not restore the missing structure (Finding 4's
+    // "less of the lattice actually visited" is still true and still costs
+    // nothing to leave alone), it restores the EXPOSURE — scaling the total
+    // back up to roughly what a full march would have accumulated, so a
+    // demoted frame reads as "coarser" rather than "going dark". Safe against
+    // overcorrection specifically because tanh() is the very next line: an
+    // already-bright region scaled up past its normal range just saturates at
+    // the same ceiling a full march hits, it cannot blow out further.
+    o *= 77.0 / max(uMaxSteps, 1.0);
+
     // mrange's tone map: tanh, then /0.9 for a deliberate slight clip. Then the
     // one edit every ported shader owes the compositor.
     vec3 col = tanh3(o / uClip) / 0.9;
@@ -298,12 +325,23 @@ export function beatsPosition(beatIndex: number, beatProgress: number, mult: num
  * tempo-scaled so the rotation keeps its original beat-relative cadence
  * (same `bpm > 0 ? bpm : 120` fallback `uBeats` uses), with `mids` widening
  * the RATE rather than being multiplied against a raw, ever-growing GLSL
- * value. Reproduces the source's authored `0.1 .. 0.18` coefficient range at
- * `mids` 0..1 (`0.1 * (1 + 1*0.8) = 0.18`).
+ * value.
+ *
+ * Base coefficient lowered from mrange's source `0.1` to `0.08` (requested:
+ * "slightly slow down 4D Beats") — deliberately touching THIS constant and
+ * not `beatsPosition`'s beat-lock multiplier: `st.beats` is phase-LOCKED to
+ * the engine's real beat grid at neutral (Finding 1 above — "at mult===1
+ * this returns the grid position exactly"), so scaling it down would detune
+ * the lurch from the track's actual tempo, reopening the exact bug that fix
+ * exists to close. `uSpin` carries none of that invariant — it is a purely
+ * cosmetic JS-accumulated rotation with no "correct" rate to preserve — so
+ * it is the one speed knob in this scene safe to turn down on its own. 20%
+ * off the base keeps the same mids-widening ratio, `0.08 .. 0.144` at
+ * `mids` 0..1 (was `0.1 .. 0.18`).
  */
 export function beatsSpinRate(bpm: number, mids: number): number {
   const effectiveBpm = bpm > 0 ? bpm : 120
-  return (effectiveBpm / 60) * 0.1 * (1 + mids * 0.8)
+  return (effectiveBpm / 60) * 0.08 * (1 + mids * 0.8)
 }
 
 interface BeatsState {
@@ -386,19 +424,31 @@ export const BeatsScene = createShaderScene<BeatsState>({
     // every step). Cutting `uMaxSteps` from 77 to the 20-step floor (26%) is
     // not a softer version of the same image the way a hit-test march's cut
     // is — it is fewer lattice cells actually visited, i.e. less of the
-    // structure the shader is supposed to be drawing, plus (per Finding 3) a
-    // proportionally smaller `glow` subtotal for `kickGlow` to multiply, so
-    // the kick flash reads weaker on the same beat at low tiers too. That is
-    // a real, visible cost of running this scene at a low tier, not a free
-    // resolution trade — disclosed here rather than fixed blind, per this
-    // scene's own house convention of stating a tradeoff plainly instead of
-    // hiding it behind a number (cf. `sceneCost.ts`'s "estimate, not
-    // measured" header). Reducing real per-tier cost without this visual
-    // consequence would mean removing/cheapening per-iteration ops (the
-    // `dot()`/inversion/min-tree work), not cutting how many of the 77 steps
-    // run — a shader rewrite outside this fix's scope, and one that needs a
-    // rendered A/B to trust, not a guess. Left as `/bench`'s job (see the
-    // header's FORCED LIVE section); `SCENE_COST_MS.beats` is unchanged.
+    // structure the shader is supposed to be drawing. That part is still
+    // real, still unavoidable without more steps, and still not fixed here.
+    //
+    // What WAS fixed (Finding 5, reported live: large regions visibly going
+    // black on a demotion, not just reading coarser): `o`'s per-iteration
+    // accumulation means the total gathered light scales with how many of
+    // the 77 steps actually ran, so a hard cut to the 20-step floor was not
+    // just less detail, it was measurably less exposed — an increasing
+    // fraction of the frame fell toward black as uMaxSteps dropped. Fixed at
+    // the accumulator, not here: see the `o *= 77.0 / uMaxSteps` compensation
+    // right before the tone-map in FRAG, and its own comment for why scaling
+    // exposure back up (not adding steps back) is the correct, cheap
+    // response to specifically THAT symptom. The kick flash reading weaker
+    // at low tiers (per Finding 3, `glow`'s smaller subtotal) is covered by
+    // the same compensation, since it runs on the combined `o` after
+    // `o += glow * kickGlow`.
+    //
+    // Reducing the real per-tier COST without the remaining structural
+    // consequence would still mean removing/cheapening per-iteration ops
+    // (the `dot()`/inversion/min-tree work), not cutting how many of the 77
+    // steps run — a shader rewrite outside this fix's scope, and one that
+    // needs a rendered A/B to trust, not a guess. Left as `/bench`'s job (see
+    // the header's FORCED LIVE section); `SCENE_COST_MS.beats` is unchanged —
+    // the exposure fix changes what a demoted frame looks like, not what it
+    // costs.
     const qFrac = Math.min(1, quality.knobs.raymarchSteps / 96)
     u.uMaxSteps.value = Math.max(
       20,

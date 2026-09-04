@@ -167,6 +167,38 @@ export function selectPrimaryCandidates(mood: MoodState, currentSceneId: string)
 }
 
 /**
+ * The candidate pool for ONE layer role: mood-fitting, eligible for `role`,
+ * not the current subject — preferring scenes `compatibleWith` the subject,
+ * falling back to the full role-eligible pool only when THIS role's own
+ * compatible subset is empty.
+ *
+ * Exported for the unit test; the component (`forRole`, its call site) is the
+ * only production caller. Named and extracted because the fallback decision
+ * has to be made per role, and getting that wrong is exactly the bug this
+ * function exists to prevent: computing one global compatible-vs-fallback
+ * pool ACROSS every role (the previous shape) meant a mood whose fitting
+ * scenes included even one primary-only compatible id — common, since most
+ * scenes are primary-only — silently starved whichever role's own compatible
+ * candidates ran out first. No scene anywhere lists `malachite`, `nebula`,
+ * `dustfield` or `hold` in `compatibleWith` (`hold` declares `[]`), so any
+ * subject whose compatible set was non-empty but entirely primary-only (e.g.
+ * `network`, `orbs`) got `[]` for background forever, never reaching
+ * `layerFits`.
+ */
+export function layerPoolForRole(
+  role: LayerRole,
+  layerFits: readonly SceneDef[],
+  primaryId: string,
+  compatibleIds: ReadonlySet<string>,
+): SceneDef[] {
+  const fitsForRole = layerFits.filter(
+    (scene) => scene.id !== primaryId && scene.metadata.roles.includes(role),
+  )
+  const compatibleForRole = fitsForRole.filter((scene) => compatibleIds.has(scene.id))
+  return compatibleForRole.length > 0 ? compatibleForRole : fitsForRole
+}
+
+/**
  * Phrase-level scene composer. A true section change recomposes instantly; when
  * the track offers no section boundary it recomposes at most once per phrase
  * (16 beats). SceneManager handles the exact downbeat commit and crossfade.
@@ -257,10 +289,8 @@ export function PerformanceDirector() {
       : selectPrimaryCandidates(mood, s.sceneId)
 
     const layerFits = inBreakdown ? [] : getScenesForMood(mood)
-    const layerPool = layerFits.filter((scene) => compatibleIds.has(scene.id))
-    const layerCandidates = layerPool.length > 0 ? layerPool : layerFits
 
-    if (primaryCandidates.length === 0 && layerCandidates.length === 0) return
+    if (primaryCandidates.length === 0 && layerFits.length === 0) return
 
     // Prefer scenes that express the strongest current musical layer — folded
     // into pickVariedScene as a weight boost rather than a hard sort, so it
@@ -304,10 +334,9 @@ export function PerformanceDirector() {
     // which is the only one allowed.
     const leadRole: LayerRole =
       response.energy > 0.58 || response.dropPulse > 0 ? 'overlay' : 'accent'
-    const forRole = (role: LayerRole) =>
-      layerCandidates.filter(
-        (scene) => scene.id !== primaryId && scene.metadata.roles.includes(role),
-      )
+    // See `layerPoolForRole`'s own doc for the bug this fixes — the fallback
+    // to the full mood-fit pool now happens per role, not once globally.
+    const forRole = (role: LayerRole) => layerPoolForRole(role, layerFits, primaryId, compatibleIds)
 
     // Background recomposes on SECTION boundaries only, never on the phrase
     // fallback: it is the ground the rest of the composition sits on, and a

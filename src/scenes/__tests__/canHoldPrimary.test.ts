@@ -89,15 +89,33 @@ describe('the HUD picker', () => {
 
 /**
  * `Console.tsx` is a second, independent surface with the exact same shape of
- * bug: a scene grid calling `requestScene` and a per-layer `<select>` listing
- * every scene as an `<option>`. Both were unfiltered — the HUD fix (above)
- * covered only the surface that had actually been clicked and reported broken.
- * `store.requestScene`'s guard made the grid harmless (a press silently did
- * nothing) but not correct: a dead tile is still a bug the operator sees.
- * `setLayer` had NO guard at all, so a layer `<select>` could mount `shock` as
- * a permanent background wash — not a black frame (a layer mount uses the ROLE
- * passed in, not the scene's declared role, so `effectEnvelope` never enters
- * it), but a scene never priced or profiled for running continuously.
+ * bug: a scene grid calling `requestScene` and a per-layer picker listing every
+ * scene. Both were unfiltered — the HUD fix (above) covered only the surface
+ * that had actually been clicked and reported broken. `store.requestScene`'s
+ * guard made the grid harmless (a press silently did nothing) but not correct:
+ * a dead tile is still a bug the operator sees. `setLayer` had NO guard at all,
+ * so a layer picker could mount `shock` as a permanent background wash — not a
+ * black frame (a layer mount uses the ROLE passed in, not the scene's declared
+ * role, so `effectEnvelope` never enters it), but a scene never priced or
+ * profiled for running continuously.
+ *
+ * ## What changed under these assertions, and what did not
+ *
+ * The layer pickers were three `<select>`s in the console's Look column when
+ * these tests were written; they are now role-labelled tile groups in the Scene
+ * column, beside the subject grid, and the roster's `effect` scenes are shown
+ * there too as inert status chips. The markup is different. The guarantee is
+ * not, and it is the guarantee these assertions exist for:
+ *
+ *  - the subject grid offers only primary-capable scenes, and derives that from
+ *    the same predicate the store's own guard uses;
+ *  - each layer picker offers only scenes eligible for ITS role, by the same
+ *    predicate `setLayer` enforces;
+ *  - no effect scene is wired to `requestScene` from this surface.
+ *
+ * Source-order checks, and labelled as such for the reason the HUD block above
+ * gives: rendering the console needs a DOM, a store and a live telemetry poll,
+ * none of which this suite has any business standing up to assert a filter.
  */
 describe('the Console picker', () => {
   it('offers PICKABLE_SCENES for the subject grid, not the raw registry', () => {
@@ -111,8 +129,36 @@ describe('the Console picker', () => {
     )
   })
 
-  it('filters each layer <select> by eligibility for that role', () => {
+  it('filters each layer picker by eligibility for that role', () => {
     expect(CONSOLE_SRC).toMatch(/SCENES\.filter\(.*canHoldRole\(.*role\)/s)
+  })
+
+  it('feeds that filtered list to setLayer for the same role it filtered on', () => {
+    // The filter is only worth anything if the tiles it produces drive the slot
+    // it was computed for. A group that filtered on `role` and then wrote to a
+    // hard-coded one would pass the assertion above and still mount an
+    // ineligible scene — `setLayer` would decline it, and the tile would sit
+    // there never lighting up, which is F180's silent-dead-control failure with
+    // a different cause.
+    expect(CONSOLE_SRC).toMatch(/setLayer\(role,/)
+  })
+
+  it('shows effect scenes without wiring any of them to requestScene', () => {
+    // The console lists the `effect` roster so an operator can see what is
+    // firing. Listing them is safe; making them pressable is the original bug.
+    // `requestScene` would refuse one anyway, which is exactly the problem — the
+    // tile would look live and do nothing forever.
+    //
+    // Counted rather than pattern-matched: any second call site on this surface
+    // is a new way to ask for a subject, and this file cannot tell from a regex
+    // whether the id reaching it came from `PICKABLE_SCENES` or from the effect
+    // list next to it. One call site, from the grid asserted above, is the
+    // invariant worth pinning.
+    expect(CONSOLE_SRC).toContain('EFFECT_SCENES = getEffectScenes()')
+    expect(
+      CONSOLE_SRC.match(/requestScene\(/g)?.length,
+      'Console.tsx should have exactly one requestScene call site: the subject grid',
+    ).toBe(1)
   })
 })
 

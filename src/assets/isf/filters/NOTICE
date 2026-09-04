@@ -1,20 +1,24 @@
 Third-party notice — vendored ISF filters
 =========================================
 
-The five `.fs` files in this directory are vendored VERBATIM, byte for byte,
+The nine `.fs` files in this directory are vendored VERBATIM, byte for byte,
 from the Vidvox ISF shader collection:
 
     https://github.com/Vidvox/ISF-Files        (path: ISF/<name>.fs)
     Licence: MIT — the full text is in ./LICENSE, copied from that repository.
 
-    Bad TV.fs           CREDIT: by VIDVOX
-                        Adapted upstream from Felix Turner's BadTVShader; that
-                        author's own MIT notice is inside the file and travels
-                        with it. Do not strip it.
-    Broken LCD.fs       CREDIT: VIDVOX
-    Bump Distortion.fs  CREDIT: by carter rosenberg
-    CMYK Halftone.fs    CREDIT: by zoidberg
-    Color Invert.fs     CREDIT: by zoidberg
+    Bad TV.fs                 CREDIT: by VIDVOX
+                              Adapted upstream from Felix Turner's BadTVShader;
+                              that author's own MIT notice is inside the file
+                              and travels with it. Do not strip it.
+    Broken LCD.fs              CREDIT: VIDVOX
+    Bump Distortion.fs         CREDIT: by carter rosenberg
+    CMYK Halftone.fs           CREDIT: by zoidberg
+    Color Invert.fs            CREDIT: by zoidberg
+    Dither-Bayer.fs             CREDIT: Hugh Kennedy, adapted by David Lublin
+    JPEG Block Corruption.fs   CREDIT: by VIDVOX
+    Pixel Shifter.fs           CREDIT: by VIDVOX
+    Ripples.fs                 CREDIT: by carter rosenberg
 
 Not edited. A vendored fixture is only worth having if it is what upstream
 actually ships — the day one of these is "tidied up" it stops proving that the
@@ -22,28 +26,82 @@ adapter reads the real format and starts proving that it reads our idea of it.
 Filenames keep their upstream spelling, spaces included, so the mapping back to
 `ISF/<name>.fs` is exact rather than approximate.
 
-WHY THESE FIVE
---------------
+WHY THE FIRST FIVE
+-------------------
 Each exercises something the adapter has to get right, and between them they
 cover every ISF image function:
 
     Bad TV            IMG_NORM_PIXEL, TIME-driven animation, nine float inputs
     Broken LCD        IMG_PIXEL (with nested-paren arguments), IMG_THIS_PIXEL,
                       IMG_NORM_PIXEL, a `long` pop-up menu input
+                      *** DOES NOT RUN — see UNUSABLE_FILTERS / F185. It still
+                      earns its place here as the adapter fixture it was picked
+                      to be, and it is still credited above; it is the SHADER
+                      that is not portable, not the import of it. Its noise
+                      sums go negative into pow(), undefined for a negative
+                      base in GLSL, and the NaN blacks out the frame. ***
     Bump Distortion   IMG_NORM_PIXEL, point2D input, and the one body in the set
                       that writes a non-source alpha (`vec4(0.0)` out of bounds)
     CMYK Halftone     IMG_PIXEL, gl_FragCoord in pixel space, a const array
     Color Invert      IMG_THIS_PIXEL, and the smallest possible whole filter
 
-NOT SHIPPABLE YET — READ THIS BEFORE WIRING A PICKER
-----------------------------------------------------
-These are imported by tests only. Nothing in `src/engine`, `src/scenes` or
-`src/ui` references them, so they are not in the production bundle and no user
-can select one.
+Note what that list is and is not. Every one of the five was chosen because it
+exercises the PARSER — none was chosen for how it looks, and nothing here was
+ever screened for whether it renders well at its shipped defaults. Those are
+two different reviews, and for a long time only the first had been run: that is
+exactly how `Broken LCD` reached the live roster and blacked out a show (F185).
+A file earning its place as an adapter fixture says nothing about whether it
+should be offered to a viewer.
 
-That is deliberate and it is not a to-do we forgot. MIT requires this notice and
-the copyright line to travel with the work, and the product has no surface that
-shows a third-party credit to a viewer. The same question already pulled the
-`heap` scene from the roster. Until it is answered, adding a filter picker would
-ship ~200 MIT works with their attribution left behind in a directory nobody
-opens. See F178 in docs/ISSUES.md.
+WHY THE NEXT FOUR
+------------------
+Added once the pipeline below (roster, budget, trigger, attribution UI) was
+proven end to end against the first five — not before, for the reason the
+"shippable" section used to warn about: curating and vendoring the corpus
+before the pipeline exists just moves the F01 risk instead of avoiding it.
+Screened for genuine visual distinctiveness against both the mounted post
+chain (Bloom/ChromaticAberration/Vignette/GradePass/MirrorPass/FeedbackPass)
+and the first five, and for a NON-DEGENERATE author DEFAULT — this engine has
+no per-filter parameter UI yet, so a filter's `INPUTS` render at whatever the
+header's own `DEFAULT` says, and a filter whose default is a no-op (checked:
+`Noise Displace.fs`'s `displaceX`/`displaceY` both default to 0, making it
+invisible until someone drives its parameters — passed over for exactly this
+reason) would silently cost a full pass and show nothing:
+
+    Dither-Bayer            ordered/Bayer dithering — retro halftone texture,
+                            a `long` matrix-size menu, distinct from CMYK
+                            Halftone's four-plate print-dot look
+    JPEG Block Corruption   compression-artifact blocking/chroma-bleed — a
+                            distinct flavour of "broken" from Bad TV/Broken
+                            LCD's noise-based interference
+    Pixel Shifter           row/column pixel-shift glitch — a third, distinct
+                            glitch texture; scanline-shift rather than noise
+                            or corruption
+    Ripples                 concentric ripple/wave distortion from a fixed
+                            centre — distinct from Bump Distortion's static
+                            radial bulge (the same author's other filter
+                            already vendored here); reuses the identical
+                            `#ifndef GL_ES`-guarded `distance()` redefinition
+                            pattern already proven safe by Bump Distortion
+
+All four confirmed against the real adapter (`compileIsfFilter`, not just the
+header) before vendoring: single `inputImage`, no `PASSES`/`IMPORTED`/audio
+input/second image, no `FILTER_RESERVED_SYMBOLS` collision. Rejected on sight
+for the same reasons: `Crosshatch`/`Glitch Displace`/`Mosaic`/`Pixelize`/
+`Water Drop` (gl-transitions ports — `startImage`/`endImage`, the adapter's
+Track D, not this one), `Interlace`/`Vertical Tearing` (`PASSES` — persistent
+buffers this engine has no render-target allocator for), `v002-CRT-Mask`
+(`IMPORTED` — external PNG textures), `Waveform Displace` (an `audio` input,
+refused unconditionally, on top of `PASSES`), `Displace` (a second image
+input, `displaceImage`).
+
+Shipped and selectable
+-----------------------
+Unlike the state this file used to describe, these ARE wired into production:
+`src/engine/isfFilterRoster.ts` compiles all nine and curates which are
+selectable, `src/engine/FilterDirector.tsx` picks and times one on musical
+events, `src/engine/PostFXChain.tsx` drives `IsfFilterPass` from that, and
+`src/ui/Credits.tsx` (`I` key / the HUD's "ⓘ" chip) is the attribution
+surface MIT requires — every filter here appears there with its credit,
+whether or not it is currently in the selectable pool. See F178 in
+docs/ISSUES.md for how that gate got answered.

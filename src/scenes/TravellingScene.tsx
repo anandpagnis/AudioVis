@@ -1,7 +1,9 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
+import { impulseClock, sinceImpulse, type ImpulseClock } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
+import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
 
 /**
  * Moving Without Travelling — a hypnotic forward drift through stacked
@@ -61,17 +63,63 @@ import { drastic } from '../engine/sceneParams'
  * renderer ALSO encodes linear->sRGB, so this would double-gamma. Swapped for
  * `pow(col, vec3(0.72))` (mild contrast only), same fix as MazeFlightScene.
  *
+ * ## The identity this scene owns: the kick TRAVELS down the tunnel
+ *
+ * The scene is called Moving Without Travelling, and until now the kick was
+ * the one thing in it that did neither: `col *= 1.0 + uKick*0.5`, applied to
+ * the finished frame, after postProcess, at the very last line — the single
+ * most literal instance of the problem the response audit
+ * (engine/response.ts) names. Four stacked planes at four different depths,
+ * and every one of them brightened on the same frame by the same amount, so
+ * the depth the whole scene is built to sell was exactly the dimension the
+ * kick threw away.
+ *
+ * It now sweeps front to back instead. The hit lands on the plane nearest the
+ * camera and runs away down the tunnel, each plane's eye dilating and flaring
+ * as the front reaches it — so the pulse recedes toward the vanishing point
+ * and the stack reads as four things at four distances rather than one flat
+ * picture that got brighter.
+ *
+ * Its counterpart is `web`, whose kick expands RADIALLY outward through a hex
+ * lattice. Axial here, radial there — deliberately different axes, so the two
+ * flythrough-of-stacked-planes scenes never answer the same kick with the same
+ * gesture.
+ *
+ * `uKick` (the prelude's own envelope) consequently has no reader left in this
+ * shader. That is intentional, not an oversight: an envelope that only knows
+ * WHEN cannot express a reaction that depends on WHERE, and the prelude still
+ * declares it for every other scene, so nothing here redeclares anything.
+ *
  * ## Band routing
  *
  *   speed + energy -> uClock rate (whole flythrough)
- *   onKick         -> brightness pop (prelude uKick envelope, no JS state)
+ *   onKick         -> a wavefront travelling front-to-back through the plane
+ *                     stack, NOT a frame-wide pop. `sinceImpulse()` times the
+ *                     hit in JS, `uSinceKick` carries it over and
+ *                     `travellingPulse()` turns plane depth into arrival time
+ *                     (see `g_pulse` in color() for pos/speed/decay). Per
+ *                     plane it drives:
+ *                       - eye SCALE   (plane3's `s`) -- the eye dilates
+ *                       - SPECULAR    (weird()'s two key lights) -- it flares
+ *                       - plane luminance -- the brightness half, now local
+ *                     Two of the three are not raw glow: the eye dilating is
+ *                     what makes the plane read as a struck object rather than
+ *                     an illuminated one.
+ *   uKickAmp       -> strength of the last hit, so a soft kick makes a soft
+ *                     wave (the wave outlives its onset frame, so the value
+ *                     has to be latched rather than read live)
  *   mids           -> extra kaleidoscope drift (uMidDrift)
- *   highs          -> specular shimmer on the two key lights (uHigh)
- *   sub            -> eye scale per plane (uBass)
+ *   highs          -> specular shimmer on the two key lights (uHigh) -- the
+ *                     continuous term the kick's specular flare rides on top
+ *                     of, same property at a different timescale
+ *   sub            -> eye scale per plane (uBass) -- likewise the continuous
+ *                     breath under the discrete dilation
  */
 
 export const FRAG = /* glsl */ `
   uniform float uClock;    // speed-scaled time accumulator (replaces iTime)
+  uniform float uSinceKick; // seconds since the last kick (engine/response.ts)
+  uniform float uKickAmp;   // strength of that kick, so soft hits make soft waves
   uniform float uMidDrift; // s.mids -> extra kaleidoscope drift
   uniform float uHigh;     // s.highs -> specular shimmer
   uniform float uBass;     // s.sub  -> per-plane eye scale
@@ -97,6 +145,18 @@ export const FRAG = /* glsl */ `
   }
 
   const vec3 std_gamma = vec3(2.2);
+
+  // Kick propagation. See the g_pulse block in color() for the full reasoning.
+  const float waveSpeed = 3.0;   // spans per second -- the stack crossed in 1/3 s
+  const float waveDecay = 6.0;   // trailing falloff behind the front
+
+  // How much of THIS plane the kick wavefront has reached, 0..1-ish. Set once
+  // per plane in color()'s stack loop and read all the way down in plane3()
+  // and weird() -- the same global-hand-down the source already uses for g_th,
+  // which is set in plane3() and read inside warp(). Threading it through the
+  // plane/plane3/weird/warp signatures instead would touch four of them to
+  // deliver one float.
+  float g_pulse = 0.0;
 
   float g_th = 0.0;
   float g_hf = 0.0;
@@ -319,8 +379,12 @@ export const FRAG = /* glsl */ `
                         abs(0.5 + tanh_approx(v.y*w.y)),
                         tanh_approx(0.1 + abs(v.y - w.y))));
     col -= 0.5*(length(v)*col1 + length(w)*col2*1.0);
-    col += 0.5*lcol1*pow(ref1, 20.0)*(1.0 + uHigh*2.0);
-    col += 0.5*lcol2*pow(ref2, 10.0)*(1.0 + uHigh*2.0);
+    // highs shimmer the key lights continuously; the wavefront flares them as
+    // it passes. Specular rather than flat gain on purpose -- it only shows
+    // where the warped surface happens to face a light, so the flare picks out
+    // the plane's RELIEF instead of washing the whole plane up uniformly.
+    col += 0.5*lcol1*pow(ref1, 20.0)*(1.0 + uHigh*2.0 + g_pulse*2.0);
+    col += 0.5*lcol2*pow(ref2, 10.0)*(1.0 + uHigh*2.0 + g_pulse*2.0);
     col *= hf;
     return col;
   }
@@ -329,7 +393,12 @@ export const FRAG = /* glsl */ `
     float h = hash(n + 1234.4);
     float th = TAU*h;
     g_th = th;
-    float s = mix(0.2, 0.3, h)*(1.0 + uBass*0.15);   // sub swells the eye
+    // sub swells the eye continuously; the kick wavefront DILATES it as the
+    // front arrives, plane by plane down the stack. Same magnitude as the bass
+    // term so the two read as one property with two timescales, and because p
+    // is divided by s the dilation is a real change of scale -- the pattern
+    // inside the eye grows with it rather than the eye just getting brighter.
+    float s = mix(0.2, 0.3, h)*(1.0 + uBass*0.15 + g_pulse*0.15);
 
     vec2 p = (pp - off*vec3(1.0, 1.0, 0.0)).xy;
     p *= ROT(0.2*mix(-1.0, 1.0, h));
@@ -385,12 +454,47 @@ export const FRAG = /* glsl */ `
         vec3 npp = ro + nrd*pd;
         float aa = 3.0*length(pp - npp);
         vec3 off = offset(pp.z);
+
+        float dz = pz - ro.z;                   // was nz, which shadowed the outer nz
+
+        // --- the kick, arriving plane by plane ---------------------------
+        // pos is this plane's depth ahead of the camera over the depth of the
+        // whole visible stack, so 0 is the plane in the viewer's face and 1 is
+        // the furthest one still drawn. The front therefore starts AT the
+        // camera and recedes: the pulse shrinks toward the vanishing point as
+        // it goes, which is what sells it as travelling rather than as the
+        // planes taking turns.
+        //
+        // speed 3.0 -> the front crosses all four planes in 1/3 s. The scene's
+        // own BPM define is 150, one beat = 0.4 s, so the far plane lights just
+        // inside the beat that triggered it and the tunnel is clear again
+        // before the next kick. At 120 BPM (0.5 s) there is more room still.
+        //
+        // decay 6.0 is set by the sampling, not by taste: the stack is only
+        // FOUR planes, so the lit band has to span at least two of them or the
+        // wave lands on one plane at a time and reads as a strobe rather than
+        // as motion. Band width is speed/decay = 0.5 of the span = exactly two
+        // planes. Anything much tighter aliases against the plane spacing.
+        //
+        // Set before plane() so plane3()/weird() can read it; multiplied by
+        // uKickAmp so a soft hit makes a soft wave, and zero on every frame
+        // before the first kick (travellingPulse returns exp(-1e4*decay)).
+        g_pulse = travellingPulse(uSinceKick, dz/(planeDist*float(furthest)),
+                                  waveSpeed, waveDecay) * uKickAmp;
+
         vec4 pcol = plane(ro, rd, pp, off, aa, nz + float(i));
 
-        float dz = pp.z - ro.z;                 // was nz, which shadowed the outer nz
         float fadeIn = exp(-2.5*max((dz - planeDist*float(fadeFrom))/fadeDist, 0.0));
         float fadeOut = smoothstep(0.0, planeDist*0.1, dz);
         pcol.xyz = mix(skyCol, pcol.xyz, fadeIn);
+        // The brightness third of the reaction, and note WHERE it is: per
+        // plane, inside the stack loop, before the alpha blend -- so the near
+        // planes are already fading while the far ones are still lifting.
+        // The old frame-wide multiply lived in main() after postProcess, which
+        // is precisely why it could not do this. Slightly above the source's
+        // 0.5 to make up for postProcess's pow(col, 0.72) now running AFTER
+        // the gain instead of before it.
+        pcol.xyz *= 1.0 + g_pulse*0.6;
         pcol.w *= fadeOut;
         pcol = clamp(pcol, 0.0, 1.0);
         acol = alphaBlend(pcol, acol);
@@ -434,7 +538,10 @@ export const FRAG = /* glsl */ `
     vec3 col = effect(p, q);
     col += smoothstep(3.0, 0.0, TIME);
     col = postProcess(col, q);
-    col *= 1.0 + uKick * 0.5;              // onKick -> brightness pop
+    // The kick deliberately does NOT appear here any more. A multiply on the
+    // finished frame reaches every plane on the same frame by construction,
+    // which is the one thing a travelling pulse must not do; it now lives per
+    // plane inside color()'s stack loop instead.
 
     gl_FragColor = vec4(col*uFade, 1.0);
   }
@@ -443,11 +550,24 @@ export const FRAG = /* glsl */ `
 interface TravellingState {
   /** Time accumulator, so a changing speed/energy rate stays continuous. */
   clock: number
+  /**
+   * When the last kick landed. A shader cannot remember this on its own, so
+   * the JS half holds the clock and the GPU half turns it into a wavefront —
+   * which is the whole reason the old reaction could not have been written in
+   * the shader alone.
+   */
+  kick: ImpulseClock
+  /** How hard that kick was, held until the next one. */
+  hitAmp: number
 }
 
 export const TravellingScene = createShaderScene<TravellingState>({
   id: 'travelling',
   frag: FRAG,
+  // travellingPulse(): one exp and one divide per plane per pixel (4 planes),
+  // against the ~100 fbm evaluations per pixel documented above. Not
+  // measurable here — SCENE_COST_MS is unchanged and deliberately so.
+  include: TRAVELLING_PULSE_GLSL,
   // Paints its own sky — replace, not blend, for the offscreen buffer.
   blending: THREE.NoBlending,
   // AGGRESSIVE — this is the dearest shader in the roster (see the header).
@@ -457,6 +577,10 @@ export const TravellingScene = createShaderScene<TravellingState>({
   pixelBudget: () => (quality.knobs.raymarchSteps >= 72 ? 1.0 : 0.6),
   uniforms: () => ({
     uClock: { value: 0 },
+    // 1e4 = sinceImpulse()'s "never fired" sentinel, so the first frame shows
+    // an already-spent wave rather than one mid-flight down the tunnel.
+    uSinceKick: { value: 1e4 },
+    uKickAmp: { value: 0 },
     uMidDrift: { value: 0 },
     uHigh: { value: 0 },
     uBass: { value: 0 },
@@ -465,12 +589,26 @@ export const TravellingScene = createShaderScene<TravellingState>({
     uSat: { value: -0.4 },
     uOctaves: { value: 4 },
   }),
-  state: () => ({ clock: 0 }),
-  update({ u, s, P, st, dt }) {
+  state: () => ({ clock: 0, kick: impulseClock(), hitAmp: 0 }),
+  update({ u, s, P, st, dt, ctx }) {
     // Source drove everything off iTime. Accumulate so a changing rate stays
     // continuous; energy leans on the throttle (cf. NeonJungleScene).
     st.clock += dt * (1 + s.energy * 0.4) * drastic(P.speed)
     u.uClock.value = st.clock
+
+    // Latch the hit's strength when it fires: the wave it launches outlives
+    // the onset frame by most of a beat, so the amplitude has to be held
+    // rather than read live. Floored at 0.5 because the far plane sees this
+    // hit a third of a second late, with the trailing decay already taken out
+    // of it — an unfloored weak onset would reach the back of the tunnel as
+    // nothing at all, and a propagation nobody can see is worse than none.
+    if (s.onKick > 0) st.hitAmp = Math.min(1.5, Math.max(0.5, s.onKick))
+    // ctx.f.time, NOT st.clock: the wave must be timed in engine seconds. The
+    // scene clock is speed- and energy-scaled, so timing the wave on it would
+    // make the speed dial silently retune how long a kick takes to cross the
+    // tunnel, and the pulse would drift out of tempo whenever energy moved.
+    u.uSinceKick.value = sinceImpulse(st.kick, ctx.f.time, s.onKick > 0)
+    u.uKickAmp.value = st.hitAmp
 
     // Bands — each neutral value reproduces a source constant.
     u.uMidDrift.value = s.mids * 0.5

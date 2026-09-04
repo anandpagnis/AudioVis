@@ -392,6 +392,15 @@ class SessionLog {
   private tiles = 0
   private tileInterval = 2
   private nextTileAt = 0
+  /** A tile grab is in flight. See {@link grabTile} — skipped, never queued. */
+  private tileBusy = false
+  /**
+   * Bumped by every `start()`. A grab in flight across a restart resolves into
+   * the previous recording's epoch and is dropped, including its claim on
+   * {@link tileBusy} — otherwise it would clear the new recording's latch and
+   * let two grabs run at once for the same slot.
+   */
+  private tileEpoch = 0
 
   isRecording(): boolean {
     return this.active
@@ -431,6 +440,8 @@ class SessionLog {
     this.tiles = 0
     this.tileInterval = 2
     this.nextTileAt = 0
+    this.tileBusy = false
+    this.tileEpoch++
     this.prev = {
       tier: -1,
       scale: -1,
@@ -732,23 +743,120 @@ class SessionLog {
   /**
    * Copy the live frame into the next contact-sheet tile.
    *
-   * Must run inside the render tick that drew it: `preserveDrawingBuffer` is
-   * off, so this is the only moment the canvas holds pixels rather than
+   * Must be REQUESTED inside the render tick that drew it: `preserveDrawingBuffer`
+   * is off, so this is the only moment the canvas holds pixels rather than
    * transparency — the same constraint `captureIfRequested` documents.
+   *
+   * ## Asynchronous, for the reason `ExposureSampler` is (F189)
+   *
+   * The obvious implementation — `ctx.drawImage(stageCanvas, …)` — blocks the
+   * CPU until every queued GPU command retires. `ExposureSampler.tsx:18-31`
+   * documents that stall measured at **117 ms every eleventh frame** on a heavy
+   * scene, and was rewritten onto `createImageBitmap` because of it. This did
+   * the same thing every ~2 s for the whole of a recording, which is a flight
+   * recorder perturbing the flight.
+   *
+   * `createImageBitmap` snapshots the same pixels without blocking, and the
+   * `resize*` options make the browser do the reduction as part of the snapshot
+   * so that 192x108 crosses the boundary rather than a full framebuffer — the
+   * downscale was never the expensive part, copying the frame out of the GPU
+   * was. `resizeQuality: 'low'` matches what `drawImage` into the sheet was
+   * already doing (a 2d context smooths at 'low' by default), so the tiles look
+   * the same as before.
+   *
+   * ## Ordering: the slot is claimed before the pixels arrive
+   *
+   * A tile is placed at a `col`/`row` derived from `this.tiles`, so two grabs
+   * resolving out of order could both target the same slot, or land backwards
+   * in time. Two things prevent that:
+   *
+   *  - **At most one grab is in flight.** A tick that finds `tileBusy` set drops
+   *    its thumbnail rather than queueing one, exactly as `ExposureSampler`
+   *    skips a sample — queueing builds back-pressure on precisely the frames
+   *    that are already slow, which is how an async path quietly becomes a
+   *    synchronous one. At a 2 s interval against a bitmap that resolves in a
+   *    frame or two, a skip should never actually happen; if it does, it costs
+   *    one thumbnail and `nextTileAt` still advances, so the sheet keeps its
+   *    even spacing.
+   *  - **`col`/`row` are computed at REQUEST time** and captured by the
+   *    callback, and `this.tiles` only advances once the pixels are actually in
+   *    the sheet. A failed grab therefore leaves the slot for the next tick to
+   *    retry, and never leaves a half-written tile.
+   *
+   * `compactSheet()` — which rewrites every slot and doubles `tileInterval` —
+   * is reached only below the `tileBusy` gate, so it can never renumber the
+   * slots under a grab that is already in flight.
    */
   private grabTile(): void {
     const c = stageCanvas()
     const ctx = this.sheetCtx
     if (!c || !ctx) return
+    if (this.tileBusy) return
     if (this.tiles >= TILE_CAPACITY) this.compactSheet()
     const col = this.tiles % SHEET_COLS
     const row = (this.tiles / SHEET_COLS) | 0
-    try {
-      ctx.drawImage(c, col * TILE_W, row * TILE_H, TILE_W, TILE_H)
-    } catch {
-      return // Tainted or lost context — a missing thumbnail is not worth throwing over.
+    const x = col * TILE_W
+    const y = row * TILE_H
+
+    if (typeof createImageBitmap !== 'function') {
+      // No async path here (a worker, an old browser, the node test env). Take
+      // the synchronous blit rather than dropping the contact sheet entirely:
+      // an environment without `createImageBitmap` cannot avoid the stall by
+      // any other means either.
+      try {
+        ctx.drawImage(c, x, y, TILE_W, TILE_H)
+      } catch {
+        return // Tainted or lost context — a missing thumbnail is not worth throwing over.
+      }
+      this.tiles++
+      return
     }
-    this.tiles++
+
+    // A zero-sized drawing buffer (mid-resize, or a canvas already torn down)
+    // rejects rather than resolving; asking is cheaper than the rejection.
+    if (c.width === 0 || c.height === 0) return
+
+    const epoch = this.tileEpoch
+    this.tileBusy = true
+    createImageBitmap(c, {
+      resizeWidth: TILE_W,
+      resizeHeight: TILE_H,
+      resizeQuality: 'low',
+    }).then(
+      (bmp) => {
+        // A recording restarted while this was in flight: the latch now belongs
+        // to the new one, so do not touch it, and do not draw.
+        if (epoch !== this.tileEpoch) {
+          bmp.close()
+          return
+        }
+        this.tileBusy = false
+        // Stale target. `stop()` has already handed this sheet to the caller —
+        // drawing into it now would race whoever is encoding the PNG — or the
+        // sheet was reallocated under us. Either way the tile belongs to a
+        // recording that is over; drop it quietly.
+        if (!this.active || this.sheetCtx !== ctx) {
+          bmp.close()
+          return
+        }
+        try {
+          // The bitmap is already TILE_W x TILE_H, so this is a 1:1 blit into
+          // the slot claimed above — same rect, same layout as the sync path.
+          ctx.drawImage(bmp, x, y, TILE_W, TILE_H)
+          this.tiles++
+        } catch {
+          // Lost context or a detached sheet. Leave `this.tiles` alone: the slot
+          // stays unclaimed and the next tick retries it.
+        } finally {
+          bmp.close()
+        }
+      },
+      () => {
+        // Context lost, canvas gone, buffer resized to nothing. Release the
+        // latch so the recorder is not wedged, and leave the slot for next time.
+        if (epoch === this.tileEpoch) this.tileBusy = false
+      },
+    )
   }
 
   /**

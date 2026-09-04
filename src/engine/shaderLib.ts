@@ -377,3 +377,34 @@ export const RAYMARCH_GLSL = /* glsl */ `
     return -1.0;
   }
 `
+
+/**
+ * A pulse that TRAVELS across the geometry instead of moving all of it at once.
+ *
+ * The propagation half of engine/response.ts's vocabulary — see that file's
+ * header for the audit this answers. Of 22 live scenes exactly one had any
+ * per-element delay at all (`dissolve`'s particle stagger, and even that is not
+ * audio-keyed), so every kick moved every scene as a single rigid body. Delay
+ * by position is the cheapest way to turn one scalar envelope into something
+ * that reads as a wave crossing a surface, a tunnel, or a strand network.
+ *
+ * `sinceImpulse` comes from the JS side (`sinceImpulse()` in response.ts, fed
+ * from an `ImpulseClock` charged on `s.onKick`); `pos` is whatever 0..1
+ * coordinate the wave should travel along — radial distance, screen y, depth
+ * into the march, index along a strand. `speed` is in pos-units per second, so
+ * `speed = 2` crosses a normalised span in half a second.
+ *
+ * Returns 0 ahead of the wavefront (the pulse has not arrived yet) and an
+ * exponential decay behind it, so a scene can use it exactly where it used to
+ * use a bare `uKick` — the only change is that the value now depends on WHERE
+ * the fragment is, not just when.
+ */
+export const TRAVELLING_PULSE_GLSL = /* glsl */ `
+  float travellingPulse(float sinceImpulse, float pos, float speed, float decay) {
+    // Time since the wavefront reached THIS position. Negative means it has
+    // not arrived; the max() is what makes the leading edge a real edge
+    // rather than a pre-echo everywhere at once.
+    float local = sinceImpulse - pos / max(speed, 1e-3);
+    return local < 0.0 ? 0.0 : exp(-local * decay);
+  }
+`

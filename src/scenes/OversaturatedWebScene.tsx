@@ -1,7 +1,9 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
+import { impulseClock, sinceImpulse, type ImpulseClock } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
+import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
 
 /**
  * Oversaturated Web — a flythrough of stacked hex-tiled planes, each node wired
@@ -47,13 +49,51 @@ import { drastic } from '../engine/sceneParams'
  * gamma lift that three's renderer would double (it sRGB-encodes itself).
  * Removed; aces output goes straight out (cf. MazeFlightScene).
  *
+ * ## The identity this scene owns: a hit PROPAGATES through the network
+ *
+ * The response audit (engine/response.ts) found every one of 22 scenes moving
+ * as a rigid body on a kick — the whole frame brightens, or the whole object
+ * scales, all at once. This scene is now the one that answers a kick by
+ * *transmitting* it: the hit enters at the tunnel axis and races outward
+ * through the hex lattice, so a node does not know the kick happened until the
+ * wavefront reaches it. Which is exactly what a network should look like when
+ * something is injected into it, and is the whole reason this scene is a WEB
+ * rather than a field of unrelated glowing dots.
+ *
+ * It replaces the old `uShock` — a JS `exp(-dt*4)` envelope, the same decay ten
+ * other scenes independently wrote — which lit every strand, every node and the
+ * global exposure on the same frame. That envelope carried no information about
+ * WHERE anything was, so the 36 bezier strands this scene pays dearly for were
+ * spatially indistinguishable during the one moment the viewer was looking
+ * hardest. The propagation makes the topology legible: you can see the lattice
+ * conduct.
+ *
+ * Its counterpart is `travelling`, which sweeps its pulse along DEPTH (front to
+ * back down the tunnel). Radial-outward here, axial there — deliberately
+ * different axes so two flythrough-of-stacked-planes scenes do not read as one
+ * idea on the same kick.
+ *
  * ## Band routing
  *
- *   onKick  -> uShock: strand + node glow surge, brightness punch (decaying)
- *   sub     -> strand/node glow RADIUS: bias into the bezier/segment and node
- *              distance fields (`plane()`'s `dd`/`cd`) so the web reads as
- *              physically swelling thicker on bass, not just brighter --
- *              distinct from uShock's additive brightness punch above
+ *   onKick  -> a travelling wavefront, NOT a global flash. `sinceImpulse()`
+ *              (engine/response.ts) times the hit on the JS side; `uSinceKick`
+ *              carries it to the GPU and `travellingPulse()` turns it into a
+ *              ring expanding outward through the lattice. See `pulse` in
+ *              `plane()` for the pos/speed/decay reasoning. It drives:
+ *                - node RADIUS  (`cd` bias)     -- nodes swell as the front hits
+ *                - strand RADIUS (`dd` bias)    -- strands fatten in sequence
+ *                - node + strand glow           -- the brightness half
+ *              Note two of those three are geometry, not glow: a node that
+ *              grows reads as receiving something, where a node that merely
+ *              brightens reads as being lit from outside.
+ *   uKickAmp -> how hard the last hit was, so a soft kick makes a soft wave.
+ *              Floored (see `update`) because a pulse nobody can see is worse
+ *              than no pulse.
+ *   sub     -> strand/node glow RADIUS: a CONTINUOUS bias into the same
+ *              bezier/segment and node distance fields the pulse biases, so the
+ *              web breathes with the bass under the discrete kick waves --
+ *              same property, different timescale, which is what lets the two
+ *              coexist without either being lost
  *   mids    -> flythrough rate
  *   energy  -> overall luminance / glow gain
  *   highs   -> hex-cell edge glow
@@ -61,7 +101,8 @@ import { drastic } from '../engine/sceneParams'
 
 export const FRAG = /* glsl */ `
   uniform float uFly;
-  uniform float uShock;
+  uniform float uSinceKick;  // seconds since the last kick (engine/response.ts)
+  uniform float uKickAmp;    // strength of that kick, so soft hits make soft waves
   uniform float uEnergy;
   uniform float uHighs;
   uniform float uBass;      // s.sub -> strand/node glow radius (continuous)
@@ -85,6 +126,10 @@ export const FRAG = /* glsl */ `
   , FURTHEST  = 6.
   , fadeFrom  = 4.
   , cutOff    = .975
+  // Kick propagation. See the pulse block in plane() for the full reasoning.
+  , waveSpan  = 6.      // hex cells from the axis at which pos reaches 1.0
+  , waveSpeed = 3.      // spans per second -- one span in 1/3 s
+  , waveDecay = 8.      // trailing falloff behind the front
   ;
   const vec3 L = vec3(0.299, 0.587, 0.114);
 
@@ -226,6 +271,36 @@ export const FRAG = /* glsl */ `
     hp /= z;
     vec2 hn = hextile(hp);
 
+    // --- the kick, arriving late ----------------------------------------
+    // pos is this NODE's radius in the plane's hex lattice, normalised over
+    // waveSpan cells. Two properties earn it over a per-pixel radius:
+    //
+    //  - hn is constant across a whole hex cell, so a node and the strands
+    //    leaving it fire as ONE event instead of the front sliding across
+    //    each node's face. Quantising to the lattice is what makes this read
+    //    as a network conducting rather than as a gradient sweeping over a
+    //    picture of a network.
+    //  - hn is a world-space radius shared by every plane, so the front is a
+    //    single cylinder expanding along the tunnel axis rather than an
+    //    unrelated ripple per plane. On screen the near planes' rings run off
+    //    the edge first and the far ones trail behind them, which is what
+    //    gives the wave depth as well as spread.
+    //
+    // pos is deliberately NOT clamped to 1: the outermost cells (radius ~8 at
+    // the far planes) simply arrive proportionally later. Clamping would fire
+    // every one of them on the same frame and put a hard flashing rim around
+    // the picture.
+    //
+    // speed 3.0 -> the span is crossed in 1/3 s, inside one beat at any tempo
+    // above 90 BPM, so the wave reads as belonging to THIS hit and is spent
+    // before the next. decay 8.0 puts the lit band at speed/decay = 0.375 of
+    // the span (~2 hex rings): narrow enough to read as a ring, wide enough
+    // that it never falls between rings and strobes. Together they run about
+    // 0.7 s from axis to rim-and-gone, close to the old uShock envelope's
+    // total lifetime -- the event is the same LENGTH, it is just no longer
+    // happening everywhere at once.
+    float pulse = travellingPulse(uSinceKick, length(hn)/waveSpan, waveSpeed, waveDecay) * uKickAmp;
+
     float h0 = hash(hn+n);
     vec2 p0 = coff(h0);
 
@@ -247,22 +322,29 @@ export const FRAG = /* glsl */ `
   #else
       float dd = segment(hp, p0, p1);
   #endif
-      // sub-bass biases INTO the distance field itself (not just the glow
-      // multiplier below) -- the strand's effective radius grows with the
-      // bass, so the web reads as physically swelling rather than merely
-      // brightening. Kept well under the node-spacing scale so strands don't
-      // fuse into their neighbours at full bass.
-      dd = max(dd - uBass*0.012, 0.0);
+      // Both audio terms bias INTO the distance field itself (not just the
+      // glow multiplier below) -- the strand's effective radius grows, so the
+      // web reads as physically swelling rather than merely brightening.
+      // uBass is the continuous breath; pulse is the discrete wave, so a
+      // strand FATTENS as the front passes through it and relaxes behind.
+      // Both kept well under the node-spacing scale (1.0 in hp units) so
+      // strands never fuse into their neighbours, even on a loud hit over
+      // full bass.
+      dd = max(dd - uBass*0.012 - pulse*0.008, 0.0);
       float gd = abs(dd);
       gd *= sqrt(gd);
       gd = max(gd, 0.0005);
-      col += fade*0.002*bcol/(gd) * (1.0 + uShock*1.5 + uEnergy*0.4);
+      col += fade*0.002*bcol/(gd) * (1.0 + pulse*1.5 + uEnergy*0.4);
     }
 
     {
-      float cd = max(length(hp-p0) - uBass*0.02, 0.0);   // node swells with bass too
+      // The node swells with the bass continuously AND punches out as the
+      // wavefront arrives -- radius first, glow second. A node that grows
+      // reads as having RECEIVED something; a node that only brightens reads
+      // as having been lit from somewhere else.
+      float cd = max(length(hp-p0) - uBass*0.02 - pulse*0.015, 0.0);
       float gd = max(abs(cd)*abs(cd), 0.0005);
-      col += 0.0025*sqrt(bcol)/(gd) * (1.0 + uShock*2.0);
+      col += 0.0025*sqrt(bcol)/(gd) * (1.0 + pulse*2.0);
     }
 
     {
@@ -333,7 +415,12 @@ export const FRAG = /* glsl */ `
     vec3 col = color(ww, uu, vv, ro, p);
     col -= 0.02*U.zwx*(length(pp)+0.125);
     col *= smoothstep(1.5, 1.0, length(pp));
-    col *= uExposure * (1.0 + uEnergy*0.2 + uShock*0.35);
+    // The kick deliberately does NOT appear here. A global exposure term is
+    // the rigid-body reaction this scene exists to stop doing: it would lift
+    // the un-reached half of the lattice at the same instant as the reached
+    // half and flatten the wavefront back into a flash. energy keeps its
+    // whole-frame gain because it IS a whole-frame quantity.
+    col *= uExposure * (1.0 + uEnergy*0.2);
     col = aces_approx(col);
     // Source had a sqrt(col) here — a gamma lift three's renderer would double.
 
@@ -344,20 +431,34 @@ export const FRAG = /* glsl */ `
 interface WebState {
   /** Flythrough clock, accumulated so a changing rate stays continuous. */
   fly: number
-  /** Kick glow surge, decaying. */
-  shock: number
+  /**
+   * When the last kick landed. The shader cannot remember this on its own, so
+   * the JS half holds the clock and the GPU half turns it into a wavefront.
+   * Replaces the old decaying `shock` scalar outright — that value was the
+   * same everywhere at once, which is precisely what a propagation is not.
+   */
+  kick: ImpulseClock
+  /** How hard that kick was, held until the next one. */
+  hitAmp: number
 }
 
 export const OversaturatedWebScene = createShaderScene<WebState>({
   id: 'web',
   frag: FRAG,
+  // travellingPulse(): one exp and one divide per plane per pixel (<= 6), set
+  // against 36 cubic-bezier solves. Immeasurable next to what this scene
+  // already spends — SCENE_COST_MS is unchanged and deliberately so.
+  include: TRAVELLING_PULSE_GLSL,
   blending: THREE.NoBlending,
   // Aggressive — inverse-distance glow upscales invisibly. Tier-sensitive
   // like MazeFlightScene. Estimate; replace with a /bench sweep.
   pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 0.8 : 0.5),
   uniforms: () => ({
     uFly: { value: 0 },
-    uShock: { value: 0 },
+    // 1e4 = sinceImpulse()'s "never fired" sentinel, so the very first frame
+    // has an already-spent wave rather than one mid-flight.
+    uSinceKick: { value: 1e4 },
+    uKickAmp: { value: 0 },
     uEnergy: { value: 0 },
     uHighs: { value: 0 },
     uBass: { value: 0 },
@@ -367,16 +468,28 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
     uPlanes: { value: 5 },
     uStrands: { value: 4 },
   }),
-  state: () => ({ fly: 0, shock: 0 }),
-  update({ u, s, P, st, dt }) {
+  state: () => ({ fly: 0, kick: impulseClock(), hitAmp: 0 }),
+  update({ u, s, P, st, dt, ctx }) {
     // Source clock was a raw iTime driving the flythrough + per-strand wobble.
     // Accumulate so a changing rate stays continuous; mids lean on the throttle.
     st.fly += dt * (1 + s.mids * 0.5) * drastic(P.speed)
-    if (s.onKick > 0) st.shock = Math.min(1.5, st.shock + s.onKick)
-    st.shock *= Math.exp(-dt * 4.0)
+
+    // Latch the hit's strength at the moment it fires — the wave it launches
+    // outlives the onset frame by most of a second, so the amplitude has to be
+    // held rather than read live. Floored at 0.5 because the far half of the
+    // lattice sees this hit a third of a second late, by which point the
+    // trailing decay has already taken a bite out of it: an unfloored weak
+    // onset would propagate to nodes that never visibly move, and a
+    // propagation nobody can see is worse than none. Ceiling 1.5 matches the
+    // clamp the old `shock` accumulator used, so a run of loud kicks tops out
+    // where it always did.
+    if (s.onKick > 0) st.hitAmp = Math.min(1.5, Math.max(0.5, s.onKick))
+    // ctx.f.time, not the scene-local clock: the wave has to be timed on the
+    // engine's seconds, which is what the onset itself was stamped with.
+    u.uSinceKick.value = sinceImpulse(st.kick, ctx.f.time, s.onKick > 0)
+    u.uKickAmp.value = st.hitAmp
 
     u.uFly.value = st.fly
-    u.uShock.value = st.shock
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
     u.uBass.value = s.sub

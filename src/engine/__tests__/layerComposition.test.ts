@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { composeLayers } from '../PerformanceDirector'
+import { composeLayers, layerPoolForRole } from '../PerformanceDirector'
 import { resolveLayerIds } from '../SceneManager'
-import type { SceneDef, SceneRole, ScenePerformanceCost } from '../../scenes'
+import {
+  getCompatibleScenes,
+  getScenesForMood,
+  SCENES,
+  type SceneDef,
+  type SceneRole,
+  type ScenePerformanceCost,
+} from '../../scenes'
+import { MOOD_STATES } from '../../audio/types'
 
 /**
  * Layer-composition invariants.
@@ -373,5 +381,87 @@ describe('composeLayers — no scene holds two slots', () => {
     expect(out.accent).not.toBeNull()
     expect(out.overlay).not.toBeNull()
     expect(out.accent).not.toBe(out.overlay)
+  })
+})
+
+/**
+ * `layerPoolForRole` — the per-role compatible/fallback pool `forRole` in
+ * `PerformanceDirector.tsx` is built from. Pins the bug the function replaces:
+ * the fallback used to be decided ONCE, across every role, so a mood whose
+ * fitting scenes included even one primary-only compatible id (common — most
+ * scenes are primary-only) meant background/accent/overlay were each filtered
+ * against a set that might contain zero candidates actually eligible for
+ * THEM, and the fallback to the full mood-fit pool never fired to rescue it.
+ */
+describe('layerPoolForRole', () => {
+  const bg = (id: string): SceneDef => fake(id, 'low', ['background'])
+  const primaryOnly = (id: string): SceneDef => fake(id, 'low', ['primary'])
+
+  it('THE BUG: a compatible set that is entirely primary-only used to starve every layer role', () => {
+    // Mood fits a background scene AND a primary-only scene; the SUBJECT is
+    // compatible with only the primary-only one — exactly the live-roster
+    // shape (`network`/`orbs`'s compatible lists are primary-only; nothing
+    // lists `malachite`/`nebula`/`dustfield`/`hold` at all).
+    const layerFits = [bg('ground'), primaryOnly('compatible-primary')]
+    const compatibleIds = new Set(['compatible-primary'])
+    const pool = layerPoolForRole('background', layerFits, 'subject', compatibleIds)
+    // Old bug: the global fallback saw a non-empty compatible pool (it
+    // contained `compatible-primary`) and never fell back, so `background`
+    // filtered that already-decided pool down to `[]`. Fixed: the fallback is
+    // decided per role, so background's own compatible subset (empty) falls
+    // through to background's own fits (`ground`).
+    expect(pool.map((s) => s.id)).toEqual(['ground'])
+  })
+
+  it('prefers a role-compatible scene over the fallback when one genuinely exists', () => {
+    const layerFits = [bg('ground-a'), bg('ground-b')]
+    const compatibleIds = new Set(['ground-b'])
+    const pool = layerPoolForRole('background', layerFits, 'subject', compatibleIds)
+    expect(pool.map((s) => s.id)).toEqual(['ground-b'])
+  })
+
+  it('excludes the subject itself even from the fallback', () => {
+    const layerFits = [bg('ground'), bg('subject')]
+    const pool = layerPoolForRole('background', layerFits, 'subject', new Set())
+    expect(pool.map((s) => s.id)).toEqual(['ground'])
+  })
+
+  it('every mood can produce a background for every live primary — the real-roster guarantee', () => {
+    // The regression this whole fix exists for, run against the actual
+    // roster rather than synthetic data: for every (mood, primary) pair,
+    // background must not come back empty just because the primary's
+    // compatible set happens to be primary-only or sparse.
+    const primaries = SCENES.filter((s) => s.metadata.roles.includes('primary'))
+    const backgroundCapable = SCENES.some((s) => s.metadata.roles.includes('background'))
+    expect(backgroundCapable, 'sanity: the roster must have SOME background scene').toBe(true)
+
+    for (const mood of MOOD_STATES) {
+      if (mood === 'silence') continue // `hold` alone; not every primary pairs with it.
+      const layerFits = getScenesForMood(mood)
+      if (!layerFits.some((s) => s.metadata.roles.includes('background'))) continue // mood has no bg option at all
+      for (const primary of primaries) {
+        const compatibleIds = new Set(getCompatibleScenes(primary.id).map((s) => s.id))
+        const pool = layerPoolForRole('background', layerFits, primary.id, compatibleIds)
+        expect(pool.length, `${mood} / ${primary.id}`).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('the fallback decision never leaks across roles', () => {
+    // background has zero compatible candidates but a real fallback;
+    // overlay has a real compatible candidate. Neither should affect the
+    // other — this is the exact global-vs-per-role distinction the bug was.
+    const layerFits = [
+      bg('ground'),
+      fake('overlay-compatible', 'low', ['overlay']),
+      fake('overlay-other', 'low', ['overlay']),
+    ]
+    const compatibleIds = new Set(['overlay-compatible'])
+    expect(layerPoolForRole('background', layerFits, 'subject', compatibleIds).map((s) => s.id)).toEqual([
+      'ground',
+    ])
+    expect(layerPoolForRole('overlay', layerFits, 'subject', compatibleIds).map((s) => s.id)).toEqual([
+      'overlay-compatible',
+    ])
   })
 })

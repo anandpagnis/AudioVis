@@ -3,7 +3,8 @@ import { getEffectScenes } from '../index'
 import type { EffectTrigger } from '../index'
 
 /**
- * The three scenes that claim the `effect` role (c6 / F20's second close).
+ * The four scenes that claim the `effect` role (c6 / F20's second close, plus
+ * `strobe` from the roster-completion pass).
  *
  * Component-level rendering is deliberately NOT tested here, matching this
  * codebase's own split: the pure decision logic (`advanceEffects`,
@@ -12,10 +13,10 @@ import type { EffectTrigger } from '../index'
  * file covers the part that IS this project's own logic rather than
  * three.js/R3F plumbing: what each scene declares about itself.
  */
-describe('the licensed effect roster (shock / flare / spark)', () => {
-  it('is exactly three scenes, none of them the withheld orbs', () => {
+describe('the licensed effect roster (shock / flare / spark / strobe)', () => {
+  it('is exactly four scenes, none of them the withheld orbs', () => {
     const ids = getEffectScenes().map((s) => s.id)
-    expect(ids.sort()).toEqual(['flare', 'shock', 'spark'])
+    expect(ids.sort()).toEqual(['flare', 'shock', 'spark', 'strobe'])
     expect(ids).not.toContain('orbs')
   })
 
@@ -28,7 +29,11 @@ describe('the licensed effect roster (shock / flare / spark)', () => {
     }
   })
 
-  it('together cover every trigger family exactly once', () => {
+  it('together cover every trigger family', () => {
+    // Named without "exactly once" deliberately — the assertion below only
+    // ever checked coverage, not uniqueness, and now that `drop` genuinely
+    // has two answers (see the next test), a name promising uniqueness would
+    // be actively wrong rather than just imprecise.
     const ALL_TRIGGERS: EffectTrigger[] = ['drop', 'buildPeak', 'sectionChange', 'transient']
     const covered = new Map<EffectTrigger, string[]>()
     for (const s of getEffectScenes()) {
@@ -41,13 +46,20 @@ describe('the licensed effect roster (shock / flare / spark)', () => {
     }
   })
 
-  it('drop and transient are answered by exactly one scene each', () => {
-    // Two scenes racing for the same rare, high-value trigger would mean
-    // `pickVariedScene`'s weighting decides which one a drop actually gets,
-    // rather than it being a deliberate one-to-one mapping.
+  it('transient is answered by exactly one scene; drop now deliberately has two', () => {
+    // transient stays a strict one-to-one mapping — a second scene racing for
+    // the roster's most frequent trigger would mean `pickVariedScene`'s
+    // weighting, not intent, decides which one fires nearly every time.
+    //
+    // drop is different on purpose: `shock` and `strobe` (roster-completion
+    // pass) both answer it. `EffectDirector.tsx`'s own `advanceEffects`
+    // comment states the design this relies on — "two different effects can
+    // both answer one drop while a single effect cannot machine-gun" — so two
+    // scenes sharing `drop` is the documented shape, not an oversight this
+    // test should have caught.
     const byTrigger = (t: EffectTrigger) =>
       getEffectScenes().filter((s) => s.metadata.effect!.triggers.includes(t))
-    expect(byTrigger('drop')).toHaveLength(1)
+    expect(byTrigger('drop').map((s) => s.id).sort()).toEqual(['shock', 'strobe'])
     expect(byTrigger('transient')).toHaveLength(1)
   })
 

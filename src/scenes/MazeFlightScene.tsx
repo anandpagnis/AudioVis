@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
+import { criticalDamping, spring, springStep, type SpringState } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
 import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
 
@@ -102,11 +103,80 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *
  * ## Band routing
  *
- *   onKick  → forward lurch along the path + a decaying light/glow surge
+ *   onKick  → SPRING lurch: shoves the ray origin down the corridor, which then
+ *             rings back through its rest position (see below). The same signed
+ *             spring value walks the palette ramp and thins/thickens the fog.
  *   mids    → flight-speed drift
  *   energy  → headlight and emissive intensity
  *   highs   → circuit and window shimmer
+ *
+ * ## Response identity: the spring settle — the roster's only overshoot
+ *
+ * The audit behind `engine/response.ts` measured the reaction vocabulary and
+ * found **zero** springs across 22 scenes: every scene charged a value on a
+ * kick and let `exp(-dt*k)` slide it monotonically back, so every hit in every
+ * scene read as the same soft thud with a different texture painted over it.
+ * This scene is the answer to that, and it is deliberately the only one.
+ *
+ * A kick displaces `st.lurch` — a real mass on a real spring, deliberately
+ * UNDER-damped — and `springStep` then does what an exponential decay
+ * structurally cannot: the corridor surges forward, carries PAST where it
+ * should have stopped, rocks back through rest, and settles. That readable
+ * overshoot is the whole point. It is the difference between a light that got
+ * brighter and a thing that got hit, and it costs two multiplies a frame.
+ *
+ * Notice what the kick no longer does: it does not brighten anything. The old
+ * `uShock * 0.8` term in `light` was the 22nd of 22 scenes driving glow from a
+ * kick envelope, so it is gone outright. The spring reaches the image three
+ * ways, none of them a gain term:
+ *
+ *   1. `uPhase` — the ray origin's position on the path. The lurch itself.
+ *   2. `uHue`   — palette-ramp POSITION, so the neon swings colour and rocks
+ *                 back with the geometry rather than merely flashing.
+ *   3. `uLurch` — fog density, signed: surging forward opens the corridor
+ *                 ahead of you, the rock-back closes it in again.
+ *
+ * The kick therefore no longer permanently advances the flight the way the old
+ * `st.z += 0.8 * s.onKick` did — displacement now returns to zero, because a
+ * corridor with mass that keeps the ground it gained on every hit is not a
+ * corridor with mass, it is a speed knob. Cruise distance is `speed`/`mids`
+ * alone; the kick only rocks the camera about it.
  */
+
+/**
+ * The lurch spring. Two numbers, chosen against the music rather than by feel.
+ *
+ * `stiffness = 60` puts the ringing frequency at `sqrt(60) ≈ 7.75 rad/s`, a
+ * 0.81 s period — so the surge-and-return half cycle is ~0.4 s, which at
+ * anything near 120-150 BPM lands the rock-back around the following beat.
+ * Faster and the overshoot is a twitch too quick to read as mass; slower and
+ * the corridor is still swinging when the next kick displaces it again.
+ *
+ * Damping is `criticalDamping(60) * 0.38` — 0.38 of critical, so the spring is
+ * genuinely under-damped and the first rebound is `exp(-0.38π/sqrt(1-0.38²))`
+ * ≈ 27% of the initial displacement, then ~7%, then gone. Visible for two
+ * swings, settled inside a bar. Critical damping (`* 1.0`) would settle with no
+ * overshoot at all and this scene would be back to being one more exponential
+ * slide, which is exactly what the primitive exists to escape.
+ */
+const LURCH_STIFFNESS = 60
+const LURCH_DAMPING = criticalDamping(LURCH_STIFFNESS) * 0.38
+
+/**
+ * Forward displacement per unit of kick onset — the source's authored lurch
+ * size, unchanged from when it was added straight onto `st.z`. What changed is
+ * where it goes (into the spring's position) and what happens next.
+ */
+const LURCH_IMPULSE = 0.8
+
+/**
+ * Ceiling on accumulated displacement, so a dense kick pattern rocks the
+ * corridor rather than catapulting it. Matches the old `shock` clamp's intent.
+ */
+const LURCH_MAX = 1.4
+
+/** Palette-ramp travel per unit of spring displacement. Colour, not gain. */
+const LURCH_HUE = 0.06
 
 /**
  * Loop ceilings. GLSL ES 1.00 needs constant bounds; uniforms early-break.
@@ -136,7 +206,13 @@ const MAX_AO = 5
  */
 export const FRAG = /* glsl */ `
   uniform float uPhase;
-  uniform float uShock;
+  /**
+   * Signed lurch-spring displacement, roughly -0.4..1.4. NOT an envelope: it
+   * crosses zero and changes sign as the corridor rocks back, so anything
+   * reading it must behave sensibly for negative values. Drives fog depth
+   * only -- the lurch proper arrives as uPhase, the colour swing as uHue.
+   */
+  uniform float uLurch;
   uniform float uTurns;
   uniform float uSmooth;
   uniform float uDensity;
@@ -294,7 +370,11 @@ export const FRAG = /* glsl */ `
     vec3 an = abs(n);
     float hue = hue0 + p.z * 0.012 * ZHUE;
     float dfade = exp(-t * 0.06);
-    float light = 1.0 + uEnergy * 0.5 + uShock * 0.8;
+    // A kick deliberately does NOT appear here. The old term was uShock * 0.8,
+    // which made this the 22nd of 22 scenes turning a kick into brightness;
+    // the lurch spring reaches the image as position, ramp colour and fog
+    // depth instead. Continuous energy still opens the headlight.
+    float light = 1.0 + uEnergy * 0.5;
 
     // Neutral base so the neon reads, tinted toward the palette's dark end.
     float tint = hash31(floor(p / CELL) + 7.7);
@@ -380,7 +460,12 @@ export const FRAG = /* glsl */ `
     vec3 col;
     if (hit) {
       col = shade(ro, rd, t, zt, hue0);
-      col = mix(col, fogc, 1.0 - exp(-t * t * 0.0014 * FOG));
+      // Fog breathes with the spring, signed both ways: the forward surge
+      // thins it and the corridor opens ahead of you, the rock-back thickens
+      // it and closes in. Depth and contrast rather than a glow pulse. At
+      // uLurch = 0 this is exactly FOG, so silence is the authored image.
+      float fogAmt = FOG * clamp(1.0 - uLurch * 0.35, 0.4, 1.6);
+      col = mix(col, fogc, 1.0 - exp(-t * t * 0.0014 * fogAmt));
     } else {
       col = fogc;
     }
@@ -408,8 +493,12 @@ interface MazeState {
   z: number
   /** Palette-ramp drift. */
   hue: number
-  /** Kick surge, decaying. */
-  shock: number
+  /**
+   * Forward-lurch spring: a kick displaces its position, and it rings back
+   * through rest rather than sliding there. Signed — it goes negative on the
+   * rebound, which is the entire reason it is a spring and not a `shock`.
+   */
+  lurch: SpringState
 }
 
 export const MazeFlightScene = createShaderScene<MazeState>({
@@ -431,7 +520,7 @@ export const MazeFlightScene = createShaderScene<MazeState>({
   pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 0.9 : 0.55),
   uniforms: () => ({
     uPhase: { value: 0 },
-    uShock: { value: 0 },
+    uLurch: { value: 0 },
     uTurns: { value: 1.63 },
     uSmooth: { value: 0.6 },
     uDensity: { value: 1.5 },
@@ -446,23 +535,35 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     uTMax: { value: 48 },
     uEdgeOn: { value: 1 },
   }),
-  state: () => ({ z: 0.4, hue: 0, shock: 0 }),
+  state: () => ({ z: 0.4, hue: 0, lurch: spring(0) }),
   update({ u, s, P, st, dt }) {
     // Source's authored cruise: 3.2 units/s at speed 1.
     st.z += dt * 3.2 * (1 + s.mids * 0.5) * drastic(P.speed)
-    // A kick is a lurch forward down the corridor, not a flash.
+
+    // A kick is a lurch forward down the corridor, not a flash — and now it is
+    // a lurch with mass. The onset SHOVES the spring's position (an impulse to
+    // displacement, so the surge is instant at exactly the authored 0.8 per
+    // unit of onset, as it was when this went straight onto `st.z`)...
     if (s.onKick > 0) {
-      st.z += 0.8 * s.onKick
-      st.shock = Math.min(1.5, st.shock + s.onKick)
+      st.lurch.value = Math.min(LURCH_MAX, st.lurch.value + LURCH_IMPULSE * s.onKick)
     }
-    st.shock *= Math.exp(-dt * 3.5)
+    // ...and the spring, pulling back toward a rest of zero and deliberately
+    // under-damped, then carries the corridor past rest and rocks it back.
+    // This line is the whole identity: `exp(-dt * k)` here would only ever
+    // slide home, and the scene would be indistinguishable in MANNER from the
+    // other 21. See LURCH_STIFFNESS for the tuning argument.
+    springStep(st.lurch, 0, dt, LURCH_STIFFNESS, LURCH_DAMPING)
+
     // Slow drift through the palette ramp, so depth and time both read as
     // colour without spinning a full rainbow.
     st.hue += dt * 0.015
 
-    u.uPhase.value = st.z
-    u.uShock.value = st.shock
-    u.uHue.value = st.hue
+    // The spring reaches the shader three ways, none of them a gain term: as
+    // the ray origin's position, as a swing in palette-ramp POSITION that
+    // rocks back with the geometry, and (signed) as fog depth.
+    u.uPhase.value = st.z + st.lurch.value
+    u.uLurch.value = st.lurch.value
+    u.uHue.value = st.hue + st.lurch.value * LURCH_HUE
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
 

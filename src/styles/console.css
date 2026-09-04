@@ -379,6 +379,192 @@
   }
 }
 
+/* ---------- scene groups ---------- */
+
+/* The Scene column is five stacked groups now — subject, three layer roles and
+   the effects readout — where it used to be one grid. That is more than a
+   column of a four-column grid holds at most viewport heights, so it scrolls:
+   `.console-section` already carries `overflow: auto`, and the rules below make
+   sure the overflow actually reaches it instead of being absorbed by flex
+   children quietly compressing. Hit targets on this surface are aimed at
+   without looking, so squeezing tiles to fit is the one thing that must not
+   happen. */
+.scene-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+
+.scene-group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  /* No shrinking: overflow the section and let it scroll. */
+  flex: 0 0 auto;
+}
+
+/* `.fx-head` carries a 10px top margin for the Post FX column, where it has a
+   slider directly above it to be spaced away from. Here the group gap is that
+   spacing, and both together read as the heading belonging to the group above
+   it rather than the one it labels. */
+.scene-group .fx-head {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* What the slot is doing right now, beside its name. Colour-matched to the
+   tile state it is summarising — blue for on screen, amber for asked-for but
+   unconfirmed — so the heading and the grid under it cannot tell two different
+   stories. Lower case: it is a state, not a label. */
+.scene-group-note {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.scene-group-note.is-live {
+  color: rgba(130, 205, 255, 0.9);
+}
+.scene-group-note.is-pending {
+  color: rgba(255, 200, 120, 0.9);
+}
+
+.scene-note {
+  margin: -1px 0 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+/* An effect scene: shown, never pressed.
+
+   `EffectDirector` fires these on musical triggers and nothing on this surface
+   can request one, so they are rendered as <span> rather than <button> — there
+   is no click here to look available and then do nothing, which is the failure
+   `.chip-disabled`'s `pointer-events` note in styles.css records and the one
+   F180 was. Pointer events stay ON, unlike `.chip-disabled`: the only thing
+   these offer is the tooltip explaining why they are not pressable, and
+   disabling pointer events would take that away too. What is removed instead is
+   every affordance that says "press me" — the pointer cursor, the hover lift,
+   and the solid border a real control has. */
+.tile-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  cursor: default;
+  opacity: 0.6;
+  background: rgba(255, 255, 255, 0.02);
+  border-style: dashed;
+}
+
+.tile-status:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Firing right now, off telemetry. Takes back the full opacity and the solid
+   border, because for the length of the firing this IS on screen — and gets a
+   glow the pickable tiles do not, since an effect can come and go inside a
+   second and a flat colour change is easy to miss at a glance. */
+.tile-status.on {
+  opacity: 1;
+  border-style: solid;
+  box-shadow: 0 0 12px rgba(130, 205, 255, 0.45);
+}
+
+/* The filters lead the Post FX column, so this heading has no slider above it
+   to be spaced away from — `.fx-head`'s 10px top margin would just push the
+   column's first row down for nothing. */
+.fx-head-first {
+  margin-top: 0;
+}
+
+/* Filter names are longer than scene names ("JPEG Block Corruption"), and this
+   grid sits in the console's narrowest column. Two per row at a lower minimum
+   keeps them from wrapping to three cramped lines each. */
+.tile-grid-filters {
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: 6px;
+}
+.tile-grid-filters .tile {
+  min-height: 42px;
+  padding: 6px;
+  font-size: 11px;
+}
+
+/* An ISF filter the director will never pick on its own. Dimmed, but NOT
+   `pointer-events: none` and no line-through: it stays firable by hand, and
+   both of those would say it was unavailable rather than off the rotation. */
+.tile-off-roster {
+  opacity: 0.55;
+}
+.tile-off-roster:hover {
+  opacity: 0.8;
+}
+
+/* "firing": which filter is on screen right now, off telemetry from the output
+   window. Sits under the grid, quiet at rest — nothing is firing for most of a
+   show, and a readout that shouted about that would be noise. */
+.filter-now {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  font: 500 11px/1 ui-monospace, monospace;
+  color: #cfd8e3;
+}
+
+.filter-now-label {
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.filter-now-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-now-name.dim {
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.filter-now-bar {
+  width: 64px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+/* scaleX, not width: this updates ten times a second and compositing a
+   transform costs nothing, where animating width reflows the bar's box. */
+.filter-now-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: rgba(130, 205, 255, 0.8);
+}
+
+.filter-now-mix {
+  min-width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.55);
+}
+
 .toggle-wide {
   margin-top: auto;
   min-height: 52px;
@@ -578,44 +764,6 @@
     height: auto;
     min-height: 100vh;
   }
-}
-
-/* ---------- layer slots ---------- */
-
-.layer-slots {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.layer-slot {
-  display: grid;
-  grid-template-columns: 82px 1fr;
-  align-items: center;
-  gap: 8px;
-}
-
-.layer-slot > span {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.42);
-}
-
-.layer-slot select {
-  min-height: 40px;
-  padding: 0 10px;
-  border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.045);
-  color: #dfe6ef;
-  font: 500 12px/1 inherit;
-  cursor: pointer;
-}
-
-.layer-slot select option {
-  background: #12161c;
 }
 
 /* ---------- post fx ---------- */
@@ -848,4 +996,16 @@
   flex-direction: column;
   gap: 5px;
   flex: 0 0 auto;
+}
+
+/* Broken on this platform, not merely off the rotation — see UNUSABLE_FILTERS.
+   `:disabled` already blocks the click; this makes it look blocked, which
+   `.tile-off-roster` deliberately does not (those stay hand-firable). */
+.tile-broken {
+  opacity: 0.3;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+.tile-broken:hover {
+  background: rgba(255, 255, 255, 0.045);
 }

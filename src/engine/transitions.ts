@@ -53,11 +53,26 @@
  * practice — see F64. Removing `cut` from the picker will therefore not, on its
  * own, stop you seeing cuts.
  *
+ * `dipToBlack` is disabled on explicit request, reported as "an extremely
+ * bright flash when a scene switches." The header's own energy invariant
+ * explains why this is the one style that CAN produce that: every other style's
+ * mix curve satisfies `out(t) + in(t) === 1` at every point by construction (see
+ * the `default` case in {@link transitionMix} — a plain crossfade), but
+ * `dipToBlack` is documented as "the one deliberate exception: dimming through
+ * the middle IS the effect." The cost of that exception is the incoming scene
+ * ramping from a held-black state to full brightness in under the back 40% of
+ * the transition — a much steeper brightness ramp than any other style ever
+ * produces, and steep enough on a bright scene to read as a flash rather than a
+ * reveal. `pickTransitionStyle` already falls through to the mood's own list
+ * (none of which is `dipToBlack`) whenever it is not selectable, and
+ * `resolveTransitionStyle` downgrades a stored cue using it to `dissolve` — so
+ * disabling it here is real, not just hidden from a picker.
+ *
  * Kept in the vocabulary rather than deleted: the value is stored in cues and
  * recorded in transition telemetry, so removing the name would orphan saved
  * shows and make old records unreadable. A disabled style still has to resolve.
  */
-export const DISABLED_STYLES: readonly TransitionStyle[] = ['cut']
+export const DISABLED_STYLES: readonly TransitionStyle[] = ['cut', 'dipToBlack']
 
 /** Everything the director can choose between. Append-only: stored in cues. */
 export const TRANSITION_STYLES = [

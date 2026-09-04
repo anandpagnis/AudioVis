@@ -6,6 +6,8 @@ import {
   remainingMs,
   FEEDBACK_MS,
   feedbackMsFor,
+  ISF_FILTER_MS,
+  isfFilterMsFor,
   POST_CHAIN_MS,
   type FrameLoadEntry,
 } from '../frameLoad'
@@ -38,6 +40,26 @@ describe('feedbackMsFor', () => {
 
   it('reserves nothing for a garbage value rather than over-reserving', () => {
     expect(feedbackMsFor(NaN)).toBe(0)
+  })
+})
+
+describe('isfFilterMsFor', () => {
+  it('reserves nothing while no filter is selected', () => {
+    // The default, and the case until a picker exists at all — IsfFilterPass
+    // disables itself and EffectComposer skips a disabled pass entirely, so
+    // it genuinely costs nothing, same reasoning as feedbackMsFor above.
+    expect(isfFilterMsFor({ id: null })).toBe(0)
+  })
+
+  it('reserves a full unit once a filter is actually selected', () => {
+    expect(isfFilterMsFor({ id: 'Broken LCD' })).toBe(ISF_FILTER_MS)
+  })
+
+  it('reserves the same flat unit regardless of which filter is selected', () => {
+    // isfFilterMsFor only knows "a filter is selected", not which one — see
+    // its doc comment on why a per-filter surcharge is not wireable here.
+    expect(isfFilterMsFor({ id: 'Color Invert' })).toBe(ISF_FILTER_MS)
+    expect(isfFilterMsFor({ id: 'CMYK Halftone' })).toBe(ISF_FILTER_MS)
   })
 })
 

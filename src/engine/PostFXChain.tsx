@@ -11,6 +11,7 @@ import type {
 import { FeedbackPass } from './FeedbackPass'
 import { GradePass } from './GradePass'
 import { IsfFilterPass } from './IsfFilterPass'
+import { ISF_FILTERS } from './isfFilterRoster'
 import type { LensRackState, MirrorRackState } from './opticalRack'
 import { LensPass } from './LensPass'
 import { MirrorPass } from './MirrorPass'
@@ -251,6 +252,14 @@ export function PostFXChain() {
       caRef.current.offset.set(Math.cos(p.caAngle) * g, Math.sin(p.caAngle) * g)
     }
     if (vignetteRef.current) vignetteRef.current.darkness = p.vignette
+
+    // `p.filter.mix` is already eased by whoever wrote it (see performanceState.ts's
+    // doc comment on `filter` — same convention as `p.vignette`/`p.trails`/
+    // `p.mirror.twist`), so this is a straight read-and-assign, no smoothing here.
+    // `.find()` over a 5-element array every frame is negligible.
+    const selectedFilter = p.filter.id ? (ISF_FILTERS.find((f) => f.id === p.filter.id) ?? null) : null
+    isfFilterPass.setFilter(selectedFilter)
+    isfFilterPass.setMix(p.filter.mix)
 
     // Atmospheric depth. Tinted toward the palette's background rather than
     // pure black so it reads as air, not as the subject being clipped away.

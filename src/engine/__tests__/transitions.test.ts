@@ -140,11 +140,18 @@ describe('transitionRack', () => {
 })
 
 describe('pickTransitionStyle — the director', () => {
-  it('marks a section boundary with a dip rather than a blend', () => {
-    // The one moment the two scenes are not continuous material: the music has
-    // drawn a line, and a dip states that where a blend smooths over it.
+  it('no longer marks a section boundary with a dip — dipToBlack is disabled', () => {
+    // Was: the one moment the two scenes are not continuous material got its
+    // own dip. dipToBlack is now in DISABLED_STYLES (an unclassified section
+    // boundary read as "an extremely bright flash" — the incoming scene ramps
+    // from held-black to full brightness in under 40% of the transition, the
+    // one style that doesn't hold the energy invariant), so an unclassified
+    // boundary must degrade to exactly what a non-boundary change already does
+    // for the same mood — never a special, disabled style.
     for (const mood of ['ambient', 'groove', 'peak', 'aggressive']) {
-      expect(pickTransitionStyle(mood, true, 0, undefined)).toBe('dipToBlack')
+      const boundary = pickTransitionStyle(mood, true, 0, undefined)
+      expect(boundary).not.toBe('dipToBlack')
+      expect(boundary).toBe(pickTransitionStyle(mood, false, 0, undefined))
     }
   })
 
@@ -208,14 +215,27 @@ describe('pickTransitionStyle — the director', () => {
 describe('pickTransitionStyle — boundary type (audit c3)', () => {
   it('is unaffected when boundaryType is omitted — every existing call site', () => {
     // The whole existing suite above calls this with 4 args; this pins that
-    // adding a 5th, optional one changed nothing for them.
-    expect(pickTransitionStyle('groove', true, 0, undefined)).toBe('dipToBlack')
-    expect(pickTransitionStyle('groove', true, 0, undefined, undefined)).toBe('dipToBlack')
+    // adding a 5th, optional one changed nothing for them. dipToBlack is
+    // disabled, so groove/rotation=0/last=undefined now falls through to the
+    // mood's own first pick rather than a forced style — the point of this
+    // test is that BOTH call shapes still agree, not the specific value.
+    const omitted = pickTransitionStyle('groove', true, 0, undefined)
+    const explicitUndefined = pickTransitionStyle('groove', true, 0, undefined, undefined)
+    expect(omitted).not.toBe('dipToBlack')
+    expect(omitted).toBe(explicitUndefined)
   })
 
-  it('keeps a drop on dipToBlack — the boundary type this split validates rather than changes', () => {
+  it('no longer keeps a drop on dipToBlack — DROP_STYLE obeys the disable exactly like any other pick', () => {
+    // dipToBlack was "the classic case" for a drop, but it's also the one
+    // style that breaks the energy invariant — see DISABLED_STYLES. With it
+    // disabled, DROP_STYLE's own selectability check fails and a drop must
+    // degrade to precisely what an unclassified boundary already does for the
+    // same mood, not to some other special-cased style.
     for (const mood of ['ambient', 'groove', 'peak', 'aggressive']) {
-      expect(pickTransitionStyle(mood, true, 0, undefined, 'drop')).toBe('dipToBlack')
+      const drop = pickTransitionStyle(mood, true, 0, undefined, 'drop')
+      const generic = pickTransitionStyle(mood, true, 0, undefined, 'generic')
+      expect(drop).not.toBe('dipToBlack')
+      expect(drop).toBe(generic)
     }
   })
 
@@ -226,10 +246,14 @@ describe('pickTransitionStyle — boundary type (audit c3)', () => {
     expect(breakdown).toBe('smear')
   })
 
-  it('leaves a generic section boundary on the original dipToBlack behaviour', () => {
+  it('falls a generic (or unclassified) section boundary through to the mood pick, dipToBlack disabled', () => {
     for (const mood of ['ambient', 'groove', 'peak', 'aggressive']) {
-      expect(pickTransitionStyle(mood, true, 0, undefined, 'generic')).toBe('dipToBlack')
-      expect(pickTransitionStyle(mood, true, 0, undefined, null)).toBe('dipToBlack')
+      const nonBoundary = pickTransitionStyle(mood, false, 0, undefined)
+      const generic = pickTransitionStyle(mood, true, 0, undefined, 'generic')
+      const unclassified = pickTransitionStyle(mood, true, 0, undefined, null)
+      expect(generic).not.toBe('dipToBlack')
+      expect(generic).toBe(nonBoundary)
+      expect(unclassified).toBe(nonBoundary)
     }
   })
 
@@ -241,12 +265,14 @@ describe('pickTransitionStyle — boundary type (audit c3)', () => {
     expect(withType).toBe(withoutType)
   })
 
-  it('falls back to plain dipToBlack if the forced style were ever disabled', () => {
-    // Mirrors the existing disabled-style guard on the plain section-change
-    // path — a boundary-type override must obey DISABLED_STYLES exactly like
-    // every other pick, never bypass it.
+  it('DROP_STYLE really is disabled now, not just hypothetically', () => {
+    // This used to be a defensive test asserting the then-current enabled
+    // state, guarding against a future disable silently bypassing the check.
+    // The disable is real now (an "extremely bright flash" report — see
+    // DISABLED_STYLES): pin that directly, plus that BREAKDOWN_STYLE (smear)
+    // is untouched by it.
     expect(isStyleSelectable('smear')).toBe(true)
-    expect(isStyleSelectable('dipToBlack')).toBe(true)
+    expect(isStyleSelectable('dipToBlack')).toBe(false)
   })
 })
 
@@ -309,10 +335,13 @@ describe('disabled styles', () => {
     // What makes the disable real for a cue saved while it was still available,
     // rather than only hiding it from the picker.
     expect(resolveTransitionStyle('cut')).toBe('dissolve')
+    expect(resolveTransitionStyle('dipToBlack')).toBe('dissolve')
   })
 
   it('leaves every other style selectable', () => {
-    expect(selectableStyles()).toHaveLength(TRANSITION_STYLES.length - 1)
+    // Two disabled now: `cut` (always was) and `dipToBlack` (the bright-flash
+    // report — see DISABLED_STYLES).
+    expect(selectableStyles()).toHaveLength(TRANSITION_STYLES.length - 2)
   })
 })
 

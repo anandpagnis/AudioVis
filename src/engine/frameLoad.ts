@@ -202,6 +202,74 @@ export function lensRackMs(l: { amount: number; style: number }): number {
 }
 
 /**
+ * `IsfFilterPass` — the permanently-mounted ISF post-processing filter slot.
+ *
+ * Zero at rest, same shape as the optical racks above and for the same
+ * reason: `enabled` is derived straight from whether `IsfFilterPass.setFilter`
+ * has been handed a real filter (see that class's header) — `null` skips the
+ * pass in `EffectComposer` before it ever draws, so there is nothing to
+ * reserve against.
+ *
+ * Switched ON it is one fullscreen draw, same as every other pass in this
+ * file, but the five vendored filters (`src/assets/isf/filters/*.fs`) are not
+ * uniformly cheap ones. Reading the shader bodies: Color Invert and Bump
+ * Distortion are one texture tap (`IMG_THIS_PIXEL`/`IMG_NORM_PIXEL`) plus
+ * light closed-form math; Bad TV is one tap plus two Simplex-noise (`snoise`)
+ * evaluations; CMYK Halftone has a genuine `for (i=0;i<4;++i)` loop, one
+ * `IMG_PIXEL` tap per CMYK channel, four unconditional taps every pixel.
+ * Broken LCD is the outlier by a wide margin: it unrolls up to three separate
+ * 4-octave value-noise `fbm` sequences per pixel (the glitch mask and the
+ * tint mask always, plus a third inside `patternForType` for the default
+ * noise-style pattern selections), each octave a `noise()` call built from
+ * four bilinearly-blended `hash()` lookups — on the order of a hundred
+ * procedural ALU evaluations per pixel worst case — on top of its own one
+ * unconditional texture tap plus two or three more conditional ones
+ * (row-glitch and pattern-flicker branches).
+ *
+ * `isfFilterMsFor` below only knows "a filter is selected", not which one —
+ * the whole point of this pass is that swapping filters is a material
+ * assignment, not a pass rebuild (see `IsfFilterPass`'s header on why), and
+ * that design has no cheap way to hand this file an id to key a per-filter
+ * surcharge on, unlike `lensRackMs` above, which receives `style` for exactly
+ * that reason. So this is ONE flat reservation rather than a base-plus-
+ * surcharge pair, and it is sized to the heaviest of the roster (Broken LCD),
+ * not the group's typical case — a flat number calibrated to Color Invert
+ * would undercharge the instant a director picks Broken LCD instead, which is
+ * the shape of mistake F182 exists to warn against.
+ *
+ * Rechecked, not just assumed, against the four filters added in the second
+ * vendoring wave (`isfFilterRoster.ts`, `NOTICE`'s "WHY THE NEXT FOUR"):
+ * `Dither-Bayer`'s worst case is a chain of up to 64 integer `if`-comparisons
+ * with a single texture tap, `JPEG Block Corruption` samples twice plus one
+ * cheap 2D hash, `Pixel Shifter` and `Ripples` each sample once plus a
+ * handful of `sin`/`cos`/`rand` calls — all four clearly lighter than Broken
+ * LCD's unrolled triple-`fbm`, so the existing reservation still covers the
+ * roster's worst case without moving.
+ *
+ * **ESTIMATE — not a `/bench` measurement.** Same family as `POST_CHAIN_MS`,
+ * `MIRROR_RACK_MS` and `LENS_RACK_MS` above, and for the same reason: `/bench`
+ * deliberately excludes the whole post chain, and this pass did not exist
+ * when that exclusion was decided either. Reasoned from the shader bodies
+ * above, not measured against a GPU trace; real measurement is future work in
+ * the same family as F90.
+ */
+export const ISF_FILTER_MS = 1.0
+
+/**
+ * What the ISF filter slot is actually costing, from the live selection.
+ *
+ * Conditional, mirroring `feedbackMsFor`'s shape: `IsfFilterPass` disables
+ * itself whenever no filter is selected — the default, and the overwhelming
+ * common case until a picker exists at all — and a disabled pass costs
+ * nothing, so reserving for it unconditionally would hold budget against work
+ * that is not happening, the exact mistake `feedbackMsFor`'s own doc comment
+ * already covers for `trails`.
+ */
+export function isfFilterMsFor(filter: { id: string | null }): number {
+  return filter.id !== null ? ISF_FILTER_MS : 0
+}
+
+/**
  * Live breakdown of the frame's committed cost. Mutated in place once per frame
  * by `SceneManager`, which is the only component that knows every mounted
  * entry; read by everything that wants to spend budget.

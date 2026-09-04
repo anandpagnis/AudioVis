@@ -311,6 +311,42 @@ interface AppState {
    *  16 beats of the next session against a stamp from the last one. */
   layerCommitBeats: Record<LayerRole, number>
   paletteId: string
+  /**
+   * A filter the user picked by hand, waiting for `FilterDirector` to fire it.
+   *
+   * The exact shape of `pendingSceneId` above, and for the exact same reason:
+   * the thing it wants to change already has a per-frame WRITER that owns it.
+   * `FilterDirector` rewrites `performanceState.filter` every frame and clears
+   * it on every frame its own flourish is null, so a UI setting that field
+   * directly would be stomped one frame later. A manual pick therefore flows
+   * THROUGH the director — requested here, consumed there — exactly as a scene
+   * pick flows through `pendingSceneId` for `SceneManager` to commit.
+   *
+   * Transient, and deliberately absent from `partialize` below, matching
+   * `pendingSceneId`: a one-shot request is meaningless a reload later, and
+   * persisting it would fire a filter flourish at nobody seconds into the
+   * next session.
+   */
+  pendingFilterId: string | null
+  /**
+   * Bumped on every {@link requestFilter}, and the reason firing the SAME
+   * filter twice from the console works at all.
+   *
+   * `outputLink` publishes the look only when a `LOOK_FIELDS` value actually
+   * changes, and — critically — only the CONTROL window publishes; the output
+   * window applies looks and never echoes back (see `startLink`). So when the
+   * output's `FilterDirector` consumes a request and calls
+   * `clearFilterRequest()`, it clears its OWN copy while the console's stays
+   * at the id it last sent. A second click on that same chip would then write
+   * a value identical to what the console already held, `changed` would stay
+   * false, nothing would be published, and the output would never fire —
+   * a dead-looking button with no error anywhere.
+   *
+   * A monotonic counter makes every request distinguishable from the last
+   * even when the id repeats, so the look always publishes. Nothing reads its
+   * value; only the fact that it changed matters.
+   */
+  filterRequestNonce: number
 
   uiHidden: boolean
   debugOpen: boolean
@@ -319,6 +355,8 @@ interface AppState {
    *  very measurement you open it to read. */
   fpsMeter: boolean
   analyticsOpen: boolean
+  /** The third-party credits/attribution panel — see `src/ui/Credits.tsx`. */
+  creditsOpen: boolean
   params: VisualParams
   quality: Quality
 
@@ -401,6 +439,15 @@ interface AppState {
    *  automatic dwell floor has not elapsed) — callers that act on the
    *  incoming scene must check, not assume. */
   requestScene: (id: string, opts?: { auto?: boolean; immediate?: boolean }) => boolean
+  /** Ask `FilterDirector` to fire this filter on its next frame. Unlike
+   *  `requestScene` there is nothing for a caller to check — the director
+   *  validates the id and consumes the request either way — so this returns
+   *  void rather than a refusal. See {@link AppState.pendingFilterId}. */
+  requestFilter: (id: string) => void
+  /** Clear a consumed request. Called by `FilterDirector` on the frame it
+   *  reads `pendingFilterId`, valid id or not, so an unknown id cannot wedge
+   *  the queue. */
+  clearFilterRequest: () => void
   setLayer: (role: LayerRole, id: string | null, opts?: { auto?: boolean }) => void
   setLayerFx: (role: LayerRole, patch: Partial<LayerFx>) => void
   setResponseTuning: (patch: Partial<ResponseTuning>) => void
@@ -415,6 +462,7 @@ interface AppState {
   toggleDebug: () => void
   toggleFpsMeter: () => void
   toggleAnalytics: () => void
+  toggleCredits: () => void
   setParam: (key: keyof VisualParams, value: number) => void
   /**
    * Move one Scene Contract dial. A write to a parameter the scene does not
@@ -481,11 +529,14 @@ export const useStore = create<AppState>()(
       layerSceneIds: emptyLayerScenes(),
       layerCommitBeats: { background: -Infinity, accent: -Infinity, overlay: -Infinity },
       paletteId: 'aurora',
+      pendingFilterId: null,
+      filterRequestNonce: 0,
 
       uiHidden: false,
       debugOpen: false,
       fpsMeter: false,
       analyticsOpen: false,
+      creditsOpen: false,
       params: { intensity: 1, speed: 1, reactivity: 1 },
       quality: 'auto',
       debugPostFx: {
@@ -773,6 +824,20 @@ export const useStore = create<AppState>()(
         return true
       },
 
+      // No roster lookup, no dwell floor, no cooldown here — deliberately.
+      // This is a plain hand-off to the one component that owns
+      // `performanceState.filter` (see `pendingFilterId`), and `FilterDirector`
+      // is where every rule about whether and how a filter may fire already
+      // lives; validating the id here too would only give a bad one two places
+      // to be rejected and two places to keep in sync with `ISF_FILTERS`.
+      // The nonce bump is load-bearing across the window boundary, not
+      // bookkeeping — see {@link AppState.filterRequestNonce}: without it a
+      // repeat click on the same chip publishes no look change and the output
+      // window never hears about it.
+      requestFilter: (id) =>
+        set((s) => ({ pendingFilterId: id, filterRequestNonce: s.filterRequestNonce + 1 })),
+      clearFilterRequest: () => set({ pendingFilterId: null }),
+
       setLayer: (role, id, opts) => {
         if (id === get().sceneId) id = null
         // A scene not authored for this role must never be mounted in it.
@@ -895,6 +960,7 @@ export const useStore = create<AppState>()(
 
       toggleFpsMeter: () => set((s) => ({ fpsMeter: !s.fpsMeter })),
       toggleAnalytics: () => set((s) => ({ analyticsOpen: !s.analyticsOpen })),
+      toggleCredits: () => set((s) => ({ creditsOpen: !s.creditsOpen })),
       setParam: (key, value) => set((s) => ({ params: { ...s.params, [key]: value } })),
       setSceneParam: (sceneId, key, value) => {
         const contract = getSceneContract(sceneId)

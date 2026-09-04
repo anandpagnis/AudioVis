@@ -57,6 +57,10 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   harkonnen: () => import('./FortressHarkonnenScene').then((m) => ({ default: m.FortressHarkonnenScene })),
   travelling: () => import('./TravellingScene').then((m) => ({ default: m.TravellingScene })),
   web: () => import('./OversaturatedWebScene').then((m) => ({ default: m.OversaturatedWebScene })),
+  nebula: () => import('./NebulaDriftScene').then((m) => ({ default: m.NebulaDriftScene })),
+  dustfield: () => import('./DustFieldScene').then((m) => ({ default: m.DustFieldScene })),
+  hold: () => import('./HoldScene').then((m) => ({ default: m.HoldScene })),
+  strobe: () => import('./StrobeBarsScene').then((m) => ({ default: m.StrobeBarsScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -164,6 +168,10 @@ const BeatsScene = lazyScene('beats')
 const FortressHarkonnenScene = lazyScene('harkonnen')
 const TravellingScene = lazyScene('travelling')
 const OversaturatedWebScene = lazyScene('web')
+const NebulaDriftScene = lazyScene('nebula')
+const DustFieldScene = lazyScene('dustfield')
+const HoldScene = lazyScene('hold')
+const StrobeBarsScene = lazyScene('strobe')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -1000,60 +1008,6 @@ export const SCENES: SceneDef[] = [
     },
   },
   {
-    id: 'harkonnen',
-    name: 'Fortress Harkonnen',
-    component: FortressHarkonnenScene,
-    metadata: {
-      // Shadertoy shader "Fortress Harkonnen", header declares `// License CC0`.
-      // SABS credited to ollj; the escape formula is from fractalforums (public).
-      // Reads as mrange's. CC0 -> `license: 'original'`, same basis as `maze` /
-      // `malachite` / `truchet`. Credit + source link kept in the .tsx header.
-      license: 'original',
-      // LIVE, unlike `neonjungle` / `truchet` / `beats` — but its cost is an
-      // ESTIMATE, not a /bench measurement. The source ran a 25-iter field
-      // sampled 4x for the normal (~118 iters/px, no early-out); this port cuts
-      // that to a 3-tap normal + `complexity`-controlled 10..16 iters + two
-      // `pow`->mul swaps + an offscreen `pixelBudget`, which plausibly lands it
-      // ~3.5 ms at tier 0 (under slotBudget.test.ts's ~4 ms bar). Run `/bench`
-      // and re-price the SCENE_COST_MS row; if it lands over the bar, move this
-      // object to DISABLED_SCENES or cut further. See FortressHarkonnenScene.tsx.
-      //
-      // `speed` -> zoom/macro-cycle rate (drastic + mids). `complexity` ->
-      // fractal iteration depth (user dial only, never tier-gated — kifs F129 /
-      // maze F139). `fill` -> zoom scale. `tilt` -> static frame roll.
-      // `contrast` -> the postProcess S-curve strength. No `shape`/`density`.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
-        paramLabels: {
-          '*': { complexity: 'iterations', fill: 'zoom', tilt: 'roll', contrast: 'grade' },
-        },
-      },
-      // Subject only — a full-frame lit fractal relief, same as `kifs` /
-      // `wingfold`.
-      roles: ['primary'],
-      // A slow, monumental zoom — architectural, not frantic. Sits mid-range;
-      // the kick-pop and energy swell carry it up to `peak`.
-      moods: ['mellow', 'groove', 'building', 'peak'],
-      // `bass` stands in for the kick-onset routing (`s.onKick` -> specular pop
-      // + brightness punch), same convention as `malachite` / `matrix`.
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT /bench-MEASURED — documented op-count estimate (see sceneCost.ts).
-      // ~52 fractal iterations/px at the neutral `complexity`, rendered
-      // offscreen and upscaled. Heavier than `wingfold`; confirm with /bench.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a full-bleed fractal relief.
-      compatibleWith: [],
-      moodFit: { mellow: 0.66, groove: 0.78, building: 0.84, peak: 0.8 },
-      // The shader frames itself — flat screen-space fractal math, no engine
-      // camera. Declared only for CameraDirector.test.ts's variety invariant,
-      // same as `kifs` / `wingfold`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
     id: 'beats',
     name: '4D Beats',
     component: BeatsScene,
@@ -1310,6 +1264,159 @@ export const SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
+  // --- Second background/silence/effect wave (roster-completion pass) -----
+  // Four scenes closing counted gaps in the live roster: one background scene
+  // total (malachite alone), zero scenes declaring `silence`, and no
+  // strobe/blinder archetype despite it being the most-used tool in techno
+  // and DnB. See docs — the plan this batch executes computed those counts
+  // directly from this array rather than estimating them.
+  {
+    id: 'nebula',
+    name: 'Nebula Drift',
+    component: NebulaDriftScene,
+    metadata: {
+      license: 'original',
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'warp', density: 'coverage', fill: 'scale', contrast: 'definition' },
+        },
+      },
+      roles: ['background'],
+      // Stops at groove, one step short of malachite's own peak ceiling —
+      // this ground should never compete for attention, even less than
+      // malachite does.
+      moods: ['ambient', 'mellow', 'groove'],
+      bands: ['bass', 'mid', 'energy'],
+      intensity: 'calm',
+      // NOT /bench-measured — see NebulaDriftScene.tsx's own header for the
+      // full op-count reasoning. Anchored against malachite's measured row
+      // just below (0.72-0.76ms): 3 fbm calls x <=3 octaves = <=9 noise()
+      // samples per pixel, against malachite's 5 fbm calls x <=5 octaves =
+      // <=25 samples — roughly a third of the per-pixel noise cost, using the
+      // same hash-based value noise. paletteRamp adds one small FIXED Oklab
+      // term on top (not one that scales with octave count). Priced flat,
+      // same shape as malachite's own near-flat row, since the only tier
+      // lever here is a 3->2 octave drop, not a raymarch-step cliff. Replace
+      // with a real /bench sweep; this is a documented estimate.
+      performanceCost: 'low',
+      compatibleWith: ['wireframe', 'pointcloud', 'snowflake'],
+      moodFit: { ambient: 0.92, mellow: 0.8, groove: 0.62 },
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'dustfield',
+    name: 'Dust Field',
+    component: DustFieldScene,
+    metadata: {
+      license: 'original',
+      contract: {
+        version: 1,
+        params: { speed: 0.5, density: 0.5, fill: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { density: 'population', fill: 'size', contrast: 'sparkle' },
+        },
+      },
+      roles: ['background'],
+      // The universal, always-safe background — the one scene on the roster
+      // meant to sit under EVERY mood including silence, unlike malachite
+      // (stops at peak) and nebula (stops at groove).
+      moods: ['silence', 'ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'high', 'energy'],
+      intensity: 'calm',
+      // NOT /bench-measured — see DustFieldScene.tsx's own header. Three
+      // fixed-count `dustLayer()` calls (no loop at all, so no loop-bound
+      // question even arises), each 5 hash() evals + 2 smoothstep()s — no
+      // fbm, no domain warp, no iteration. Roughly the per-call cost of a
+      // SINGLE octave of malachite's noise(), called 3x total per pixel
+      // against malachite's up to 25 noise() evaluations under the hood.
+      // Priced well under malachite's measured 0.72-0.76ms row, flat across
+      // tiers (declares no quality.knobs response — nothing here scales with
+      // an octave/step count to gate). Replace with a real /bench sweep.
+      performanceCost: 'low',
+      compatibleWith: ['plasma', 'pointcloud', 'dissolve'],
+      moodFit: {
+        silence: 0.62,
+        ambient: 0.65,
+        mellow: 0.63,
+        groove: 0.58,
+        building: 0.55,
+        peak: 0.5,
+        aggressive: 0.48,
+      },
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'hold',
+    name: 'Hold',
+    component: HoldScene,
+    metadata: {
+      license: 'original',
+      // No contract — deliberately. See HoldScene.tsx's header: the one
+      // value that looks like a dial (breath rate) is not exposed, since
+      // handing a performer control over "how is the show breathing right
+      // now" fights the scene's own concept.
+      roles: ['background', 'primary'],
+      moods: ['silence', 'ambient'],
+      bands: ['energy', 'bass'],
+      intensity: 'calm',
+      // NOT /bench-measured. Two closed-form scalar ops per pixel (one sin,
+      // one exp), no loop, no texture read — at or under the roster's `low`
+      // floor, likely the cheapest entry on it. See shock/flare/spark's own
+      // rows below for the same op-count-comparison convention this follows.
+      performanceCost: 'low',
+      // Empty deliberately, not an oversight — see the scene's own header.
+      // As primary during near-total silence, nothing on the live roster
+      // belongs paired with a near-black field; as background, real silence
+      // means no competing primary is fighting for the slot above it.
+      // `snowflake` sets the precedent for an empty list on a full-bleed
+      // scene with nothing to legitimately composite against.
+      compatibleWith: [],
+      moodFit: { silence: 0.95, ambient: 0.3 },
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'strobe',
+    name: 'Strobe Bars',
+    component: StrobeBarsScene,
+    metadata: {
+      license: 'original',
+      roles: ['effect'],
+      // `effect`, not `overlay` — deliberate: this is the one scene with a
+      // genuine physical-safety concern (photosensitive seizure triggers),
+      // and `effect` is the only role with an engine-enforced minimum gap
+      // (cooldownSec) and a hard lifetime cap (durationSec). See
+      // StrobeBarsScene.tsx's header for the full safety design, including a
+      // second, independent 333ms hard flash-rate floor enforced in the
+      // scene's own update() — cooldownSec bounds how often the WHOLE effect
+      // fires; that floor bounds how many hard-contrast pulses can happen
+      // inside one firing, which cooldownSec cannot see.
+      effect: { triggers: ['drop'], durationSec: 1.5, cooldownSec: 16 },
+      moods: ['peak', 'aggressive'],
+      bands: ['bass', 'energy'],
+      intensity: 'high',
+      // NOT /bench-measured. A floor/fract bar pattern plus three
+      // smoothsteps, no loop, no noise, no division — no uRes/aspect
+      // correction needed either, since bar position only reads vUv.x.
+      // Cheaper than shock/flare/spark's own exp()-based falloffs, so priced
+      // at or below their row.
+      performanceCost: 'low',
+      compatibleWith: [],
+      moodFit: { peak: 0.9, aggressive: 0.95 },
+      // Flat 2D screen-space math, no camera concept at all — inert here,
+      // declared only for CameraDirector.test.ts's variety invariant, same
+      // reasoning shock/flare/spark give for their own identical block.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
 ]
 
 /**
@@ -1341,6 +1448,52 @@ export const SCENES: SceneDef[] = [
  * imports actually land.
  */
 export const DISABLED_SCENES: SceneDef[] = [
+  {
+    id: 'harkonnen',
+    name: 'Fortress Harkonnen',
+    component: FortressHarkonnenScene,
+    metadata: {
+      // Disabled on explicit request, unlike its neighbours below — this one's
+      // licence was already cleared (CC0-based, `license: 'original'`, same
+      // basis as `maze` / `malachite` / `truchet`) and its cost estimate was
+      // never flagged over budget. Re-enabling is moving this entry back into
+      // `SCENES`; nothing else needs to change.
+      license: 'original',
+      // `speed` -> zoom/macro-cycle rate (drastic + mids). `complexity` ->
+      // fractal iteration depth (user dial only, never tier-gated — kifs F129 /
+      // maze F139). `fill` -> zoom scale. `tilt` -> static frame roll.
+      // `contrast` -> the postProcess S-curve strength. No `shape`/`density`.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'iterations', fill: 'zoom', tilt: 'roll', contrast: 'grade' },
+        },
+      },
+      // Subject only — a full-frame lit fractal relief, same as `kifs` /
+      // `wingfold`.
+      roles: ['primary'],
+      // A slow, monumental zoom — architectural, not frantic. Sits mid-range;
+      // the kick-pop and energy swell carry it up to `peak`.
+      moods: ['mellow', 'groove', 'building', 'peak'],
+      // `bass` stands in for the kick-onset routing (`s.onKick` -> specular pop
+      // + brightness punch), same convention as `malachite` / `matrix`.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // NOT /bench-MEASURED — documented op-count estimate (see sceneCost.ts).
+      // ~52 fractal iterations/px at the neutral `complexity`, rendered
+      // offscreen and upscaled. Heavier than `wingfold`; confirm with /bench.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed fractal relief.
+      compatibleWith: [],
+      moodFit: { mellow: 0.66, groove: 0.78, building: 0.84, peak: 0.8 },
+      // The shader frames itself — flat screen-space fractal math, no engine
+      // camera. Declared only for CameraDirector.test.ts's variety invariant,
+      // same as `kifs` / `wingfold`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
   {
     id: 'tunnel',
     name: 'Tunnel Drift',

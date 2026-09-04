@@ -25,6 +25,23 @@ export interface TransitionRecord {
   /** Wall time from commit until the incoming entry's fade reached 1. */
   actualDurationSec: number
   frameMsDuringFade: { mean: number; p95: number; max: number }
+  /**
+   * Wall-clock ms (`Date.now()`) at which this transition COMMITTED.
+   *
+   * Exists so a reader can tell a transition that just happened from one that
+   * happened twenty minutes ago. The panel renders the last four records
+   * forever and every director suppresses during silence, so without an age a
+   * stopped show shows four rows of scene changes and reads as a running one
+   * (F190). Commit time rather than completion time because that is when the
+   * scene actually changed; the fade adds at most ~2 beats to it, which is
+   * below the resolution this is displayed at.
+   *
+   * Wall clock, not the render clock `nowSec` that times the fade: the console
+   * structured-clones this history into a second window (`outputLink.ts:811`),
+   * and `Date.now()` is the only one of the two that means the same thing on
+   * both sides of that copy.
+   */
+  atMs: number
 }
 
 const HISTORY_CAP = 50
@@ -34,12 +51,14 @@ export const transitionMetrics = {
   history: [] as TransitionRecord[],
 }
 
-type PendingRecord = Omit<TransitionRecord, 'actualDurationSec' | 'frameMsDuringFade'>
+type PendingRecord = Omit<TransitionRecord, 'actualDurationSec' | 'frameMsDuringFade' | 'atMs'>
 
 interface InFlight {
   key: number
   record: PendingRecord
   startedAt: number
+  /** Wall clock at commit — see {@link TransitionRecord.atMs}. */
+  atMs: number
   frames: number[]
 }
 
@@ -52,7 +71,9 @@ let inFlight: InFlight | null = null
  */
 export function beginTransition(record: PendingRecord & { key: number }, nowSec: number): void {
   const { key, ...rest } = record
-  inFlight = { key, record: rest, startedAt: nowSec, frames: [] }
+  // Stamped here rather than taken from the caller so the one call site
+  // (SceneManager) needs no change and cannot forget it.
+  inFlight = { key, record: rest, startedAt: nowSec, atMs: Date.now(), frames: [] }
 }
 
 /**
@@ -81,6 +102,7 @@ export function sampleTransitionFrame(
     ...inFlight.record,
     actualDurationSec: nowSec - inFlight.startedAt,
     frameMsDuringFade: { mean, p95, max },
+    atMs: inFlight.atMs,
   })
   if (transitionMetrics.history.length > HISTORY_CAP) transitionMetrics.history.shift()
   inFlight = null

@@ -49,6 +49,15 @@ body,
   letter-spacing: 0.04em;
 }
 
+/* The persistent "find me without knowing the keybinding" affordance for the
+   credits panel — sits in the always-visible corner dock next to auto/☰
+   rather than buried in a collapsed menu section. */
+.credits-fab {
+  padding: 7px 11px;
+  font-size: 14px;
+  line-height: 1;
+}
+
 .menu-fab {
   appearance: none;
   width: 46px;
@@ -284,6 +293,19 @@ body,
   opacity: 0.32;
   pointer-events: none;
   text-decoration: line-through;
+}
+
+/* The ISF filter chips need a THIRD state the two above cannot express: off
+   the autonomous roster, but still firable by hand — `DISABLED_FILTERS` only
+   withholds a filter from the director's picker, and a manual `requestFilter`
+   of one is explicitly allowed. So it keeps `.chip-disabled`'s greying (it is
+   genuinely not in the rotation) but takes back the `pointer-events: none`
+   that would make the click it still accepts impossible, and drops the
+   line-through, which reads as "gone" rather than "not automatic". */
+.chip-disabled.chip-hand-firable {
+  pointer-events: auto;
+  opacity: 0.5;
+  text-decoration: none;
 }
 
 .chip.pending {
@@ -659,6 +681,88 @@ body,
   color: inherit;
   font-family: inherit;
   font-size: 12.5px;
+}
+
+/* ---------- live filter readout ---------- */
+
+/* Which ISF filter is firing, and how wet it is. Not under "debug": this is
+   the confirmation half of a shipped performance feature (the HUD's ISF
+   filters chips), not a diagnostic.
+
+   Bottom-left is the last free corner of the dock — the fps meter and debug
+   panel own top-right, the analytics panel top-left, the ☰ dock bottom-right —
+   and being the opposite corner from the menu means a filter fired from a chip
+   does not report itself underneath the cursor that fired it.
+
+   Deliberately quiet: this appears mid-show over live visuals, so it is a
+   label, a hairline bar and a percentage in the same muted monospace as
+   `.fps-meter`, not a panel. */
+.filter-indicator {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  /* Read-only, and it sits over the visuals — same as `.fps-meter`, it must
+     never swallow a click meant for the show. */
+  pointer-events: none;
+  z-index: 24;
+}
+
+/* Load-bearing, not a tidy-up. The component is always mounted and hides
+   itself by setting the `hidden` attribute, but `[hidden] { display: none }`
+   lives in the UA sheet, and the author `display: flex` above outranks it —
+   without this rule `hidden` would be silently inert and the readout would
+   never go away. */
+.filter-indicator[hidden] {
+  display: none;
+}
+
+.filter-indicator-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.filter-indicator-name {
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 600;
+}
+
+.filter-indicator-bar {
+  width: 72px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+/* Driven by `transform: scaleX()` from the indicator's rAF loop, which is why
+   this is full-width at rest and anchored left. No CSS transition on purpose:
+   the value arriving is already an eased envelope sampled at 15 Hz, and a
+   second smoothing pass on top would make the bar lag the picture it is
+   describing. */
+.filter-indicator-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(170, 214, 255, 0.85);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+.filter-indicator-mix {
+  min-width: 30px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.4);
 }
 
 /* ---------- debug ---------- */
@@ -1136,5 +1240,108 @@ body,
 @media (prefers-reduced-motion: reduce) {
   .bench-bar > div {
     transition: none;
+  }
+}
+
+/* ---------- credits & attribution ---------- */
+
+/* Static reference text (licences, provenance), not a live readout — sized
+   and centred like a document rather than pinned to a corner like the
+   telemetry panels (.analytics-panel / .debug-panel). */
+.credits-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 520px);
+  max-height: 78vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px 14px;
+  z-index: 30;
+}
+
+.credits-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.credits-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+
+.credits-section {
+  padding: 10px 8px 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.credits-section:first-of-type {
+  border-top: none;
+}
+
+.credits-section h3 {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(219, 233, 242, 0.75);
+  margin-bottom: 8px;
+}
+
+.credits-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.credits-list strong {
+  display: block;
+  font-size: 12.5px;
+  color: #eaf2f7;
+}
+
+.credit-line {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-top: 1px;
+}
+
+.credit-desc {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.42);
+  margin-top: 2px;
+}
+
+.credits-panel summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 6px 0;
+}
+
+.credits-panel summary:hover {
+  color: #fff;
+}
+
+.credits-license {
+  white-space: pre-wrap;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 2px 0 6px;
+}
+
+@media (max-width: 640px) {
+  .credits-panel {
+    width: calc(100vw - 20px);
+    max-height: 84vh;
   }
 }

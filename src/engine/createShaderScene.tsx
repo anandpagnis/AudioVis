@@ -565,7 +565,30 @@ function createBudgetedScene<S>(
     // the target is fixed to the full canvas (see `getBudgetedRT`'s F139/
     // F143 doc comment) and essentially never changes, while this tracks the
     // viewport sub-rect the quality governor moves dozens of times a minute.
-    const activeSize = useRef({ w: 0, h: 0 })
+    // Tracks BOTH sizes `uUvMax` is a ratio of, not just the active one.
+    //
+    // Guarding on the active size alone was a real, visible bug: black bars
+    // along the top and right with the picture squashed into the bottom-left.
+    // `uUvMax` is `active / full`, and in the normal (unclamped) regime the
+    // ACTIVE size is invariant under DPR — `solveScale` divides by `dpr` and
+    // the `w = floor(size.width * dpr * scale)` below multiplies it straight
+    // back out, so `w` reduces to `floor(sqrt(budget * 1e6 * W/H))`, a
+    // function of CSS aspect and budget only. `neededW/H` (the grow check)
+    // does NOT cancel dpr. So every time the governor climbed the render
+    // scale, the target grew, `full` changed, `w`/`h` did not, this guard
+    // stayed false, and `uUvMax` kept a ratio computed against the OLD,
+    // smaller target — leaving the blit sampling past the rendered rect into
+    // never-written texels. Permanent, too, for the fixed-budget scenes
+    // (`malachite`/`nebula`/`dustfield`): their `w` only moves on a window
+    // ASPECT change, so nothing ever corrected it. The function-budget
+    // scenes (`maze`/`beats`/`travelling`/`web`) self-healed on their next
+    // tier threshold crossing, which is why this looked intermittent.
+    //
+    // F147's grow-only rule is what made the two sizes able to diverge at
+    // all — before it, `setSize` ran on every change and `full` tracked
+    // `needed`, so this window barely existed. Keeping the ratio's own
+    // inputs in the guard is the fix, not reverting that.
+    const activeSize = useRef({ w: 0, h: 0, fullW: 0, fullH: 0 })
 
     // Solved every frame rather than in a resize-only effect, so a function
     // budget can react to the quality tier changing mid-scene — cheap, since
@@ -619,9 +642,16 @@ function createBudgetedScene<S>(
       const fullW = rt.target.width
       const fullH = rt.target.height
 
-      if (w !== activeSize.current.w || h !== activeSize.current.h) {
+      if (
+        w !== activeSize.current.w ||
+        h !== activeSize.current.h ||
+        fullW !== activeSize.current.fullW ||
+        fullH !== activeSize.current.fullH
+      ) {
         activeSize.current.w = w
         activeSize.current.h = h
+        activeSize.current.fullW = fullW
+        activeSize.current.fullH = fullH
         // The shader's idea of resolution is the ACTIVE viewport's, not the
         // allocated target's — it drives ray setup and pixel-space maths, so
         // passing the full target size here would draw a differently-shaped

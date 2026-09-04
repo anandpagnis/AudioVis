@@ -62,8 +62,14 @@ import { useStore } from '../store'
  * it would do it silently, at exactly the moment someone is on stage.
  */
 
-/** Store fields that describe the show. Everything here is mirrored downward. */
-const LOOK_FIELDS = [
+/**
+ * Store fields that describe the show. Everything here is mirrored downward.
+ *
+ * Exported for the tests, which assert membership rather than re-listing it:
+ * a field missing from here fails silently — the control window changes it,
+ * the output window never hears, and nothing anywhere logs an error.
+ */
+export const LOOK_FIELDS = [
   'sceneId',
   // The request, not the commitment. `requestScene` only sets this; the output
   // window's SceneManager is what promotes it to `sceneId`, on a downbeat, once
@@ -71,6 +77,18 @@ const LOOK_FIELDS = [
   // press in the control window changed nothing at all — measured, the output
   // sat on `wireframe` through every press.
   'pendingSceneId',
+  // Same shape as `pendingSceneId` above, and mirrored for the same reason: a
+  // one-shot request the OUTPUT window's director consumes. `FilterDirector`
+  // owns `performanceState.filter` and rewrites it every frame, so a manual
+  // pick can only reach the show as a request that crosses this wire first.
+  //
+  // `filterRequestNonce` rides along because the output never echoes its
+  // consume back upward (see `startLink` — followers apply, they do not
+  // publish), so the console's copy stays at the last id it sent. Without a
+  // value that changes on every request, clicking the same filter twice
+  // publishes nothing at all. See the store's own note on the field.
+  'pendingFilterId',
+  'filterRequestNonce',
   'layerSceneIds',
   'paletteId',
   'params',
@@ -128,6 +146,62 @@ export interface Telemetry {
   fps: number
   frameMs: number
   running: boolean
+  /**
+   * The ISF post-processing filter currently firing, and how wet it is.
+   *
+   * Reported rather than inferred, for the reason `status` above already
+   * records the hard way: the console cannot know this. `FilterDirector` runs
+   * in the OUTPUT window and both fires filters autonomously and consumes the
+   * console's manual requests, so what is actually on screen is a fact only
+   * that window has — a console tracking its own belief would light up for a
+   * request the director validated and refused, and show nothing at all for
+   * the autonomous flourishes it never asked for.
+   *
+   * Null when nothing is firing, which is most of a show.
+   */
+  filterId: string | null
+  /** 0..1 wet/dry of {@link filterId}; 0 when nothing is firing. */
+  filterMix: number
+  /**
+   * What is ACTUALLY drawing in each layer slot — the MOUNTED state, not the
+   * desire.
+   *
+   * The console already holds the desire and could read it for free:
+   * `layerSceneIds` is a `LOOK_FIELD`, and the console is the window that
+   * publishes it. Free, and wrong. `layerSceneIds` is a REQUEST, and between it
+   * and a visible layer sit two gates that live entirely in the output window —
+   * `resolveLayerIds` can refuse a layer that no longer fits the frame budget,
+   * and a layer that IS admitted still mounts invisibly at `dir: 0` until its
+   * shader finishes compiling. So a desire can appear and be withdrawn without
+   * anything ever being drawn.
+   *
+   * How often is not hypothetical. The session recording behind
+   * `performanceState.mountedLayers` counted 12 of 22 layer desires lasting
+   * 20-90 ms and then being withdrawn, always on a scene commit. A console that
+   * lit a slot from the request would have lit up for all twelve of those — for
+   * layers nobody watching the show ever saw — which is the precise failure
+   * that field exists to expose.
+   *
+   * Same shape and same reasoning as {@link filterId} above: what survived the
+   * gates is a fact only the output window has, so it is reported rather than
+   * inferred. See `performanceState.mountedLayers`'s own doc.
+   */
+  mountedLayers: { background: string | null; accent: string | null; overlay: string | null }
+  /**
+   * Scene ids of the effect firings live this instant.
+   *
+   * TRANSIENT, and meant to be read that way. A firing runs for its scene's
+   * `effect.durationSec` — 1.2 s (`spark`) to 4.0 s (`shock`) across the
+   * current roster — so a console polling at {@link TELEMETRY_INTERVAL_MS}
+   * (100 ms) watches an id appear, hold for a dozen-odd packets, and vanish.
+   * That flicker IS the signal: an effect is punctuation, and the window in
+   * which it is on screen is the only thing worth showing about it. A consumer
+   * that smooths the disappearance away, or treats an empty array as a dropped
+   * packet, is displaying something other than the show.
+   *
+   * Ordered oldest firing first, stably — see the note at the publish site.
+   */
+  activeEffects: string[]
 }
 
 const CHANNEL = 'audiovis-link'
@@ -586,6 +660,7 @@ export function publishTelemetry(nowMs = performance.now()): void {
   lastTelePublish = nowMs
   const f = audioEngine.features
   const mean = frameSampler.display.mean()
+  const ml = performanceState.mountedLayers
   channel.postMessage({
     t: 'tele',
     d: {
@@ -608,6 +683,29 @@ export function publishTelemetry(nowMs = performance.now()): void {
       logSec: sessionLog.elapsedSec(),
       audioState: audioEngine.contextState,
       hasSource: audioEngine.running,
+      filterId: performanceState.filter.id,
+      filterMix: performanceState.filter.mix,
+      // Two allocations per packet — this literal and the `map` below — and
+      // both are judged fine rather than left unexamined. The no-allocation
+      // rule `performanceState`'s header states is about the 60fps render
+      // loop; this is the 10Hz wire (`TELEMETRY_INTERVAL_MS`), and the packet
+      // it rides in is ALREADY a fresh object literal built every publish,
+      // handed the next statement to a `postMessage` that structured-clones
+      // the whole graph — a deep copy that costs more than either of these by
+      // an order of magnitude. Reusing a scratch object would save nothing
+      // measurable and would put a mutable singleton on the wire path, which
+      // is a hazard worth more than the saving. Spelled out field by field
+      // rather than spread, so the shape on the wire stays this file's to
+      // declare and cannot silently widen if a fourth role is ever added.
+      mountedLayers: { background: ml.background, accent: ml.accent, overlay: ml.overlay },
+      // Order is already stable, so no sort. `advanceEffects` retires with
+      // `filter` (order-preserving) and admits by appending one entry, so the
+      // list is in firing order, oldest first, and an id never changes
+      // position while it lives — a consumer diffing this sees only real
+      // changes. Sorting would cost a pass and destroy that fire order for
+      // nothing. In practice it is at most one element anyway: `MAX_ACTIVE`
+      // is 1, "only ever one effect on screen at a time".
+      activeEffects: performanceState.layers.effects.map((e) => e.id),
     },
   } satisfies Msg)
 }

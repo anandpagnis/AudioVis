@@ -6902,7 +6902,7 @@ things a curator will hit and should not have to rediscover.
 
 ## Track C — the ISF filter runtime, and the attribution wall in front of it (2026-09-02)
 
-- [~] **F178 · The ISF filter runtime landed; the ~200 filters it can run still cannot ship**
+- [x] **F178 · The ISF filter runtime landed; the ~200 filters it can run still cannot ship**
       `src/engine/IsfFilterPass.ts` (new), `src/engine/isf/parseISF.ts`,
       `src/engine/isf/transpileISF.ts`, `src/engine/PostFXChain.tsx`,
       `src/assets/isf/filters/` (new).
@@ -7036,6 +7036,170 @@ things a curator will hit and should not have to rediscover.
       here proves the emitted GLSL compiles or that `prewarm`'s draw warms an
       ANGLE/D3D11 program. Both need a browser, and the second needs a session
       log.
+
+      **Follow-up: the attribution gate is answered, and the runtime is wired
+      in end to end.** `src/ui/Credits.tsx` (new) is the product decision this
+      entry was blocked on — a plain-DOM panel, toggled by `I`/a corner "ⓘ"
+      chip in the HUD, listing every filter in `ISF_FILTERS`' `credit`/
+      `description` (falling back to a table transcribed from `NOTICE` when a
+      parsed credit is thin) plus the full vendored `LICENSE`/`NOTICE` text,
+      and a live-scene section for any non-`'original'`-licensed entry in
+      `SCENES` (currently empty — `sceneLicensing.test.ts` still pins every
+      such scene to `DISABLED_SCENES` — but a real filter over live data, not
+      a snapshot, so `heap` appears the day it clears review with no code
+      change here).
+
+      With that surface in place, the rest of the plan (docs/ISSUES.md's own
+      "runtime is done; what unblocks it is a product decision" line) landed:
+      `src/engine/isfFilterRoster.ts` compiles all 5 vendored filters and
+      curates them exactly like `transitions.ts` curates transition styles —
+      `DISABLED_FILTERS`/`isFilterSelectable`/`selectableFilters` mirror
+      `DISABLED_STYLES`/`isStyleSelectable`/`selectableStyles`, seeded with
+      `Color Invert` disabled (lowest-differentiation of the five — reads as
+      "something broke" more than "an effect fired"). `FILTER_MOOD_STYLES`
+      (mirroring `MOOD_STYLES`) was authored by reading each filter's actual
+      GLSL body, not guessed from its name — `Bad TV`/`Broken LCD` (signal
+      corruption) to `building`/`peak`/`aggressive`, `Bump Distortion`
+      (smooth displacement) to `groove`/`building`/`peak`, `CMYK Halftone`
+      (print texture) to `ambient`/`mellow`/`groove`, `silence` to `[]`
+      (matches `EffectDirector`'s own posture of not punctuating near-silence).
+
+      `src/engine/FilterDirector.tsx` (new) is the trigger director — modeled
+      directly on `EffectDirector.tsx`'s `TriggerEdges` (imported and reused,
+      not forked) and `transitions.ts`'s `pickTransitionStyle` rotation math
+      (reproduced, since that function is hard-typed to transition styles and
+      carries boundary-type logic with no filter equivalent). Fires a
+      momentary flourish on the same drop/sectionChange/buildPeak/transient
+      edges effects fire on, admitted by a direct `remainingMs(TIER_BUDGET_MS
+      [tier]) >= ISF_FILTER_MS` headroom check (a single always-mounted pass
+      has no `admitSlots` competition to run), envelope shaped by the
+      existing `effectEnvelope` (reused unchanged — its zero-at-both-ends
+      contract fits a filter flourish exactly as well as an effect scene),
+      3.5 s duration / 15 s shared cooldown, mounted at `useFrame` priority
+      -84 (after `EffectDirector`/-86 so the frame's budget already reflects
+      any effect that just fired, after `PerformanceDirector`/-85 since
+      nothing it writes affects filter admission). Writes the already-eased
+      final value into the new `performanceState.filter: { id, mix }` field
+      by mutating it in place rather than reassigning — the hot-path-
+      allocates-nothing discipline `performanceState.ts`'s own header states,
+      matching how `p.mirror.twist`/`p.mirror.slice` are field-assigned in
+      `PerformanceStateBridge.tsx` rather than replaced wholesale.
+
+      `src/engine/frameLoad.ts` gained `ISF_FILTER_MS` (a reasoned estimate,
+      not a `/bench` measurement — sized to `Broken LCD`, the one vendored
+      filter whose body runs up to three unrolled 4-octave `fbm` sequences
+      per pixel, clearly heavier than the other four's one-or-two-tap
+      bodies) and `isfFilterMsFor()`, wired into both of `SceneManager.tsx`'s
+      existing fixed-cost sums alongside `POST_CHAIN_MS`/`feedbackMsFor`/
+      `mirrorRackMs`/`lensRackMs` — the same "measured/reasoned, never
+      guessed" discipline F182 re-established elsewhere in that file.
+      `src/engine/PostFXChain.tsx`'s existing per-frame executor loop reads
+      `performanceState.filter` and calls `IsfFilterPass.setFilter()`/
+      `.setMix()` with no further easing, same convention as `p.vignette`/
+      `p.trails`.
+
+      `npm run typecheck`, `npm run lint`, `npm run build` clean; **1423
+      passed, 1 skipped** (up from 1321/1 — the F181b `beats` solo-cost
+      failure in `slotBudget.test.ts` is pre-existing and unrelated, see that
+      entry). Not yet verified against real music/GPU — same caveat as the
+      runtime landing above, and now the more consequential one: no session
+      has confirmed a filter actually fires, ramps and releases audibly/
+      visibly correctly, or that `ISF_FILTER_MS`'s reasoned estimate holds up
+      against a real GPU trace the way `POST_CHAIN_MS`/`FEEDBACK_MS` did once
+      session logs existed for them (F182). That verification is the
+      immediate next step, same instrument (`J` fps meter, watch `gpuMs`
+      between flourishes) F182 used.
+
+      **Second vendoring wave: 5 filters → 9.** Fetched the live `Vidvox/
+      ISF-Files` file listing (327 files, MIT confirmed again via the GitHub
+      API's own `license.spdx_id`) and screened candidates against three
+      gates: not a re-skin of the mounted post chain or the first five,
+      adapter-compatible on inspection (single `inputImage`, no `PASSES`/
+      `IMPORTED`/audio input/second image — rejected on sight:
+      `Crosshatch`/`Glitch Displace`/`Mosaic`/`Pixelize`/`Water Drop`,
+      gl-transitions ports needing `startImage`/`endImage`;
+      `Interlace`/`Vertical Tearing`, `PASSES`; `v002-CRT-Mask`, `IMPORTED`;
+      `Waveform Displace`, an `audio` input; `Displace`, a second image
+      input), and — the gate that actually excluded a real candidate — a
+      non-degenerate author `DEFAULT`, since this engine has no per-filter
+      parameter UI and renders whatever the header ships: `Noise Displace.fs`
+      looked like a good fourth pick (organic warp, distinct from `Bump
+      Distortion`'s static bulge) until its `displaceX`/`displaceY` both
+      turned out to default to 0 — selectable, costed, and invisible, the
+      same class of bug F180 exists to catch. `Ripples.fs` (carter
+      rosenberg, the same author as `Bump Distortion`, reusing its already-
+      proven `#ifndef GL_ES`-guarded `distance()` pattern) replaced it.
+
+      Landed: `Dither-Bayer` (ordered dithering), `JPEG Block Corruption`
+      (compression-artifact glitch), `Pixel Shifter` (row-shear glitch),
+      `Ripples` (concentric wave distortion). All four run through the real
+      adapter (`compileIsfFilter`, not just header inspection) before being
+      vendored, byte-exact, into `src/assets/isf/filters/`. `NOTICE` rewritten
+      for all nine. `isfFilterRoster.ts`'s `FILTER_MOOD_STYLES` rebalanced
+      with the new four woven in by the same read-the-GLSL-body discipline as
+      the first five — `ambient` deliberately kept as a single-entry list
+      (`CMYK Halftone` alone) rather than diluted, both on its own editorial
+      merits and because it is the one real single-choice mood
+      `pickFilter`'s anti-repeat fallback needs to exercise against actual
+      data. `frameLoad.ts`'s `ISF_FILTER_MS` rechecked (not just assumed)
+      against all four new shader bodies — heaviest is two texture samples
+      plus a cheap hash — and left unchanged: still lighter than `Broken
+      LCD`'s triple-`fbm`, so the existing reservation already covers the
+      roster's new worst case.
+
+      `npm run typecheck`, `npm run lint`, `npm run build` clean; **1426
+      passed, 1 skipped** (up from 1423/1 — the F181b `beats` failure is
+      still the only unrelated pre-existing one). Same not-yet-verified
+      caveat as above: no browser/GPU session has confirmed any of the nine
+      filters read well live, this wave included.
+
+      **Manual triggering and a live readout.** Both halves of "I can't see
+      or steer this" answered together, because the autonomous director alone
+      made the feature hard to even evaluate — a filter fired every 15 s at
+      the earliest, on musical events, with nothing on screen naming which of
+      nine had just changed the picture.
+
+      `store.pendingFilterId` + `requestFilter(id)`/`clearFilterRequest()` is
+      the one-shot channel, consumed by `FilterDirector` on its next frame —
+      the same seam `pendingSceneId` gives `SceneManager`, and necessarily so:
+      this director OWNS `performanceState.filter` and nulls it on every frame
+      no flourish is live, so a UI writing that field directly would be
+      stomped one frame later. `advanceFilter` gained an optional `manualId`
+      handled AHEAD of the retire pass, so a second click replaces a live
+      flourish rather than being swallowed by "one is already running."
+
+      A manual pick bypasses the trigger edge, the cooldown, the suppression
+      gate and the budget headroom check, on the precedent `requestScene`
+      already states outright — *"Manual picks are exempt (the user asked for
+      it)"* — those gates PACE the autonomous show rather than police a
+      person. The budget bypass is argued explicitly in-source since it is the
+      one a reader should question: a manual fire is a bounded, user-initiated,
+      one-shot ~3.5 s cost that retires itself and can only recur as fast as
+      someone clicks, categorically unlike the autonomous branch, which is
+      evaluated every frame and keeps its headroom check for exactly that
+      reason. Ids are validated against `ISF_FILTERS` (not
+      `isFilterSelectable`): `DISABLED_FILTERS` withholds a filter from
+      autonomous ROTATION, and says nothing about what a human may ask for, so
+      `Color Invert` is hand-firable while `pickFilter` still never selects it.
+
+      UI: an `ISF filters` section in the HUD's corner menu, one chip per
+      filter carrying its credit in the title (attribution at the point of
+      use, not only in the Credits panel), with off-roster filters greyed but
+      still clickable — which needed a `chip-hand-firable` modifier, because
+      the existing `.chip-disabled` sets `pointer-events: none` and would have
+      made those chips look present and silently do nothing. Plus
+      `src/ui/FilterIndicator.tsx`, a self-hiding corner readout (filter name,
+      bar, percent) following `FpsMeter`'s DOM-diffing discipline exactly —
+      one RAF loop at 15 Hz, no `useState`, every write diffed, `mix`
+      quantised to whole percent before the diff and the bar driven by
+      `transform` rather than `width`. That discipline matters more here than
+      in `FpsMeter`: this indicator is on screen precisely when the frame is
+      most expensive, so a render storm would land on the worst frames of the
+      show and be blamed on the filter.
+
+      **1451 passed, 1 skipped**, typecheck/lint/build clean; F181b remains
+      the only failure. See F184 for the two CSS rules underpinning this that
+      could not be unit-pinned.
 
 - [ ] **F179 · Scene supply: ISF is a format win, not a corpus win** —
       strategy, no single file. Recorded because the obvious next move is to go
@@ -7389,10 +7553,407 @@ things a curator will hit and should not have to rediscover.
       `.toBeGreaterThan(0)`) with the reasoning inline — a deliberate behaviour
       change, not a workaround.
 
+- [x] **F183 · `dipToBlack` produced an extremely bright flash on scene
+      transitions, not just on the `travelling` scene** —
+      `src/engine/transitions.ts`, `src/scenes/index.ts`.
+
+      Reported as two apparently separate requests — "disable dip to black
+      transition" and "there's an extremely bright flash when any scene
+      switches to moving without travelling" — that turned out to be the same
+      bug. `transitions.ts`'s own header already documents an "energy
+      invariant": every transition style's `transitionMix(style, t)` must
+      satisfy `out(t) + in(t) === 1` at every point so the outgoing and
+      incoming scenes' brightness contributions sum to a constant — except
+      `dipToBlack`, called out in the file as "the one deliberate exception:
+      dimming through the middle IS the effect." A curve that doesn't sum to 1
+      can sum to *more* than 1 partway through, which is exactly a brightness
+      spike — and because `pickTransitionStyle` can select `dipToBlack` for
+      any live scene (it's `DROP_STYLE`, forced on every detected drop
+      regardless of which scenes are involved), the flash was never specific
+      to `travelling`.
+
+      **Fix:** added `'dipToBlack'` to `DISABLED_STYLES` (`transitions.ts`),
+      the same mechanism already used for `'cut'` — removes it from
+      `pickTransitionStyle`'s autonomy and `resolveTransitionStyle`'s cue
+      decoding while leaving `transitionMix('dipToBlack', t)` itself
+      resolvable, so a stored cue or old telemetry referencing it still
+      decodes (falling back to `'dissolve'`) instead of erroring. `DROP_STYLE`
+      now falls through to the mood's own style list on a drop like any other
+      forced-but-disabled pick — pinned by a new `qualityGovernor`-style test
+      in `transitions.test.ts` ("DROP_STYLE really is disabled now, not just
+      hypothetically").
+
+      Eight test cases across five `it()` blocks in `transitions.test.ts` hard
+      -asserted the old `dipToBlack`-selecting behaviour and needed updating,
+      not loosening — new expected values were hand-traced against
+      `MOOD_STYLES` (rotation 0, no `last`) rather than guessed, then
+      confirmed by running the suite. `dissolve` is `dipToBlack`'s
+      replacement for every mood whose list led with it.
+
+      Also disabled the `harkonnen` (Fortress Harkonnen) scene on explicit
+      request, unrelated to the flash — moved its full entry from `SCENES`
+      into `DISABLED_SCENES` (`src/scenes/index.ts`), the same live-roster-removal
+      mechanism already used for `maze`/`malachite`/`truchet`'s licensing
+      holds, just for a different reason (no licensing or cost concern here;
+      it's parked as the first `DISABLED_SCENES` entry with a comment noting
+      why). Re-enabling either is a one-line move back into the live array.
+
+- [ ] **F184 · The two CSS rules the manual-filter UI depends on cannot be
+      unit-pinned** — `src/styles.css`, `src/ui/__tests__/filterTrigger.test.ts`.
+
+      The ISF filter chips and the `FilterIndicator` readout each depend on a
+      rule in `styles.css` that is invisible from the TSX and would fail
+      silently: `.filter-indicator[hidden] { display: none }` (the component
+      hides itself by setting the `hidden` attribute, and the author
+      `display: flex` outranks the UA sheet's `[hidden]` rule, so without it
+      the readout never goes away), and
+      `.chip-disabled.chip-hand-firable { pointer-events: auto }` (which takes
+      back the `pointer-events: none` `.chip-disabled` sets, so the off-roster
+      filters stay clickable by hand — they are excluded from AUTONOMOUS
+      rotation only).
+
+      Neither can be asserted from the test suite as it stands. Vite's CSS
+      pipeline owns the `.css` specifier and this project's Vitest config
+      (`environment: 'node'`, CSS processing off) resolves both
+      `styles.css?raw` and `styles.css?inline` to the **empty string** —
+      measured, not assumed — so a regex assertion against either would pass
+      vacuously forever, which is worse than no assertion. The obvious
+      alternative, `readFileSync` from `node:fs`, does not typecheck:
+      `@types/node` is not in this program.
+
+      Not fixed here because both routes out are bigger than the bug: adding
+      `@types/node` as a dev dependency, or turning on Vitest's CSS handling.
+      For now the TSX half of each pair is pinned in
+      `filterTrigger.test.ts` and both call sites carry a comment naming the
+      CSS rule they rely on.
+
+- [ ] **F185 · `Broken LCD` blacks out the frame — `pow()` with a negative base
+      is undefined in GLSL, and the NaN collapses one way** —
+      `src/assets/isf/filters/Broken LCD.fs`, `src/engine/isfFilterRoster.ts`.
+
+      Reported from a live session: firing `Broken LCD` blacked out the show.
+      Not a compile failure and not a mis-transpile — the adapter handles this
+      file correctly, which is why every test stayed green.
+
+      **The mechanism.** Its `hash()` returns a SIGNED value
+      (`-1.0 + 2.0*fract(...)`, range `[-1, 1)`), so the four-octave `fbm` sums
+      built from it are negative across roughly half the frame. That value is
+      then raised to a power:
+
+          f = 1.0 - pow(f, (5.0 - glitchBrightnessCurve)) * glitchBrightness;
+
+      and `pow(x, y)` is **undefined for `x < 0`** in GLSL — ANGLE evaluates it
+      as `exp2(y * log2(x))`, so it returns NaN. The NaN does not flicker, it
+      collapses in one direction, which is why the failure is total rather than
+      patchy: `f = (f > 0.9) ? 1.0 : 0.0` is false for NaN, giving `f = 0.0`,
+      and `mix(returnMe, bgColor, 1.0 - f)` at `f = 0` replaces the pixel
+      outright. `patternForType` repeats the same mistake with `pow(f, 0.5)`,
+      and the default `patternStyle` resolves to line patterns whose channels
+      are `1.0` only inside narrow `mod()` bands — so what replaces the image
+      is mostly black.
+
+      **Not fixable from the uniform side**, which is why this is a hard block
+      rather than tamer defaults: `glitchBrightnessCurve` is clamped to
+      `[1, 4]`, so the exponent is `[1, 4]`, and `pow` is undefined for a
+      negative base at every one of them. `hardEdge: false` only changes which
+      way the NaN degrades, not that it is NaN.
+
+      **Fix applied: a new `UNUSABLE_FILTERS` state**, distinct from
+      `DISABLED_FILTERS` and deliberately not merged with it. Disabled is a
+      taste call — the director will not pick it, a person still may, and it
+      looks like its author intended when they do. Unusable is broken on this
+      platform, so hand-firing it is not a legitimate override, it is just the
+      bug on demand. `isFilterSelectable` is false for both, but it cannot tell
+      them apart, so the pickers ask `filterUnusableReason` instead: an
+      off-roster chip stays greyed-but-clickable, an unusable one is genuinely
+      `disabled` and shows the reason in its title. `FilterDirector` enforces
+      the same distinction at the choke point rather than trusting the UI —
+      the manual path bypasses trigger edges, cooldown, suppression and budget,
+      and this is the one gate a person does not outrank.
+
+      **How it got shipped.** The second vendoring wave (F178) was screened for
+      a non-degenerate DEFAULT, and that gate caught the inverse case —
+      `Noise Displace`, invisible at its defaults, was dropped for it. The
+      original five were never put through that screen: they were vendored as a
+      PARSER test corpus, chosen because each exercises something the adapter
+      has to get right (`NOTICE` says so outright), and were then inherited as
+      "already vendored, therefore fine" when the roster was built on top of
+      them. Screening the corpus for how it LOOKS is a separate pass from
+      screening it for whether it parses, and only one of the two had been run.
+
+      **Still open, and the reason this entry is not ticked:** the other four
+      originals have not been put through the same look-screen, and cannot be
+      from source alone — `Bad TV`, `Bump Distortion` and `CMYK Halftone` all
+      transform the source image rather than substituting generated content, so
+      none has this specific failure, but "does not black the screen" is not
+      the same as "looks good at its shipped defaults". That needs eyes on a
+      running show. A general fix is also available and deliberately not taken
+      here: teaching the transpiler to emit a domain-safe `pow` (clamping or
+      `sign`-preserving) would make this and any other desktop-GL-authored ISF
+      shader portable, which is a real compatibility feature for the wider
+      corpus — but it changes the rendered result versus upstream, so it wants
+      doing deliberately rather than as a bugfix for one file.
+
+- [ ] **F186 · The frame budget and the frame are different quantities — the
+      model read 1.7 ms of a 27.6 ms frame** — `src/engine/slotBudget.ts`,
+      `src/engine/frameLoad.ts`, `src/engine/PerfMonitor.tsx`.
+
+      A live session ran at **36 fps — mean 27.6 ms, p95 66.8 ms, max 86.5 ms**
+      while the on-screen budget read `0.4+0.0+1.0+0.0+0.4 = 1.7/6.5 ms` and the
+      governor sat pinned at **T4** with render scale already at ≈0.44 (floor is
+      0.40). The budget believed the frame was 26% used while the machine was
+      dropping half its frames.
+
+      **The scene was not the problem.** `MazeFlightScene` honours the quality
+      knobs (tier-scaled `pixelBudget`, clamped `raymarchSteps`, edge glow gated
+      below tier ~2) and its own header records **2.7 ms at tier 4**.
+
+      **The two numbers were never comparable.** `TIER_BUDGET_MS = [11, 9.5,
+      8.5, 7.5, 6.5]` is a scene-COMPOSITION allowance denominated in
+      bench-machine milliseconds, not a frame budget — `slotBudget.ts:59-93`
+      says so, and states the gap outright: *"a device three times slower
+      carries three times those costs while the numbers read the same. The tier
+      is the only evidence available about how far from the bench machine this
+      one is — sitting at tier 4 IS the signal."* That correction is a constant
+      taper, not a measurement, so on a slow machine the model is wrong by an
+      unknown factor and cannot know it.
+
+      **What is absent from the model entirely:** the post chain's real cost,
+      `ExposureSampler`'s readback, `audioEngine.update()`'s full per-frame DSP
+      (an 8192-point analyser plus every estimator, called from
+      `SceneManager.tsx:668`), session logging, and the console link.
+
+      **This was already measured once and never closed.** F148
+      (`ISSUES.md:5161`, still under its own "Open:" heading) records a real
+      session at **8.14 ms of a ~10 ms budget** for fixed per-frame cost,
+      attributing it to Bloom's ~18-pass `mipmapBlur` pyramid, `FeedbackPass`,
+      `GradePass` + CAS and the exposure readback. `frameLoad.ts` reserves
+      **0.9 ms** at reference resolution for that same chain.
+
+      **F182 widened the gap, defensibly.** It cut `POST_CHAIN_MS` 2→0.6 and
+      `FEEDBACK_MS` 1→0.3 against two traces whose whole-frame GPU never
+      exceeded 1.70 ms mean — calibrated on a machine that was coping. This is
+      not a regression to revert; it is a calibration with no device-speed term.
+
+      **The fix is half-built.** F148's own prescription was *"step one is a
+      GPU-timer path that measures it."* That timer now exists —
+      `perf.gpuMs` / `perf.gpuTimerAvailable` (`PerfMonitor.tsx:205,210`,
+      written at `:566`) — and its only consumers are `DebugPanel`,
+      `sessionLog` and the offline bench. **Nothing anywhere compares measured
+      GPU time against `committedMs()` or `frameBudgetMs`.** Closing that loop
+      is the most likely real fix and is deliberately not attempted here.
+
+      See also F160 (same mismatch, opposite sign — fixed cost exceeding the
+      whole tier budget at tiers 0/1), F148 (parent), F111 (scenes that ignore
+      the knobs; note `maze` is *not* one of them), F161 (precedent that this
+      instrumentation cannot attribute a bad frame).
+
+      **Missing evidence:** none of the above is measured on the machine that
+      produced this session. A session-log export would give per-tick `gpuMs`
+      and settle CPU-vs-GPU before anything in the ladder is touched.
+
+- [ ] **F187 · At the floor tier the governor is inert, and says nothing** —
+      `src/engine/quality.ts`, `src/engine/renderScale.ts`, `src/ui/FpsMeter.tsx`.
+
+      Verified in source: both the emergency path (`quality.ts:569`) and the
+      smoothed demote branch (`:611`) are gated on
+      `this.tier < TIERS.length - 1`. Tier 4 IS `TIERS.length - 1`, so at the
+      floor both are false. The tick falls through to
+      `else if (this.discount <= 0) { this.goodSince = elapsedSec }` — re-arming
+      the climb clock is the *entire* response to a frame running 1.66× the
+      display interval.
+
+      No log, no counter, no callback, no escalation. `quality.ts` contains zero
+      console statements and never imports `perf`. It does not demote into a
+      no-op; it never reaches the branch. The one observable effect is that it
+      keeps re-arming `goodSince`, so it will not climb out either — correct by
+      construction (climbing would be worse) and completely blind.
+
+      `RENDER_SCALE_FLOOR = 0.4` (`renderScale.ts:62`) closes the loop the other
+      way: its doc defers explicitly to the ladder — *"the honest response to a
+      machine that still cannot hold the frame is to drop complexity (which the
+      tier ladder is already doing) rather than resolution."* The scale defers
+      to the ladder; the ladder at the floor defers to nothing.
+
+      **The most misleading part is on screen.** `FpsMeter.tsx:131` colours the
+      load readout red only when `used > budget`. Here `used < budget`, so the
+      readout stayed **green** while the show dropped half its frames.
+
+      **Mirror image of F182.** That fix closed the false negative blocking
+      CLIMBING (stuck at floor while fast). `quality.ts:667-673` states the
+      demote side was left untouched on purpose. This is the same shape on the
+      other side — stuck at floor while slow — and is not covered by it.
+
+      **Observability half landed — the governor itself is still untouched.**
+      `FpsMeter.tsx` now surfaces `perf.gpuMs` next to mean frame time (measured
+      vs. modelled, side by side) and detects floor-starvation directly:
+      `perf.tier >= FLOOR_TIER && perf.ms > refreshIntervalMs * STARVE_MEAN_RATIO`,
+      held one second and paused while `frameLoad.incoming` is nonzero so a
+      normal crossfade cannot trigger it — `STARVE_MEAN_RATIO` mirrors
+      `quality.ts`'s own `STEP_DOWN_MEAN_RATIO` on the exact `perf.ms`/EMA value
+      the governor reads (deliberately not `perf.p95`, which is a different,
+      unfiltered 10 s-window sampler — see the file's own header for why that
+      distinction matters). `FLOOR_TIER` is derived from `TIER_BUDGET_MS.length`
+      rather than hardcoded, pinned by a test against `quality.ts`'s own rung
+      count so a ladder change can't silently break the marker. The load text
+      now appends `· FLOOR` and colours red for this state specifically —
+      `used < budget` no longer reads as fine when the machine is drowning.
+      `quality.ts` itself was deliberately not touched. **What remains:** the
+      governor still does not demote or log anything at the floor; only the
+      readout now tells a human. Closing the loop for real — giving the floor
+      tier an actual response, or feeding `gpuMs` back into admission — is
+      Step 4 of the roster-completion plan, done against real evidence rather
+      than more inference.
+
+- [ ] **F188 · The diagnostic surfaces are a material part of the cost they
+      report** — `src/ui/AnalyticsPanel.tsx`, `src/engine/outputLink.ts`,
+      `src/ui/Console.tsx`.
+
+      `AnalyticsPanel` runs a plain **unthrottled** `requestAnimationFrame`
+      (`:282-285`) with no interval gate and no diffing. Every frame it draws
+      four full sparklines that loop every sample in each `RollingWindow`, a
+      scatter with a `beginPath`/`fill` **per point** (`:175-181`), ~12
+      allocating `fillText` calls, and `history.slice(-4).reverse()` — two array
+      allocations per frame. It is the **only** unthrottled readout:
+      `FpsMeter` is 5 Hz and diffed, `BpmReadout` 10 Hz.
+
+      This is already documented as a hazard rather than being new:
+      `ISSUES.md:7715` says to prefer `J` while measuring because that panel is
+      *"a per-frame canvas heavy enough to distort the reading"*, and
+      `FpsMeter.tsx:8-13` says the same of `DebugPanel`. **F10** is the
+      precedent — a per-frame full-viewport canvas deleted for exactly this.
+
+      With any panel open, `publishDetail` structured-clones
+      `audioEngine.features` (a 1024-bin spectrum plus two 1024-sample
+      waveforms), `analytics`, `perf` and the whole `transitionMetrics.history`
+      at 5 Hz, and the console then recursively mirrors all of it.
+      `useTelemetry` re-renders the entire console — scene grid, 30 palette
+      swatches, every slider — 10×/s (`Console.tsx:492`).
+
+      **Inference, explicitly unverified:** the console opens the output window
+      via same-origin `window.open` and holds a live opener reference
+      (`outputLink.ts:420`, `:597-609`), so the two very likely share a
+      browsing-context group and therefore one renderer main thread in Chrome.
+      If that holds, everything above lands on the same event loop as the render
+      rAF. **Confirm in `chrome://process-internals` before acting on it** — if
+      they are separate processes, most of this entry evaporates.
+
+      Consequence: the session that prompted F186/F187 was measured with the
+      analytics panel open, so an unknown share of its p95 may be self-inflicted.
+      Triage before any deeper fix: close the analytics panel and re-read p95;
+      stop the session log and watch `max`.
+
+      **The `AnalyticsPanel` third is fixed.** Throttled to 10 Hz (settling
+      numbers and 30 s sparklines read worse flickering at 60 than lagging a
+      frame or two behind an adjustment; the constant's own comment argues the
+      rate). Every per-frame allocation named above is gone — the scatter's
+      per-point `beginPath`/`fill` is now one path, `history.slice().reverse()`
+      is a backward index, the mood-head array literal is hoisted. **Still
+      open:** `outputLink.ts`'s 5 Hz structured clone of the spectrum/waveforms/
+      history and `Console.tsx:492`'s 10 Hz full-console re-render are
+      untouched, and the same-renderer-process inference above is still
+      unverified — this entry stays open until both are addressed or the
+      process-sharing premise is confirmed false.
+
+- [x] **F189 · `sessionLog.grabTile` still does the synchronous canvas readback
+      `ExposureSampler` was rewritten to avoid** — `src/engine/sessionLog.ts`.
+
+      `grabTile` (`:739`) calls `ctx.drawImage(c, …)` (`:747`) directly off the
+      live WebGL canvas, fired every ~2 s while a session log is recording
+      (`tileInterval`, `:393`, `:520-523`).
+
+      `ExposureSampler.tsx:20-23` documents precisely this operation blocking
+      the CPU until every queued GPU command retires, **measured at 117 ms every
+      eleventh frame**, and was moved to `createImageBitmap` because of it.
+      `grabTile` never got the same treatment.
+
+      Candidate for the `max 86.5 ms` outlier and part of p95 in the F186
+      session — not for the mean. The fix pattern already exists in-repo, so
+      this is a port rather than a design question.
+
+      **Fixed.** `grabTile` now calls `createImageBitmap(canvas, { resizeWidth,
+      resizeHeight, resizeQuality: 'low' })`, following `ExposureSampler`'s own
+      resize-on-decode approach — the resize options are load-bearing, since
+      without them the full framebuffer still crosses the GPU boundary before
+      the CPU downscales it. A synchronous fallback remains for environments
+      with no `createImageBitmap` (workers, node), matching
+      `ExposureSampler.tsx:85-99`'s own reasoning: an environment that can't go
+      async can't avoid the stall regardless, and a missing thumbnail beats a
+      missing contact sheet. Ordering: only one grab is ever in flight (a second
+      request is skipped, not queued, so two grabs can never race for one
+      contact-sheet slot); the slot's `col`/`row` is computed synchronously at
+      request time and only committed on success, so a failed or late grab never
+      half-writes a tile. A restart epoch guards the async gap specifically — a
+      grab that resolves after `stop()`/`start()` returns without touching the
+      new recording's state, since clearing the busy latch there would reopen
+      the exact race the design rules out.
+
+      Coverage note, stated plainly rather than implied: the existing test for
+      this path never executed `grabTile`'s body at all — the suite runs in
+      `node`, which has no `document` or `createImageBitmap`, and the prior test
+      only asserted `not.toThrow()` on a code path that returned at its first
+      null check. New tests (`sessionLogTiles.test.ts`) stub `document` and a
+      deferred `createImageBitmap` to get real control-flow coverage — request
+      shape, in-order placement, skip-while-busy, rejection not wedging the
+      recorder, the restart epoch, the sync fallback, and that compaction still
+      fires. This proves control flow, not pixels; no test in this repo can
+      prove pixels, since CI has no GPU.
+
+- [x] **F190 · The analytics panel presents frozen values as live readings** —
+      `src/ui/AnalyticsPanel.tsx`, `src/engine/transitionMetrics.ts`.
+
+      During silence the ENGINE behaves correctly — `EssentiaBridge.ts:205`,
+      `VoiceBridge.ts:120`, `StructureBridge.ts:113` and the onset feed
+      (`AudioEngine.ts:956`) all gate on `f.silence`. The bug is that the panel
+      renders their last latched values with no staleness marker, so a stopped
+      show reads as a running one.
+
+      Specifics worth keeping:
+
+      - `beatGridAccuracy` (44% in the observed session) only moves inside
+        `addOnset` (`BpmEstimator.ts:180-188`), and onsets are gated off during
+        silence — so it is a frozen score from the last audible passage, not a
+        live one.
+      - `keyRuns`/`danceRuns` (`17`/`19`) are **cumulative lifetime counters**,
+        reset only on `detach()`. They read as work happening now.
+      - BPM free-runs at the last tempo by design (`BpmEstimator.ts:200-206`,
+        `docs/02_Music_Intelligence.md:86`) and is visually indistinguishable
+        from a live lock.
+      - `TransitionRecord` (`transitionMetrics.ts:4-27`) has **no timestamp**,
+        and the panel renders the last four forever — so an old transition reads
+        as current activity even though all four directors suppress during
+        silence.
+      - `f.silence` is relative-RMS with hysteresis (`AudioEngine.ts:879-881`),
+        not LUFS. A `-70.0 LUFS` reading is an independent diagnostic that
+        merely agrees; `LUFS_SILENCE` (`loudness.ts:71`) is its hard floor.
+
+      Worth fixing for a reason beyond tidiness: this is what made the F186/F187
+      investigation start from a false premise — the panel appeared to show a
+      full analysis stack running confidently on digital silence, and the first
+      hypothesis chased that instead of the frame budget.
+
+      **Fixed.** `TransitionRecord` now carries `atMs` (wall-clock `Date.now()`
+      at commit, stamped in `beginTransition` — wall clock rather than the
+      render clock because `outputLink.ts` structured-clones this history into
+      a second window and only `Date.now()` means the same thing on both
+      sides). Every gated row (beat accuracy + its sparkline, section strength +
+      scatter, essentia key/dance, voice % + mood-head bars) is dimmed and
+      tagged `HELD` when `f.silence` is true, read once per frame so a redraw
+      can't show half the panel as live and half as held; a header banner
+      states it plainly. Mood scores and `lufsShortTerm` are deliberately left
+      unmarked — the mood estimator scores `silence` as a live state and
+      `lufsShortTerm` recomputes every frame, so marking those would be as
+      wrong as marking nothing. `keyRuns`/`danceRuns` no longer read as current
+      work: `12ms/17` became `12/34ms per run · 17/19 runs lifetime`.
+      Transition rows now lead with an age column and dim past 60 s — far
+      longer than any real gap between director-fired transitions, so an older
+      row is evidence of nothing happening rather than of something. No engine
+      gating was touched; only the presentation was lying.
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1330 tests**
-(1 skipped, see F108), build.
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1483 tests**
+(1 skipped — see F108; 1 pre-existing failure, see F181b), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

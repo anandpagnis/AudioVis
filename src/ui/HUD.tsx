@@ -36,11 +36,14 @@ import { buildShareUrl } from '../urlParams'
 import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
 import { FpsMeter } from './FpsMeter'
+import { FilterIndicator } from './FilterIndicator'
 import { AnalyticsPanel } from './AnalyticsPanel'
+import { Credits } from './Credits'
 import { SceneParamsPanel } from './SceneParamsPanel'
 import { IconAudioFile, IconMic, IconSystemAudio } from './icons'
 import { LENS_STYLES } from '../engine/opticalRack'
 import { TRANSITION_STYLES, isStyleSelectable } from '../engine/transitions'
+import { filterUnusableReason, ISF_FILTERS, isFilterSelectable } from '../engine/isfFilterRoster'
 
 // macOS Chrome can only capture a browser TAB's audio via getDisplayMedia —
 // whole-screen / system audio isn't available, so the copy has to differ.
@@ -82,6 +85,7 @@ export function HUD() {
   const uiHidden = useStore((s) => s.uiHidden)
   const debugOpen = useStore((s) => s.debugOpen)
   const analyticsOpen = useStore((s) => s.analyticsOpen)
+  const creditsOpen = useStore((s) => s.creditsOpen)
   const fpsMeter = useStore((s) => s.fpsMeter)
   const params = useStore((s) => s.params)
   const quality = useStore((s) => s.quality)
@@ -175,6 +179,8 @@ export function HUD() {
         s.toggleFpsMeter()
       } else if (e.key === 'y' || e.key === 'Y') {
         s.toggleAnalytics()
+      } else if (e.key === 'i' || e.key === 'I') {
+        s.toggleCredits()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -432,7 +438,8 @@ export function HUD() {
             )}
             <p className="hint keys">
               Runs on autopilot by default — open the ☰ menu to customize. 1–0 scenes · A autopilot
-              · P palette · C cue · R record · S shot · J fps · Y analytics · F fullscreen · H hide
+              · P palette · C cue · R record · S shot · J fps · Y analytics · I credits · F
+              fullscreen · H hide
             </p>
           </div>
         </div>
@@ -452,8 +459,13 @@ export function HUD() {
         </div>
 
         {fpsMeter && <FpsMeter />}
+        {/* No toggle, unlike the fps meter: it hides itself whenever no filter
+            is firing (see FilterIndicator's `hidden` diff), so at rest it costs
+            no screen space and there is nothing for a user to turn off. */}
+        <FilterIndicator />
         {debugOpen && <DebugPanel />}
         {analyticsOpen && <AnalyticsPanel />}
+        {creditsOpen && <Credits />}
 
         {/* ---- Collapsible corner menu: all customization lives here ---- */}
         <div className="menu-dock">
@@ -699,6 +711,75 @@ export function HUD() {
                       ))}
                     </div>
                   </div>
+                </>,
+              )}
+
+              {/* Manual fire for the ISF filter layer. Sits next to Post FX
+                  because it is the same family of control, but deliberately
+                  NOT inside it and NOT gated on `debugPostFx.enabled`:
+                  triggering a filter by hand is a performance action, not a
+                  debug override. It goes through the same `requestFilter`
+                  queue the director consumes, so a manual fire is the same
+                  flourish — envelope, duration and all — as an autonomous one,
+                  and `FilterIndicator` reports both identically. */}
+              {section(
+                'filters',
+                'ISF filters',
+                <>
+                  <div className="menu-chips">
+                    {ISF_FILTERS.map((f) => {
+                      // See the Console's copy of this: three states, and an
+                      // unusable filter is the one that is truly not clickable
+                      // — it is broken on this platform rather than merely
+                      // withheld from the director's own rotation.
+                      const broken = filterUnusableReason(f.id)
+                      return (
+                      <button
+                        key={f.id}
+                        disabled={broken !== undefined}
+                        // The credit travels with the filter at the point of
+                        // use, not just in the Credits panel — these are
+                        // third-party MIT shaders and the author is genuinely
+                        // the most useful thing to know while picking one.
+                        //
+                        // Off-roster filters are shown, greyed, and STILL
+                        // CLICKABLE, which is the one place this diverges from
+                        // the Transition row above: there a disabled style
+                        // truly cannot be chosen, here `DISABLED_FILTERS` only
+                        // withholds a filter from AUTONOMOUS selection and the
+                        // director explicitly permits a hand fire of one. A
+                        // chip that looked dead but worked, or looked live and
+                        // was excluded from the rotation, would both misreport
+                        // that — hence greyed but live, and a title that says
+                        // exactly which of the two it is.
+                        title={
+                          (broken
+                            ? `${f.id} — unavailable: ${broken}`
+                            : isFilterSelectable(f.id)
+                              ? f.id
+                              : `${f.id} — excluded from autonomous rotation; click to fire it by hand`) +
+                          (f.credit ? `\n${f.credit}` : '') +
+                          (f.description ? `\n${f.description}` : '')
+                        }
+                        className={`chip ${
+                          broken
+                            ? 'chip-disabled'
+                            : isFilterSelectable(f.id)
+                              ? ''
+                              : 'chip-disabled chip-hand-firable'
+                        }`}
+                        onClick={() => useStore.getState().requestFilter(f.id)}
+                      >
+                        {f.id}
+                      </button>
+                      )
+                    })}
+                  </div>
+                  <p className="menu-note">
+                    Fires a ~3.5 s flourish now. Autonomous firing is currently OFF
+                    (`ISF_AUTOFIRE_ENABLED`, isfFilterRoster.ts) — these only run when you
+                    press one. The readout in the corner shows whichever is running.
+                  </p>
                 </>,
               )}
 
@@ -1056,6 +1137,13 @@ export function HUD() {
                     analytics
                   </button>
                   <button
+                    className={`chip ${creditsOpen ? 'active' : ''}`}
+                    title="Third-party credits & attribution — ISF filters and scene sources (I)"
+                    onClick={() => useStore.getState().toggleCredits()}
+                  >
+                    credits
+                  </button>
+                  <button
                     className="chip"
                     title="Hide all UI (H)"
                     onClick={() => useStore.getState().toggleUi()}
@@ -1074,6 +1162,13 @@ export function HUD() {
               onClick={() => useStore.getState().toggleAutoPilot()}
             >
               auto
+            </button>
+            <button
+              className={`chip credits-fab ${creditsOpen ? 'active' : ''}`}
+              title="Third-party credits & attribution (I)"
+              onClick={() => useStore.getState().toggleCredits()}
+            >
+              ⓘ
             </button>
             <button
               className={`menu-fab glass ${menuOpen ? 'open' : ''}`}

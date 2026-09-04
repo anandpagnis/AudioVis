@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { SCENES, canHoldRole } from '../scenes'
+import { SCENES, canHoldRole, getEffectScenes, type SceneDef } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
 
 /**
@@ -14,6 +14,43 @@ import { LAYER_ROLES, type LayerRole } from '../store'
  * identical `SCENES.map` + `requestScene` pattern.
  */
 const PICKABLE_SCENES = SCENES.filter((s) => canHoldRole(s.id, 'primary'))
+
+/**
+ * The scenes eligible for each composition slot.
+ *
+ * Derived from the SAME predicate `store.setLayer` guards with, so the picker
+ * and the store cannot drift: every tile this surface offers is one the store
+ * will accept. That already mattered when these were `<select>`s — an option
+ * the store declined sat selected in the dropdown still showing the last
+ * ACCEPTED scene, which reads as the click having silently failed — and it
+ * matters more as tiles, because a tile that simply never lights is quieter
+ * about it still.
+ *
+ * Written out per role rather than folded over `LAYER_ROLES` so that
+ * `Record<LayerRole, …>` makes a new role a compile error here, rather than an
+ * empty group that ships.
+ */
+const layerScenesFor = (role: LayerRole): SceneDef[] =>
+  SCENES.filter((sc) => canHoldRole(sc.id, role))
+
+const LAYER_SCENES: Record<LayerRole, SceneDef[]> = {
+  background: layerScenesFor('background'),
+  accent: layerScenesFor('accent'),
+  overlay: layerScenesFor('overlay'),
+}
+
+/**
+ * The effect scenes — shown here, never offered here.
+ *
+ * `EffectDirector` fires these on a musical trigger. `requestScene` refuses
+ * them outright (F180) and `canHoldRole` refuses them for all three layer
+ * roles, so there is no slot on this surface a person could put one in, and
+ * they are rendered as inert chips rather than buttons for exactly that reason.
+ * They are listed at all because "what is on screen right now" is the question
+ * this column now answers, and four scenes that can appear at any moment were
+ * answering it nowhere.
+ */
+const EFFECT_SCENES = getEffectScenes()
 import { PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { useStore } from '../store'
 import { AnalyticsPanel } from './AnalyticsPanel'
@@ -31,6 +68,12 @@ import {
   type Telemetry,
 } from '../engine/outputLink'
 import { LENS_STYLES } from '../engine/opticalRack'
+import {
+  filterUnusableReason,
+  ISF_AUTOFIRE_ENABLED,
+  ISF_FILTERS,
+  isFilterSelectable,
+} from '../engine/isfFilterRoster'
 import { selectableStyles } from '../engine/transitions'
 import type { DebugPostFx } from '../store'
 
@@ -62,7 +105,7 @@ export function Console() {
 
       <div className="console-body">
         <Section title="Scene">
-          <SceneGrid />
+          <SceneGrid tele={tele} />
         </Section>
         <Section title="Colour">
           <PaletteGrid />
@@ -71,7 +114,7 @@ export function Console() {
           <LookControls />
         </Section>
         <Section title="Post FX">
-          <PostFx />
+          <PostFx tele={tele} />
         </Section>
       </div>
     </div>
@@ -278,29 +321,67 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-function SceneGrid() {
+/**
+ * Everything that can be on screen at once, in the order it composes.
+ *
+ * One flat grid of primary-capable scenes used to be the whole section. That
+ * grid is right about what it offers — `PICKABLE_SCENES` is the F180 fix and
+ * stays — but it is only a fifth of the picture: the roster's `background`-only
+ * scenes were reachable solely through three `<select>`s parked in the Look
+ * column, and its `effect` scenes were reachable nowhere at all. The show is a
+ * stack, so the control for it is a stack too, and each group reports its own
+ * slot.
+ *
+ * ## "Requested" and "live" are two different questions
+ *
+ * For the subject the store answers both (`sceneId` / `pendingSceneId`). For a
+ * layer it answers only the first: `layerSceneIds[role]` is a DESIRE, and
+ * between that desire and a lit pixel sit two gates — `resolveLayerIds` can
+ * refuse a layer that no longer fits the frame budget, and an admitted layer
+ * still mounts invisibly at `dir: 0` until its shader finishes compiling. The
+ * doc on `performanceState.mountedLayers` records a session in which 12 of 22
+ * layer desires were withdrawn within 20-90 ms having never drawn anything.
+ *
+ * So the two get two states, and they are the subject grid's existing `on` /
+ * `pending` pair rather than a second vocabulary for the same distinction.
+ * Collapsing them into one highlight would report a layer as being on screen
+ * that the viewer never saw.
+ */
+function SceneGrid({ tele }: { tele: Telemetry | null }) {
   const sceneId = useStore((s) => s.sceneId)
   const pendingSceneId = useStore((s) => s.pendingSceneId)
   const autoPilot = useStore((s) => s.autoPilot)
   return (
     <>
-      <div className="tile-grid">
-        {PICKABLE_SCENES.map((s) => (
-          <button
-            key={s.id}
-            // Two states, because a scene press is not instant: the switch is
-            // held for the next downbeat once the incoming scene has warmed.
-            // Showing only what is live would leave the operator's press with
-            // no feedback for up to a bar, which reads as a dropped input.
-            className={`tile ${sceneId === s.id ? 'on' : ''} ${
-              pendingSceneId === s.id ? 'pending' : ''
-            }`}
-            onClick={() => useStore.getState().requestScene(s.id)}
-          >
-            {s.name}
-          </button>
+      <div className="scene-groups">
+        <div className="scene-group">
+          <h3 className="fx-head">subject</h3>
+          <div className="tile-grid">
+            {PICKABLE_SCENES.map((s) => (
+              <button
+                key={s.id}
+                // Two states, because a scene press is not instant: the switch is
+                // held for the next downbeat once the incoming scene has warmed.
+                // Showing only what is live would leave the operator's press with
+                // no feedback for up to a bar, which reads as a dropped input.
+                className={`tile ${sceneId === s.id ? 'on' : ''} ${
+                  pendingSceneId === s.id ? 'pending' : ''
+                }`}
+                onClick={() => useStore.getState().requestScene(s.id)}
+              >
+                {s.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {LAYER_ROLES.map((role: LayerRole) => (
+          <LayerGroup key={role} role={role} tele={tele} />
         ))}
+
+        <EffectGroup tele={tele} />
       </div>
+
       <button
         className={`toggle-wide ${autoPilot ? 'on' : ''}`}
         onClick={() => useStore.getState().toggleAutoPilot()}
@@ -309,6 +390,130 @@ function SceneGrid() {
         <small>{autoPilot ? 'picking scenes for you' : 'manual'}</small>
       </button>
     </>
+  )
+}
+
+/**
+ * One composition slot, as tiles.
+ *
+ * Was a `<select>` in the Look column, on the reasoning that a layer is picked
+ * rarely and read often so three more grids would crowd out the controls a set
+ * actually touches. Both halves of that turned out to be wrong here: a
+ * dropdown is the one control whose current value you cannot read without
+ * opening it, and "what is drawing" is precisely what this column is for.
+ *
+ * Re-selecting the lit tile clears the slot. With the `<select>` gone so is its
+ * "none" option, and a layer you cannot turn off is worse than one you cannot
+ * turn on — hence the title on every tile saying so, since a second press
+ * meaning "off" is not something a tile grid announces on its own.
+ */
+function LayerGroup({ role, tele }: { role: LayerRole; tele: Telemetry | null }) {
+  const requested = useStore((s) => s.layerSceneIds[role])
+  const scenes = LAYER_SCENES[role]
+
+  /**
+   * What is ACTUALLY drawing here — a fact only the output window has, so it is
+   * read off telemetry and not inferred locally. `null` when that window is
+   * down: nothing is known to be live then, and a highlight held over from the
+   * last packet would be a claim about a renderer that is no longer running.
+   *
+   * Optional at every step because telemetry is a message from another
+   * window's build, not a local object — an output window one deploy behind
+   * simply does not send this field.
+   */
+  const mounted = tele?.mountedLayers?.[role] ?? null
+
+  // A role nothing is authored for gets no control, rather than an empty
+  // heading implying there is a choice to be made. Mirrors HUD's own rule.
+  if (scenes.length === 0) return null
+
+  // Note and highlight tell the same story: blue is on screen, amber is asked
+  // for but unconfirmed. With the output window down only the store's own half
+  // is knowable, so it says "requested" and claims nothing about the frame.
+  let note = 'empty'
+  let noteCls = ''
+  if (mounted && requested && mounted !== requested) {
+    note = 'swapping'
+    noteCls = 'is-pending'
+  } else if (mounted) {
+    note = 'live'
+    noteCls = 'is-live'
+  } else if (requested) {
+    note = tele ? 'requested · not drawing' : 'requested'
+    noteCls = 'is-pending'
+  }
+
+  return (
+    <div className="scene-group">
+      <h3 className="fx-head">
+        {role}
+        <span className={`scene-group-note ${noteCls}`}>{note}</span>
+      </h3>
+      <div className="tile-grid">
+        {scenes.map((sc) => {
+          const live = mounted === sc.id
+          const wanted = requested === sc.id
+          return (
+            <button
+              key={sc.id}
+              className={`tile ${live ? 'on' : ''} ${wanted && !live ? 'pending' : ''}`}
+              title={
+                wanted
+                  ? `${sc.name} — press again to clear the ${role} slot${
+                      live ? '' : tele ? ' · requested, not drawing yet' : ' · output down'
+                    }`
+                  : live
+                    ? `${sc.name} — drawing in ${role}`
+                    : `${sc.name} — use as ${role}`
+              }
+              onClick={() => useStore.getState().setLayer(role, wanted ? null : sc.id)}
+            >
+              {sc.name}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The effect scenes, as a status readout.
+ *
+ * Chips and not buttons, deliberately. Nothing on this surface can fire one —
+ * `EffectDirector` picks them off musical triggers — so a tile here would look
+ * pressable and do nothing, forever, which is the failure F180 was and the one
+ * `.chip-disabled`'s `pointer-events` note in styles.css is still arguing
+ * about. They are `<span>`s: there is no click to swallow, no disabled button
+ * to explain, and the only thing they do is light up while they fire.
+ */
+function EffectGroup({ tele }: { tele: Telemetry | null }) {
+  if (EFFECT_SCENES.length === 0) return null
+  // Same honesty as the layers: with no telemetry nothing is known to be
+  // firing, and an empty list is the truthful answer rather than a stale one.
+  const firing = tele?.activeEffects ?? []
+
+  return (
+    <div className="scene-group">
+      <h3 className="fx-head">
+        effects
+        <span className={`scene-group-note ${firing.length > 0 ? 'is-live' : ''}`}>
+          {tele ? (firing.length > 0 ? `${firing.length} firing` : 'idle') : 'output down'}
+        </span>
+      </h3>
+      <p className="scene-note">Fired by the director on a musical trigger — not hand-picked.</p>
+      <div className="tile-grid">
+        {EFFECT_SCENES.map((s) => (
+          <span
+            key={s.id}
+            className={`tile tile-status ${firing.includes(s.id) ? 'on' : ''}`}
+            title={`${s.name} — punctuation the director fires on a musical trigger; it cannot be picked by hand, and lights here while it fires`}
+          >
+            {s.name}
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -381,7 +586,10 @@ function LookControls() {
         value={params.reactivity}
         onChange={(v) => useStore.getState().setParam('reactivity', v)}
       />
-      <LayerSlots />
+      {/* The three layer `<select>`s used to sit here. They are tiles in the
+          Scene column now, next to the subject grid they compose with — see
+          `LayerGroup`. Two controls for one slot is one more than the number
+          that can be right. */}
 
       <div className="quality-row">
         <span className="meter-label">quality</span>
@@ -398,45 +606,6 @@ function LookControls() {
         </div>
       </div>
     </>
-  )
-}
-
-/**
- * The three composition slots, as plain selects.
- *
- * Deliberately not tiles: a layer is picked rarely and read often, and three
- * more grids of sixteen would crowd out the controls that get touched during a
- * set. They cross to the output window on the existing look wire, because
- * `layerSceneIds` is ordinary store state — the output window's SceneManager
- * mounts and budgets them exactly as if they had been chosen there.
- */
-function LayerSlots() {
-  const layerSceneIds = useStore((s) => s.layerSceneIds)
-  return (
-    <div className="layer-slots">
-      <span className="meter-label">layers</span>
-      {LAYER_ROLES.map((role: LayerRole) => (
-        <label key={role} className="layer-slot">
-          <span>{role}</span>
-          <select
-            value={layerSceneIds[role] ?? ''}
-            onChange={(e) => useStore.getState().setLayer(role, e.target.value || null)}
-          >
-            <option value="">none</option>
-            {/* Same eligibility check `setLayer` itself now enforces (F180's
-                pattern extended to layers) — an option this select offered but
-                the store declined would sit selected in the dropdown, showing
-                whatever the LAST accepted scene actually was, which reads as
-                the click having silently failed. */}
-            {SCENES.filter((sc) => canHoldRole(sc.id, role)).map((sc) => (
-              <option key={sc.id} value={sc.id}>
-                {sc.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      ))}
-    </div>
   )
 }
 
@@ -524,13 +693,25 @@ function useOutputPresence(): boolean {
  * It reaches the output window on the ordinary look wire, because `debugPostFx`
  * is plain store state. Nothing here needed a new channel.
  */
-function PostFx() {
+function PostFx({ tele }: { tele: Telemetry | null }) {
   const fx = useStore((s) => s.debugPostFx)
   const set = (patch: Partial<DebugPostFx>) => useStore.getState().setDebugPostFx(patch)
   const off = !fx.enabled
 
   return (
     <>
+      {/* Filters lead this column, ahead of the override toggle and its
+          sliders, because they are the one control here used DURING a show:
+          everything below is a manual override you set up and then leave
+          alone, while a filter is fired on a moment. Putting them after
+          fourteen sliders in a scrolling column would bury the live control
+          under the static one. They also sit OUTSIDE the `fx-block` below —
+          see the note on that block: it goes inert unless you are driving the
+          chain by hand, and a filter is not an override. The director fires
+          these whether or not anyone is driving, and a hand fire is one more
+          flourish through the same queue. */}
+      <IsfFilters tele={tele} />
+
       <button className={`toggle-wide ${fx.enabled ? 'on' : ''}`} onClick={() => set({ enabled: !fx.enabled })}>
         Manual post FX
         <small>{fx.enabled ? 'you are driving' : 'directors are driving'}</small>
@@ -616,6 +797,81 @@ function PostFx() {
             ))}
           </select>
         </label>
+      </div>
+    </>
+  )
+}
+
+/**
+ * The ISF post-processing filters: fire one by hand, and see which one is
+ * firing.
+ *
+ * Lives at the top of the Post FX column rather than in a column of its own.
+ * A fifth `Section` looked like the obvious home, but `.console-body` is a
+ * deliberately FOUR-column grid on widescreen ("Four columns is the widescreen
+ * case", console.css) — a fifth wrapped onto a second row and left three
+ * quarters of it empty. Same family of control, so it belongs in this column
+ * anyway.
+ *
+ * ## Why the readout comes off telemetry
+ *
+ * This window renders none of the show and runs no `FilterDirector`, so its
+ * `performanceState` is an idle copy that never fires anything (see the note
+ * on the mirrored singletons below). What is on screen is a fact only the
+ * output window has, so it reports it — the same reasoning `Telemetry.status`
+ * already carries. At `TELEMETRY_INTERVAL_MS` (100 ms) a ~3.5 s flourish gets
+ * ~35 updates, which is enough for the bar to read as moving rather than
+ * stepping.
+ */
+function IsfFilters({ tele }: { tele: Telemetry | null }) {
+  const firing = tele?.filterId ?? null
+  const mix = tele?.filterMix ?? 0
+  return (
+    <>
+      <h3 className="fx-head fx-head-first">
+        filters{ISF_AUTOFIRE_ENABLED ? '' : ' · autofire off'}
+      </h3>
+      <div className="tile-grid tile-grid-filters">
+        {ISF_FILTERS.map((f) => {
+          // Three states, not two, and the difference is the whole point:
+          // off-roster is a taste call a person may override by hand, so those
+          // stay clickable; unusable is broken on this platform, so those do
+          // not, and the title says which it is rather than leaving a dead
+          // control to be discovered by clicking it.
+          const broken = filterUnusableReason(f.id)
+          return (
+            <button
+              key={f.id}
+              className={`tile ${firing === f.id ? 'on' : ''} ${
+                broken ? 'tile-broken' : isFilterSelectable(f.id) ? '' : 'tile-off-roster'
+              }`}
+              disabled={broken !== undefined}
+              title={
+                (broken
+                  ? `${f.id} — unavailable: ${broken}`
+                  : isFilterSelectable(f.id)
+                    ? f.id
+                    : `${f.id} — excluded from autonomous rotation; click to fire it by hand`) +
+                (f.credit ? `\n${f.credit}` : '') +
+                (f.description ? `\n${f.description}` : '')
+              }
+              onClick={() => useStore.getState().requestFilter(f.id)}
+            >
+              {f.id}
+            </button>
+          )
+        })}
+      </div>
+      <div className="filter-now">
+        <span className="filter-now-label">firing</span>
+        <span className={`filter-now-name ${firing ? '' : 'dim'}`}>{firing ?? 'nothing'}</span>
+        <span className="filter-now-bar">
+          <span
+            className="filter-now-fill"
+            style={{ transform: `scaleX(${Math.max(0, Math.min(1, mix))})` }}
+          />
+        </span>
+        <span className="filter-now-mix">{Math.round(Math.max(0, Math.min(1, mix)) * 100)}%</span>
       </div>
     </>
   )
