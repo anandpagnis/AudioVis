@@ -229,8 +229,10 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // `travelling` (mrange's "Moving without travelling", Shadertoy CC0) — NOT
   // /bench-measured. This row now reflects the worst-case estimate the
   // scene's own prior comment already stated, not a fabricated pass-the-test
-  // ceiling. It is the heaviest shader in the roster: per pixel it steps 4
-  // planes, and each plane runs one `warp()` plus a 4-tap finite-difference
+  // ceiling. Was the heaviest shader in the roster until `lattesfold` (below)
+  // landed at an estimated 45 ms; still the heaviest with a real per-pixel
+  // fbm-based cost model behind the number. Per pixel it steps 4 planes, and
+  // each plane runs one `warp()` plus a 4-tap finite-difference
   // `normal()` (= 5 warps), where every `warp()` is an eye SDF + a
   // kaleidoscope fold + 5 `fbm()` (4 octaves) — ~100 fbm + ~24 eye SDFs per
   // pixel. Against `kifs` (2.97 ms at tier 0, ~160 heavy ops/px) the prior
@@ -250,6 +252,105 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // a 2-tap, drop `furthest` 4->2, then /bench — or move `travelling` to
   // DISABLED_SCENES.
   travelling: [30.0, 27.0, 22.0, 18.0, 15.0],
+
+  // `gyroid` (Shadertoy source, requester-supplied CC0) — NOT /bench-measured.
+  // FORCED LIVE by explicit request; see GyroidFluxScene.tsx's header for the
+  // full op-count reasoning. A 150-step march with no hit-based early-out,
+  // priced at the pessimistic (kifs-scaled) end of a 7-22 ms two-method
+  // estimate rather than split down the middle — same call `beats` makes for
+  // its own two-sided estimate. Taper shape matched to `beats`' own
+  // proportional decay (same "no early-out" march family). ACTION: run
+  // `/bench` and replace with a measurement.
+  gyroid: [18.0, 14.2, 9.0, 6.6, 4.7],
+
+  // `fridaylines` (mrange's "Crazy friday lines", Shadertoy CC0) — NOT
+  // /bench-measured. FORCED LIVE by explicit request; see
+  // FridayLinesScene.tsx's header. 77-step accumulation with a SOFT distance
+  // exit (z < 49.0), double 4D inversion + lattice fold per step — heavier
+  // than `gyroid`'s single gyroid tap, lighter than `beats`' 7-deep min-tree,
+  // and the soft exit spares some rays `beats`' pure accumulate-forever loop
+  // never does. Priced around 70% of `beats`' tier-0 estimate on that basis.
+  // ACTION: run `/bench` and replace with a measurement.
+  fridaylines: [11.0, 8.7, 5.5, 4.0, 2.9],
+
+  // `javazone` (mrange's "JavaZone 2026 Shader", Shadertoy CC0) — NOT
+  // /bench-measured. FORCED LIVE by explicit request; see
+  // JavaZoneLatticeScene.tsx's header. 77-step accumulation with NO early-out
+  // at all — the closest true analogue is `beats` (same author, same
+  // iteration count, same tanh(o/2e4) shape), minus `beats`' inversion divide
+  // and 7-deep min-tree, plus one extra noise term. Priced a shade under
+  // `beats`' own tier-0 estimate on that basis. ACTION: run `/bench` and
+  // replace with a measurement.
+  javazone: [13.0, 10.3, 6.5, 4.8, 3.4],
+
+  // `lattesfold` (Shadertoy source, untitled, requester-supplied CC0 — no
+  // in-source licence header, unlike its three siblings above; see
+  // LattesFoldScene.tsx's header for the full provenance disclosure) — NOT
+  // /bench-measured. FORCED LIVE by explicit request, and by a wide margin
+  // the heaviest scene in the roster. Up to 90 outer accumulation steps, EACH
+  // running an inner fold up to 12 times — up to 1080 fold iterations per
+  // pixel, against `harkonnen`'s entire ~52-iteration fractal budget. This
+  // estimate is POST a hoist fix that pulled three redundant per-iteration
+  // trig calls (recomputed up to 1080x/pixel in the naive port, depending
+  // only on the clock) out to once per pixel — the pre-hoist op count priced
+  // roughly 3x higher. Even so, priced well above `travelling` (previously
+  // the roster's heaviest estimate at 30 ms) on raw iteration count alone.
+  // `pixelBudget` is already markedly more aggressive than every other scene
+  // in the roster for the same reason. ACTION: run `/bench` and replace with
+  // a measurement; this one plausibly needs real optimisation beyond the
+  // hoist fix, not just a lower `pixelBudget`, before it is anything but a
+  // manual pick.
+  lattesfold: [45.0, 33.0, 18.0, 11.0, 7.0],
+
+  // `neonjungle` (glslop "NEON // JUNGLE v7", ISF, CC0-1.0, credited to
+  // "Craig") — NOT /bench-measured. FORCED LIVE by explicit request. A full
+  // two-world volumetric raymarcher: STEPS 190 primary march + RSTEPS 60
+  // reflection march on water/puddle pixels, each surface hit paying
+  // calcNormal (4 taps) + calcAO (5 taps) + softShadow (up to 20 taps), all
+  // re-running the scene's map() (a multi-primitive SDF combine with a
+  // 4-octave value-noise FBM). Unlike the raw Shadertoy ports above, this
+  // scene already carries its own quality-tier gating (`uQuality`, scaling
+  // `steps`/`rsteps` off `quality.knobs.raymarchSteps`, floored at 0.35x,
+  // plus a `pixelBudget`) — that wiring predates this promotion. The taper
+  // below is shallower than `lattesfold`'s on purpose: `uQuality` scales the
+  // MARCH step count but not the fixed calcNormal/calcAO/softShadow cost per
+  // hit, so a chunk of the total is tier-invariant. Priced above `travelling`
+  // (30 ms, single accumulation pass) for the double march + heavy per-hit
+  // shading, just under `lattesfold`. ACTION: run `/bench` and replace with a
+  // measurement.
+  neonjungle: [38.0, 32.0, 27.0, 23.0, 20.0],
+
+  // `truchet` (Shadertoy "Truchet + Kaleidoscope FTW"; CC0 header, MIT/CC0
+  // helpers — reads as mrange's, same basis as `beats`/`travelling`/`web`) —
+  // NOT /bench-measured. FORCED LIVE by explicit request. `color()`
+  // accumulates up to 6 kaleidoscope + Truchet planes per pixel (no march
+  // loop) through a dual-ray AA pass, which roughly doubles whatever the
+  // base 6-plane cost is. Already carries its own quality-tier gating
+  // (`uPlanes`, 3..6 off `quality.knobs.raymarchSteps`, plus a
+  // `pixelBudget`) — that wiring predates this promotion. Priced against
+  // `web` (3.4 ms tier 0, a similarly-shaped multi-plane bezier accumulator)
+  // scaled up for the AA doubling, landing just under the tier-0 layer-
+  // funding bar the scene's own prior comment already flagged as uncertain.
+  // ACTION: run `/bench` and replace with a measurement.
+  truchet: [6.8, 5.8, 4.2, 3.2, 2.4],
+
+  // `butterfly` (requester-supplied Shadertoy multipass paste, no header) — NOT
+  // /bench-measured. One fullscreen pass, no volumetric march, but the
+  // field-line streamline walk re-evaluates the analytic butterfly field
+  // (`bField`: one `atan` + a 7-term Fourier sum AND its 7-term derivative,
+  // ~14 trig) EVERY step, up to 44, plus a `sparkGrid` hash per step. That
+  // per-step trig load is heavier than `kifs`'s per-iteration KIFS fold
+  // (2.97 ms tier 0, ~20 iters, rotation-matrix multiply + 3 distance terms
+  // WITH an escape that spares most pixels): ~2x the iteration count, no
+  // early-out, offset by the offscreen `pixelBudget`. Priced a bit above
+  // `kifs` on that basis. The taper tracks its two real levers: `uMaxSteps`
+  // off `quality.knobs.raymarchSteps` (44→12) and the `pixelBudget` step
+  // (1.6 MP tiers 0-1, 1.0 MP below). Deliberately NOT run through {@link
+  // SCENE_COST_MODEL} — that needs a real multi-resolution measurement.
+  // ACTION: run `/bench`; if tier 0 lands at/over `sceneBudget(0)/2` (~5 ms),
+  // drop `uMaxSteps`, evaluate the field every OTHER step, or lower
+  // `pixelBudget`.
+  butterfly: [3.8, 3.3, 2.7, 2.2, 1.8],
 }
 
 /**

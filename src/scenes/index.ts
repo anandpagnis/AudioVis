@@ -57,6 +57,11 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   harkonnen: () => import('./FortressHarkonnenScene').then((m) => ({ default: m.FortressHarkonnenScene })),
   travelling: () => import('./TravellingScene').then((m) => ({ default: m.TravellingScene })),
   web: () => import('./OversaturatedWebScene').then((m) => ({ default: m.OversaturatedWebScene })),
+  gyroid: () => import('./GyroidFluxScene').then((m) => ({ default: m.GyroidFluxScene })),
+  fridaylines: () => import('./FridayLinesScene').then((m) => ({ default: m.FridayLinesScene })),
+  lattesfold: () => import('./LattesFoldScene').then((m) => ({ default: m.LattesFoldScene })),
+  javazone: () => import('./JavaZoneLatticeScene').then((m) => ({ default: m.JavaZoneLatticeScene })),
+  butterfly: () => import('./ButterflyFieldScene').then((m) => ({ default: m.ButterflyFieldScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -164,6 +169,11 @@ const BeatsScene = lazyScene('beats')
 const FortressHarkonnenScene = lazyScene('harkonnen')
 const TravellingScene = lazyScene('travelling')
 const OversaturatedWebScene = lazyScene('web')
+const GyroidFluxScene = lazyScene('gyroid')
+const FridayLinesScene = lazyScene('fridaylines')
+const LattesFoldScene = lazyScene('lattesfold')
+const JavaZoneLatticeScene = lazyScene('javazone')
+const ButterflyFieldScene = lazyScene('butterfly')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -1310,6 +1320,420 @@ export const SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
+  {
+    id: 'gyroid',
+    name: 'Gyroid Flux',
+    component: GyroidFluxScene,
+    metadata: {
+      // Shadertoy source, supplied directly by the requester and credited as
+      // CC0 -> `license: 'original'`, same basis as `beats` / `harkonnen` /
+      // `web`. No URL was given with the paste — see GyroidFluxScene.tsx's
+      // header if a source page turns up later.
+      //
+      // FORCED LIVE by explicit request. A 150-step march with NO hit-based
+      // early-out (every pixel accumulates glow for every step it is given —
+      // same shape as `beats`, not `maze`). Op-count against the two nearest
+      // analogues lands 7-22 ms at tier 0 depending on method (kifs-scaled vs
+      // beats-scaled — see the .tsx header for both), well past
+      // `slotBudget.test.ts`'s `< sceneBudget(0)/2 ≈ 4ms` bar either way.
+      // `SCENE_COST_MS.gyroid` is priced at the pessimistic (kifs-scaled) end
+      // of that range — a documented worst-case estimate, not a fabricated
+      // ceiling built to clear the test. ACTION: run `/bench` and replace it
+      // with a measurement.
+      //
+      // `speed` -> flight/orbit + domain-warp clock rate. `shape` -> warp
+      // amount. `complexity` -> lattice cell frequency. `density` -> glow-band
+      // thickness. `contrast` -> glow falloff sharpness. `fill` -> zoom.
+      // `tilt` -> static camera-wobble offset (replaces the source's mouse
+      // look, which this project has no equivalent input for).
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'warp',
+            complexity: 'scale',
+            density: 'thickness',
+            fill: 'zoom',
+            tilt: 'wobble',
+          },
+        },
+      },
+      // Subject only — a full-bleed drift through an infinite lattice that
+      // owns its own camera, same as `maze` / `neonjungle` / `tunnel`.
+      roles: ['primary'],
+      // Slow orbital drift and a soft glow-accumulation look read cooler and
+      // more hypnotic than a committed flythrough like `tunnel` — starts at
+      // `ambient` rather than `groove`. No inherent chaos in the structure
+      // itself (same reasoning as `tunnel`), so it stops at `building`
+      // rather than reaching `peak`/`aggressive`.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // FORCED LIVE — see the licence note above and SCENE_COST_MS.gyroid in
+      // sceneCost.ts for the worst-case estimate this ceiling is priced from.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed flythrough.
+      compatibleWith: [],
+      moodFit: { ambient: 0.7, mellow: 0.85, groove: 0.84, building: 0.76 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera — declared only for CameraDirector.test.ts's variety
+      // invariant, same as `maze` / `tunnel` / `neonjungle`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'fridaylines',
+    name: 'Friday Lines',
+    component: FridayLinesScene,
+    metadata: {
+      // Shadertoy shader "Crazy friday lines". Header is an explicit, named
+      // CC0 declaration ("mrange has waived all copyright...") -> `license:
+      // 'original'`, same basis as `beats` / `travelling` / `web`.
+      //
+      // FORCED LIVE by explicit request. 77-step accumulation with a SOFT
+      // exit (z < 49.0, not a hit test) -- most rays still run close to the
+      // full count. `SCENE_COST_MS.fridaylines` is a documented worst-case
+      // op-count estimate, not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`. See FridayLinesScene.tsx for the full port
+      // notes. ACTION: run `/bench` and replace it with a measurement.
+      //
+      // `speed` -> clock rate. `shape` -> breathing amplitude (static to full
+      // pulse). `complexity` -> first-inversion constant. `density` -> line
+      // thickness. `contrast` -> tanh clip point. `fill` -> zoom. `tilt` ->
+      // static z-twist offset.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'breathe',
+            complexity: 'fold',
+            density: 'thickness',
+            fill: 'zoom',
+            tilt: 'roll',
+          },
+        },
+      },
+      // Subject only -- a full-bleed flythrough that owns its own camera,
+      // same as `gyroid` / `tunnel`.
+      roles: ['primary'],
+      // A pulsing, colourful lattice with no inherent violence in its
+      // structure -- same reasoning as `gyroid` / `tunnel` for stopping
+      // short of aggressive.
+      moods: ['groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above and SCENE_COST_MS.fridaylines.
+      performanceCost: 'high',
+      compatibleWith: [],
+      moodFit: { groove: 0.78, building: 0.84, peak: 0.8 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera -- declared only for CameraDirector.test.ts's variety
+      // invariant, same as `gyroid` / `tunnel`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'javazone',
+    name: 'JavaZone Lattice',
+    component: JavaZoneLatticeScene,
+    metadata: {
+      // Shadertoy shader "JavaZone 2026 Shader". Header is an explicit, named
+      // CC0 declaration, identical wording to `fridaylines`' -> `license:
+      // 'original'`, same basis as `beats` / `travelling` / `web` /
+      // `fridaylines`.
+      //
+      // FORCED LIVE by explicit request. 77-step accumulation with NO
+      // early-out at all -- the closest true analogue is `beats` (same
+      // author, same shape). `SCENE_COST_MS.javazone` is a documented
+      // worst-case op-count estimate, not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`. See JavaZoneLatticeScene.tsx for the full port
+      // notes, including why its beat clock reuses `beats`' exported
+      // `beatsPosition()` rather than reimplementing the fix its own audit
+      // already found necessary. ACTION: run `/bench` and replace the
+      // estimate with a measurement.
+      //
+      // `speed` -> beat-position rate (+energy, matches beats). `shape` ->
+      // lattice cell radius. `complexity` -> surface roughness. `density` ->
+      // z-twist rate. `contrast` -> tanh clip point. `fill` -> zoom. `tilt`
+      // -> static twist offset.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'cell',
+            complexity: 'roughness',
+            density: 'twist',
+            fill: 'zoom',
+            tilt: 'roll',
+          },
+        },
+      },
+      // Subject only -- a full-bleed flythrough that owns its own camera,
+      // same as `beats` / `gyroid` / `tunnel`.
+      roles: ['primary'],
+      // Beat-locked by construction (the on-beat flash IS the animation's
+      // anchor, same as `beats`), so it starts at `groove` and tops out at
+      // `aggressive` -- same range as `beats` for the same reason.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above and SCENE_COST_MS.javazone.
+      // Structurally beats' closest sibling; likely a similar order of cost.
+      performanceCost: 'high',
+      compatibleWith: [],
+      moodFit: { groove: 0.74, building: 0.84, peak: 0.82, aggressive: 0.76 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera -- declared only for CameraDirector.test.ts's variety
+      // invariant, same as `beats` / `gyroid` / `tunnel`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'lattesfold',
+    name: 'Lattès Fold',
+    component: LattesFoldScene,
+    metadata: {
+      // Shadertoy shader, untitled, supplied directly by the requester and
+      // credited as CC0 -> `license: 'original'`. UNLIKE `fridaylines` /
+      // `javazone`, this paste carries no in-source header, author or licence
+      // declaration at all -- the requester's direct statement is the entire
+      // basis, same provenance class `snowflake` rests on ("a witnessed
+      // generation, no upstream to audit"). See LattesFoldScene.tsx's header
+      // for the full disclosure, and if a source page turns up later that is
+      // where to add it.
+      //
+      // FORCED LIVE by explicit request, and by a wide margin the heaviest of
+      // the four new shaders in this batch -- very likely the heaviest scene
+      // in the whole roster even after a hoist fix that removed most of its
+      // redundant per-iteration trig (see LattesFoldScene.tsx's header). Up
+      // to 90 outer accumulation steps, EACH running an inner fold up to 12
+      // times: up to 1080 total fold iterations per pixel, before even the
+      // Lattes warp or the secondary depth-band pass. For scale, `harkonnen`'s
+      // entire per-pixel fractal budget is ~52 iterations.
+      // `SCENE_COST_MS.lattesfold` is a documented worst-case op-count
+      // estimate, not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`; `pixelBudget` here is already markedly more
+      // aggressive than its siblings' for the same reason. ACTION: run
+      // `/bench` and replace the estimate with a measurement; this one
+      // plausibly needs real optimisation beyond the hoist fix, not just a
+      // lower `pixelBudget`, before it is anything but a manual pick.
+      //
+      // `speed` -> clock rate. `shape` -> Lattes iteration depth. `complexity`
+      // -> inner-fold depth (user dial only, never tier-gated -- same
+      // reasoning as harkonnen's fractal depth). `density` -> lattice cell
+      // size. `contrast` -> brightness divisor. `fill` -> zoom. `tilt` ->
+      // rotates the coordinate feeding the Lattes warp.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'chaos',
+            complexity: 'fold depth',
+            density: 'scale',
+            fill: 'zoom',
+            tilt: 'roll',
+          },
+        },
+      },
+      // Subject only -- a full-bleed flythrough that owns its own camera,
+      // same as `gyroid` / `tunnel`.
+      roles: ['primary'],
+      // Chaotic, dense, and relentless -- reads harder-edged than
+      // `fridaylines`' pulsing lattice or `javazone`'s beat-locked corridor,
+      // closer to `heap` / `wingfold` territory.
+      moods: ['building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above for the iteration-count
+      // reasoning (likely the roster's single heaviest scene) and
+      // SCENE_COST_MS.lattesfold in sceneCost.ts for the estimate itself.
+      performanceCost: 'high',
+      compatibleWith: [],
+      moodFit: { building: 0.78, peak: 0.86, aggressive: 0.84 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera -- declared only for CameraDirector.test.ts's variety
+      // invariant, same as `gyroid` / `tunnel`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'truchet',
+    name: 'Truchet Kaleidoscope',
+    component: TruchetKaleidoScene,
+    metadata: {
+      // Shadertoy shader "Truchet + Kaleidoscope FTW". Header declares CC0; the
+      // bundled helpers are MIT (iq) / "MIT OR CC-BY-NC-4.0" (mercury, MIT
+      // option applies) / trivial "Unknown" utility snippets — consistent with
+      // CC0, so `original`. Reads as mrange's (who releases everything CC0),
+      // same basis as `beats` / `travelling` / `web` — no stronger author
+      // confirmation has been sought beyond that, same as those three.
+      license: 'original',
+      // FORCED LIVE by explicit request. `color()` accumulates up to 6
+      // kaleidoscope + Truchet planes per pixel with a dual-ray AA — no march
+      // loop, but the AA doubles whatever the base per-pixel cost is. Already
+      // carries its own quality-tier gating (`uPlanes`, 3..6, driven off
+      // `quality.knobs.raymarchSteps`, plus a `pixelBudget`) — that wiring
+      // predates this promotion. `SCENE_COST_MS.truchet` is a documented
+      // worst-case op-count estimate (see that row's comment in
+      // sceneCost.ts), not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`. ACTION: run `/bench` and replace it with a
+      // measurement.
+      //
+      // `speed` -> flythrough rate. `complexity` -> kaleidoscope symmetry.
+      // `density` -> Truchet line weight. `fill` -> field of view. `tilt` ->
+      // static roll. No `shape` (nothing to switch) / `contrast` (the grade
+      // curve doesn't take a clean 0..1 dial).
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, tilt: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'symmetry', density: 'line weight', fill: 'fov', tilt: 'roll' },
+        },
+      },
+      // Subject only — a full-bleed flythrough that owns its own camera, same
+      // as `maze` / `neonjungle` / `tunnel`.
+      roles: ['primary'],
+      // Relentless forward motion through a strobing pattern — driving/hard
+      // half, overlapping `maze` / `wingfold` territory.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above and SCENE_COST_MS.truchet in
+      // sceneCost.ts. 6-plane per-pixel accumulation + dual-ray AA, each plane
+      // a kaleidoscope fold + Truchet distance field -- likely lighter than
+      // the true raymarchers, priced closer to `web`'s multi-plane accumulator
+      // scaled up for the AA pass.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed flythrough.
+      compatibleWith: [],
+      moodFit: { groove: 0.74, building: 0.82, peak: 0.84, aggressive: 0.8 },
+      // The shader drives its own path/camera and never reads the engine's —
+      // declared only for CameraDirector.test.ts's variety invariant, same as
+      // `maze` / `kifs`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'butterfly',
+    name: 'Butterfly Field',
+    component: ButterflyFieldScene,
+    metadata: {
+      // Requester-supplied shader paste with NO title, author or licence
+      // header. The `common` + `buffer a` (self-sampling `iChannel0` feedback)
+      // + `image` structure identifies it as a Shadertoy multipass shader with
+      // no upstream record to cite -- same provenance class as `lattesfold`
+      // ("the requester's direct statement is the entire basis") and
+      // `snowflake` ("a witnessed generation, no upstream to audit"), so
+      // `license: 'original'` follows the roster's established convention for
+      // requester-supplied pastes. `provenance.spdx` is SPDX NOASSERTION -- the
+      // honest reading of an unmarked paste -- and ButterflyFieldScene.tsx's
+      // header is where a source URL goes if one ever turns up.
+      license: 'original',
+      provenance: {
+        source:
+          'Supplied directly by the requester; no title, author or licence header. ' +
+          'common + buffer A feedback + image pass structure identifies it as a Shadertoy multipass shader.',
+        spdx: 'NOASSERTION',
+      },
+      // `speed` -> flap + flow clock rate. `shape` -> wing harmonic amount
+      // (rounded blob to full butterfly). `complexity` -> spark density (how
+      // fine the point grid is). `density` -> how far the spark halo reaches
+      // past the body. `fill` -> zoom. `tilt` -> static field roll. `contrast`
+      // -> exposure hardness + point sharpness + where the solid body begins.
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+          contrast: 0.5,
+        },
+        paramLabels: {
+          '*': { complexity: 'sparks', density: 'spread', fill: 'zoom', tilt: 'roll', contrast: 'ink' },
+        },
+      },
+      // Subject only -- a centred butterfly owns the middle of the frame by
+      // construction, same as the other full-bleed 2D shader primaries
+      // (`kifs` / `wingfold` / `snowflake`).
+      roles: ['primary'],
+      // Luminous and flowing rather than frantic -- the wingbeat is bar-locked
+      // and every response is slewed (see the .tsx header's "FLOWY, not
+      // twitchy" note), so it sits in the calmer half and tops out at
+      // `building`, overlapping `snowflake` / `chrome` territory.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      // `bass` stands in for the kick-onset routing (`s.onKick` -> the slow
+      // tail/brightness swell), same convention as `snowflake` / `malachite`.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // NOT /bench-measured -- documented op-count estimate (see the
+      // `SCENE_COST_MS.butterfly` row in sceneCost.ts). A single fullscreen
+      // pass, but the field-line streamline walk re-evaluates the analytic
+      // butterfly field (one `atan` + a 7-term Fourier sum AND its derivative,
+      // ~14 trig) plus a hash EVERY step, up to 44 -- ~2x `kifs`'s iteration
+      // count (2.97 ms, ~20 folds WITH an escape) and no early-out, offset by
+      // the offscreen `pixelBudget`, so priced a bit above it. Step count is
+      // quality-gated (44 -> 12). ACTION: run `/bench`; if tier 0 is at/over
+      // ~5 ms, drop `uMaxSteps` or evaluate the field every other step.
+      performanceCost: 'medium',
+      // Owns the centre of the frame; nothing composites with a full-bleed
+      // silhouette, same as `kifs` / `wingfold` / `snowflake`.
+      compatibleWith: [],
+      moodFit: { ambient: 0.62, mellow: 0.74, groove: 0.78, building: 0.7 },
+      // Flat 2D screen-space field -- no camera concept at all, inert to this
+      // scene's own rendering. Declared only for CameraDirector.test.ts's
+      // variety invariant, same as `kifs` / `wingfold` / `snowflake`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
 ]
 
 /**
@@ -2026,17 +2450,22 @@ export const DISABLED_SCENES: SceneDef[] = [
       // "Craig". CC0-1.0 — same provenance basis as `maze` (`gstbkfmm`) and
       // `malachite`: platform generation, no fork lineage — so `original`, not
       // `unverified`. The in-source credit is kept in NeonJungleScene.tsx's
-      // header. NOTE: the plan's `SceneProvenance` field (source URL / author /
-      // SPDX / credit string) would replace this comment; it does not exist yet.
+      // header.
       license: 'original',
-      // HELD OUT ON ARRIVAL, not moved out. This is a full two-world volumetric
-      // raymarcher — STEPS 190 primary march PLUS a second RSTEPS 60 reflection
-      // march on every water/puddle pixel, per-step volumetric integration in
-      // both, calcNormal(4x)/calcAO(5x)/softShadow(up to 20x) each re-running
-      // the whole scene SDF. It will NOT clear slotBudget.test.ts's tier-0
-      // `< sceneBudget(0)/2 ≈ 4ms` bar as-is, and `/bench` (the only
-      // instrument) cannot run from CI. Move into SCENES once an optimised pass
-      // benches under that bar AND a SCENE_COST_MS row is measured for it.
+      // DISABLED AGAIN by explicit request — was briefly live in `SCENES`,
+      // pulled back out. Licence is not the reason (still `original`, see
+      // above); this is a full two-world volumetric raymarcher — STEPS 190
+      // primary march PLUS a second RSTEPS 60 reflection march on every
+      // water/puddle pixel, per-step volumetric integration in both,
+      // calcNormal(4x)/calcAO(5x)/softShadow(up to 20x) each re-running the
+      // whole scene SDF. Already carries its own quality-tier gating
+      // (`uQuality`, driven off `quality.knobs.raymarchSteps`, plus a
+      // `pixelBudget`) — unlike the raw Shadertoy ports elsewhere in this
+      // file, that wiring predates either promotion attempt.
+      // `SCENE_COST_MS.neonjungle` (kept in sceneCost.ts, not removed by this
+      // disable) is a documented worst-case op-count estimate, not a
+      // fabricated ceiling built to clear `slotBudget.test.ts`. Re-enabling
+      // is moving this object back into `SCENES` — no other change needed.
       //
       // `speed` -> flight rate (drastic + energy). `complexity` -> the D1/D2/D3
       // detail tiers. `fill` -> lens width. `tilt` -> sun azimuth. `contrast`
@@ -2058,9 +2487,9 @@ export const DISABLED_SCENES: SceneDef[] = [
       moods: ['mellow', 'groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // NOT MEASURED — see the licence note above. Heavier than every disabled
-      // raymarcher (`tunnel`, `crystalfold`): two full SDF worlds, a second
-      // reflection march, per-step volumetrics. `/bench` before promotion.
+      // DISABLED AGAIN — see the note above. Heavier than every other
+      // raymarcher in the roster except possibly `lattesfold`: two full SDF
+      // worlds, a second reflection march, per-step volumetrics.
       performanceCost: 'high',
       // Owns the frame; nothing composites with a first-person flythrough.
       compatibleWith: [],
@@ -2069,56 +2498,6 @@ export const DISABLED_SCENES: SceneDef[] = [
       // The shader flies its own scripted path and never reads the engine
       // camera — declared only for CameraDirector.test.ts's variety invariant,
       // same as `maze`/`tunnel`/`crystalfold`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'truchet',
-    name: 'Truchet Kaleidoscope',
-    component: TruchetKaleidoScene,
-    metadata: {
-      // Shadertoy shader "Truchet + Kaleidoscope FTW". Header declares CC0; the
-      // bundled helpers are MIT (iq) / "MIT OR CC-BY-NC-4.0" (mercury, MIT
-      // option applies) / trivial "Unknown" utility snippets — consistent with
-      // CC0, so `original`. HELD OUT ON ARRIVAL pending (1) the shader author
-      // confirmed (reads as mrange's, who releases CC0) and (2) a real /bench:
-      // `color()` accumulates up to 6 kaleidoscope + Truchet planes per pixel
-      // with a dual-ray AA — no march loop but unmeasured, and it may not clear
-      // slotBudget.test.ts's tier-0 `< sceneBudget(0)/2 ≈ 4ms` bar. `uPlanes`
-      // is wired to the quality governor so a bench can run per tier. Move into
-      // SCENES + add a SCENE_COST_MS row once both are settled.
-      license: 'original',
-      // `speed` -> flythrough rate. `complexity` -> kaleidoscope symmetry.
-      // `density` -> Truchet line weight. `fill` -> field of view. `tilt` ->
-      // static roll. No `shape` (nothing to switch) / `contrast` (the grade
-      // curve doesn't take a clean 0..1 dial).
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, tilt: 0.5 },
-        paramLabels: {
-          '*': { complexity: 'symmetry', density: 'line weight', fill: 'fov', tilt: 'roll' },
-        },
-      },
-      // Subject only — a full-bleed flythrough that owns its own camera, same
-      // as `maze` / `neonjungle` / `tunnel`.
-      roles: ['primary'],
-      // Relentless forward motion through a strobing pattern — driving/hard
-      // half, overlapping `maze` / `wingfold` territory.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT MEASURED — see the licence note. 6-plane per-pixel accumulation +
-      // dual-ray AA, each plane a kaleidoscope fold + Truchet distance field.
-      // No march loop, so likely lighter than the raymarchers, but confirm
-      // with /bench before trusting it near the tier-0 layer-funding bar.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a full-bleed flythrough.
-      compatibleWith: [],
-      moodFit: { groove: 0.74, building: 0.82, peak: 0.84, aggressive: 0.8 },
-      // The shader drives its own path/camera and never reads the engine's —
-      // declared only for CameraDirector.test.ts's variety invariant, same as
-      // `maze` / `kifs`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
