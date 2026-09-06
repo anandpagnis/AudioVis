@@ -418,7 +418,7 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
 
 ## Low
 
-- [ ] **F17 · Six exported symbols with no production caller**
+- [x] **F17 · Six exported symbols with no production caller**
       `CAMERA_MODES`, `DEFAULT_ANCHOR`, `LOADER_KEYS`, `isResident`,
       `resetParallelCompileProbe`. `registerPalette` is a documented extension point
       like `registerScene` and should stay.
@@ -440,6 +440,12 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       `acquireSingleton` itself (the general mechanism it would have used)
       stays, since it's real, tested, general infra any future scene can
       call with its own key. `npm run check` clean.
+
+      **Checkbox corrected 2026-09-05.** The fix above already landed and was
+      never the open part of this entry — the box was simply never ticked
+      when it did. Re-verified before ticking: `LOADER_KEYS` has zero matches
+      anywhere in `src/` today, confirming the deletion is real and still
+      current.
 
 - [x] **F18 · The background slot has no content** — *fixed 2026-08-27*
       `src/scenes/index.ts`
@@ -921,11 +927,31 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partly done, see the note.
       commit / crossfade / compile / layer-mount / DPR-change; show in the analytics
       panel and make it copyable. **Phase 3.**
 
-- [ ] **F26 · No GPU timing, and no headroom signal at all** — *not started*
+- [x] **F26 · No GPU timing, and no headroom signal at all** — *GPU timing
+      half shipped since this was written; superseded 2026-09-05*
       `delta * 1000` is wall-clock between rAF callbacks. Until the budget is blown
       it reads exactly one refresh interval whether the GPU was at 10% or 95%, so
       the only signal available today is a binary "already too late".
       `EXT_disjoint_timer_query_webgl2` gives real GPU ms. **Phase 3.**
+
+      **The GPU-timing half is done.** `src/engine/gpuTimer.ts` (cited
+      elsewhere in this file as "c11b") wraps
+      `EXT_disjoint_timer_query_webgl2` exactly as proposed here, and
+      `PerfMonitor.tsx` wires it up: `createGpuTimer` runs per frame
+      (`:280-286`), and `perf.gpuMs` / `perf.gpuTimerAvailable` (`:205-210`,
+      written at `:566`) are real, measured GPU milliseconds today, not the
+      wall-clock proxy this entry complained about. `DebugPanel`, `sessionLog`
+      and the offline bench all read it, and F186/F187 (2026-09-02) both cite
+      live session traces built from it (`mean gpuMs 1.45 / p95 3.12`).
+
+      **The headroom-signal half is still not done, and now belongs to
+      F186/F187 rather than to this entry.** Those two found the exact gap
+      this predicted, with real numbers behind it — F186: "Nothing anywhere
+      compares measured GPU time against `committedMs()` or `frameBudgetMs`";
+      F187: closing that comparison loop is Step 4 of the roster-completion
+      plan. Closing here rather than carrying a second, vaguer copy of the
+      same open question next to the two entries that now state it with
+      evidence a plain "not started" never had.
 
 - [x] **F27 · `performanceCost` was assigned by eye** — *measured and retagged*
       `/bench` run on 2026-08-22. **10 of 16 tags were wrong, in both directions.**
@@ -1420,7 +1446,7 @@ ratios between configurations, never anyone's real frame rate.
       again, since `keyPalette`'s whole design is about collapsing keys onto
       families.
 
-- [ ] **F60 · The `Palette` shape change is breaking for third-party callers** —
+- [x] **F60 · The `Palette` shape change is breaking for third-party callers** —
       *known, accepted, undocumented*
       `src/engine/palettes.ts`
       `Palette.colors` and `Palette.bg` are gone, replaced by `Palette.slots`.
@@ -1431,6 +1457,21 @@ ratios between configurations, never anyone's real frame rate.
       ARCHITECTURE still describe the old three-colour shape. Update both, and
       state the slot contract there rather than only in the source — it is the
       thing a scene author most needs to read before writing anything.
+
+      **2026-09-05: narrower than described, and now fixed.** Neither doc
+      actually described the old `colors`/`bg` shape by the time this was
+      re-checked — ARCHITECTURE's "Add a palette / preset" section named only
+      `registerPalette({...})` with no shape at all, and README doesn't
+      mention the `Palette` type either. So there was no stale three-colour
+      description to correct, only the always-true gap this entry's last
+      sentence already named: the slot contract was written down nowhere a
+      scene author would find it before calling `registerPalette`.
+      ARCHITECTURE.md's "Add a palette / preset" section now carries a worked
+      `registerPalette({...})` example (matching the existing `registerScene`
+      example's style) naming all five slots, `PaletteFamily`'s five values,
+      and an explicit one-line note that `Palette.colors`/`Palette.bg` is the
+      pre-slots shape so a reader who finds old code recognises it as such.
+      Documentation only — no source file touched, no behaviour change.
 
 - [ ] **F61 · `paletteFromImage` not ported** — *available, not taken*
       lilim extracts a five-slot palette from an image: quantise to a 48x48
@@ -7950,10 +7991,627 @@ things a curator will hit and should not have to rediscover.
       row is evidence of nothing happening rather than of something. No engine
       gating was touched; only the presentation was lying.
 
+- [x] **F191 · A rate-limit mid-rewrite left `malachite` referencing two
+      undeclared GLSL uniforms — a hard compile/link failure, not a black
+      frame** — `src/scenes/MalachiteScene.tsx`.
+
+      Part of the response-diversity pass (see the plan this session executed:
+      giving each scene a distinct audio-reaction identity instead of the
+      roster's shared `onKick → exp(-dt*k) → glow` template). The agent
+      assigned to `malachite` wrote an extensive, accurate header describing
+      the intended change — replace the per-kick `shock` charge with a single
+      `slew()`-based phrase swell on `s.energy`, remove `onKick`/`mids`/
+      `highs` entirely, add a `uSwell` uniform driving colour-ramp position
+      and vein width — and edited the FRAG uniform declaration list and the
+      ramp/vein GLSL to match. It then hit the session's rate limit before
+      editing the corresponding JS `uniforms()`/`state()`/`update()`, which
+      still declared and wrote `uShock`/`uEnergy`/`uHighs` — the OLD per-kick
+      accumulator, completely unmodified.
+
+      **The break, found by directly reading the file rather than trusting
+      the header** (typecheck/lint/the full suite all passed — none of them
+      touch a GLSL compiler): the shader body still read
+      `uEnergy * 0.35 + uShock * 0.4` in its crest term, and **neither
+      `uEnergy` nor `uShock` was declared anywhere in this FRAG string** —
+      both had been removed from the uniform list along with the rewrite's
+      other changes, and neither is a `SHADER_SCENE_PRELUDE` name. GLSL
+      requires every identifier declared before use; this is an undeclared-
+      identifier link error, not the silent-black-frame class of bug a
+      redeclared prelude uniform produces (`BeatsScene`'s `uKick` incident,
+      `WingfoldJuliaScene`/`KifsRoseScene`'s in-source warnings about it). The
+      shader would have failed to compile outright the moment `malachite` was
+      selected as a background. Compounding it: the new `uSwell` uniform was
+      declared and used in GLSL but never added to the JS `uniforms()` object
+      or written by `update()`, so even a compile that somehow tolerated the
+      first problem would have rendered the swell feature as permanently 0.
+
+      **Fixed**: JS `state()`/`uniforms()`/`update()` rewritten to match the
+      header exactly — `st.swell = slew(st.swell, s.energy, dt, 1.0, 0.5)`
+      (~3 s rise, ~6 s fall, matching the documented asymmetry), `uSwell`
+      wired for real, `uShock`/`uEnergy`/`uHighs` removed from both the JS
+      object and the GLSL crest term (now a flat `0.25`, exactly as the
+      header already claimed). Verified with a full manual declared-vs-used
+      audit of the corrected shader, not just a re-read — every identifier in
+      `main()`/`fbm()`/`noise()`/`hash()` now resolves to either a uniform
+      declared in this file or a known prelude name.
+
+      The other seven scenes in this pass were read in full against the same
+      standard and are consistent — this was the only file where the
+      documentation outran the code. Recorded because it is exactly the
+      failure mode "trust the header" would have shipped silently: nothing in
+      `npm run check` can catch a GLSL identifier error, so the only defence
+      is reading the shader.
+
+      `npm run typecheck`, `npm run lint` clean; **1512 passed, 1 skipped**,
+      same pre-existing F181b failure, unrelated.
+
+- [x] **F192 · `maze`'s wave-1 lurch spring drove the camera backward for a
+      stretch on every kick — a pause/reversal, not a settle** —
+      `src/scenes/MazeFlightScene.tsx`.
+
+      Wave 1 of the response-diversity pass gave `maze` the roster's first
+      spring (`springStep`, `engine/response.ts`) by adding `st.lurch.value`
+      straight onto `uPhase` — the ray origin's position along the corridor —
+      on the theory that an under-damped spring's rebound would just read as a
+      deceleration. Reported by the user as the flight pausing/stopping on
+      beats rather than continuing to move.
+
+      **Root-caused by direct simulation before touching any code**: running
+      the actual spring constants (`LURCH_STIFFNESS = 60`,
+      `LURCH_DAMPING = criticalDamping(60) * 0.38 ≈ 5.89`, impulse `0.8`
+      applied to spring position on each kick) through `springStep`'s own
+      integrator in Node showed `d(uPhase)/dt` dips to **-0.63 units/s** about
+      0.16 s after a kick, against a cruise rate of +3.2 units/s — the
+      spring's peak rebound velocity (~6.2 units/s) genuinely exceeds cruise
+      speed, so the camera was not merely decelerating, it was flying
+      backward for a fraction of a second on every hit. Re-tested against an
+      adversarial dense-kick-train pattern to confirm this was not a
+      single-kick edge case.
+
+      **Fixed**: the spring no longer touches forward position at all.
+      `uPhase.value = st.z` alone — cruise distance, strictly increasing,
+      driven only by `speed`/`mids` (`MazeFlightScene.tsx:611`). The spring's
+      output (`st.lurch`) is redirected into a new `kickRoll` term summed
+      with the existing cornering `lean` into the camera's bank angle in
+      `main()` (clamped to a first-person-safe ±0.6 rad total), and continues
+      to drive `uHue` (palette-ramp position) and signed fog density exactly
+      as wave 1 intended — none of which can turn an overshoot into a
+      reversal of travel, since rotation and colour have no direction of
+      travel to reverse. Colour and fog reactions are otherwise unchanged.
+
+      Dispatched as one of four agents alongside the other six live,
+      non-disabled scenes not yet covered by wave 1 (`wireframe`+`ribbons`,
+      `dissolve`+`chrome`, `pointcloud`+`plasma`), each given the wave-1
+      roster's already-claimed response identities to keep the fourteen
+      total distinct. The maze fix was independently re-verified by the
+      dispatched agent's own simulation, reproducing the -0.629 units/s
+      figure and confirming the fixed version's `d(uPhase)/dt` never drops
+      below cruise rate under any tested kick pattern.
+
+      All seven touched files (the maze fix plus the six others) were then
+      read in full directly, against the same standard F191 records —
+      checking for prelude uniform redeclarations, backticks inside a GLSL
+      template literal, and declared-vs-used consistency between each
+      header's claims and its actual JS/GLSL — specifically because F191 was
+      caught only by that manual read and none of `npm run check`'s tools can
+      see a GLSL link error. All seven came back clean this round: no
+      redeclarations, no stray backticks, and every uniform declared in a
+      FRAG/VERT string is both wired from JS and actually read. Two claims
+      were spot-checked numerically against their code and matched exactly —
+      `ChromeFormScene`'s declared roughness/clearcoatRoughness defaults
+      (`0.85` dial → `0.05`/`0.04`) and `PointCloudScanScene`'s documented
+      `sinceImpulse()` sentinel (`1e4`, matching `response.ts:206`).
+
+      `npm run typecheck`, `npm run lint` clean; **1512 passed, 1 skipped**,
+      same pre-existing F181b failure; `npm run build` clean.
+
+- [x] **F193 · Tuning pass on six scenes after watching the response-diversity
+      work against real music** — `MazeFlightScene.tsx`, `MalachiteScene.tsx`,
+      `WingfoldJuliaScene.tsx`, `SnowflakeScene.tsx`, `BeatsScene.tsx`,
+      `ChromeFormScene.tsx`. No mechanism introduced in the last two waves
+      changed (springs, slews, gates all stay) — this is amplitude, frequency,
+      and target tuning on top of that work, plus one scene (`beats`) never
+      part of the response-diversity pass but separately reported too
+      aggressive, and one aesthetic addition (denser snowflake branching)
+      that came up while scoping the hub-bounce request.
+
+      **`maze`** — the kick-roll bank was clamped far tighter than the
+      mechanism supports: `wup = vec3(sin(bank), cos(bank), 0.0)` already
+      flips the up-vector at `bank ≈ π`, so "ceiling becomes floor" was always
+      reachable, just capped at ±0.6 rad (~34°). `LURCH_ROLL` (0.32 → 3.6) and
+      the bank clamp (±0.6 → ±3.6 rad) raised so a typical kick swings ~165°
+      and a hard/dense kick clips at ~206° instead of spinning further.
+      Spring tuning, forward-position monotonicity, and colour/fog reactions
+      untouched.
+
+      **`malachite`** — already the roster's most restrained scene, still read
+      as too present for a background. Ramp-position reach (0.09 → 0.035),
+      vein-width reach (0.05 → 0.02), and drift-rate reach (0.5 → 0.15) all
+      cut, and the swell's own timing slowed (slew rates 1.0/0.5 → 0.4/0.2,
+      roughly 7.5s rise / 15s fall instead of ~3s/~6s).
+
+      **`wingfold`** — the spring itself (stiffness/damping/golden-angle step)
+      is what read well and is untouched. The big move's amplitude and
+      frequency both cut: zoom lunge 0.22 → 0.12, fold-seam widen scaled to
+      ~55% (`vec2(0.052,0.038)` → `vec2(0.028,0.021)`), orbit-radius widen
+      0.055 → 0.03, gate range 0.08–0.24 → 0.05–0.15 (measured 15.0% fire rate
+      drops to an estimated 9-10% by linear scaling of `gate()`'s probability
+      check — flagged in the header as an estimate, not a re-measurement).
+
+      **`snowflake`** — two independent changes, from a direct answer rather
+      than the original "rotate instead of counter rotate" framing (the
+      crystal was confirmed, by direct derivation of the rotate-then-fold
+      math, to already be a single rigid rotation with no separate
+      counter-rotating element — there was nothing there to fix). (1) The hub
+      ring now bounces on the tracked beat GRID via a new spring
+      (`HUB_STIFFNESS=100`, damping 0.35× critical, fired once per beat
+      crossing via the same `f.beat`/`lastGateBeat`-style guard Wingfold
+      uses), independent of the kick-onset flinch — a weak-kick track still
+      gets a beat-locked hub pop. Bass's own contribution to the hub shrank
+      (0.05 → 0.03) now that the bounce is the dominant term. (2) The fern
+      loop gained two sub-branches per primary branch (6 → 18 `seg()` calls),
+      so each arm forks instead of reading as a plain evenly-spaced comb —
+      cost stays trivial for a flat, non-raymarched 2D SDF.
+
+      **`beats`** ("4D Beats") — not part of the response-diversity passes,
+      reported "too fast and too aggressive" on its own. The header's hard
+      invariant (`beatsPosition`'s phase-lock multiplier must stay exactly 1
+      at neutral) is untouched; every change here only reduces how far things
+      move away from neutral or reduces raw burst intensity: the per-beat
+      ease curve softened (`sqrt(F)` → `pow(F, 0.65)`), the kick burst
+      coefficient cut (`exp(uKick*1.4)` → `exp(uKick*0.8)`), the kick charge
+      ceiling lowered (1.5 → 1.0), energy's speed-up of the beat position
+      halved (0.4 → 0.2), and `beatsSpinRate`'s base and mids-widening factor
+      both cut again (0.08 → 0.06, 0.8 → 0.5 — a second, larger reduction
+      than the prior "slightly slow down" request). `__tests__/BeatsScene.test.ts`'s
+      hardcoded expected values updated to match (0.12/0.18 at mids 0/1).
+
+      **`chrome`** — the only mechanism change in this pass, not just a
+      constant tune. The underdamped, edge-triggered torque spring on
+      `rotation.z` — reported specifically as jerky — is removed outright
+      (`TORQUE_*` constants, `torque`/`hitPrimed`/`wasDrop` refs, the whole
+      block). In its place, a **critically damped** spring
+      (`TURN_STIFFNESS=18`, `TURN_DAMPING=criticalDamping(18)`, ratio exactly
+      1.0 — no overshoot, no ring by construction) chases a held target that
+      steps by `TURN_STEP = π*0.6` on every `f.sectionChange` — confirmed by
+      direct read of `src/audio/types.ts:327` ("True for one frame when a
+      musical section boundary is detected") to be a genuine one-frame edge
+      pulse, so stepping the target directly on it (no extra rising-edge
+      latch) still fires exactly once per boundary rather than accumulating
+      every frame a section-change flag might read true. The emissive-heat
+      target reweighted toward the beat and away from raw transient
+      (`b.pulse*0.4 + b.transient*0.7` → `b.pulse*0.7 + b.transient*0.4`) so
+      the light pulse reads as landing on the beat, per the request that this
+      be the scene's primary per-beat reaction now that rotation isn't. The
+      roughen-on-impact slew term was left alone — already smooth by
+      construction, never part of the "jerky" complaint.
+
+      All six files re-read manually end to end against the same checklist
+      F191/F192 established: no redeclared prelude uniform, no backtick
+      inside any GLSL template literal, every touched uniform declared+wired
+      from JS+used in the shader. `Chrome`'s `sectionChange`-is-an-edge claim
+      was independently verified by reading the type definition directly
+      rather than trusting the agent's citation.
+
+      `npm run typecheck`, `npm run lint` clean; **1512 passed, 1 skipped**,
+      same pre-existing F181b failure, no new failures; `npm run build`
+      clean.
+
+- [~] **F194 · `HUD.tsx` is unreachable dead code — every feature built into
+      it since the Console/output split was introduced has been invisible to
+      any real user** — *the one concrete feature this was blocking is
+      fixed; whether `HUD.tsx` itself should be deleted, resurrected, or
+      wired into a route is still an open decision* —
+      `src/ui/HUD.tsx`, `src/routes/Visualizer.tsx`, `src/App.tsx`.
+
+      Traced while chasing a "the new live post-fx panel isn't live" report.
+      `Visualizer()` (`Visualizer.tsx:20-22`) renders exactly two things:
+      `isOutput() ? <OutputSurface/> : <ControlSurface/>`. `OutputSurface`
+      (`:31-40`) is `<Stage/>` alone — the engine, by its own header's
+      design, "no chrome, no keyboard map, no pointer." `ControlSurface`
+      (`:72-78`) is `<Console/>` alone. Neither imports `HUD`. A whole-`src/`
+      grep for any import of, or JSX reference to, `HUD.tsx` found **zero**
+      outside three test files, and those import its raw source as **text**
+      (`?raw`) for string-pattern assertions — they never render it. There is
+      no third route, no query-param branch, nothing: `HUD.tsx` cannot be
+      reached by any URL this app serves.
+
+      This session added a live post-fx meter (`PostFxMeter.tsx`) and wired
+      it into `HUD.tsx` in good faith, on an earlier Explore pass's
+      description of that file as "the whole 2D DOM chrome for the
+      single-window build" — a description that was never checked against
+      the actual router before code was written and verified against it.
+      That was the process failure: the file compiles, lints, and its own
+      logic is correct, so every automated check this session runs passed
+      cleanly while the feature was invisible to the one person who asked
+      for it. Caught only because the user reported the visible symptom
+      ("not live") and a dispatched agent traced it all the way back to the
+      render tree instead of stopping at "the store field looked plausible."
+
+      **Why this file still has substantial, well-documented functionality**
+      (a scene/palette/preset picker, ISF filter chips, a debug panel, an
+      analytics panel, credits, a full keyboard map) is not fully settled by
+      this entry. Two live possibilities, not adjudicated here: (a) it
+      predates the Console/output two-window split and was a genuine
+      single-window UI once, orphaned when that split shipped and never
+      deleted; (b) it was meant to be reachable from some mode this repo no
+      longer offers. `Console.tsx` independently reimplements a large
+      fraction of the same surface (scene tiles, palette picker, its own
+      `IsfFilters`/`PostFx` reading `Telemetry` instead of `HUD`'s direct
+      `performanceState`/store reads) — consistent with (a), not proof of it.
+      Deleting `HUD.tsx` outright, or wiring it into a route, is a product
+      decision this pass does not make unilaterally; flagging it here so it
+      is found on purpose next time rather than by accident again. Its own
+      test suite (`__tests__/hudPostfx*.test.ts` and others reading it via
+      `?raw`) should be read with this in mind: passing proves the source
+      text has a shape, not that a user can ever see it.
+
+      **Fixed, for the one concrete feature this was blocking:** the live
+      post-fx readout now lives where a real user can actually reach it —
+      `Console.tsx`'s `PostFx` column, as a new `PostFxLive` component
+      (ordinary React re-rendering on the existing 10Hz `useTelemetry()`
+      poll, ​not `PostFxMeter.tsx`'s rAF/ref-diffing pattern, which is a
+      60fps-render-loop discipline this component is nowhere near).
+      `outputLink.ts`'s `Telemetry` gained `bloom`/`bloomThreshold`/`glitch`/
+      `vignette`/`fog`/`trails`/`mirrorSegments`/`mirrorTiles`/`mirrorTwist`/
+      `mirrorSlice`/`mirrorSpin`/`mirrorMix`/`lensAmount`/`lensStyle`,
+      published from the output window's own `performanceState` exactly the
+      way `filterId`/`filterMix` already were, for the same reason stated at
+      each of those fields: the control window cannot compute director
+      output, only be told it. `PostFxMeter.tsx`/`HUD.tsx`'s own mount are
+      left as they are — harmless, and not worth touching until (a)/(b)
+      above is actually decided.
+
+      A second, related bug fixed in the same pass, found by the same
+      agent: the postfx debug override was a single `debugPostFx.enabled`
+      boolean gating all fourteen fields at once — dragging one slider
+      required freezing the other thirteen first, and (since `debugPostFx`
+      is `persist`-ed) a `true` value stuck from any earlier session would
+      silently freeze the whole panel with no visible switch to notice, in
+      either window — exactly what a "not live" report looks like from
+      outside, independent of the dead-HUD finding above. Replaced with
+      per-field `debugPostFxOverrides` (`store.ts`, non-persisted by
+      omission from `partialize`, so every load starts fully automatic);
+      `PerformanceStateBridge.tsx`'s single gate became fourteen independent
+      per-field checks; `HUD.tsx` and `Console.tsx`'s sliders are now always
+      draggable, each takes manual control of only the field it touches, and
+      a "manual (all)"/"auto (all)" chip remains as the bulk convenience.
+      `debugPostFxOverrides` was also missing from `outputLink.ts`'s
+      `LOOK_FIELDS` — added, or an override taken in the control window would
+      set `debugPostFx` correctly (mirrored) but never reach the output
+      window's own copy of `debugPostFxOverrides`, so `PerformanceStateBridge`
+      — reading its OWN window's store — would never have applied it.
+
+      `npm run typecheck`, `npm run lint` clean; **1512 passed, 1 skipped**,
+      same pre-existing F181b failure, no new failures; `npm run build`
+      clean.
+
+- [x] **F195 · Eleven scenes' `createShaderScene` offscreen buffers were
+      pinned at `solveScale`'s 0.4 clamp on any panel at or above ~1440p —
+      the declared budget had stopped meaning anything** —
+      `src/engine/createShaderScene.tsx`, plus the eleven scenes in the table.
+
+      Reported as "why does my 4K NVIDIA machine look so much worse than my
+      cofounder's much weaker MacBook", with two screenshots. The answer had
+      nothing to do with either GPU.
+
+      **The arithmetic.** These scenes declare `createShaderScene`'s own spec
+      `pixelBudget` (`createShaderScene.tsx:169`), which sizes the scene's
+      OFFSCREEN buffer and is solved by that module's own `solveScale`
+      (`:192-196`):
+
+          fullMP = (width * dpr * height * dpr) / 1e6
+          scale  = clamp(sqrt(pixelBudget / fullMP), MIN_RENDER_SCALE = 0.4, 1)
+
+      `maze` declared **0.9 MP**. On a 3840x2160 panel (8.29 MP) that asks for
+      `sqrt(0.9 / 8.29) = 0.33` — *below the clamp* — so it pinned to **0.40**,
+      rendering a 1536x864 buffer upscaled **2.5x linear**. Once a budget
+      solves under the clamp the declared number stops meaning anything: the
+      clamp alone sets the resolution, identically on every machine.
+
+      **Why the weaker Mac looked better.** It did not render more. On a
+      2560x1664 MacBook Air `maze` solved to 0.46 — a 1176x764 buffer, a
+      2.18x upscale — against the 4K machine's 1536x864 at 2.50x. The 4K
+      machine had the LARGER buffer. Nearly identical relative softness; what
+      differed was that a 2.5x upscale stretched across a large 4K panel at
+      desk distance is glaring where 2.18x on a 13" laptop is nearly
+      invisible. Two further confounds, neither a rendering difference: the
+      two screenshots had different **palettes** active (vivid magenta vs
+      desaturated grey-lavender), and the captures were 1024px vs 3798px wide
+      — downscaling a screenshot supersamples it, manufacturing sharpness and
+      hiding upscale blur, so a 3.7x capture-size difference alone favours the
+      smaller one on pixel-identical renders.
+
+      **Root cause.** These budgets were chosen while the roster was developed
+      against 1080p and laptop displays, where they solve above the clamp and
+      behave as intended (`maze` at 0.9 solves to 0.66 on 1080p). Nothing
+      re-examined them when larger displays came into use, and because the
+      clamp silently rescues an under-declared budget rather than failing,
+      there was no symptom on the machines the values were tuned against —
+      only a quiet ceiling on every larger one.
+
+      **This entry originally cited the wrong solver, and the error reached
+      seven files before it was caught.** The first draft attributed this to
+      F107's re-anchor of `BUDGET_BY_COST` / `POST_CHAIN_PIXEL_BUDGET` in
+      `renderScale.ts`, and quoted tier tables computed with that solver's
+      post-chain reciprocal sum and `pixelBudgetScale` multiplier. That is a
+      DIFFERENT mechanism, governing the canvas, which these scenes were never
+      on — `renderScale.ts` reaches them only through `performanceCost`, and a
+      grep confirms **no scene in the roster sets `SceneMetadata.pixelBudget`
+      at all** (`index.ts:301`, declared and validated but unused by every
+      in-repo scene). Two dispatched agents verified against the solver the
+      brief named and so reproduced the error faithfully; a third traced the
+      declaration to its real consumer and refused the numbers. Recorded
+      because the failure mode is this ledger's own recurring one — a claim
+      propagating because it was checked against the wrong authority — and
+      because the correction cost a second pass over seven files.
+
+      **Fixed.** Re-anchored all eleven by a uniform **5.5556x** — the ratio
+      implied by the chosen conservative anchor for `maze` (0.9 -> 5.0),
+      rounded to one decimal. One explainable rule rather than eleven separate
+      judgement calls: it preserves each scene's relative ordering (which
+      encodes real measured cost differences) and each scene's own threshold
+      structure.
+
+      | scene | live? | old | new | 4K scale (t0) | 4K buffer (t0) |
+      |---|---|---|---|---|---|
+      | `maze` | live | 0.9 / 0.55 | 5.0 / 3.0 | 0.40 -> **0.78** | 2981x1677 |
+      | `beats` | live | 1.2 / 0.7 | 6.7 / 3.9 | 0.40 -> **0.90** | 3451x1941 |
+      | `travelling` | live | 1.0 / 0.6 | 5.6 / 3.3 | 0.40 -> **0.82** | 3155x1774 |
+      | `web` | live | 0.8 / 0.5 | 4.4 / 2.8 | 0.40 -> **0.73** | 2796x1573 |
+      | `malachite` | live | 1.3 | 7.2 | 0.40 -> **0.93** | 3577x2012 |
+      | `nebula` | live | 1.6 | 8.9 | 0.44 -> **1.00** | native |
+      | `dustfield` | live | 1.3 | 7.2 | 0.40 -> **0.93** | 3577x2012 |
+      | `harkonnen` | DISABLED | 1.4 / 0.8 | 7.8 / 4.4 | 0.41 -> **0.97** | 3723x2094 |
+      | `neonjungle` | DISABLED | 1.2 / 0.7 | 6.7 / 3.9 | 0.40 -> **0.90** | 3451x1941 |
+      | `truchet` | DISABLED | 1.6 / 1.0 | 8.9 / 5.6 | 0.44 -> **1.00** | native |
+      | `lumen` | DISABLED | 1.5 | 8.3 | 0.43 -> **1.00** | native |
+
+      `maze` on 4K goes from a 2.50x upscale to **1.29x**; at 1440p and below
+      every one of the eleven now reaches native. Four of the eleven are in
+      `DISABLED_SCENES` and so are not in any live show — re-anchored anyway,
+      since the same wrong value would ship with them whenever they are
+      enabled, but no live frame changes for those four.
+
+      **The risk this creates, stated plainly.** `solveScale` has NO tier
+      multiplier — unlike the canvas path, the quality governor cannot claw
+      these buffers back under load. Raising a budget therefore raises the
+      FLOOR of what a weak machine must render, not just its ceiling. On a
+      2560x1664 MacBook Air `maze` now solves to 1.00 (native) where it was
+      0.46 — **4.7x the pixels** — and its own header measured 48.7 ms at full
+      resolution on an M1. The other ten are less extreme but move the same
+      way: their old tier-0 solves on that panel were 0.53-0.61, so 2.7x-3.5x
+      more pixels each.
+
+      The obvious mitigation — "the ladder can still cut per-pixel cost via
+      `raymarchSteps` 96->28, just not pixel COUNT" — was itself checked and
+      is **false for three of the eleven**. `harkonnen` reads `raymarchSteps`
+      as a tier PROXY only (its shader has no march loop; iteration depth
+      comes from the user's `complexity` dial and is deliberately never
+      tier-gated), and `lumen` and `dustfield` read no `quality.knobs` value
+      at all. Those three now have zero governor response of any kind — no
+      pixel-count lever and no per-pixel lever. Accepted for now on the
+      reasoning F107 states for its own equivalent trade, but this is the half
+      most likely to need revisiting: giving `solveScale` a tier term, or
+      lowering the values for the tier-insensitive scenes, are both live
+      options and neither has been measured.
+
+      **Not re-measured.** Every `performanceCost` and measured-ms figure in
+      these eleven headers was taken at the old budget. A `/bench` sweep on
+      real hardware is what would replace the extrapolation, and remains the
+      honest next step.
+
+      `npm run typecheck`, `npm run lint` clean; **1512 passed, 1 skipped**,
+      same pre-existing F181b failure, no new failures; `npm run build` clean.
+
+- [ ] **F196 · Three scenes now solve to 1.00 at 4K, paying an offscreen blit
+      for a buffer that is already native** — `NebulaDriftScene.tsx` (live),
+      `TruchetKaleidoScene.tsx`, `LumenMaskScene.tsx` (both in
+      `DISABLED_SCENES`).
+
+      Fallout from F195's re-anchor, found while correcting that entry's own
+      numbers. `createShaderScene`'s spec doc (`:157-159`) says plainly that a
+      scene wanting native resolution should OMIT `pixelBudget` rather than
+      declare a large one, because the budgeted path renders to an offscreen
+      target and then blits it to screen — an extra fullscreen pass that buys
+      nothing once `solveScale` returns 1.00.
+
+      After F195 these three do exactly that on a 4K panel: `nebula` 8.9,
+      `truchet` 8.9 and `lumen` 8.3 all solve to 1.00 against 8.29 MP. Their
+      budgets only re-engage above 4K (~0.75-0.78 at 5K). They were inert at
+      the FLOOR before and are inert at the CEILING now — the number still is
+      not doing the job it is there to do, just at the other end.
+
+      `nebula` is the one that matters: it is the only one of the three in the
+      live roster, so it is the only one costing a real frame anything today.
+
+      Not fixed here because the right answer is a value question, not a
+      mechanical one: either lower these three so the budget binds below 4K,
+      or drop the declaration entirely and accept native on every panel
+      including 5K. Both want the `/bench` sweep F195 already says these
+      eleven need.
+
+- [ ] **F197 · Three scenes have no quality-governor response of any kind** —
+      `FortressHarkonnenScene.tsx`, `LumenMaskScene.tsx` (both
+      `DISABLED_SCENES`), `DustFieldScene.tsx` (live).
+
+      Also found while correcting F195. With `createShaderScene`'s
+      `solveScale` having no tier multiplier (see F195), a scene's only
+      remaining tier response is whatever it reads from `quality.knobs`
+      itself. These three read nothing usable:
+
+      - `harkonnen` reads `raymarchSteps`, but only as a TIER PROXY to pick
+        which `pixelBudget` branch to return. Its shader has no march loop at
+        all, and its real iteration depth (`uNIter`/`uFIter`) comes from the
+        user's `complexity` dial and is deliberately never tier-gated.
+      - `lumen` and `dustfield` read no `quality.knobs` value whatsoever.
+
+      So under sustained load the governor can demote these three all the way
+      to tier 4 and nothing about what they draw changes — not resolution, not
+      iteration count, not octaves. The tier ladder's only remaining effect on
+      them is indirect, through the CANVAS scale `renderScale.ts` sets for the
+      whole frame.
+
+      Whether that is wrong depends on the scene: `dustfield` is a cheap
+      background and may genuinely have nothing worth cutting, while
+      `harkonnen` is `performanceCost: 'high'`. Recorded rather than fixed
+      because deciding needs the same `/bench` numbers F195 and F196 are both
+      waiting on.
+
+- [ ] **F198 · The governor's "known one-off" suspension blinds the p95 window
+      but NOT the EMA — and the EMA is the gate that actually fires. A single
+      compile stall demotes the ladder, and on a 4K panel that is what the
+      picture is soft from** — `src/engine/PerfMonitor.tsx`,
+      `src/engine/frameSampler.ts`, `src/engine/SceneManager.tsx`.
+
+      First real `/bench` on the reporter's own machine
+      (`audiovis-session-2026-09-05-19-18-53`, RTX 4060 Laptop, ANGLE/D3D11,
+      2560x1440 css at `baseDpr` 1.5 = **8.29 MP** device pixels — the same
+      machine and display as the F115/F140 sessions). 150 s, 8995 frames.
+
+      **The headline number.** The session held **tier 4 for 115 s of 150 s
+      (77%)** and render scale **0.40 (1.33 MP) for 127 s**, i.e. a 1536x864
+      buffer upscaled 2.5x to an 8.29 MP display — while the GPU measured
+      `mean 1.55 ms, p95 4.16 ms` (`EXT_disjoint_timer_query_webgl2`, n=578).
+      The log's own summary line: **"GPU share of frame time: 9%"**. Frame
+      budget: `committed 3.66` of `6.84` allowed. Mean frame 16.7 ms, effective
+      59.9 fps, `over 33.3ms 0.1%`.
+
+      The machine was not GPU-bound and was not dropping frames. It spent the
+      show at the bottom rung anyway.
+
+      **The mechanism, verified in code.**
+
+      `quality.tick(ema, elapsed, p95, ms)` gates a demote on
+      (`quality.ts:551`):
+
+          overloaded = emaMs > r * STEP_DOWN_MEAN_RATIO   // 16.67 * 1.1 = 18.3 ms
+                    || p95Ms > r * STEP_DOWN_P95_RATIO    // 16.67 * 1.5 = 25.0 ms
+
+      `frameSampler.suspend()` exists precisely so a "known one-off — a scene
+      commit's compile and crossfade, a context restore" is "not taken as
+      evidence of steady-state load" (its own doc). But `suspend()` gates only
+      `frameSampler.push`'s write to the GOVERNOR window (`frameSampler.ts:84-91`),
+      and the EMA is computed one line EARLIER in the frame loop, unconditionally
+      (`PerfMonitor.tsx`):
+
+          const ms = delta * 1000
+          ema.current += (ms - ema.current) * 0.05      // <- no suspend guard
+          ...
+          frameSampler.push(clock.elapsedTime, ms)      // <- suspend applies here
+
+      So every event the codebase deliberately excuses still lands on the mean
+      axis at full strength. Suspension protects the tail statistic and leaves
+      the gate that actually fires wide open.
+
+      **What that did here, arithmetically.** The session's worst frame is
+      **158.4 ms at t=110.9 s**. A 0.05-alpha EMA takes
+      `0.05 * (158.4 - 16.7) = +7.1 ms` from one such frame: 16.7 -> 23.8. The
+      log's next sample reads **`ms 23.82` at t=110.94** — an exact match, and
+      **23.8 > 18.3**, so `overloaded` was true. The governor had promoted to
+      **tier 1 at 110.2 s** (its best rung all session); `SETTLE_SEC` is 2 s, and
+      the demote lands at **112.2 s**, the first moment it could.
+
+      **Where the 158 ms frame came from — the second half of the defect.** The
+      events at that instant:
+
+          110.72s  scene: requested web
+          110.94s  (158.4 ms frame; sample shows programs 42 -> 43)
+          110.97s  scene: withdrew web
+
+      A candidate scene warm-mounted, `prewarmShaders` compiled its program, and
+      the request was then withdrawn — so `commitScene()` never ran. And
+      `suspendFrameSampling` is called from exactly four places
+      (grep-verified): the scene COMMIT (`SceneManager.tsx:800`), a DPR resize
+      (`PerfMonitor.tsx:339`), context restore and going-live
+      (`Stage.tsx:92,210`). The warm-mount compile at `SceneManager.tsx:528` —
+      the single most expensive scheduled event in the app — calls none. A
+      candidate that compiles and is withdrawn is unprotected on BOTH axes;
+      one that commits is unprotected on the axis that matters.
+
+      **What this log does NOT explain, stated rather than guessed.** The
+      cascade continued `2->3` at 114.2 s and `3->4` at 116.2 s, each exactly
+      one `SETTLE_SEC` apart. At those samples the EMA reads 16.64 / 16.62 and
+      p95 20.9 / 20.9 — **both under their gates**. So the first demote is
+      explained and the second and third are not. The obvious candidate is
+      F140's reallocation (both coincide with a scale change: 0.50->0.42 and
+      0.42->0.40), each demote's own composer rebuild becoming the evidence for
+      the next — but no EMA spike appears in the 4 Hz samples between them, so
+      that is a hypothesis and not a finding. Settling it needs the per-frame
+      governor trace (ema, p95, and the gate's verdict at decision time), which
+      the session recorder does not currently capture.
+
+      **Relationship to F195.** F195 re-anchored eleven scenes' `createShaderScene`
+      OFFSCREEN budgets. This is the CANVAS, `renderScale.ts`, tier-driven — the
+      path F195's first draft wrongly blamed for those scenes. Both were real and
+      they compound: the canvas sat at 0.40 for 85% of the session, and inside it
+      every budgeted scene's own buffer was independently clamped to 0.40 too. Of
+      the two, this one is the larger share of what the reporter sees, and unlike
+      F195 it is a controller defect rather than a stale constant.
+
+      **What the GPU numbers say about F195's risk note.** F195 flags that
+      raising those budgets raises the floor a weak machine must render. This
+      session is mild evidence the headroom is real — `gpuMs` never exceeds
+      4.16 ms at p95, and the 12 s the session spent at scale 0.50 (2.07 MP)
+      held a flat 16.6-16.9 ms with `gpuMs` ~1.0-1.5 ms. It is NOT proof: every
+      one of those measurements was taken with the OLD offscreen budgets also
+      clamped at 0.40, and `maze` was on screen for only 7 s. F195/F196/F197
+      still want their own sweep.
+
+      **Also visible in this session, not yet separately filed.**
+      - `layer desires withdrawn within 1s: 3` — the `matrix` overlay was
+        mounted and pulled after **30 ms** at 52.6 s and **40 ms** at 93.2 s.
+        Mount + compile cost paid for something that never became visible, and
+        (per the above) charged to the governor.
+      - `beat coverage score 6%` — of 78 bars spanned, a cut landed near the
+        downbeat in 6% of them; `beat-grid confidence mean 0.19, min 0.05`.
+      - `samples FAILING the scene-switch gate (moodConf<0.5 or amb>0.6): 68%`.
+      - `lens duty cycle: 100%` (longest off 0.0 s) at a near-constant
+        `lensAmount` ~0.152 — an optical rack that is never off is a permanent
+        tint, not an expressive move.
+      - `palette changes: 8 (of 30 available)`, only 3 distinct palettes used.
+
+      **Doc/code mismatch found while reading.** `quality.ts`'s
+      CONSECUTIVE_OVERBUDGET doc describes "a 10 s-windowed p95"; the constant
+      is `GOVERNOR_WINDOW_SEC = 2` (`frameSampler.ts:50`). The reasoning in that
+      comment should be re-checked against 2 s, not just the number corrected.
+
+      Not fixed here: the EMA-suspension gap is a one-line change with a real
+      blast radius (it changes what every demote decision in the app sees), and
+      the unexplained 2nd/3rd demotes above mean a fix aimed only at the first
+      one may not recover the tier anyway. Wants the per-frame governor trace
+      first.
+
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1483 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1512 tests**
 (1 skipped — see F108; 1 pre-existing failure, see F181b), build.
+
+**2026-09-05 open-item triage pass.** Swept every `- [ ]` in this file (37
+open items, whole-file grep, not just the section headers). Three closed:
+F17 (checkbox never flipped when its fix landed — `LOADER_KEYS` re-confirmed
+deleted), F26 (GPU timing shipped since it was written — `src/engine/
+gpuTimer.ts` / `PerfMonitor.tsx`'s `perf.gpuMs` — remaining headroom-signal
+gap now redirected to F186/F187, which already state it with evidence this
+entry didn't have), F60 (`docs/ARCHITECTURE.md` now carries the five-slot
+`Palette` contract with a worked `registerPalette` example). All three are
+documentation/checkbox corrections with no source-file changes, re-verified
+below. Every other open item needs one of: a live `/bench` run or session-log
+capture (F44, F49/F93, F51, F53, F74, F88, F90, F93, F140, F158, F160, F161,
+F166, F179, F185, F186, F188), a product/curatorial decision (F03, F58, F59,
+F61, F70, F77, F174-F177, F184), scene-authoring content work out of scope
+for a triage pass (F78), or touches files owned by a parallel session this
+same day (F188's `Console.tsx` half) — left open, unedited, and itemised in
+this pass's own report. Re-ran the full suite after the three closures:
+typecheck clean, lint clean, **same 1512 passed / 1 skipped / 1 pre-existing
+F181b failure** (no new failures, none fixed), build clean — unchanged from
+the baseline above because none of the three fixes touched a source file.
+
+**Same day, later pass: F194.** Fixed the postfx debug all-or-nothing
+override (root cause of a second "not live" symptom) and discovered
+`HUD.tsx` itself is unreachable from any route this app serves — see F194
+for the full trace. Re-verified: typecheck clean, lint clean, **same 1512
+passed / 1 skipped / 1 pre-existing F181b failure**, build clean.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and
