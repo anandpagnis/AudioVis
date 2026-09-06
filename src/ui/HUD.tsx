@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { supportsSystemAudioCapture } from '../audio/capabilities'
 import {
+  DEBUG_POSTFX_KEYS,
   LAYER_ROLES,
   MAX_BAND_MAPPINGS,
   useStore,
   type BandSource,
+  type DebugPostFxKey,
   type LayerBlend,
   type LayerRole,
   type Quality,
@@ -37,6 +39,7 @@ import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
 import { FpsMeter } from './FpsMeter'
 import { FilterIndicator } from './FilterIndicator'
+import { PostFxMeter } from './PostFxMeter'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { Credits } from './Credits'
 import { SceneParamsPanel } from './SceneParamsPanel'
@@ -87,6 +90,7 @@ export function HUD() {
   const analyticsOpen = useStore((s) => s.analyticsOpen)
   const creditsOpen = useStore((s) => s.creditsOpen)
   const fpsMeter = useStore((s) => s.fpsMeter)
+  const postFxMeter = useStore((s) => s.postFxMeter)
   const params = useStore((s) => s.params)
   const quality = useStore((s) => s.quality)
   const autoPilot = useStore((s) => s.autoPilot)
@@ -94,6 +98,8 @@ export function HUD() {
   const layerFx = useStore((s) => s.layerFx)
   const responseTuning = useStore((s) => s.responseTuning)
   const debugPostFx = useStore((s) => s.debugPostFx)
+  const debugPostFxOverrides = useStore((s) => s.debugPostFxOverrides)
+  const allDebugPostFxOverridden = DEBUG_POSTFX_KEYS.every((k) => debugPostFxOverrides[k])
   const bandMappings = useStore((s) => s.bandMappings)
   const cues = useStore((s) => s.cues)
   const cueFollow = useStore((s) => s.cueFollow)
@@ -177,6 +183,8 @@ export function HUD() {
         saveScreenshot()
       } else if (e.key === 'j' || e.key === 'J') {
         s.toggleFpsMeter()
+      } else if (e.key === 'x' || e.key === 'X') {
+        s.togglePostFxMeter()
       } else if (e.key === 'y' || e.key === 'Y') {
         s.toggleAnalytics()
       } else if (e.key === 'i' || e.key === 'I') {
@@ -313,6 +321,37 @@ export function HUD() {
           </p>
         )}
       </>
+    )
+  }
+
+  /**
+   * Per-row "is this field auto or manual" indicator, plus the one-click
+   * release back to auto — for exactly one {@link DebugPostFxKey} at a time.
+   *
+   * Reuses the existing `.chip`/`.chip.active`/`.chip-disabled` idiom rather
+   * than inventing a new visual system for a debug-only panel: `chip-disabled`
+   * already means "greyed and inert" everywhere else in this file (the ISF
+   * filter rows), which is exactly what "auto — nothing to release" is here.
+   * Clicking only does anything while overridden; an auto row has nothing to
+   * click, which `.chip-disabled`'s own `pointer-events: none` already
+   * enforces.
+   */
+  const postfxBadge = (key: DebugPostFxKey, label: string) => {
+    const overridden = !!debugPostFxOverrides[key]
+    return (
+      <button
+        type="button"
+        className={`chip ${overridden ? 'active' : 'chip-disabled'}`}
+        style={{ padding: '3px 8px', fontSize: 10 }}
+        title={
+          overridden
+            ? `${label} is under manual control — click to return it to auto`
+            : `${label} is auto (director-driven)`
+        }
+        onClick={() => useStore.getState().setDebugPostFxOverride(key, false)}
+      >
+        {overridden ? 'manual' : 'auto'}
+      </button>
     )
   }
 
@@ -463,6 +502,7 @@ export function HUD() {
             is firing (see FilterIndicator's `hidden` diff), so at rest it costs
             no screen space and there is nothing for a user to turn off. */}
         <FilterIndicator />
+        {postFxMeter && <PostFxMeter />}
         {debugOpen && <DebugPanel />}
         {analyticsOpen && <AnalyticsPanel />}
         {creditsOpen && <Credits />}
@@ -603,22 +643,31 @@ export function HUD() {
                 <>
                   {/*
                     TEMPORARY: overrides the post-fx fields PerformanceStateBridge
-                    otherwise decides every frame (bloom/vignette/glitch/fog/trails),
-                    so a value can be dragged and eyeballed ahead of any director
-                    having an opinion about when to move it. When OFF, every slider
-                    here is inert — see PerformanceStateBridge.tsx's "Debug override"
-                    block, which is what actually applies these.
+                    otherwise decides every frame (bloom/vignette/glitch/fog/
+                    trails/mirror/lens/transition). Every slider/chip below is
+                    always draggable/clickable — dragging one takes MANUAL
+                    control of just that field immediately (see
+                    PerformanceStateBridge.tsx's per-field "Debug override"
+                    block, which is what actually applies these); the
+                    "auto"/"manual" chip on each row shows which side is
+                    currently driving it and releases that one field back to
+                    auto. "auto (all)"/"manual (all)" below is the bulk
+                    convenience for every field at once — it does not gate
+                    anything by itself, unlike the single `enabled` switch this
+                    used to be (see `debugPostFx`'s own doc on why that was a
+                    "not live" trap waiting to happen).
                   */}
                   <div className="param-row">
                     <span>Override</span>
                     <div className="quality-row">
                       <button
-                        className={`chip ${debugPostFx.enabled ? 'active' : ''}`}
+                        className={`chip ${allDebugPostFxOverridden ? 'active' : ''}`}
+                        title="Take or release manual control of every Post FX field at once"
                         onClick={() =>
-                          useStore.getState().setDebugPostFx({ enabled: !debugPostFx.enabled })
+                          useStore.getState().setAllDebugPostFxOverrides(!allDebugPostFxOverridden)
                         }
                       >
-                        {debugPostFx.enabled ? 'on' : 'off'}
+                        {allDebugPostFxOverridden ? 'manual (all)' : 'auto (all)'}
                       </button>
                     </div>
                   </div>
@@ -653,13 +702,17 @@ export function HUD() {
                         min={min}
                         max={max}
                         step={step}
-                        disabled={!debugPostFx.enabled}
                         value={debugPostFx[key]}
-                        onChange={(e) =>
-                          useStore.getState().setDebugPostFx({ [key]: Number(e.target.value) })
-                        }
+                        onChange={(e) => {
+                          const value = Number(e.target.value)
+                          useStore.getState().setDebugPostFx({ [key]: value })
+                          // Dragging IS taking manual control of this one field
+                          // — no master switch to flip first.
+                          useStore.getState().setDebugPostFxOverride(key, true)
+                        }}
                       />
                       <em>{debugPostFx[key].toFixed(digits)}</em>
+                      {postfxBadge(key, label)}
                     </label>
                   ))}
                   {/* The lens material is a choice between seven pictures, not a
@@ -688,13 +741,16 @@ export function HUD() {
                           className={`chip ${debugPostFx.transitionStyle === name ? 'active' : ''} ${
                             isStyleSelectable(name) ? '' : 'chip-disabled'
                           }`}
-                          disabled={!debugPostFx.enabled}
-                          onClick={() => useStore.getState().setDebugPostFx({ transitionStyle: name })}
+                          onClick={() => {
+                            useStore.getState().setDebugPostFx({ transitionStyle: name })
+                            useStore.getState().setDebugPostFxOverride('transitionStyle', true)
+                          }}
                         >
                           {name}
                         </button>
                       ))}
                     </div>
+                    {postfxBadge('transitionStyle', 'Transition')}
                   </div>
                   <div className="param-row">
                     <span>Lens material</span>
@@ -703,20 +759,23 @@ export function HUD() {
                         <button
                           key={name}
                           className={`chip ${debugPostFx.lensStyle === i ? 'active' : ''}`}
-                          disabled={!debugPostFx.enabled}
-                          onClick={() => useStore.getState().setDebugPostFx({ lensStyle: i })}
+                          onClick={() => {
+                            useStore.getState().setDebugPostFx({ lensStyle: i })
+                            useStore.getState().setDebugPostFxOverride('lensStyle', true)
+                          }}
                         >
                           {name}
                         </button>
                       ))}
                     </div>
+                    {postfxBadge('lensStyle', 'Lens material')}
                   </div>
                 </>,
               )}
 
               {/* Manual fire for the ISF filter layer. Sits next to Post FX
                   because it is the same family of control, but deliberately
-                  NOT inside it and NOT gated on `debugPostFx.enabled`:
+                  NOT inside it and NOT gated on any Post FX override state:
                   triggering a filter by hand is a performance action, not a
                   debug override. It goes through the same `requestFilter`
                   queue the director consumes, so a manual fire is the same
@@ -1128,6 +1187,13 @@ export function HUD() {
                     onClick={() => useStore.getState().toggleFpsMeter()}
                   >
                     fps
+                  </button>
+                  <button
+                    className={`chip ${postFxMeter ? 'active' : ''}`}
+                    title="Live post-fx readout: bloom / CA / vignette / fog / trails / mirror / lens / active flourishes (X)"
+                    onClick={() => useStore.getState().togglePostFxMeter()}
+                  >
+                    postfx
                   </button>
                   <button
                     className={`chip ${analyticsOpen ? 'active' : ''}`}

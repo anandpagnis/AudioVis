@@ -837,6 +837,53 @@
   border: 2px solid #4ba8ff;
 }
 
+/* PostFxLive — read-only, so it borrows `.fx-slider`'s column widths (see
+   FxLiveBar's own comment) without any of its interactive styling. */
+.fx-live {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 10px;
+}
+
+.fx-live-row {
+  display: grid;
+  grid-template-columns: 66px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.fx-live-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+/* No transition, same reasoning as `.filter-now-fill`: the value arriving is
+   already an eased envelope sampled at the telemetry rate, so a CSS
+   transition on top would make the bar lag the picture it describes. */
+.fx-live-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  background: #4ba8ff;
+  transform-origin: left center;
+}
+
+/* Mirror/lens/fx rows have no bar (segments/style/scene-id are pictures, not
+   an intensity) so their summary spans both the bar and value columns. */
+.fx-live-summary {
+  grid-column: 2 / span 2;
+  font-size: 11px;
+  color: rgba(234, 244, 255, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fx-select {
   display: grid;
   grid-template-columns: 66px 1fr;

@@ -67,7 +67,7 @@ import {
   sendCommand,
   type Telemetry,
 } from '../engine/outputLink'
-import { LENS_STYLES } from '../engine/opticalRack'
+import { isLensActive, isMirrorActive, LENS_STYLES } from '../engine/opticalRack'
 import {
   filterUnusableReason,
   ISF_AUTOFIRE_ENABLED,
@@ -75,7 +75,7 @@ import {
   isFilterSelectable,
 } from '../engine/isfFilterRoster'
 import { selectableStyles } from '../engine/transitions'
-import type { DebugPostFx } from '../store'
+import { DEBUG_POSTFX_KEYS, type DebugPostFx, type DebugPostFxKey } from '../store'
 
 /**
  * The DJ-facing control surface.
@@ -684,19 +684,38 @@ function useOutputPresence(): boolean {
 /**
  * The post chain, exposed directly.
  *
- * Every value here is normally owned by the directors, which is why it sits
- * behind one master switch: `PerformanceStateBridge` copies this whole block
- * over its own output when `enabled` is set, and ignores it entirely when it is
- * not. Half-overriding was never on the table — a chain where some values are
- * driven and some are held reads as neither, and the switch is the only branch.
+ * Every value here is normally owned by the directors. Used to sit behind one
+ * master switch — `PerformanceStateBridge` copied this whole block over its
+ * own output when `enabled` was set, and ignored it entirely otherwise — but
+ * that meant dragging ANY one slider froze the other thirteen (nothing else
+ * could be half-overridden without first flipping the master on), and a
+ * stale `enabled: true` reviving from an older install's `localStorage` (see
+ * `debugPostFxOverrides`'s own doc on `AppState`) froze the WHOLE column with
+ * no switch anywhere in this UI to notice, let alone flip back off. Now each
+ * field checks its OWN override flag, taken the moment its slider/select is
+ * touched — see every `setValue` call below — and "Manual post FX (all)" is
+ * only the bulk convenience for taking or releasing every field at once.
  *
- * It reaches the output window on the ordinary look wire, because `debugPostFx`
- * is plain store state. Nothing here needed a new channel.
+ * It reaches the output window on the ordinary look wire, because
+ * `debugPostFx` is plain store state — `debugPostFxOverrides` is NOT
+ * currently mirrored the same way (it is deliberately absent from
+ * `outputLink.ts`'s `LOOK_FIELDS`, which this file does not own), so a field
+ * overridden from THIS window will not yet reach the output window's copy of
+ * `PerformanceStateBridge`. See this session's report for the follow-up.
  */
 function PostFx({ tele }: { tele: Telemetry | null }) {
   const fx = useStore((s) => s.debugPostFx)
-  const set = (patch: Partial<DebugPostFx>) => useStore.getState().setDebugPostFx(patch)
-  const off = !fx.enabled
+  const overrides = useStore((s) => s.debugPostFxOverrides)
+  // Sets the VALUE and takes manual control of that one field in the same
+  // gesture — touching a control IS the act of overriding it, no master
+  // switch to flip first. See `DebugPostFx`'s own doc for why those are two
+  // separate store calls rather than one.
+  const setValue = <K extends DebugPostFxKey>(key: K, value: DebugPostFx[K]) => {
+    useStore.getState().setDebugPostFx({ [key]: value } as Partial<DebugPostFx>)
+    useStore.getState().setDebugPostFxOverride(key, true)
+  }
+  const resetField = (key: DebugPostFxKey) => useStore.getState().setDebugPostFxOverride(key, false)
+  const allOverridden = DEBUG_POSTFX_KEYS.every((k) => overrides[k])
 
   return (
     <>
@@ -705,31 +724,81 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
           everything below is a manual override you set up and then leave
           alone, while a filter is fired on a moment. Putting them after
           fourteen sliders in a scrolling column would bury the live control
-          under the static one. They also sit OUTSIDE the `fx-block` below —
-          see the note on that block: it goes inert unless you are driving the
-          chain by hand, and a filter is not an override. The director fires
-          these whether or not anyone is driving, and a hand fire is one more
-          flourish through the same queue. */}
+          under the static one. They also sit OUTSIDE the `fx-block` below,
+          because a filter fire is not a Post FX override at all — the
+          director fires these whether or not anyone is driving the chain by
+          hand, and a hand fire is one more flourish through the same queue. */}
       <IsfFilters tele={tele} />
+      {/* Live readout of everything below, reported rather than computed for
+          the same reason `IsfFilters` above is: this window cannot see
+          `performanceState` (it runs in a separate window with no engine at
+          all — see outputLink.ts's own header), so a value it did not just
+          set by hand can only ever be a fact the output window tells it. */}
+      <PostFxLive tele={tele} />
 
-      <button className={`toggle-wide ${fx.enabled ? 'on' : ''}`} onClick={() => set({ enabled: !fx.enabled })}>
-        Manual post FX
-        <small>{fx.enabled ? 'you are driving' : 'directors are driving'}</small>
+      <button
+        className={`toggle-wide ${allOverridden ? 'on' : ''}`}
+        onClick={() => useStore.getState().setAllDebugPostFxOverrides(!allOverridden)}
+      >
+        Manual post FX (all)
+        <small>{allOverridden ? 'you are driving everything' : 'directors are driving'}</small>
       </button>
 
-      <div className={`fx-block ${off ? 'inert' : ''}`}>
-        <FxSlider label="bloom" value={fx.bloom} min={0} max={2} onChange={(v) => set({ bloom: v })} />
+      <div className="fx-block">
+        <FxSlider
+          label="bloom"
+          value={fx.bloom}
+          min={0}
+          max={2}
+          overridden={!!overrides.bloom}
+          onChange={(v) => setValue('bloom', v)}
+          onReset={() => resetField('bloom')}
+        />
         <FxSlider
           label="threshold"
           value={fx.bloomThreshold}
           min={0}
           max={1}
-          onChange={(v) => set({ bloomThreshold: v })}
+          overridden={!!overrides.bloomThreshold}
+          onChange={(v) => setValue('bloomThreshold', v)}
+          onReset={() => resetField('bloomThreshold')}
         />
-        <FxSlider label="glitch" value={fx.glitch} min={0} max={1} onChange={(v) => set({ glitch: v })} />
-        <FxSlider label="vignette" value={fx.vignette} min={0} max={1} onChange={(v) => set({ vignette: v })} />
-        <FxSlider label="fog" value={fx.fog} min={0} max={1} onChange={(v) => set({ fog: v })} />
-        <FxSlider label="trails" value={fx.trails} min={0} max={1} onChange={(v) => set({ trails: v })} />
+        <FxSlider
+          label="glitch"
+          value={fx.glitch}
+          min={0}
+          max={1}
+          overridden={!!overrides.glitch}
+          onChange={(v) => setValue('glitch', v)}
+          onReset={() => resetField('glitch')}
+        />
+        <FxSlider
+          label="vignette"
+          value={fx.vignette}
+          min={0}
+          max={1}
+          overridden={!!overrides.vignette}
+          onChange={(v) => setValue('vignette', v)}
+          onReset={() => resetField('vignette')}
+        />
+        <FxSlider
+          label="fog"
+          value={fx.fog}
+          min={0}
+          max={1}
+          overridden={!!overrides.fog}
+          onChange={(v) => setValue('fog', v)}
+          onReset={() => resetField('fog')}
+        />
+        <FxSlider
+          label="trails"
+          value={fx.trails}
+          min={0}
+          max={1}
+          overridden={!!overrides.trails}
+          onChange={(v) => setValue('trails', v)}
+          onReset={() => resetField('trails')}
+        />
 
         <h3 className="fx-head">mirror</h3>
         {/* `segments` is an integer: 0 off / 1 mirror-x / 2 quad / >=3 n-fold.
@@ -737,58 +806,75 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
             is the wrong one.
 
             No `tiles` or `slice` here — both retired (F108). The engine gates
-            them to zero in PerformanceStateBridge, so leaving the sliders would
-            leave two controls that move and do nothing, which is worse than a
-            missing control: it reads as a broken renderer rather than as a
-            deliberate absence. */}
+            them to zero in PerformanceStateBridge regardless of override, so
+            leaving the sliders would leave two controls that move and do
+            nothing, which is worse than a missing control: it reads as a
+            broken renderer rather than as a deliberate absence. */}
         <FxSlider
           label="segments"
           value={fx.mirrorSegments}
           min={0}
           max={12}
           step={1}
-          onChange={(v) => set({ mirrorSegments: v })}
+          overridden={!!overrides.mirrorSegments}
+          onChange={(v) => setValue('mirrorSegments', v)}
+          onReset={() => resetField('mirrorSegments')}
         />
         <FxSlider
           label="twist"
           value={fx.mirrorTwist}
           min={-3.14}
           max={3.14}
-          onChange={(v) => set({ mirrorTwist: v })}
+          overridden={!!overrides.mirrorTwist}
+          onChange={(v) => setValue('mirrorTwist', v)}
+          onReset={() => resetField('mirrorTwist')}
         />
         <FxSlider
           label="spin"
           value={fx.mirrorSpin}
           min={-2}
           max={2}
-          onChange={(v) => set({ mirrorSpin: v })}
+          overridden={!!overrides.mirrorSpin}
+          onChange={(v) => setValue('mirrorSpin', v)}
+          onReset={() => resetField('mirrorSpin')}
         />
 
         <h3 className="fx-head">lens</h3>
-        <FxSlider label="amount" value={fx.lensAmount} min={0} max={1} onChange={(v) => set({ lensAmount: v })} />
-        <label className="fx-select">
-          <span>material</span>
-          <select
-            value={fx.lensStyle}
-            onChange={(e) => set({ lensStyle: Number(e.target.value) })}
-          >
+        <FxSlider
+          label="amount"
+          value={fx.lensAmount}
+          min={0}
+          max={1}
+          overridden={!!overrides.lensAmount}
+          onChange={(v) => setValue('lensAmount', v)}
+          onReset={() => resetField('lensAmount')}
+        />
+        <FxSelect
+          label="material"
+          overridden={!!overrides.lensStyle}
+          onReset={() => resetField('lensStyle')}
+        >
+          <select value={fx.lensStyle} onChange={(e) => setValue('lensStyle', Number(e.target.value))}>
             {LENS_STYLES.map((name, i) => (
               <option key={name} value={i}>
                 {name}
               </option>
             ))}
           </select>
-        </label>
+        </FxSelect>
 
         <h3 className="fx-head">transition</h3>
-        <label className="fx-select">
-          <span>next change</span>
+        <FxSelect
+          label="next change"
+          overridden={!!overrides.transitionStyle}
+          onReset={() => resetField('transitionStyle')}
+        >
           {/* `selectableStyles()` and not the whole list: `cut` is disabled, and
               offering a style the engine will refuse is worse than not
               offering it. */}
           <select
             value={fx.transitionStyle}
-            onChange={(e) => set({ transitionStyle: e.target.value as DebugPostFx['transitionStyle'] })}
+            onChange={(e) => setValue('transitionStyle', e.target.value as DebugPostFx['transitionStyle'])}
           >
             {selectableStyles().map((st) => (
               <option key={st} value={st}>
@@ -796,7 +882,7 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
               </option>
             ))}
           </select>
-        </label>
+        </FxSelect>
       </div>
     </>
   )
@@ -878,6 +964,84 @@ function IsfFilters({ tele }: { tele: Telemetry | null }) {
 }
 
 /**
+ * Live readout of the rest of the post-fx chain — bloom, chromatic
+ * aberration, vignette, fog, feedback trails, the mirror/lens optical racks,
+ * and which effect-scene flourish is currently firing.
+ *
+ * Sibling to `IsfFilters` above and built the same way (an ordinary function
+ * component re-rendering on the 10Hz-ish `tele` poll `useTelemetry` already
+ * drives — NOT the imperative `requestAnimationFrame`-plus-ref-diffing
+ * pattern `FilterIndicator`/`FpsMeter` use in the OUTPUT window's own 60fps
+ * render loop; that discipline exists to protect a hot path this component
+ * is nowhere near). `isMirrorActive`/`isLensActive` (`engine/opticalRack.ts`)
+ * are reused rather than re-derived, so "is it active" can never drift from
+ * what the engine itself considers active.
+ *
+ * Returns `null` before the first telemetry packet arrives, same as
+ * `IsfFilters`'s own `tele?.` optional-chaining does implicitly — there is
+ * nothing honest to show about a chain this window has not yet heard from.
+ */
+function PostFxLive({ tele }: { tele: Telemetry | null }) {
+  if (!tele) return null
+
+  const mirrorOn = isMirrorActive({
+    segments: tele.mirrorSegments,
+    tiles: tele.mirrorTiles,
+    twist: tele.mirrorTwist,
+    slice: tele.mirrorSlice,
+    spin: tele.mirrorSpin,
+    mix: tele.mirrorMix,
+  })
+  const lensOn = isLensActive({ amount: tele.lensAmount, style: tele.lensStyle })
+
+  return (
+    <div className="fx-live">
+      <FxLiveBar label="bloom" value={tele.bloom} max={2} />
+      <FxLiveBar label="vignette" value={tele.vignette} max={1} />
+      {tele.glitch > 0.01 && <FxLiveBar label="CA" value={tele.glitch} max={1} />}
+      {tele.fog > 0.01 && <FxLiveBar label="fog" value={tele.fog} max={1} />}
+      {tele.trails > 0.01 && <FxLiveBar label="trails" value={tele.trails} max={1} />}
+      {mirrorOn && (
+        <div className="fx-live-row">
+          <span className="fx-label">mirror</span>
+          <span className="fx-live-summary">
+            {Math.round(tele.mirrorSegments)}-fold · spin {tele.mirrorSpin.toFixed(2)}
+          </span>
+        </div>
+      )}
+      {lensOn && (
+        <div className="fx-live-row">
+          <span className="fx-label">lens</span>
+          <span className="fx-live-summary">{LENS_STYLES[tele.lensStyle] ?? '—'}</span>
+        </div>
+      )}
+      {tele.activeEffects.length > 0 && (
+        <div className="fx-live-row">
+          <span className="fx-label">fx</span>
+          <span className="fx-live-summary">{tele.activeEffects.join(', ')}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One bar row of {@link PostFxLive} — same `.fx-slider` grid columns (see
+ *  console.css) so the live readout lines up with the override sliders right
+ *  below it, just with a bar/percent in place of a draggable input. */
+function FxLiveBar({ label, value, max }: { label: string; value: number; max: number }) {
+  const pct = Math.max(0, Math.min(1, value / max))
+  return (
+    <div className="fx-live-row">
+      <span className="fx-label">{label}</span>
+      <span className="fx-live-bar">
+        <span className="fx-live-fill" style={{ transform: `scaleX(${pct})` }} />
+      </span>
+      <span className="fx-value">{Math.round(pct * 100)}%</span>
+    </div>
+  )
+}
+
+/**
  * A compact slider. Same idea as {@link BigSlider} — the number is always
  * visible — at a density that fits fourteen of them in a column.
  *
@@ -887,6 +1051,14 @@ function IsfFilters({ tele }: { tele: Telemetry | null }) {
  * Post FX) are exactly where a slider sits under the cursor while scrolling
  * that column. Blurring on the first wheel tick over it hands that and every
  * later tick back to the scrollable section.
+ *
+ * `overridden`/`onReset` fold the auto/manual indicator into the label
+ * itself, rather than adding a fourth element: `.fx-slider` is a fixed
+ * three-column grid (label / input / value, see console.css), so a new grid
+ * item would either overflow the 42px value column or fall into a stray
+ * implicit row. The label already IS the one column with room to spare, and
+ * "click the label to let go of what you just took hold of" mirrors the
+ * slider gesture that took hold of it in the first place.
  */
 function FxSlider({
   label,
@@ -894,18 +1066,39 @@ function FxSlider({
   min,
   max,
   step = 0.01,
+  overridden,
   onChange,
+  onReset,
 }: {
   label: string
   value: number
   min: number
   max: number
   step?: number
+  overridden: boolean
   onChange: (v: number) => void
+  onReset: () => void
 }) {
   return (
     <label className="fx-slider">
-      <span className="fx-label">{label}</span>
+      <button
+        type="button"
+        className="fx-label"
+        disabled={!overridden}
+        onClick={onReset}
+        title={overridden ? `${label} — manual, click to return to auto` : `${label} — auto (director-driven)`}
+        style={{
+          background: 'none',
+          border: 'none',
+          padding: 0,
+          font: 'inherit',
+          textAlign: 'left',
+          cursor: overridden ? 'pointer' : 'default',
+          color: overridden ? 'rgba(130, 205, 255, 0.9)' : undefined,
+        }}
+      >
+        {label}
+      </button>
       <input
         type="range"
         min={min}
@@ -916,6 +1109,47 @@ function FxSlider({
         onWheel={(e) => e.currentTarget.blur()}
       />
       <span className="fx-value">{step >= 1 ? value.toFixed(0) : value.toFixed(2)}</span>
+    </label>
+  )
+}
+
+/**
+ * The `<select>` equivalent of {@link FxSlider}'s auto/manual label.
+ *
+ * `.fx-select` is a fixed TWO-column grid (label / control, see console.css,
+ * and note `.fx-select > span` is a child-combinator rule scoped to a literal
+ * `<span>` — turning the label itself into a button here would silently drop
+ * that styling). So instead of touching the label, the control column wraps
+ * the real `<select>` (passed as `children`, unmodified) together with a
+ * small reset chip in a plain flex `<div>` — still exactly one grid item,
+ * exactly like the bare `<select>` it replaces.
+ */
+function FxSelect({
+  label,
+  overridden,
+  onReset,
+  children,
+}: {
+  label: string
+  overridden: boolean
+  onReset: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <label className="fx-select">
+      <span>{label}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+        <button
+          type="button"
+          className={`chip ${overridden ? 'active' : 'chip-disabled'}`}
+          style={{ padding: '2px 7px', fontSize: 9, flexShrink: 0 }}
+          title={overridden ? `${label} — manual, click to return to auto` : `${label} — auto (director-driven)`}
+          onClick={onReset}
+        >
+          {overridden ? 'manual' : 'auto'}
+        </button>
+      </div>
     </label>
   )
 }
