@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { getSharedEnvMap, releaseSharedEnvMap } from '../engine/envMap'
+import { criticalDamping, slew, spring, springStep, type SpringState } from '../engine/response'
 import { useSceneFrame, useSpin } from '../engine/sceneFrame'
 import { bipolar, drastic } from './contract'
 
@@ -36,6 +37,74 @@ import { bipolar, drastic } from './contract'
  * physically-shaded pass over a near-mirror surface — the one place in the
  * roster where a dial that silently multiplies geometry is a frame-time risk
  * rather than a look.
+ *
+ * ## Band routing
+ *
+ *   bass + pulse + inflate -> envMapIntensity (reflections swell with the
+ *                             low end; unchanged by this pass, see below)
+ *   mid                    -> base-colour tint toward the palette
+ *   transient + pulse + drop -> emissive heat (see "Response identity")
+ *   high + presence        -> frost, i.e. roughness/clearcoat floor lift
+ *   transient + pulse + drop -> a momentary EXTRA roughen on top of that
+ *                             floor (see "Response identity") — reads as the
+ *                             surface catching the impact, not brightening
+ *   section change          -> smooth structural turn, rotation.z (critically
+ *                             damped, no overshoot — see below)
+ *   speed/mid/energy       -> spin rate; tilt dial + slow bob -> rotation.x
+ *   fill dial + inflate    -> scale (pulse's old per-hit scale term is gone;
+ *                             see "Response identity" below)
+ *
+ * ## Response identity: struck metal, not a brighter torus knot
+ *
+ * Before this pass every reactive term on this scene fed brightness or scale
+ * — bass/inflate -> envMapIntensity, pulse/transient/drop -> emissiveIntensity,
+ * pulse/inflate -> scale — which is exactly the roster-wide collapse
+ * `engine/response.ts`'s header audits (22 of 22 scenes drove brightness off
+ * an envelope, 14 of 22 drove a size term). Three changes give this scene a
+ * physical, metal-specific identity instead:
+ *
+ *   - **Emissive heat now cools like metal, not like a symmetric pulse.**
+ *     `emissiveIntensity` used to be set directly from the current band
+ *     values every frame, so it rose and fell exactly on `b.transient`'s own
+ *     (symmetric) envelope shape. It now runs through `engine/response.ts`'s
+ *     `slew()` with a fast rise and a slow fall: a hit still flashes in
+ *     essentially instantly, but the glow lingers and cools over roughly
+ *     half a second afterward rather than tracking the input back down in
+ *     lockstep — heated metal, not a strobe. The target itself is weighted
+ *     `b.pulse * 0.7 + b.transient * 0.4` (was `0.4`/`0.7`) so the glow reads
+ *     as landing on the beat rather than firing on every raw onset.
+ *   - **Rotation now marks the music's structure, not a per-hit reaction.**
+ *     The old `b.pulse * 0.055` term on `scale` — a per-hit size bump, the
+ *     exact 14-of-22 pattern above — is gone (see the scale comment where
+ *     `rotation.z` is assigned). It was first replaced by an underdamped
+ *     spring on `rotation.z`, the one rotation axis nothing else drives (X is
+ *     the tilt dial + bob, Y is the continuous spin): a hit displaced it and
+ *     it rang back through zero and settled, the same primitive
+ *     `MazeFlightScene`'s camera-roll lurch uses. Per direct report that
+ *     specifically THIS per-hit rotation read as jerky, that spring is gone
+ *     too. `rotation.z` now answers structural SECTION CHANGES instead of
+ *     individual hits: one smooth, critically-damped turn per boundary
+ *     (`criticalDamping()`, ratio 1.0 — see `TURN_STIFFNESS`/`TURN_DAMPING`
+ *     below) that reaches its new target in roughly 1-1.5s with no overshoot
+ *     and no ring, rather than an edge-triggered snap on every transient. The
+ *     moment-to-moment reaction to a hit hasn't disappeared — it already
+ *     lived on the emissive heat and roughen terms above and below, both
+ *     already smooth by construction (asymmetric slew, not a spring) and
+ *     never part of the "jerky" complaint. Rotation's job is now the music's
+ *     larger-scale changes; the heat/roughen terms still carry every hit.
+ *   - **A hit now visibly changes the SURFACE, not just its brightness.**
+ *     `roughness`/`clearcoatRoughness` get a new additive term — zero at
+ *     rest, so the documented default-reproduction invariant below is
+ *     unaffected — driven by the same hit signal as the emissive heat, also
+ *     through an asymmetric slew (fast in, slower-than-emissive fall): a hit
+ *     momentarily roughens the finish before it re-polishes, reading as the
+ *     surface itself catching the impact rather than merely glowing harder.
+ *     This is the term moved fully off brightness, per the wave-2 brief.
+ *
+ * `envMapIntensity`'s bass/pulse/inflate routing is left as authored — it is
+ * already a reflection-intensity response rather than a raw emissive one,
+ * and the brief only asks that at least one term move off brightness
+ * entirely, which the roughness/clearcoat term above does.
  *
  * ## Quality governance
  *
@@ -88,6 +157,31 @@ interface CachedChromeAssets {
  * a context loss remounts under a brand new `WebGLRenderer`, so the old
  * entry simply becomes unreachable.
  */
+
+/**
+ * Section-change turn (rotation.z — replaces the old impact-torque spring).
+ * Critically damped (damping = criticalDamping(stiffness), ratio 1.0) so
+ * there is NO overshoot and NO ring -- a smooth, deliberate turn instead of
+ * the jerky edge-triggered snap this replaces. Stiffness chosen so the turn
+ * completes in roughly 1-1.5s: too fast reads as a snap again, too slow
+ * reads as the knot drifting rather than turning.
+ */
+const TURN_STIFFNESS = 18
+const TURN_DAMPING = criticalDamping(TURN_STIFFNESS)
+/** Radians added to the held target on each section change -- a definite,
+ *  noticeable reorientation without spinning past a natural resting view. */
+const TURN_STEP = Math.PI * 0.6
+
+/** Rise/fall rates (1/s) for the emissive "heat" slew — fast in, slow cool. */
+const EMISSIVE_RISE = 30
+const EMISSIVE_FALL = 2.2
+/** Rise/fall rates for the impact-roughen slew — same fast attack, an even
+ *  slower release than the glow so the surface visibly re-polishes after the
+ *  light has already cooled, reading as two separate physical events rather
+ *  than one dial moving. */
+const ROUGHEN_RISE = 30
+const ROUGHEN_FALL = 1.6
+
 const chromeAssetCache = new WeakMap<THREE.WebGLRenderer, CachedChromeAssets>()
 
 function getChromeAssets(gl: THREE.WebGLRenderer): CachedChromeAssets {
@@ -115,6 +209,19 @@ export function ChromeFormScene() {
   const gl = useThree((s) => s.gl)
   const heroRef = useRef<THREE.Mesh>(null)
   const spin = useSpin()
+  // Asymmetric-slew state for the emissive "heat" and the impact "roughen" —
+  // see "Response identity" above. Persisted per-mount, same as `spin`'s own
+  // phase accumulator.
+  const emissiveHeat = useRef(0)
+  const roughenHeat = useRef(0)
+  // Section-change turn (rotation.z, replaces the old impact-torque spring —
+  // see "Response identity" above). `turnTarget` is a held angle that steps
+  // by TURN_STEP each section change; `turn` is the critically-damped spring
+  // that chases it. `f.sectionChange` is already a one-frame pulse (see the
+  // AudioFeatures doc comment and EffectDirector's own "needs no edge state"
+  // note), so no separate rising-edge latch is needed here.
+  const turnTarget = useRef(0)
+  const turn = useRef<SpringState>(spring(0))
 
   // Cached across mounts (see getChromeAssets) — no useDispose for these two;
   // they outlive any one mount by design, same as createShaderScene's cache.
@@ -174,12 +281,27 @@ export function ChromeFormScene() {
       // tint, so harmonically dense passages read as more saturated metal.
       heroMat.color.copy(white).lerp(col.a, 0.3 + b.mid * 0.3)
       heroMat.emissive.copy(col.c)
+      // Impact strength shared by the emissive heat and the surface roughen
+      // below — one signal read two different physical ways, rather than two
+      // separate copies of "kick -> glow". Weighted toward the beat-synced
+      // pulse rather than the raw transient (0.7/0.4, was 0.4/0.7) so the
+      // glow reads as landing on the beat, not firing on every raw onset.
+      const heatTarget = b.pulse * 0.7 + b.transient * 0.4 + (f.drop ? 0.9 : 0)
       // Emissive is the transient's job — a rim flash faster than any band
-      // envelope, which is what reflections alone can never fake.
-      heroMat.emissiveIntensity = b.pulse * 0.4 + b.transient * 0.7 + (f.drop ? 0.9 : 0)
+      // envelope, which is what reflections alone can never fake. Slewed
+      // asymmetrically rather than assigned straight from the envelope: the
+      // old code tracked `heatTarget` up AND down in lockstep, so the glow
+      // decayed exactly as fast as it rose — a symmetric pulse. Fast rise,
+      // slow fall reads instead as heated metal cooling: the flash is still
+      // essentially instant, but it lingers afterward instead of matching
+      // the input's own (much faster) decay.
+      emissiveHeat.current = slew(emissiveHeat.current, heatTarget, dt, EMISSIVE_RISE, EMISSIVE_FALL)
+      heroMat.emissiveIntensity = emissiveHeat.current
       // Reflections swell with the low end: the room "brightens" on the bass.
       // `inflate` folds sub in with bass, so a track whose weight sits below
       // the bass band still moves the reflections — b.bass alone misses it.
+      // Left as a direct read (not slewed) — this is a slow, sustained swell
+      // already, not a per-hit event competing with the emissive term above.
       heroMat.envMapIntensity = 0.6 + b.bass * 0.55 + b.pulse * 0.3 + anim.inflate * 0.25
       // Highs frost the surface. Raised well past the old 0.05 — at that amount it
       // was mathematically present but invisible, which is exactly the complaint.
@@ -195,8 +317,30 @@ export function ChromeFormScene() {
       // surface is authored as near-mirror and the dial's job is to frost it —
       // a 0.5 default would have shipped a duller scene than the one reviewed.
       const finish = 1 - p.contrast
-      heroMat.roughness = 0.029 + finish * 0.14 + b.high * 0.16
-      heroMat.clearcoatRoughness = 0.019 + finish * 0.14 + b.presence * 0.1
+      // Impact roughen: a NEW term, additive on top of the authored
+      // finish/frost floor above and zero at rest, so the declared-default
+      // invariant documented there (0.85 -> the authored 0.05/0.04 exactly)
+      // is unaffected by anything below. Driven by the same `heatTarget` as
+      // the emissive heat but slewed with its own (slower) fall, so the
+      // surface visibly re-polishes a beat after the glow has already
+      // cooled — two distinct physical events reading off one hit, and the
+      // one place this scene answers a hit with something other than
+      // brightness or size.
+      roughenHeat.current = slew(roughenHeat.current, Math.min(1, heatTarget), dt, ROUGHEN_RISE, ROUGHEN_FALL)
+      heroMat.roughness = 0.029 + finish * 0.14 + b.high * 0.16 + roughenHeat.current * 0.1
+      heroMat.clearcoatRoughness = 0.019 + finish * 0.14 + b.presence * 0.1 + roughenHeat.current * 0.06
+
+      // Section-change turn: the held target steps by TURN_STEP once per
+      // section boundary, and a critically-damped spring chases it — a
+      // single smooth, deliberate reorientation with no overshoot and no
+      // ring, replacing the old per-hit torque snap (see "Response identity"
+      // above). `f.sectionChange` is already a one-frame pulse, so stepping
+      // the target directly on it (no rising-edge latch) still fires exactly
+      // once per boundary.
+      if (f.sectionChange) {
+        turnTarget.current += TURN_STEP
+      }
+      springStep(turn.current, turnTarget.current, dt, TURN_STIFFNESS, TURN_DAMPING)
 
       const angle = spin(dt, 0.14 + f.energy * 0.3 + b.mid * 0.3, params.speed * drastic(p.speed))
       if (heroRef.current) {
@@ -208,12 +352,23 @@ export function ChromeFormScene() {
         // pi/2, where the knot would present its silhouette edge-on and a
         // near-mirror surface has nothing left to reflect.
         heroRef.current.rotation.x = Math.sin(f.time * 0.11) * 0.4 + bipolar(p.tilt, 1.1)
+        // The section-change turn's entire output lands here — the one
+        // rotation axis nothing else drives. A boundary steps the held
+        // target and the critically-damped spring above turns smoothly to
+        // meet it, with no overshoot and no ring (see "Response identity").
+        heroRef.current.rotation.z = turn.current.value
         // `fill` is the subject's size in frame. Bounded well inside the camera
         // anchor's 8.2-unit distance at the top end: the CameraDirector frames
         // this scene, and a scale that outgrows its framing reads as a bug
-        // rather than as a bigger subject.
+        // rather than as a bigger subject. The old per-hit `b.pulse * 0.055`
+        // term is gone — that was a kick driving a size term, the exact
+        // 14-of-22 pattern the wave-2 brief calls out; a hit's answer now
+        // lives entirely on the emissive heat and roughen terms above (see
+        // "Response identity"), not on scale or rotation. `inflate`'s slow bass
+        // swell stays: a different, sustained physical read (mass breathing),
+        // not a per-hit reaction.
         const size = 0.55 + p.fill * 0.9
-        heroRef.current.scale.setScalar(size * (1 + b.pulse * 0.055 + anim.inflate * 0.05))
+        heroRef.current.scale.setScalar(size * (1 + anim.inflate * 0.05))
       }
     },
     { visCeiling: 1, visFloor: 0.6 },

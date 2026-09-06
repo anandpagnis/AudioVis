@@ -23,13 +23,19 @@ import { drastic } from '../engine/sceneParams'
  *     a quality drop (`kifs` F129 / `maze` F139 precedent). With `s *= 0.75`
  *     each iteration, term `i` contributes ~0.75^i to the accumulator before a
  *     saturating tanh, so 10-16 is a safe visual range. The governor's only
- *     lever here is `pixelBudget`.
+ *     lever here is `pixelBudget` — and on `createShaderScene`'s offscreen path
+ *     that lever is weaker than it sounds: see the declaration's risk note.
  *   - Normal is a 3-tap forward difference (centre + x + z), not the source's
  *     4-tap central difference. Slight bias, invisible on organic relief.
  *   - `pow(s, 1.0)` -> `s`; `pow(s, 0.65)` -> a running multiply by the
  *     constant 0.75^0.65. Two `pow` removed per `nfield` iteration.
  *   - `pixelBudget` renders offscreen and upscales — the relief is soft, no
- *     hard edges (cf. `maze`, same treatment).
+ *     hard edges (cf. `maze`, same treatment). Re-anchored 1.4/0.8 -> 7.8/4.4;
+ *     see the declaration below for why. At the old numbers the sentence above
+ *     was not describing what shipped: the "soft upscale" was a ~2.5x one, with
+ *     the offscreen buffer sitting on (tiers 3-4) or within a hundredth of
+ *     (tiers 0-2) `createShaderScene`'s own `MIN_RENDER_SCALE` clamp on any 4K
+ *     panel.
  *
  * ## GLSL ES 1.00 fixes
  *
@@ -48,6 +54,17 @@ import { drastic } from '../engine/sceneParams'
  * `slotBudget.test.ts`'s `< sceneBudget(0)/2 ≈ 4ms` bar — but `pow`/`tanh`
  * cost is unpredictable on weak GPUs. Run `/bench` and re-price; if it comes in
  * over the bar it must move to DISABLED_SCENES or take further cuts.
+ *
+ * That ~3.5 ms was reasoned against the OLD 1.4 MP budget — i.e. against an
+ * offscreen buffer pinned to `createShaderScene`'s `MIN_RENDER_SCALE` clamp
+ * (0.40-0.41 linear, ~17% of the panel's pixels) on anything above ~1440p. The
+ * re-anchor below takes tier 0 on a 4K panel from 0.41 to 0.97 linear, about
+ * 5.6x the internal pixels, and every op counted for that estimate is
+ * per-pixel. So the real tier-0 cost is correspondingly higher and the
+ * `sceneCost.ts` row now prices a frame this scene no longer renders.
+ * No replacement number is invented here: the honest state is UNMEASURED, and
+ * the `/bench` sweep this section already asks for is now also the thing that
+ * decides whether the scene still clears the bar at its new resolution.
  *
  * ## Band routing
  *
@@ -258,7 +275,64 @@ export const FortressHarkonnenScene = createShaderScene<HarkonnenState>({
   blending: THREE.NoBlending,
   // Estimate — replace with a /bench sweep. Offscreen + upscale; the relief is
   // soft so a gentle upscale is invisible. Tier-sensitive like MazeFlightScene.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.4 : 0.8),
+  //
+  // ## Which `pixelBudget` this is
+  //
+  // This is `createShaderScene`'s spec field, which sizes THIS SCENE'S OWN
+  // offscreen buffer and nothing else. It is solved by that module's private
+  // `solveScale` (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // That is the whole solver. It is NOT the `SceneMetadata.pixelBudget` field
+  // in scenes/index.ts, and it does not touch engine/renderScale.ts: there is
+  // no `combinePixelBudgets` reciprocal sum with the post chain, and no
+  // `quality.knobs.pixelBudgetScale` tier multiplier anywhere on this path.
+  // (`SceneMetadata.pixelBudget` is declared and validated but set by no scene
+  // in the roster, so the renderScale ladder never had this scene on it.)
+  //
+  // ## Re-anchored 1.4/0.8 -> 7.8/4.4
+  //
+  // The old pair was chosen when the roster was being developed against 1080p
+  // and laptop displays, where 1.4 MP still solved to something meaningful.
+  // On any panel at or above ~1440p it does not: 1.4 MP solves to 0.41 linear
+  // at 4K and the 0.8 branch lands flat on the 0.4 clamp. The declared number
+  // had stopped meaning anything — the buffer was pinned at ~40% linear (a
+  // ~2.5x upscale, ~17% of the panel's pixels) regardless of display or
+  // hardware. 7.8/4.4 is the roster-wide 5.5556x re-anchor (from `maze`'s
+  // 0.9 -> 5.0), which preserves this scene's relative cost and its own tier
+  // step.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.41 / 0.41 / 0.41 / 0.40 / 0.40
+  //     NEW  0.97 / 0.97 / 0.97 / 0.73 / 0.73     buffer @ tier 0: 3723x2094
+  //
+  // The only tier sensitivity on this path is this scene's own `>= 50`
+  // threshold flipping the declared budget between branches: tiers 0-2 take
+  // 7.8 (96/72/54 march steps), tiers 3-4 take 4.4 (40/28). At 1440p, 1080p
+  // and on the MacBook panel below, both branches now solve to 1.00.
+  //
+  // ## KNOWN RISK: this raises the FLOOR, and the governor cannot lower it
+  //
+  // `solveScale` has no tier multiplier, so the quality governor CANNOT claw
+  // resolution back on this scene under load — it never could, and that cuts
+  // the other way now that the budget is large. Raising it raises the floor of
+  // what a weak machine must render, not just the ceiling. Concretely, on a
+  // 2560x1664 MacBook Air this scene goes from 0.57 to 1.00 (native): ~3.0x
+  // the pixels, at every tier, with no way for the governor to back off.
+  //
+  // It is worth being blunt about how little the governor holds here. The
+  // `raymarchSteps` read below is a TIER PROXY only — this shader has no march
+  // loop, and its actual iteration depth (`uNIter`/`uFIter`) comes from the
+  // user's `complexity` dial and is deliberately never tier-gated (see the
+  // header). So the branch flip below is the ladder's entire influence on this
+  // scene: on 4K it buys 0.97 -> 0.73, and on any panel at or below ~1440p it
+  // buys literally nothing, because both branches solve to 1.00 there. The
+  // governor can cut neither pixel count nor per-pixel cost on this scene.
+  // That is a known and accepted-for-now consequence, pending the `/bench` the
+  // cost section above already asks for; it is not a solved problem.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 7.8 : 4.4),
   uniforms: () => ({
     uFly: { value: 0 },
     uShock: { value: 0 },

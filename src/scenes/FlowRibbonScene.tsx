@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { applyToUniforms } from '../engine/AnimationDirector'
+import { criticalDamping, spring, springStep, type SpringState } from '../engine/response'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -36,12 +37,67 @@ import { useDispose } from '../engine/useDispose'
  *   voice  → ribbon WIDTH, brightness, and how deep the wave is carved
  *   bass   → how far the bundle spreads from the axis
  *   hihat  → travelling sparkle along the arc, nothing else
- *   snare  → a lateral kick to the whole bundle
+ *   snare  → a lateral WHIP through a real spring — see below
+ *
+ * ## Response identity: the snare whip
+ *
+ * `engine/response.ts`'s audit found zero springs anywhere in the 22-scene
+ * roster: every scene charged a value on a hit and let `exp(-dt*k)` slide it
+ * back down, so a struck thing and a merely-lit thing read the same. `maze`
+ * (wave 2 of this pass) was the first scene to reach for `springStep`, on
+ * camera ROLL. This is the second, and it drives a different axis on
+ * different geometry — a lateral displacement of the ribbon spine itself, not
+ * a rotation of the whole view — so the technique repeating is not the
+ * outcome repeating.
+ *
+ * A snare hit used to set `uSnare` straight to the raw envelope, which
+ * PercussionDetector's own `env` decay then slid back to 0 — monotonically,
+ * like every other scene's shock. Now a hit JUMPS `snareShove.value` by a
+ * fixed impulse (scaled by hit strength) and `springStep` takes over from
+ * there: the bundle whips sideways, carries PAST centre, rings back once, and
+ * settles — a struck cable, not a nudge that fades. The renamed uniform
+ * (`uSnareShove`, was `uSnare`) still multiplies the same per-ribbon
+ * `sin(aRibbon * 2.1)` spatial pattern the old term used, so the whip crosses
+ * the bundle exactly where the old kick did; only the TIME shape changed.
+ *
+ * Damping is deliberately under-critical (`criticalDamping(70) * 0.4`) so the
+ * first rebound is a visible ~25% of the initial displacement, then ~6%, then
+ * gone — two swings, settled well inside a bar, so the next snare always
+ * lands on a bundle that has gone quiet rather than stacking on one still
+ * mid-ring. See `SNARE_STIFFNESS`/`SNARE_DAMPING` below for the arithmetic.
+ *
+ * Brightness is untouched by this change — voice/energy/waveform already
+ * carried it, and this scene was one of wave 1's two counter-examples for
+ * routing bands onto genuinely different dimensions in the first place. What
+ * changed is the SHAPE of one existing term, not which term owns glow.
  */
 
 const RIBBONS = 22
 /** Spine samples per ribbon. Each contributes 2 verts (left/right edge). */
 const SEGMENTS = 90
+
+/**
+ * Snare-whip spring (see the header's Response identity section).
+ *
+ * `stiffness = 70` puts the ringing frequency at `sqrt(70) ≈ 8.37 rad/s` —
+ * a ~0.75 s period, so the surge-and-return half cycle is ~0.37 s: inside a
+ * beat at most tempos, so the whip is visibly settling again before the next
+ * snare rather than still swinging through it.
+ */
+const SNARE_STIFFNESS = 70
+/**
+ * `criticalDamping(70) * 0.4` keeps the spring genuinely under-damped: the
+ * first rebound is `exp(-0.4*PI / sqrt(1-0.4*0.4))` ~= 25% of the initial
+ * displacement, then ~6%, then gone. Two visible swings, not an indefinite
+ * ring — matches `maze`'s LURCH_DAMPING reasoning, tuned independently.
+ */
+const SNARE_DAMPING = criticalDamping(SNARE_STIFFNESS) * 0.4
+/** Position jump per snare hit, scaled by hit strength. Matches the peak the
+ *  old `uSnare * 0.5` term reached at full envelope, so the bundle's initial
+ *  excursion reads the same size as before; only the follow-through rings. */
+const SNARE_IMPULSE = 0.9
+/** Ceiling so a fast snare roll whips the bundle harder rather than without limit. */
+const SNARE_MAX = 1.4
 
 /** Exported so the GLSL can be compiled on a real driver — tsc never sees it. */
 export const VERT = /* glsl */ `
@@ -54,7 +110,7 @@ export const VERT = /* glsl */ `
   uniform float uMid;
   uniform float uVoice;
   uniform float uBass;
-  uniform float uSnare;
+  uniform float uSnareShove; // spring-driven lateral whip, not a raw envelope
   uniform float uPulse;
   uniform float uCount;
   uniform sampler2D uWave;   // band-passed synth waveform, 0.5 = silence
@@ -114,8 +170,10 @@ export const VERT = /* glsl */ `
     p += waveAxis * wave * uWaveAmp * 4.0 * sin(aT * 3.14159);
     vWave = wave;
 
-    // Snares shove the whole bundle sideways — a discrete event, not a wash.
-    p.y += uSnare * 0.5 * sin(aRibbon * 2.1);
+    // Snares whip the whole bundle sideways through a real spring (see
+    // SNARE_STIFFNESS / snareSpring in the component) instead of a decay --
+    // it overshoots past centre and rings once before settling.
+    p.y += uSnareShove * 0.5 * sin(aRibbon * 2.1);
     vSpeed = curl;
 
     // Widen across the flow, in a plane that is DIFFERENT for every ribbon.
@@ -235,6 +293,9 @@ const WAVE_SIZE = 256
 export function FlowRibbonScene() {
   const geometry = useMemo(() => buildGeometry(), [])
   const smoothed = useRef(new Float32Array(WAVE_SIZE))
+  // The snare whip's spring state — see the header's Response identity
+  // section and the SNARE_* constants above.
+  const snareSpring = useRef<SpringState>(spring(0))
 
   const { waveTex, waveData } = useMemo(() => {
     const d = new Uint8Array(WAVE_SIZE).fill(128) // 128 = silence (0.5 in shader)
@@ -259,7 +320,7 @@ export function FlowRibbonScene() {
           uMid: { value: 0 },
           uVoice: { value: 0 },
           uBass: { value: 0 },
-          uSnare: { value: 0 },
+          uSnareShove: { value: 0 },
           uHihat: { value: 0 },
           uEnergy: { value: 0 },
           uPulse: { value: 0 },
@@ -335,11 +396,22 @@ export function FlowRibbonScene() {
       // a sustained line worth looking at.
       u.uWaveAmp.value = 0.12 + b.voice * 0.5
 
+      // ---- Snare: a struck-cable whip, not a decay -----------------------
+      // A hit JUMPS the spring's position (clamped so a snare roll can't
+      // build without limit); springStep then overshoots past centre and
+      // rings back once before settling. See the header's Response identity
+      // section for why this replaces the old raw-envelope term.
+      const snareSt = snareSpring.current
+      if (f.percussion.snare.trigger) {
+        snareSt.value = Math.min(SNARE_MAX, snareSt.value + SNARE_IMPULSE * f.percussion.snare.strength)
+      }
+      springStep(snareSt, 0, dt, SNARE_STIFFNESS, SNARE_DAMPING)
+
       u.uTime.value = f.time
       u.uMid.value = b.mid
       u.uVoice.value = b.voice
       u.uBass.value = b.bass
-      u.uSnare.value = b.snare
+      u.uSnareShove.value = snareSt.value
       u.uHihat.value = b.hihat
       u.uEnergy.value = b.energy
       u.uPulse.value = b.pulse

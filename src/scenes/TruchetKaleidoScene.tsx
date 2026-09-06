@@ -26,6 +26,15 @@ import { drastic } from '../engine/sceneParams'
  *     `< sceneBudget(0)/2 ≈ 4ms` bar. `uPlanes` (below) is wired to the
  *     quality governor so a bench can be run at each tier.
  *
+ *     That sweep now has to be run against a bigger frame than the one this
+ *     scene used to render. `pixelBudget` was re-anchored 1.6/1.0 -> 8.9/5.6
+ *     (see the declaration below for the reasoning), taking tier 0 on a 4K
+ *     panel from 0.44 linear to 1.00 — full native, about 5.2x the internal
+ *     pixels, and the per-plane `smoothKaleidoscope` + `truchet_df` work is
+ *     per-pixel. No ms figure is asserted here because none was ever measured;
+ *     the point is that a bench taken at the old budget would understate the
+ *     scene by roughly that factor and could not be used to clear the bar.
+ *
  * Promotion = move the object literal into `SCENES` + add a `SCENE_COST_MS`
  * row from the sweep.
  *
@@ -377,7 +386,56 @@ export const TruchetKaleidoScene = createShaderScene<TruchetState>({
   blending: THREE.NoBlending,
   // Starting point only — replace with a real /bench sweep before promotion.
   // The dual-ray AA is resolution-aware, so a soft upscale degrades gracefully.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.6 : 1.0),
+  //
+  // ## Which `pixelBudget` this is
+  //
+  // `createShaderScene`'s spec field, sizing THIS SCENE'S OWN offscreen buffer
+  // and nothing else, solved by that module's private `solveScale`
+  // (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // Not `SceneMetadata.pixelBudget` from scenes/index.ts, and nothing to do
+  // with engine/renderScale.ts: no `combinePixelBudgets` reciprocal sum, no
+  // `quality.knobs.pixelBudgetScale` tier multiplier on this path.
+  //
+  // ## Re-anchored 1.6/1.0 -> 8.9/5.6
+  //
+  // The old pair was chosen against the 1080p/laptop displays the roster was
+  // developed on. On a 4K panel 1.6 MP solves to 0.44 and the 1.0 branch falls
+  // through `solveScale`'s 0.4 clamp entirely, so the declared number had
+  // stopped carrying information and the buffer was pinned near 40% linear —
+  // a ~2.4x upscale — whatever the display or the hardware. 8.9/5.6 is the
+  // roster-wide 5.5556x re-anchor (from `maze`'s 0.9 -> 5.0), which keeps this
+  // scene the most generous of the four: it is the cheapest, no march loop.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.44 / 0.44 / 0.44 / 0.40 / 0.40
+  //     NEW  1.00 / 1.00 / 1.00 / 0.82 / 0.82     buffer @ tier 0: 3840x2160
+  //
+  // The only tier sensitivity on this path is the `>= 50` threshold below
+  // flipping the budget between branches: tiers 0-2 take 8.9, tiers 3-4 take
+  // 5.6. At 1440p and 1080p both branches solve to 1.00.
+  //
+  // ## KNOWN RISK: this raises the FLOOR, and the governor cannot lower it
+  //
+  // `solveScale` has no tier multiplier, so the quality governor CANNOT claw
+  // resolution back on this scene under load. Raising the budget raises the
+  // floor of what a weak machine must render, not just the ceiling: on a
+  // 2560x1664 MacBook Air this scene goes from 0.61 to 1.00 (native) at every
+  // tier — ~2.7x the pixels, with no governor move available at any tier.
+  // 8.9 MP now exceeds a 4K panel outright, so tiers 0-2 render at scale 1.00
+  // and pay `createShaderScene`'s extra fullscreen blit for a buffer that is
+  // already native — the exact cost the spec doc says to omit `pixelBudget` to
+  // avoid. The declaration still earns its place at tiers 3-4 on 4K and on
+  // anything larger (a 5K panel solves ~0.78), but on 1440p and below it is now
+  // inert at the ceiling where it used to be inert at the floor.
+  //
+  // The ladder can still cut per-pixel cost — `uPlanes` drops the plane count
+  // off the governor's iteration knob — but not pixel COUNT. Known and
+  // accepted for now, pending the `/bench` this scene needs before promotion.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 8.9 : 5.6),
   uniforms: () => ({
     uFly: { value: 0 },
     uShock: { value: 0 },

@@ -26,8 +26,12 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  *   - plane count is the `complexity` dial (3..6, default 5), NOT tier-gated
  *     (fractal/stack depth changing under load reads as glitching — kifs F129 /
  *     maze F139); the governor's lever here is `pixelBudget`
- *   - `pixelBudget` renders offscreen at 0.8 MP (tiers 0-1) / 0.5 MP below —
- *     the output is inverse-distance GLOW, which upscales invisibly (cf. maze)
+ *   - `pixelBudget` renders offscreen at 4.4 MP (tiers 0-2) / 2.8 MP below —
+ *     the output is inverse-distance GLOW, which upscales invisibly (cf. maze).
+ *     Re-anchored from 0.8 / 0.5, which were pre-F107 values that pinned the
+ *     scene to the offscreen solver's 0.4 clamp above ~1440p; see the
+ *     declaration for the arithmetic. Note the step is at tiers 0-2, not 0-1:
+ *     the cutoff is `raymarchSteps >= 50` and tier 2 runs 54 steps
  *   - `hash()` swapped for a sine-free version (it was called ~36x/pixel)
  *
  * The `SCENE_COST_MS` row is a documented estimate, not a /bench measurement.
@@ -450,9 +454,29 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
   // already spends — SCENE_COST_MS is unchanged and deliberately so.
   include: TRAVELLING_PULSE_GLSL,
   blending: THREE.NoBlending,
-  // Aggressive — inverse-distance glow upscales invisibly. Tier-sensitive
-  // like MazeFlightScene. Estimate; replace with a /bench sweep.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 0.8 : 0.5),
+  // Inverse-distance glow upscales invisibly, so an offscreen buffer is cheap
+  // here in perceptual terms. Tier-sensitive like MazeFlightScene. Estimate;
+  // replace with a /bench sweep.
+  //
+  // Re-anchored 0.8 -> 4.4 / 0.5 -> 2.8. The old pair was a pre-F107 value that
+  // was never revisited when the engine's budget table moved to (12.5/16/20) MP
+  // plus a 24 MP post chain. A `createShaderScene` spec budget does not go
+  // through that table — it is solved by that module's own `solveScale`, which
+  // divides the declared megapixels straight into the display's full
+  // megapixels and clamps at MIN_RENDER_SCALE (0.4), with no post-chain
+  // reciprocal sum and no tier `pixelBudgetScale` factor. 0.8 MP against a
+  // 3840x2160 panel solves to sqrt(0.8/8.29) = 0.31 — the lowest solve of the
+  // four function-budget scenes, and well below that clamp — so the buffer
+  // pinned to 1536x864 and upscaled 2.5x linear on any panel above ~1440p.
+  // Because the unclamped size is dpr-invariant on this path, a 4K desktop and
+  // a 1080p laptop were handed near-identical buffers, which is why the same
+  // build read soft on the larger panel and sharp on the smaller one.
+  //
+  // 4.4 MP clears the clamp on 4K (0.73 linear -> 2796x1573) and reaches native
+  // 1.00 on 1080p at every tier. This scene stays the LOWEST budget of the four
+  // by design — the uniform re-anchor preserved the roster's existing ordering,
+  // which encodes measured cost differences between the scenes.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 4.4 : 2.8),
   uniforms: () => ({
     uFly: { value: 0 },
     // 1e4 = sinceImpulse()'s "never fired" sentinel, so the very first frame

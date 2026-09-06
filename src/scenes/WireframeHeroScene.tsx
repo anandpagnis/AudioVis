@@ -7,6 +7,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
 import { quality } from '../engine/quality'
+import { impulseClock, sinceImpulse } from '../engine/response'
 import {
   useSceneFrame,
   useSceneMode,
@@ -57,6 +58,52 @@ import { useDispose } from '../engine/useDispose'
  * `density` is not declared. The three elements ARE the composition, and a dial
  * that removed the core or the ring would be a dial that removes the parallax
  * and the scale reference — the two things the header says the piece is for.
+ *
+ * ## Response identity: per-edge kick propagation
+ *
+ * `engine/response.ts`'s audit found the roster's propagation entries — `web`
+ * (radially outward through a hex lattice) and `travelling` (axially
+ * front-to-back through a tunnel) — both live in a continuous per-FRAGMENT
+ * shader field: every pixel evaluates the same `travellingPulse()` against
+ * its own position. This scene has no such field to write into — three's
+ * `Wireframe`/`LineMaterial` compiles its own internal shader (see the file
+ * header on why it is used at all), and patching that shader is exactly the
+ * "redeclared uniform" / "backtick in a GLSL template literal" trap the brief
+ * warns about. So this reaches for the thing that IS available here instead:
+ * the hero is built from `LineSegmentsGeometry`'s (`instanceStart`,
+ * `instanceEnd`) pairs — every edge is already its own separately-addressable
+ * INSTANCE, not a sample point in a continuous field. `edgeHeights()` reads
+ * each edge's own local-space midpoint once at geometry build time, and the
+ * frame loop writes a per-edge brightness multiplier straight into the
+ * geometry's `instanceColorStart`/`instanceColorEnd` attributes (enabled via
+ * `LineMaterial.vertexColors`, which multiplies `diffuseColor.rgb` — see
+ * `color_fragment.glsl.js` — so it rides ON TOP of the existing hue/ink
+ * routing below rather than replacing it).
+ *
+ * A kick charges an `ImpulseClock`; each frame, each edge asks "has the wave
+ * reached MY height yet" via the same `local = sinceImpulse - pos/speed;
+ * exp(-local*decay)` shape `TRAVELLING_PULSE_GLSL` documents (engine/
+ * shaderLib.ts) — computed in JS here rather than GLSL, since there is no
+ * fragment stage to put it in. The result: a kick lights the hero's lowest
+ * edges first and the wave visibly climbs to the apex over ~0.4s, edge by
+ * edge, rather than the whole mesh flashing at once. The axis is the
+ * geometry's own local Y, not world/view space, so the wave rides with the
+ * hero's spin instead of smearing across it — the hero rotates about Y and a
+ * Y-axis wave is invariant under its own rotation.
+ *
+ * This is a genuinely different mechanism from `web`'s and `travelling`'s
+ * propagation, not just a different axis of the same one: those two evaluate
+ * one formula per fragment across a continuous surface; this evaluates one
+ * per DISCRETE, individually-addressable edge instance, using data
+ * (`instanceStart`/`instanceEnd`) that only exists because the hero is drawn
+ * as three's real per-edge instanced quads rather than a rasterized surface.
+ *
+ * Brightness is the only per-edge channel `LineMaterial` exposes — linewidth
+ * and dash are single uniforms, not per-instance — so the wave necessarily
+ * rides a colour multiplier. That is not the audit's complaint restated: the
+ * complaint was a global envelope driving a global glow uniformly; this is a
+ * spatially-delayed field walking across discrete geometry, and it sits ON
+ * TOP of the hero/core/ring per-band routing below, which is untouched.
  */
 
 /** The solid the hero is cut from, per mode. `shard` reads as a chunk of the
@@ -76,6 +123,58 @@ function heroSolid(mode: string | undefined, detail: number): THREE.BufferGeomet
   }
 }
 
+/**
+ * Kick-wave propagation constants (see the header's Response identity
+ * section). `WAVE_SPEED` is in "mesh heights per second": 2.4 means the
+ * wavefront crosses the hero's full bottom-to-top span in ~0.42s — fast
+ * enough to read as one sweep rather than a crawl at any tempo the roster is
+ * tuned for. `WAVE_DECAY` fades an arrived pulse with the same `exp(-t*k)`
+ * shape `TRAVELLING_PULSE_GLSL` documents. `WAVE_GAIN` is the peak per-edge
+ * brightness multiplier at the wavefront, layered on top of — not instead
+ * of — the existing bass/mid/presence routing in the frame callback below.
+ */
+const WAVE_SPEED = 2.4
+const WAVE_DECAY = 3.2
+const WAVE_GAIN = 2.2
+
+/**
+ * Per-edge 0..1 position along the geometry's own local Y axis (bottom to
+ * top), read directly off the wireframe's (instanceStart, instanceEnd)
+ * pairs — the per-instance data LineSegmentsGeometry already keeps for every
+ * edge, and exactly the "instance index or spatial position along the mesh"
+ * axis a per-edge propagation wave needs. Local space rather than world
+ * space so the wave rides with the geometry: the hero spins around Y, and a
+ * Y-axis wave is invariant under its own spin.
+ */
+function edgeHeights(geo: THREE.BufferGeometry): Float32Array {
+  const start = geo.attributes.instanceStart as THREE.InterleavedBufferAttribute
+  const end = geo.attributes.instanceEnd as THREE.InterleavedBufferAttribute
+  const n = start.count
+  const t = new Float32Array(n)
+  let min = Infinity
+  let max = -Infinity
+  for (let i = 0; i < n; i++) {
+    const y = (start.getY(i) + end.getY(i)) * 0.5
+    t[i] = y
+    if (y < min) min = y
+    if (y > max) max = y
+  }
+  const span = Math.max(1e-4, max - min)
+  for (let i = 0; i < n; i++) t[i] = (t[i] - min) / span
+  return t
+}
+
+/**
+ * Neutral per-edge colour buffer: multiplier 1 everywhere, so before the
+ * first kick (or with no audio at all) `LineMaterial`'s `diffuseColor.rgb *=
+ * vColor` is a no-op and the hero reproduces exactly the look it had before
+ * this response was added. `setColors()` wants 6 floats per edge (start rgb,
+ * end rgb) — see LineSegmentsGeometry.setColors.
+ */
+function neutralEdgeColors(edgeCount: number): Float32Array {
+  return new Float32Array(edgeCount * 6).fill(1)
+}
+
 /** Ring of positions for a LineGeometry, closed back onto its first point. */
 function ringPositions(radius: number, segments: number): number[] {
   const pts: number[] = []
@@ -91,7 +190,7 @@ function ringPositions(radius: number, segments: number): number[] {
  * (a real uniform on LineMaterial) is the exposure control — the frame stays
  * ~90% true black because coverage is thin, not because the lines are dim.
  */
-function makeLineMaterial(linewidth: number, dashed = false): LineMaterial {
+function makeLineMaterial(linewidth: number, dashed = false, vertexColors = false): LineMaterial {
   const mat = new LineMaterial({
     color: 0x00e5ff, // non-black default: never black-on-black pre-first-frame
     linewidth,
@@ -99,6 +198,10 @@ function makeLineMaterial(linewidth: number, dashed = false): LineMaterial {
     depthWrite: false,
     depthTest: false, // x-ray blueprint — the whole cage reads, front and back
     blending: THREE.AdditiveBlending,
+    // Only the hero enables this (see the per-edge propagation call site) —
+    // core and ring never pass `true`, so their shaders compile without the
+    // USE_COLOR branch and are untouched by any of this.
+    vertexColors,
   })
   if (dashed) {
     mat.dashed = true
@@ -122,6 +225,10 @@ export function WireframeHeroScene() {
   const gl = useThree((s) => s.gl)
   const spin = useSpin()
   const dash = useRef(0)
+  // Kick-wave propagation state (see the header's Response identity
+  // section): when the wave last fired, and how strong that kick was.
+  const kickWave = useRef(impulseClock())
+  const kickAmp = useRef(0)
 
   const heroRef = useRef<THREE.Group>(null)
   const coreRef = useRef<THREE.Group>(null)
@@ -129,7 +236,9 @@ export function WireframeHeroScene() {
 
   // Detail 1, not 3: fewer, larger facets read as deliberately cut crystal
   // rather than a tessellated sphere — and keeps the edge count trivial.
-  const heroMat = useMemo(() => makeLineMaterial(2.2), [])
+  // vertexColors on so the propagation wave below can drive a per-edge
+  // brightness multiplier; core and ring stay off it (see makeLineMaterial).
+  const heroMat = useMemo(() => makeLineMaterial(2.2, false, true), [])
   const coreMat = useMemo(() => makeLineMaterial(1.2), [])
   const ringMat = useMemo(() => makeLineMaterial(1.4, true), [])
 
@@ -140,10 +249,20 @@ export function WireframeHeroScene() {
   const mode = useSceneMode()
   const detail = useSceneParamSteps('complexity', 0, 2)
 
-  const hero = useMemo(
-    () => makeWireframe(heroSolid(mode, detail), heroMat),
-    [heroMat, mode, detail],
-  )
+  // heroEdgeT is recomputed alongside hero every time mode/detail rebuilds
+  // the geometry — it indexes the SAME edges in the SAME order, since both
+  // come from the one WireframeGeometry2 built in this memo.
+  const { hero, heroEdgeT } = useMemo(() => {
+    const wf = makeWireframe(heroSolid(mode, detail), heroMat)
+    const edgeT = edgeHeights(wf.geometry)
+    // Seed the colour attribute neutral immediately — see neutralEdgeColors's
+    // doc for why this has to happen before first render, not in the frame
+    // loop, and before `heroMat.vertexColors = true` ever gets used to draw.
+    // Cast needed: `Wireframe.geometry` is typed as the base BufferGeometry,
+    // but at runtime it is always the WireframeGeometry2 built two lines up.
+    ;(wf.geometry as WireframeGeometry2).setColors(neutralEdgeColors(edgeT.length))
+    return { hero: wf, heroEdgeT: edgeT }
+  }, [heroMat, mode, detail])
   const core = useMemo(
     () => makeWireframe(new THREE.OctahedronGeometry(0.95, 0), coreMat),
     [coreMat],
@@ -234,6 +353,35 @@ export function WireframeHeroScene() {
       // busy hat patterns rather than crawling at a fixed rate.
       dash.current += dt * (0.1 + b.high * 0.9)
       ringMat.dashOffset = -dash.current
+
+      // ---- Per-edge kick propagation (see header: Response identity) -----
+      // A kick charges the wave clock; each edge then asks how long ago the
+      // wavefront reached ITS height, same shape as TRAVELLING_PULSE_GLSL.
+      // Runs in JS, not GLSL, because LineMaterial's shader is three's own
+      // (see the file header) and there is no fragment stage of ours to add
+      // travellingPulse() to — see the header's Response identity section.
+      const kickFired = f.percussion.kick.trigger
+      const sinceKick = sinceImpulse(kickWave.current, f.time, kickFired)
+      if (kickFired) kickAmp.current = f.percussion.kick.strength
+      const edgeColorAttr = hero.geometry.attributes.instanceColorStart as
+        | THREE.InterleavedBufferAttribute
+        | undefined
+      if (edgeColorAttr) {
+        const colors = edgeColorAttr.data.array as Float32Array
+        for (let i = 0; i < heroEdgeT.length; i++) {
+          const local = sinceKick - heroEdgeT[i] / WAVE_SPEED
+          const pulse = local < 0 ? 0 : Math.exp(-local * WAVE_DECAY)
+          const mult = 1 + pulse * WAVE_GAIN * kickAmp.current
+          const base = i * 6
+          colors[base] = mult
+          colors[base + 1] = mult
+          colors[base + 2] = mult
+          colors[base + 3] = mult
+          colors[base + 4] = mult
+          colors[base + 5] = mult
+        }
+        edgeColorAttr.needsUpdate = true
+      }
 
       // Mid content drives rotation, so a dense chord section visibly moves faster
       // than a sparse one at identical overall energy.

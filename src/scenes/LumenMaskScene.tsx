@@ -462,7 +462,67 @@ export const LumenMaskScene = createShaderScene<LumenMaskState>({
   blending: THREE.AdditiveBlending,
   // Heavy: fbm x several, 4-tap floor reflection re-running wallColor, ~40 SDF
   // ops per pixel across wall + reflection. Render offscreen and upscale.
-  pixelBudget: 1.5,
+  //
+  // ## Which `pixelBudget` this is
+  //
+  // `createShaderScene`'s spec field, sizing THIS SCENE'S OWN offscreen buffer
+  // and nothing else, solved by that module's private `solveScale`
+  // (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // Not `SceneMetadata.pixelBudget` from scenes/index.ts, and nothing to do
+  // with engine/renderScale.ts: no `combinePixelBudgets` reciprocal sum, no
+  // `quality.knobs.pixelBudgetScale` tier multiplier on this path.
+  //
+  // ## Re-anchored 1.5 -> 8.3
+  //
+  // The 1.5 was chosen against the 1080p/laptop displays the roster was
+  // developed on. The op count above is the honest half of the justification
+  // and is unchanged; what it never justified was the ABSOLUTE. On a 3840x2160
+  // panel 1.5 MP solves to 0.43 linear — barely off `solveScale`'s own 0.4
+  // clamp, and through it entirely at 1440p and above once DPR is involved —
+  // so "render offscreen and upscale" meant a fixed ~2.3x upscale that no tier
+  // and no GPU could move, and the declared number had stopped meaning
+  // anything. 8.3 is the roster-wide 5.5556x re-anchor (from `maze`'s
+  // 0.9 -> 5.0), preserving this scene's cost ordering against its neighbours.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.43 / 0.43 / 0.43 / 0.43 / 0.43
+  //     NEW  1.00 / 1.00 / 1.00 / 1.00 / 1.00     buffer @ tier 0: 3840x2160
+  //
+  // Flat at every tier, and that is not a rounding artefact: the budget is a
+  // plain number with no threshold to flip, and `solveScale` has no tier
+  // multiplier, so this scene's resolution does not vary by tier AT ALL. The
+  // earlier claim that the ladder moved it through `pixelBudgetScale` was
+  // simply wrong — that factor lives on the renderScale path, which this scene
+  // is not on.
+  //
+  // ## KNOWN RISK: this scene has no tier response of any kind
+  //
+  // Worth stating plainly, because it is the sharpest case in the roster: this
+  // shader reads NO `quality.knobs` value anywhere, and its budget is
+  // tier-invariant. So the quality governor cannot cut this scene's pixel
+  // count and has nothing to cut its per-pixel cost with either. Raising the
+  // budget therefore raises the FLOOR of what a weak machine must render, with
+  // no lever left to give any of it back. On a 2560x1664 MacBook Air this scene
+  // goes from 0.59 to 1.00 (native): ~2.8x the pixels, permanently.
+  //
+  // 8.3 MP also exceeds a 4K panel, so on any display up to and including 4K
+  // this now renders at scale 1.00 and pays `createShaderScene`'s extra
+  // fullscreen blit for a buffer that is already native — the exact overhead
+  // the spec doc says to omit `pixelBudget` to avoid. The budget only starts
+  // doing work above 4K (a 5K panel solves ~0.75). It is inert at the ceiling
+  // now where it used to be inert at the floor.
+  //
+  // The op count is still an ESTIMATE and this scene has never been /bench'd.
+  // The estimate was reasoned at the old budget, so whatever it was worth it
+  // now describes a frame with ~5.5x the internal pixels at tier 0 on 4K; the
+  // cost is per-pixel, so the real figure is higher by about that factor. No
+  // number is invented to replace it — it wants a sweep, and that sweep is now
+  // also what decides whether the risk above is acceptable.
+  pixelBudget: 8.3,
   uniforms: () => ({
     uT: { value: 0 },
     uBass: { value: 0 },

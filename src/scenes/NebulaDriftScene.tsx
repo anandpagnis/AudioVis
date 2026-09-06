@@ -102,13 +102,24 @@ import { bipolar, drastic } from './contract'
  * only adds a small flat term. Net: cheaper than Malachite per pixel even
  * counting it.
  *
- * Malachite measured 0.42ms at its 1.3 MP budget (M1, ANGLE/Metal). This
- * shader has NOT been bench-measured (documented op-count estimate only,
- * same caveat Snowflake's header uses for its own unmeasured figure —
- * confirm with `/bench`), so `pixelBudget: 1.6` is a conservative bump over
- * Malachite's 1.3 rather than the ~3.6 MP a naive 1/3-cost scaling would
- * imply — a third of the noise cost buys real headroom, but it is headroom
- * this scene is declining to spend blind.
+ * Malachite measured 0.42ms at its THEN-CURRENT 1.3 MP budget (M1,
+ * ANGLE/Metal). Both scenes have since been re-anchored — Malachite to 7.2,
+ * this one to 8.9 (see the `pixelBudget` note in the registration below for
+ * why) — so that 0.42 ms describes neither scene's shipped budget any more,
+ * and the real cost of both is correspondingly higher and unmeasured.
+ *
+ * This shader has still never been bench-measured at all (documented op-count
+ * estimate only, same caveat Snowflake's header uses for its own unmeasured
+ * figure — confirm with `/bench`), so `pixelBudget: 8.9` remains what 1.6 was:
+ * a conservative bump over Malachite's budget rather than the ~21 MP a naive
+ * 1/3-cost scaling would imply. A third of the noise cost buys real headroom,
+ * but it is headroom this scene is still declining to spend blind — the more so
+ * because 8.9 MP already exceeds a 4K panel outright, so a naive scaling would
+ * be buying resolution no mainstream display can show. The re-anchor changed
+ * the SCALE both numbers sit on, not this scene's posture toward its own
+ * unmeasured estimate: 8.9/7.2 is essentially the margin 1.6/1.3 was
+ * (1.24x against 1.23x), which is the point of re-anchoring by a uniform
+ * ratio rather than re-deriving each scene's number independently.
  *
  * ## Band-scoped octaves
  *
@@ -226,9 +237,70 @@ export const NebulaDriftScene = createShaderScene<NebulaDriftState>({
   // See the header's "Cost" section for the full op-count reasoning: roughly
   // a third of Malachite's per-pixel noise cost even after accounting for
   // paletteRamp's small fixed Oklab overhead, so this conservative bump over
-  // Malachite's 1.3 MP budget costs nothing it hasn't earned. NOT
+  // Malachite's 7.2 MP budget costs nothing it hasn't earned. Still NOT
   // bench-measured -- confirm with /bench.
-  pixelBudget: 1.6,
+  //
+  // ## Which `pixelBudget` this is
+  //
+  // `createShaderScene`'s spec field. It sizes THIS SCENE'S OWN offscreen
+  // buffer and NOTHING else, solved by that module's private `solveScale`
+  // (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // Not `SceneMetadata.pixelBudget` from scenes/index.ts, and nothing to do
+  // with engine/renderScale.ts: no `combinePixelBudgets` reciprocal sum, no
+  // `quality.knobs.pixelBudgetScale` tier multiplier on this path.
+  //
+  // ## Re-anchored 1.6 -> 8.9 MP
+  //
+  // The 1.6 was chosen while the roster was developed against 1080p and laptop
+  // displays. On a 3840x2160 panel it solves to 0.44 linear — a hair off
+  // `solveScale`'s own 0.4 clamp, and through it at 1440p and above once DPR is
+  // counted — so the declared number had effectively stopped selecting a
+  // resolution: the buffer sat near 40% linear whatever the display or the
+  // hardware.
+  //
+  // 8.9 is 1.6 x 5.5556 — the ratio from `maze`'s chosen re-anchor (0.9 -> 5.0),
+  // applied uniformly to all eleven affected scenes so their RELATIVE ordering
+  // (which encodes real measured cost differences) survives intact.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.44 / 0.44 / 0.44 / 0.44 / 0.44
+  //     NEW  1.00 / 1.00 / 1.00 / 1.00 / 1.00     buffer @ tier 0: 3840x2160
+  //
+  // Flat across the tiers, and not by accident: the budget is a plain number
+  // with no threshold to flip and `solveScale` has no tier multiplier, so this
+  // scene's resolution never varied by tier and still does not. The re-anchor
+  // moved where the flat line sits; it did not add rungs to it.
+  //
+  // ## KNOWN RISK: this raises the FLOOR, and the governor cannot lower it
+  //
+  // With no tier multiplier on this path the quality governor CANNOT claw
+  // resolution back on this scene under load, so raising the budget raises the
+  // floor of what a weak machine must render, not just the ceiling. On a
+  // 2560x1664 MacBook Air this goes from 0.61 to 1.00 (native) at every tier —
+  // ~2.7x the pixels, with no resolution move available at any tier. The ladder
+  // can still cut per-pixel cost (`uOctaves` off `noiseOctaves`, see below) but
+  // never pixel COUNT.
+  //
+  // 8.9 MP also exceeds a 4K panel, so on any display up to and including 4K
+  // this renders at scale 1.00 and pays `createShaderScene`'s extra fullscreen
+  // blit for a buffer that is already native — the overhead the spec doc says
+  // to omit `pixelBudget` to avoid. It only starts doing work above 4K (5K
+  // solves ~0.78). Known and accepted for now, pending a fresh `/bench`.
+  //
+  // ## Why a BACKGROUND's budget still matters
+  //
+  // Not because it drags anything else down — it does not. Each
+  // `createShaderScene` budget sizes only its own offscreen buffer, so this
+  // layer's resolution has no bearing on the subject composited over it. The
+  // honest reason this one was re-anchored is that its OWN buffer was clamped:
+  // "a soft upscale is invisible under a subject" is a fair claim about this
+  // layer's own pixels, but it was propping up a number that had stopped
+  // selecting any resolution at all.
+  pixelBudget: 8.9,
   uniforms: () => ({
     uPhase: { value: 0 },
     uScale: { value: 1.2 },
