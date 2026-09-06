@@ -8458,7 +8458,7 @@ things a curator will hit and should not have to rediscover.
       because deciding needs the same `/bench` numbers F195 and F196 are both
       waiting on.
 
-- [ ] **F198 · The governor's "known one-off" suspension blinds the p95 window
+- [x] **F198 · The governor's "known one-off" suspension blinds the p95 window
       but NOT the EMA — and the EMA is the gate that actually fires. A single
       compile stall demotes the ladder, and on a 4K panel that is what the
       picture is soft from** — `src/engine/PerfMonitor.tsx`,
@@ -8576,11 +8576,27 @@ things a curator will hit and should not have to rediscover.
       is `GOVERNOR_WINDOW_SEC = 2` (`frameSampler.ts:50`). The reasoning in that
       comment should be re-checked against 2 s, not just the number corrected.
 
-      Not fixed here: the EMA-suspension gap is a one-line change with a real
-      blast radius (it changes what every demote decision in the app sees), and
-      the unexplained 2nd/3rd demotes above mean a fix aimed only at the first
-      one may not recover the tier anyway. Wants the per-frame governor trace
-      first.
+      **Fixed.** `frameSampler.stepGovernorEma()` is a second EMA, gated on the
+      identical `suspended` state `push()` already gates the p95 window on —
+      `PerfMonitor.tsx` now feeds `quality.tick()` from it instead of the
+      display `ema`, which stays untouched (its own doc wants a real stall
+      visible to the FPS meter, unfiltered). Verified by temporarily
+      reintroducing the exact bug and confirming three tests fail with it,
+      then reverting; the existing "does not cascade" regression test was
+      itself a false negative — it fed `QualityGovernor` a hardcoded `16.7`
+      regardless of what was pushed, so it could not have caught a bug in the
+      computation feeding that argument. Rewritten to compute a real ema via
+      the same path production code now uses, plus three isolated unit tests
+      on `stepGovernorEma` itself. 1512 -> 1517 passed.
+      
+      **Still open, and NOT closed by this fix:** the unexplained 2nd/3rd
+      demotes (114.2 s, 116.2 s — both under-gate on the EMA and p95 axes
+      recorded above) point at something this fix does not touch, most likely
+      F140's own reallocation becoming its own next decision's evidence. A
+      fresh `/bench` on the reporter's machine is what would confirm the fix
+      actually recovers the tier in practice rather than only closing the one
+      mechanism that is provably wrong; the per-frame governor trace this
+      entry asked for still does not exist.
 
 - [ ] **F199 · Five of the six scenes promoted live by the expanding-scenes
       merge exceed the tier-0 solo budget by their OWN declared cost rows —
