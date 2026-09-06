@@ -38,6 +38,31 @@ import { RollingWindow } from './RollingWindow'
  * the person holding the instrument. The two consumers want genuinely different
  * things: the meter wants the truth, the controller wants a signal it can act
  * on without chasing its own tail.
+ *
+ * ## F198: rule 1 covered the percentile window and nothing else
+ *
+ * The governor does not read `governorP95()` alone — `quality.tick()` also
+ * takes a smoothed mean, computed as a 0.05-alpha EMA over raw per-frame `ms`.
+ * That EMA lived entirely in `PerfMonitor.tsx`, outside this class, computed
+ * unconditionally from every frame with no knowledge of `suspend()` at all —
+ * so rule 1 above was true for the p95 axis and silently false for the mean
+ * axis: the exact known-one-off frames this file exists to hide from the
+ * governor were still moving it, just through the other argument.
+ *
+ * A live session confirmed it: a 158.4 ms warm-mount compile stall (a
+ * candidate scene that compiled and was then withdrawn — `SceneManager.tsx`'s
+ * warm-mount path never calls `suspend()` at all, unlike a real commit) moved
+ * a 0.05-alpha EMA from 16.7 to 23.8 ms in one frame, past `STEP_DOWN_MEAN_RATIO`'s
+ * 18.3 ms gate, and demoted the tier one `SETTLE_SEC` later — on a machine
+ * whose GPU measured 9% of frame time that session.
+ *
+ * {@link FrameSampler.stepGovernorEma} closes this the same way `push()`
+ * already closes it for the percentile: both read the identical `suspended`
+ * state, so a frame excused from one is excused from the other. The display
+ * EMA (`PerfMonitor.tsx`'s own `ema` ref, feeding `perf.ms`/`perf.fps`) is
+ * deliberately untouched — that one's job is to tell the person holding the
+ * instrument the truth about a real stall, same reasoning as the display
+ * window above.
  */
 
 /** Unfiltered window for the meter and analytics panel. Shows reality. */
@@ -88,6 +113,20 @@ export class FrameSampler {
       return
     }
     this.governor.push(t, ms)
+  }
+
+  /**
+   * Advance the governor's OWN mean-axis EMA by one frame — see the F198
+   * section of this file's header doc for why a second EMA exists at all.
+   *
+   * Reads the same `suspended` state `push()` already gates the percentile
+   * window on: a frame excused from the p95 window is excused here too,
+   * with no separate call for a caller to remember to make. Held while
+   * suspended rather than reset, matching `governor`'s own window (a
+   * suspension means "no evidence", not "evidence of zero load").
+   */
+  stepGovernorEma(prevEma: number, ms: number, alpha = 0.05): number {
+    return this.suspended ? prevEma : prevEma + (ms - prevEma) * alpha
   }
 
   /**

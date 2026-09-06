@@ -256,6 +256,41 @@ export function PerfMonitor() {
   const size = useThree((s) => s.size)
   const storeQuality = useStore((s) => s.quality)
   const ema = useRef(16.7)
+  /**
+   * F198: a second EMA, filtered the same way `frameSampler`'s governor
+   * window already is, for the governor's mean-axis input specifically.
+   *
+   * `ema` above is the FPS meter's number, and `perf.p95`'s own doc comment
+   * already states the intended split: "the governor deliberately reads a
+   * different, filtered number" than the display metric, because the
+   * display metric's job is to report a real stall (a scene commit's
+   * compile, a DPR resize) unfiltered, while `frameSampler.suspend()` exists
+   * so the governor does not mistake that SAME known one-off for steady-state
+   * load. That split was real for the p95 axis (`frameSampler.governorP95()`
+   * vs `frameSampler.display.percentile()`) and never existed for the mean
+   * axis — `ema` fed both `perf.ms` and `quality.tick()` from one unguarded
+   * number, so every suspension that protected the p95 window left the mean
+   * gate wide open.
+   *
+   * A live session (`audiovis-session-2026-09-05-19-18-53`) caught this
+   * directly: a 158.4 ms warm-mount compile stall moved the shared EMA from
+   * 16.7 to 23.8 ms in one frame (`0.05 * (158.4 - 16.7) = +7.1`), crossing
+   * `STEP_DOWN_MEAN_RATIO`'s 18.3 ms gate, and the governor demoted from its
+   * best rung of the session one `SETTLE_SEC` later — on a machine whose GPU
+   * measured 9% of frame time that whole session. The warm-mount path
+   * (`SceneManager.tsx`'s `prewarmShaders` call) suspends nothing at all,
+   * so a candidate that compiles and is withdrawn without ever committing is
+   * unprotected on both axes at once.
+   *
+   * Kept as a genuinely separate ref rather than reusing `ema` under a
+   * suspend guard, because `perf.ms`/`perf.fps`'s own doc explicitly wants
+   * the unfiltered number for display ("a frame genuinely costing 150-300ms
+   * ... is exactly what this monitor exists to catch") — gating that ref
+   * would make the FPS meter silently lie about a real stall it is supposed
+   * to surface. Only the governor's copy should go blind during a known
+   * one-off; the display copy never should.
+   */
+  const governorEma = useRef(16.7)
   const appliedTier = useRef(-1)
   const p95 = useRef(0)
   const lastP95At = useRef(0)
@@ -378,6 +413,13 @@ export function PerfMonitor() {
     ema.current += (ms - ema.current) * 0.05
     perf.ms = ema.current
     perf.fps = 1000 / ema.current
+    // F198: the governor's own copy stays blind for exactly the frames
+    // `frameSampler` is suspended for — the same "known one-off, not
+    // steady-state load" evidence the p95 window already respects. See
+    // `governorEma`'s own doc above for why this has to be a second ref
+    // rather than a guard on `ema` itself, and `stepGovernorEma`'s own doc
+    // in frameSampler.ts for why the arithmetic lives there, not here.
+    governorEma.current = frameSampler.stepGovernorEma(governorEma.current, ms)
     // Feeds both windows: the display one unconditionally, the governor's only
     // when the frame is steady-state evidence. See frameSampler.ts.
     frameSampler.push(clock.elapsedTime, ms)
@@ -484,8 +526,14 @@ export function PerfMonitor() {
 
     // `ms` (this frame's own raw, unsmoothed time) feeds the governor's
     // consecutive-overbudget emergency path — see quality.ts's own doc on
-    // why the smoothed EMA above cannot substitute for it.
-    quality.tick(ema.current, clock.elapsedTime, p95.current, ms)
+    // why the smoothed EMA above cannot substitute for it. That path is
+    // unaffected by F198: it needs CONSECUTIVE_OVERBUDGET_FRAMES (5) frames
+    // in a row over the ratio, which a single warm-mount stall among
+    // otherwise-steady neighbours does not produce.
+    //
+    // `governorEma`, not the display `ema`, is the mean-axis input — see its
+    // own doc above.
+    quality.tick(governorEma.current, clock.elapsedTime, p95.current, ms)
 
     // The scale has three inputs and two urgencies (see RENDER_SCALE_HOLD_SEC).
     //
