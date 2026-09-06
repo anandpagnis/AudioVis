@@ -8582,6 +8582,67 @@ things a curator will hit and should not have to rediscover.
       one may not recover the tier anyway. Wants the per-frame governor trace
       first.
 
+- [ ] **F199 · Five of the six scenes promoted live by the expanding-scenes
+      merge exceed the tier-0 solo budget by their OWN declared cost rows —
+      and CI does not catch it because F181b aborts the loop before reaching
+      them** — `src/engine/sceneCost.ts`, `src/scenes/index.ts`,
+      `src/engine/__tests__/slotBudget.test.ts`.
+
+      `slotBudget.test.ts:84-87` asserts every scene in `SCENES` costs less
+      than `sceneBudget(0) / 2` (= **5.05 ms**) solo at tier 0. It is a `for`
+      loop over `SCENES` with the assertion inside, so **the first failure
+      aborts it** — every scene after that index goes unchecked.
+
+      `beats` fails that assertion at 15.2 ms (F181b, pre-existing and
+      accepted) and sits **13th** in `SCENES`. Everything from index 14 on has
+      therefore never been checked by this gate. The expanding-scenes merge
+      appended six live scenes at the END of the array, all of them past the
+      abort point.
+
+      Their own declared tier-0 rows against the 5.05 ms bar:
+
+      | scene | t0 | t1 | t2 | t3 | t4 | clears bar at |
+      |---|---|---|---|---|---|---|
+      | `lattesfold` | **45.0** | 33.0 | 18.0 | 11.0 | **7.0** | **no tier** |
+      | `gyroid` | **18.0** | 14.2 | 9.0 | 6.6 | 4.7 | tier 4 only |
+      | `javazone` | **13.0** | 10.3 | 6.5 | 4.8 | 3.4 | tiers 3-4 |
+      | `fridaylines` | **11.0** | 8.7 | 5.5 | 4.0 | 2.9 | tiers 3-4 |
+      | `truchet` | **6.8** | 5.8 | 4.2 | 3.2 | 2.4 | tiers 2-4 |
+      | `butterfly` | 3.8 | 3.3 | 2.7 | 2.2 | 1.8 | every tier |
+
+      `lattesfold` is the sharp one: **45 ms at tier 0 is roughly three frames
+      at 60 Hz**, and it does not clear the bar even at tier 4. `truchet` was
+      moved out of `DISABLED_SCENES` by this merge, where its own prior comment
+      had held it out pending exactly this measurement.
+
+      **Every one of these rows is self-declared "NOT /bench-measured"** — they
+      are the authors' own op-count estimates, in a file whose header already
+      says so. So this is not "the numbers prove these scenes are too heavy";
+      it is "by the project's own estimates and the project's own gate, five of
+      six should not be live, and the gate is structurally unable to say so."
+      Either the estimates are pessimistic and a `/bench` will clear them, or
+      the roster just took on real frame cost. Nothing here distinguishes those
+      two, which is the point.
+
+      **This compounds F198 directly.** F198 records the governor demoting to
+      tier 4 and staying there on a machine whose GPU was 9% utilised. Adding
+      scenes that only clear the budget bar AT tier 4 — one that clears it
+      nowhere — makes the stuck-low behaviour load-bearing rather than merely
+      wasteful, and removes the headroom F195/F196 were spending.
+
+      **Two separable fixes.**
+      1. The gate: collect failures and assert once at the end
+         (`expect(failures).toEqual([])`) instead of asserting inside the loop,
+         so one accepted failure stops masking the rest of the roster. Cheap,
+         and it is the reason this went unnoticed. Note it will then report
+         six failures, not one — that is the honest state, not a regression.
+      2. The roster: `/bench` these six on real hardware and either re-price
+         the rows or move the ones that do not clear back to
+         `DISABLED_SCENES`, which is where `truchet`'s own header had already
+         put it for this exact reason.
+
+      Found while verifying the expanding-scenes merge, not by the suite.
+
 ## Verification status
 
 `npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1512 tests**
