@@ -17,7 +17,7 @@ import {
 
 /**
  * Built-in scenes are code-split: each import() below becomes its own chunk,
- * loaded the first time the scene is mounted (or earlier via preloadScene —
+ * loaded the first time the scene is mounted (or earlier via preloadScene â€”
  * requestScene/setLayer call it, so the chunk usually arrives well before the
  * downbeat commit). SceneManager wraps scenes in <Suspense fallback={null}>.
  */
@@ -57,13 +57,18 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   harkonnen: () => import('./FortressHarkonnenScene').then((m) => ({ default: m.FortressHarkonnenScene })),
   travelling: () => import('./TravellingScene').then((m) => ({ default: m.TravellingScene })),
   web: () => import('./OversaturatedWebScene').then((m) => ({ default: m.OversaturatedWebScene })),
+  gyroid: () => import('./GyroidFluxScene').then((m) => ({ default: m.GyroidFluxScene })),
+  fridaylines: () => import('./FridayLinesScene').then((m) => ({ default: m.FridayLinesScene })),
+  lattesfold: () => import('./LattesFoldScene').then((m) => ({ default: m.LattesFoldScene })),
+  javazone: () => import('./JavaZoneLatticeScene').then((m) => ({ default: m.JavaZoneLatticeScene })),
+  butterfly: () => import('./ButterflyFieldScene').then((m) => ({ default: m.ButterflyFieldScene })),
   nebula: () => import('./NebulaDriftScene').then((m) => ({ default: m.NebulaDriftScene })),
   dustfield: () => import('./DustFieldScene').then((m) => ({ default: m.DustFieldScene })),
   hold: () => import('./HoldScene').then((m) => ({ default: m.HoldScene })),
   strobe: () => import('./StrobeBarsScene').then((m) => ({ default: m.StrobeBarsScene })),
 }
 
-/** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
+/** Scene chunks whose import() has resolved â€” drives SceneManager's warm gate. */
 const loaded = new Set<string>()
 
 /** Load a scene chunk, recording completion so {@link isSceneLoaded} can report it. */
@@ -83,13 +88,13 @@ export function preloadScene(id: string): void {
 
 /**
  * Kick off every scene chunk's download at once. Idempotent and safe to call
- * repeatedly — `load()` de-dupes against `loaded`/`lazy`'s own module cache.
+ * repeatedly â€” `load()` de-dupes against `loaded`/`lazy`'s own module cache.
  *
  * Exists so a scene's cold-load cost (F127: a 2.3s freeze was traced to a
  * `maze` `import()` still in flight when the beat-locked commit's 2.5s
  * backstop expired) can be paid once, off the critical path, instead of on
  * whichever scene the show happens to request first. `requestScene`'s own
- * per-id `preloadScene` still fires on top of this — usually a no-op by
+ * per-id `preloadScene` still fires on top of this â€” usually a no-op by
  * then, but it costs nothing to keep, and it is what covers a scene that
  * gets requested before this had a chance to run.
  */
@@ -99,7 +104,7 @@ export function preloadAllScenes(): void {
 
 /**
  * Load a scene's chunk (if it isn't already) and then force its shaders to
- * compile + link + first-draw NOW, off the critical path — so the scene's first
+ * compile + link + first-draw NOW, off the critical path â€” so the scene's first
  * real mount mid-show doesn't stall on a cold compile (F144: multi-second on
  * the roster's heaviest scenes).
  *
@@ -126,7 +131,7 @@ export function prewarmScene(id: string, gl: THREE.WebGLRenderer): void {
  * Has the scene's lazy chunk finished loading? SceneManager only starts a
  * warming scene's compile countdown once this is true, so the warm window is
  * spent actually rendering (compiling the shader) rather than waiting on the
- * download — otherwise a slow chunk closes the window before the shader ever
+ * download â€” otherwise a slow chunk closes the window before the shader ever
  * compiles and the stall lands back on the beat.
  */
 export function isSceneLoaded(id: string): boolean {
@@ -168,6 +173,11 @@ const BeatsScene = lazyScene('beats')
 const FortressHarkonnenScene = lazyScene('harkonnen')
 const TravellingScene = lazyScene('travelling')
 const OversaturatedWebScene = lazyScene('web')
+const GyroidFluxScene = lazyScene('gyroid')
+const FridayLinesScene = lazyScene('fridaylines')
+const LattesFoldScene = lazyScene('lattesfold')
+const JavaZoneLatticeScene = lazyScene('javazone')
+const ButterflyFieldScene = lazyScene('butterfly')
 const NebulaDriftScene = lazyScene('nebula')
 const DustFieldScene = lazyScene('dustfield')
 const HoldScene = lazyScene('hold')
@@ -183,8 +193,8 @@ export type EffectTrigger = 'drop' | 'buildPeak' | 'sectionChange' | 'transient'
  *
  * Effects are the one slot with a lifecycle rather than a tenancy: they are
  * fired by an event, run for `durationSec`, and retire themselves. A scene in
- * this slot receives `ctx.slotProgress` (0→1 across its lifetime) and **must
- * reach visual zero by 1** — the engine unmounts it there and does not fade it
+ * this slot receives `ctx.slotProgress` (0â†’1 across its lifetime) and **must
+ * reach visual zero by 1** â€” the engine unmounts it there and does not fade it
  * out for you.
  */
 export interface SceneEffectSpec {
@@ -211,13 +221,13 @@ export interface SceneEffectSpec {
  * The absent case now agrees with that sentence: a scene that declares no
  * `license` reads as `unverified`, not as `original` (F01). It used to read as
  * `original`, which meant this doc comment and the code it documented said
- * opposite things — and the code won, silently, for any scene nobody
+ * opposite things â€” and the code won, silently, for any scene nobody
  * remembered to mark.
  */
 export type SceneLicense =
   /** Written for this project. No restriction. */
   | 'original'
-  /** CC BY or equivalent — commercial use permitted WITH attribution. */
+  /** CC BY or equivalent â€” commercial use permitted WITH attribution. */
   | 'attribution'
   /** CC BY-NC-SA or equivalent. MUST NOT ship in a commercial build. */
   | 'noncommercial'
@@ -231,7 +241,7 @@ export type SceneIntensity = 'calm' | 'medium' | 'high'
  * (low 1 / medium 2 / high 4).
  *
  * **Set these from `/bench`, not by eye.** They were guessed for a long time
- * and 10 of 16 were wrong — some by a lot, and in both directions. `network`
+ * and 10 of 16 were wrong â€” some by a lot, and in both directions. `network`
  * and `heap` were tagged `low` while measuring 6.3 ms and 5.2 ms of GPU time,
  * which mattered doubly for `network` because it is a LAYER: the budget thought
  * a `foldpath` + `network` composition cost 5 units of 6 when it actually cost
@@ -276,8 +286,8 @@ export interface SceneMetadata {
    * those trades crispness for nothing.
    *
    * The default is the safe one, which is the point: a scene that declares
-   * nothing — an import, a stranger's upload, a scene whose author never
-   * thought about it — is assumed fill-bound and is scaled. Claiming `false`
+   * nothing â€” an import, a stranger's upload, a scene whose author never
+   * thought about it â€” is assumed fill-bound and is scaled. Claiming `false`
    * is the assertion that buys full resolution, so it is the one that has to be
    * made out loud, and the one the engine declines to believe from an untrusted
    * registration (see `UNTRUSTED_MAX_BUDGET`).
@@ -289,8 +299,8 @@ export interface SceneMetadata {
    * `performanceCost` and `fillBound`.
    *
    * Optional, and normally omitted. The engine solves the canvas scale that
-   * holds this budget on whatever display is live — `sqrt(budget / fullResMP)`
-   * — so a scene never reads the display itself and never names a resolution;
+   * holds this budget on whatever display is live â€” `sqrt(budget / fullResMP)`
+   * â€” so a scene never reads the display itself and never names a resolution;
    * see engine/renderScale.ts.
    *
    * Reach for it only when a scene genuinely does not behave like its cost
@@ -304,7 +314,7 @@ export interface SceneMetadata {
 
   /**
    * Licence posture of the scene's source material. **Absent means
-   * `unverified`** — declaring shippability is opt-IN.
+   * `unverified`** â€” declaring shippability is opt-IN.
    *
    * Anything other than `original` or `attribution` is excluded from
    * {@link commerciallyShippableScenes}, which is what a packaging step should
@@ -312,7 +322,7 @@ export interface SceneMetadata {
    *
    * The default is the safe one, and it is the same argument
    * {@link SceneMetadata.fillBound} makes for its own: a scene that declares
-   * nothing — an ISF import, a pasted shader, a plugin registration — is
+   * nothing â€” an ISF import, a pasted shader, a plugin registration â€” is
    * assumed to be somebody else's until someone says otherwise out loud. The
    * old default was `original`, which read a missing field as a positive claim
    * of authorship and let an unmarked import ship as ours. Inverting it costs
@@ -322,7 +332,7 @@ export interface SceneMetadata {
   license?: SceneLicense
 
   /**
-   * Where the source material actually came from — the record that makes a
+   * Where the source material actually came from â€” the record that makes a
    * {@link SceneMetadata.license} claim checkable by someone who was not in
    * the room when the scene arrived.
    *
@@ -332,7 +342,7 @@ export interface SceneMetadata {
    * data to put the credit: the author's name lived in a prose comment above
    * the descriptor, which no packaging step, credits screen or marketplace
    * listing can read. Separately, the moment to record where a shader came
-   * from is the moment it lands — a week before launch the browser tab is
+   * from is the moment it lands â€” a week before launch the browser tab is
    * closed, the paste is gone, and a scene that was perfectly traceable on
    * arrival has become permanently `unverified`.
    *
@@ -346,7 +356,7 @@ export interface SceneMetadata {
     /**
      * The most specific pointer to the upstream work that genuinely exists: a
      * URL where the port recorded one, otherwise the title/platform it was
-     * cited by. Never reconstruct a URL from a title — a plausible link that
+     * cited by. Never reconstruct a URL from a title â€” a plausible link that
      * resolves to the wrong shader is worse than prose, because it reads as
      * verified and nobody checks it twice.
      */
@@ -354,7 +364,7 @@ export interface SceneMetadata {
     /** Upstream credit line, verbatim where the licence requires crediting. */
     author?: string
     /**
-     * SPDX identifier for the upstream grant — `MIT`, `CC0-1.0`, `CC-BY-4.0`,
+     * SPDX identifier for the upstream grant â€” `MIT`, `CC0-1.0`, `CC-BY-4.0`,
      * `CC-BY-NC-SA-3.0`. Use SPDX's own `NOASSERTION` when the source is known
      * but carried no licence at all: that is the honest reading of an unmarked
      * Shadertoy paste, and it stays distinguishable from a grant that was
@@ -371,7 +381,7 @@ export interface SceneMetadata {
   }
 
   /**
-   * Where this scene can be looked at — subject centre, comfortable distance,
+   * Where this scene can be looked at â€” subject centre, comfortable distance,
    * eye height. Declaring it hands camera control to the CameraDirector; a
    * scene without one keeps driving its own camera (the pre-refactor path).
    * This is the opt-in switch that lets scenes migrate one at a time.
@@ -382,7 +392,7 @@ export interface SceneMetadata {
 
   /**
    * Streaming/cost hints for the scene streamer (asset dependencies, VRAM/
-   * build-time estimates, load priority). Additive and optional — absent
+   * build-time estimates, load priority). Additive and optional â€” absent
    * means `resolveManifest()` computes sane defaults from `performanceCost`,
    * so nothing here forces hand-authoring for existing or third-party scenes.
    */
@@ -390,7 +400,7 @@ export interface SceneMetadata {
 
   /**
    * This scene genuinely reduces its own shader work when it is not the
-   * primary — it reads `ctx.role` and scales step counts, iterations or
+   * primary â€” it reads `ctx.role` and scales step counts, iterations or
    * particle counts down accordingly.
    *
    * Opt-in because the composition budget discounts a scene one cost step in a
@@ -401,14 +411,14 @@ export interface SceneMetadata {
   roleScalable?: boolean
 
   /**
-   * Scene Contract v1 — the parameters this scene can be TOLD, in the shared
+   * Scene Contract v1 â€” the parameters this scene can be TOLD, in the shared
    * seven-name vocabulary, plus its named modes. See ./contract.ts.
    *
    * Optional, and validated when present. A scene without one is not steerable:
    * `ctx.p` hands it the neutral position for all seven, no panel rows appear
    * for it, the director cannot perform it, and a preset carries nothing for
    * it. That is exactly the pre-v1 behaviour, so the roster migrates one scene
-   * at a time rather than in one commit — the same opt-in shape
+   * at a time rather than in one commit â€” the same opt-in shape
    * {@link SceneMetadata.cameraAnchor} uses.
    */
   contract?: SceneContract
@@ -426,7 +436,7 @@ export interface SceneDef {
   /**
    * Was this scene reviewed alongside the engine, or registered from outside it?
    *
-   * Absent means trusted — every entry in `SCENES` below is in-repo, and its
+   * Absent means trusted â€” every entry in `SCENES` below is in-repo, and its
    * cost claims were reviewed with its shader. {@link registerScene} sets this
    * to `false` for anything arriving from a plugin, a custom build or a future
    * marketplace, and the engine then declines to take that scene's word for how
@@ -445,7 +455,7 @@ export interface SceneDef {
  * Automation only ever selects from this array (AutoPilot/PerformanceDirector
  * go through getScenesForMood/getCompatibleScenes), the HUD builds its scene bar
  * and digit shortcuts by mapping it, and getScene() falls back to SCENES[0] for
- * any id it does not find — so a stale persisted sceneId, preset, cue, or
+ * any id it does not find â€” so a stale persisted sceneId, preset, cue, or
  * `?scene=` param degrades to the fallback instead of breaking.
  *
  * SCENES[0] is that fallback, so it should always be a safe, cheap default.
@@ -456,18 +466,18 @@ export const SCENES: SceneDef[] = [
     name: 'Wireframe Hero',
     component: WireframeHeroScene,
     metadata: {
-      // Written for this project against three's Wireframe/WireframeGeometry2 —
+      // Written for this project against three's Wireframe/WireframeGeometry2 â€”
       // no ported source, nothing pasted, no upstream to credit.
       //
       // Stated rather than left absent (F01): the six genuinely-original live
       // scenes were all relying on `?? 'original'` to pass the commercial
-      // filter, so their safety was real but invisible — indistinguishable, to
+      // filter, so their safety was real but invisible â€” indistinguishable, to
       // the code, from a scene someone forgot to mark. Now that absent means
       // `unverified`, each of them says it. Nothing about their posture
       // changed; it was only ever written down in the header comments.
       license: 'original',
       // Subject only. Dropping `accent` stops the engine compositing this over
-      // another subject — with both roles, `primary: chrome` + `accent:
+      // another subject â€” with both roles, `primary: chrome` + `accent:
       // wireframe` was a legal composition and the director produced it, which
       // is two subjects fighting for the same frame.
       contract: {
@@ -480,7 +490,7 @@ export const SCENES: SceneDef[] = [
       moods: ['ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'medium',
-      // Real edge geometry — a few hundred thin quads, cheaper than the
+      // Real edge geometry â€” a few hundred thin quads, cheaper than the
       // barycentric wireframe it supersedes.
       performanceCost: 'low',
       compatibleWith: ['plasma', 'dissolve', 'chrome'],
@@ -493,7 +503,7 @@ export const SCENES: SceneDef[] = [
         aggressive: 0.6,
       },
       cameraAnchor: { target: [0, 0, 0], distance: 9.5, height: 1.6 },
-      // `push` is what separates this scene's build from its peak — without it
+      // `push` is what separates this scene's build from its peak â€” without it
       // every high-energy mood resolves to the same spiral.
       cameraModes: ['orbit', 'cinematic', 'spiral', 'hover', 'push'],
     },
@@ -511,16 +521,16 @@ export const SCENES: SceneDef[] = [
       moods: ['groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'high', 'energy'],
       intensity: 'high',
-      // 70k advected points — the one genuinely heavy scene in the roster.
+      // 70k advected points â€” the one genuinely heavy scene in the roster.
       performanceCost: 'high',
       // F89: PlasmaFilamentScene reads ctx.role and cuts its particle draw
-      // range by ROLE_SCALED_FRACTION outside 'primary' — a real vertex/fill
+      // range by ROLE_SCALED_FRACTION outside 'primary' â€” a real vertex/fill
       // reduction (setDrawRange), not a cosmetic one. First scene in the
       // roster to actually earn this discount rather than just declaring it.
       roleScalable: true,
       compatibleWith: ['wireframe', 'dissolve', 'chrome'],
       moodFit: { groove: 0.7, building: 0.84, peak: 0.94, aggressive: 0.9 },
-      // Wide field — the particle cloud needs distance to read as a form.
+      // Wide field â€” the particle cloud needs distance to read as a form.
       cameraAnchor: { target: [0, 0, 0], distance: 17, height: 2.4 },
       cameraModes: ['orbit', 'spiral', 'handheld', 'cinematic'],
     },
@@ -564,7 +574,7 @@ export const SCENES: SceneDef[] = [
       performanceCost: 'medium',
       compatibleWith: ['wireframe', 'plasma', 'dissolve'],
       moodFit: { ambient: 0.7, mellow: 0.84, groove: 0.78, building: 0.7, peak: 0.62 },
-      // Specular hero — orbiting is what makes the reflections travel.
+      // Specular hero â€” orbiting is what makes the reflections travel.
       cameraAnchor: { target: [0, 0, 0], distance: 8.2, height: 1.2 },
       cameraModes: ['orbit', 'cinematic', 'spiral', 'topdown', 'pull'],
     },
@@ -584,19 +594,19 @@ export const SCENES: SceneDef[] = [
       // opportunities everywhere else. `network` scores HIGHER at every mood
       // they share (0.90/0.84/0.76/0.70 against 0.72/0.70/0.64/0.68) and was
       // still picked less often. A flowing ribbon is also the wrong answer at
-      // peak — that is what `plasma` is for.
+      // peak â€” that is what `plasma` is for.
       moods: ['ambient', 'mellow', 'groove', 'building'],
       bands: ['mid', 'vocal', 'high', 'energy'],
       intensity: 'medium',
       // A few dozen strips, all motion in the vertex shader.
       performanceCost: 'medium', // measured 2.14 ms GPU @ tier 1 (/bench)
       // F89: never primary (roles above), so `role !== 'primary'` holds on
-      // every mount — FlowRibbonScene reads it and cuts its ribbon count by
+      // every mount â€” FlowRibbonScene reads it and cuts its ribbon count by
       // ROLE_SCALED_FRACTION accordingly, on top of (not instead of) the
       // existing tier-based particleDensity cut.
       roleScalable: true,
       compatibleWith: ['wireframe', 'chrome', 'dissolve'],
-      // Was 0.97/0.96/0.92/0.98/0.97 — the highest scores in the whole roster,
+      // Was 0.97/0.96/0.92/0.98/0.97 â€” the highest scores in the whole roster,
       // which made this the top-ranked layer candidate in five of six moods and
       // so the layer that actually appeared most of the time. Dropped into the
       // same band as its peers (network 0.70-0.90, plasma 0.70-0.94) so it
@@ -613,7 +623,7 @@ export const SCENES: SceneDef[] = [
     name: 'PCD LIDAR Scan',
     component: PointCloudScanScene,
     metadata: {
-      // Original: a procedurally seeded field (fixed SEED, no asset loaded —
+      // Original: a procedurally seeded field (fixed SEED, no asset loaded â€”
       // the "LIDAR scan" is generated, not a captured point cloud) with
       // shaders written here.
       license: 'original',
@@ -642,8 +652,8 @@ export const SCENES: SceneDef[] = [
     component: MalachiteScene,
     metadata: {
       // CC0 from glslop, credited in-source to "claude-opus-4-8" (per the
-      // requester, who sourced and supplied it directly). Replaces `ink` —
-      // whose own provenance was never fully confirmed (see git history) — in
+      // requester, who sourced and supplied it directly). Replaces `ink` â€”
+      // whose own provenance was never fully confirmed (see git history) â€” in
       // the background slot, which strictly improves the roster's licence
       // posture rather than just swapping the look.
       license: 'original',
@@ -652,28 +662,28 @@ export const SCENES: SceneDef[] = [
       // gain underneath something else without competing.
       // Ported from the lilim branch, which declared these three as flat
       // metadata. Same fields, same values, wrapped in the versioned
-      // envelope this side uses — see ./contract.ts.
+      // envelope this side uses â€” see ./contract.ts.
       contract: {
         version: 1,
         params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, contrast: 0.5 },
         paramLabels: {
         // The source's own knob names. `contrast` doubles as the source's
-        // `tox` (toxicity/vividness) AND vein hardness — worth saying so
+        // `tox` (toxicity/vividness) AND vein hardness â€” worth saying so
         // rather than leaving a performer to guess what either means here.
         '*': { complexity: 'warp', density: 'bands', fill: 'scale', contrast: 'toxicity' },
         },
       },
       roles: ['background'],
       // Same broad coverage `ink` had, for the same reason: ground should be
-      // available almost everywhere. Stops short of `aggressive` — the
+      // available almost everywhere. Stops short of `aggressive` â€” the
       // swirling bands have no hard edge in them, and under an aggressive
       // subject they would read as haze rather than as ground.
       moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
       // `bass` stands in for the kick-onset routing (`s.onKick` drives the
-      // warp churn burst) — the SceneBand vocabulary has no onset-specific
+      // warp churn burst) â€” the SceneBand vocabulary has no onset-specific
       // entry, only level bands. Same convention `matrix` uses.
       bands: ['bass', 'mid', 'high', 'energy'],
-      // Ground, not subject — composited at the background slot's 0.4 gain,
+      // Ground, not subject â€” composited at the background slot's 0.4 gain,
       // 100% coverage with no focal point by construction.
       intensity: 'calm',
       // Measured (Apple M1, ANGLE/Metal, offscreen draw, readPixels-forced
@@ -687,7 +697,7 @@ export const SCENES: SceneDef[] = [
       // even without the budget doing any work. Confirm with /bench in situ.
       performanceCost: 'low',
       // Ground sits under anything. Listed against the scenes most likely to
-      // want it — `getCompatibleScenes` is symmetric, so this reads both ways
+      // want it â€” `getCompatibleScenes` is symmetric, so this reads both ways
       // and nothing else has to list `malachite` back.
       compatibleWith: ['wireframe', 'chrome'],
       // Held inside the roster's 0.6-0.9 band, same shape `ink` used:
@@ -700,7 +710,7 @@ export const SCENES: SceneDef[] = [
         building: 0.68,
         peak: 0.62,
       },
-      // Flat 2D screen-space noise; no ray, no camera concept at all — inert
+      // Flat 2D screen-space noise; no ray, no camera concept at all â€” inert
       // to this scene's own rendering, exactly like `heap` and `juliawings`.
       // Declared because CameraDirector.test.ts requires every registered
       // scene to offer real framing variety, whether or not it samples the
@@ -717,18 +727,18 @@ export const SCENES: SceneDef[] = [
     component: MatrixRainScene,
     metadata: {
       // Adapted from an ISF generator credited "ChatGPT, direction fix by
-      // Claude" — original code, not a Shadertoy derivative. No licence
+      // Claude" â€” original code, not a Shadertoy derivative. No licence
       // encumbrance; absent would already mean this, but stated explicitly
       // given the provenance is worth being able to point at.
       license: 'original',
       // OVERLAY only, as requested. It reads as an assertive, saturated accent
-      // over a calmer primary — the same slot `ribbons`/`orbs` occupy — not as
+      // over a calmer primary â€” the same slot `ribbons`/`orbs` occupy â€” not as
       // a subject or a ground: full-frame falling text has no depth of its own
       // to carry a frame, and it would fight a background scene's job of being
       // the least-noticed layer.
       // Ported from the lilim branch, which declared these three as flat
       // metadata. Same fields, same values, wrapped in the versioned
-      // envelope this side uses — see ./contract.ts.
+      // envelope this side uses â€” see ./contract.ts.
       contract: {
         version: 1,
         params: { speed: 0.5, density: 0.5, complexity: 0.5, contrast: 0.5 },
@@ -740,15 +750,15 @@ export const SCENES: SceneDef[] = [
       },
       roles: ['overlay'],
       // Bright, flickering, saturated text reads as energetic regardless of
-      // density/speed settings — never the material for a quiet moment.
+      // density/speed settings â€” never the material for a quiet moment.
       moods: ['groove', 'building', 'peak', 'aggressive'],
       // `bass` stands in for the kick-onset routing (`s.onKick`), the same
-      // convention `malachite` uses — the SceneBand vocabulary has no
+      // convention `malachite` uses â€” the SceneBand vocabulary has no
       // onset-specific entry, only level bands.
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
       // NOT MEASURED. Two hash() calls and a sin() per pixel, no loop, no
-      // march — this estimate follows the roster's `orbs` (also two-ish cheap
+      // march â€” this estimate follows the roster's `orbs` (also two-ish cheap
       // calls, tagged low) rather than a hand guess in isolation, but per the
       // roster's own history (10 of 16 hand-tagged costs were wrong) this
       // should be confirmed with /bench before it funds a real composition.
@@ -756,15 +766,15 @@ export const SCENES: SceneDef[] = [
       // Geometric/formal primaries a hacker-rain overlay complements without
       // fighting for the same visual territory.
       compatibleWith: ['wireframe', 'chrome'],
-      // Mid-pack across its range, not maxed — `ribbons`'s history is the
+      // Mid-pack across its range, not maxed â€” `ribbons`'s history is the
       // warning here: one outlier mood weight gave it a near-monopoly on a
       // slot, and this keeps the same shape other overlay scenes use.
       moodFit: { groove: 0.6, building: 0.72, peak: 0.8, aggressive: 0.76 },
-      // Flat 2D screen-space shader, no camera concept — inert here, declared
+      // Flat 2D screen-space shader, no camera concept â€” inert here, declared
       // only for CameraDirector.test.ts's variety invariant, same as `malachite`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-      // No `shape`/`fill`/`tilt` — there is no silhouette or camera-relative
+      // No `shape`/`fill`/`tilt` â€” there is no silhouette or camera-relative
       // axis in a full-frame column grid for those to bind to.
     },
   },
@@ -774,22 +784,22 @@ export const SCENES: SceneDef[] = [
     component: KifsRoseScene,
     metadata: {
       // CC0-1.0, sourced from glslop (shader fkdh866z), which records
-      // `provenance_type: "witnessed_generation"` and `parents: []` — the
+      // `provenance_type: "witnessed_generation"` and `parents: []` â€” the
       // platform's own generation log, not a claimed upload, no fork lineage
       // to audit. Stronger provenance than a bare in-source credit comment.
       license: 'original',
-      // Subject only — same reasoning as `kaleido`, its closest sibling: a
+      // Subject only â€” same reasoning as `kaleido`, its closest sibling: a
       // centred mandala owns the middle of the frame by construction.
       // Composited over another subject the two symmetries fight; behind one
       // it is entirely hidden by its own dark centre.
       // Ported from the lilim branch, which declared these three as flat
       // metadata. Same fields, same values, wrapped in the versioned
-      // envelope this side uses — see ./contract.ts.
+      // envelope this side uses â€” see ./contract.ts.
       contract: {
         version: 1,
         params: { speed: 0.5, shape: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
         paramLabels: {
-        // The source's own input names — none of the canonical keys say this
+        // The source's own input names â€” none of the canonical keys say this
         // on their own.
         '*': {
           shape: 'symmetry',
@@ -809,7 +819,7 @@ export const SCENES: SceneDef[] = [
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
       // NOT MEASURED. Up to 20 loop iterations of abs/dot/divide/matrix-multiply
-      // plus three orbit-trap distance evaluations per pixel — meaningfully
+      // plus three orbit-trap distance evaluations per pixel â€” meaningfully
       // heavier than `kaleido`'s measured 3.15 ms (four iterations of
       // fract/length/sin/pow, no matrix multiply). Tagged `high` rather than
       // guessed at `medium` on that comparison; confirm with `/bench`.
@@ -817,15 +827,15 @@ export const SCENES: SceneDef[] = [
       // Matches `kaleido`: a centred mandala primary doesn't want to sit as a
       // background or accent under something else.
       compatibleWith: [],
-      // Same 0.6-0.9 band as `kaleido`, calibrated close but not copied — equal
+      // Same 0.6-0.9 band as `kaleido`, calibrated close but not copied â€” equal
       // weights would make the director's tie-break between the two mandala
       // scenes arbitrary.
       moodFit: { groove: 0.8, building: 0.84, peak: 0.88, aggressive: 0.82 },
-      // Flat 2D fractal math, no camera concept — inert here, declared only
+      // Flat 2D fractal math, no camera concept â€” inert here, declared only
       // for CameraDirector.test.ts's variety invariant, same as `kaleido`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-      // No `density` — nothing in an iterated fold has a discrete element
+      // No `density` â€” nothing in an iterated fold has a discrete element
       // count for it to bind to.
     },
   },
@@ -835,7 +845,7 @@ export const SCENES: SceneDef[] = [
     component: MazeFlightScene,
     metadata: {
       // CC0-1.0 from glslop (shader gstbkfmm), `provenance_type:
-      // "witnessed_generation"`, `parents: []` — platform generation log, not
+      // "witnessed_generation"`, `parents: []` â€” platform generation log, not
       // a claimed upload, no fork lineage to audit.
       license: 'original',
       // Subject only, and not negotiable: this is a first-person flythrough
@@ -843,13 +853,13 @@ export const SCENES: SceneDef[] = [
       // it that reads as ground or as an accent over something else.
       roles: ['primary'],
       // Forward motion with a hard beat is the whole premise, so it starts at
-      // `groove`. Overlaps `tunnel`'s territory deliberately — both fly
-      // forward — but the moodFit peaks are pulled apart below so they trade
+      // `groove`. Overlaps `tunnel`'s territory deliberately â€” both fly
+      // forward â€” but the moodFit peaks are pulled apart below so they trade
       // rather than substitute.
       moods: ['groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // Measured 5.4 ms at tier 0 on an M1 (offscreen, scene alone) — see the
+      // Measured 5.4 ms at tier 0 on an M1 (offscreen, scene alone) â€” see the
       // file header for the method and the full ablation. That is just over the
       // >4.5 ms `high` threshold and in line with the roster's existing
       // heavyweights (`network` 6.3 ms). Worth re-confirming with /bench in
@@ -858,7 +868,7 @@ export const SCENES: SceneDef[] = [
       // Owns the frame; nothing composites with a first-person corridor.
       compatibleWith: [],
       // Peaks at `aggressive`, where `tunnel` peaks at `building` and `kifs` at
-      // `peak` — three high-energy scenes that would otherwise shadow each
+      // `peak` â€” three high-energy scenes that would otherwise shadow each
       // other across the same range.
       moodFit: { groove: 0.66, building: 0.74, peak: 0.82, aggressive: 0.88 },
       // The shader drives its own camera down the corridor; the engine's
@@ -877,7 +887,7 @@ export const SCENES: SceneDef[] = [
       // levels; maxing the slider still buys the third at ~9.5 ms.
       // Ported from the lilim branch, which declared `params` and
       // `paramLabels` as flat metadata. Same fields, same values, wrapped in
-      // the versioned envelope this side uses — see ./contract.ts.
+      // the versioned envelope this side uses â€” see ./contract.ts.
       contract: {
         version: 1,
         params: {
@@ -890,7 +900,7 @@ export const SCENES: SceneDef[] = [
           contrast: 0.5,
         },
         paramLabels: {
-          // The source's own knob names — none of the canonical keys say this on
+          // The source's own knob names â€” none of the canonical keys say this on
           // their own. `complexity` is additionally capped by the quality
           // governor, so at low tiers the slider's top end is unreachable.
           '*': {
@@ -916,17 +926,17 @@ export const SCENES: SceneDef[] = [
       // reference art turned out to be an unrelated technique, this stood on
       // its own and earned its own slot instead of being discarded.
       license: 'original',
-      // Subject only — a centred fractal owns the whole frame by
+      // Subject only â€” a centred fractal owns the whole frame by
       // construction, same reasoning as `kifs`.
       // Ported from the lilim branch, which declared these three as flat
       // metadata. Same fields, same values, wrapped in the versioned
-      // envelope this side uses — see ./contract.ts.
+      // envelope this side uses â€” see ./contract.ts.
       contract: {
         version: 1,
         params: { speed: 0.5, shape: 0.5, complexity: 0.6, fill: 0.5, contrast: 0.5 },
         paramLabels: {
         // `shape` controls the c-orbit radius, which is the single biggest
-        // lever on the set's character — worth its own name rather than
+        // lever on the set's character â€” worth its own name rather than
         // leaving a performer to guess what "shape" does here.
         '*': { shape: 'orbit', complexity: 'detail', fill: 'zoom' },
         },
@@ -954,11 +964,11 @@ export const SCENES: SceneDef[] = [
       // Owns the frame; nothing composites with a full-bleed fractal.
       compatibleWith: [],
       moodFit: { groove: 0.76, building: 0.82, peak: 0.86, aggressive: 0.9 },
-      // Flat 2D fractal math, no camera concept — inert here, declared only
+      // Flat 2D fractal math, no camera concept â€” inert here, declared only
       // for CameraDirector.test.ts's variety invariant, same as `kifs`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-      // No `density`/`tilt` — nothing in an iterated escape-time field has a
+      // No `density`/`tilt` â€” nothing in an iterated escape-time field has a
       // discrete element count or a camera-relative axis for those to bind to.
     },
   },
@@ -968,12 +978,12 @@ export const SCENES: SceneDef[] = [
     component: SnowflakeScene,
     metadata: {
       // Supplied directly by the requester as an ISF shader, credited in-source
-      // to "claude-opus-4-8" — same provenance basis as `malachite` (a
-      // witnessed generation, no upstream to audit) — so `license: 'original'`.
+      // to "claude-opus-4-8" â€” same provenance basis as `malachite` (a
+      // witnessed generation, no upstream to audit) â€” so `license: 'original'`.
       license: 'original',
       // `shape` -> arm count (steps 4..8). `complexity` -> branch/fern length.
       // `speed` -> turn rate (drastic). `fill` -> zoom. `tilt` -> a static
-      // rotation offset. `contrast` -> ice tint. No `density` — the six side
+      // rotation offset. `contrast` -> ice tint. No `density` â€” the six side
       // branches are fixed geometry with nothing discrete to bind.
       contract: {
         version: 1,
@@ -982,17 +992,17 @@ export const SCENES: SceneDef[] = [
           '*': { shape: 'arms', complexity: 'branching', fill: 'zoom', tilt: 'angle', contrast: 'tint' },
         },
       },
-      // Subject only — a centred crystal on its own cold field, same as the
+      // Subject only â€” a centred crystal on its own cold field, same as the
       // other full-bleed 2D shader primaries (`kifs`, `wingfold`).
       roles: ['primary'],
-      // Slow, serene, glinting — sits in the calm half. The kick-bloom and
+      // Slow, serene, glinting â€” sits in the calm half. The kick-bloom and
       // energy swell give it just enough to also hold a `building` section.
       moods: ['ambient', 'mellow', 'groove', 'building'],
       // `bass` stands in for the kick-onset routing (`s.onKick` -> glint burst
       // + line-width bloom), same convention as `malachite` / `matrix`.
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'calm',
-      // NOT /bench-measured — documented op-count estimate (see sceneCost.ts).
+      // NOT /bench-measured â€” documented op-count estimate (see sceneCost.ts).
       // A closed-form 2D SDF: one `atan`, a 6-iteration `seg()` loop (~14
       // sqrt), three more `length()` terms, one hash. A notch above the
       // `shock`/`flare`/`spark` estimates (pure `exp()`), still an order of
@@ -1001,7 +1011,7 @@ export const SCENES: SceneDef[] = [
       performanceCost: 'low',
       compatibleWith: [],
       moodFit: { ambient: 0.84, mellow: 0.8, groove: 0.64, building: 0.6 },
-      // Flat 2D, no camera concept — declared only for CameraDirector.test.ts's
+      // Flat 2D, no camera concept â€” declared only for CameraDirector.test.ts's
       // variety invariant, same as `kifs` / `wingfold`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
@@ -1013,7 +1023,7 @@ export const SCENES: SceneDef[] = [
     component: BeatsScene,
     metadata: {
       // mrange's minishader "4D Beats" (Shadertoy). Header declares `// CC0` and
-      // reads as mrange's — who releases everything CC0 — so `license:
+      // reads as mrange's â€” who releases everything CC0 â€” so `license:
       // 'original'`, same basis as `truchet` / `maze` / `malachite`. CC0 line +
       // mrange's shader-dev credit list kept in BeatsScene.tsx's header.
       //
@@ -1021,7 +1031,7 @@ export const SCENES: SceneDef[] = [
       // fabricated CEILING, not an estimate: this is a 77-step 4D raymarch with
       // NO early ray termination (every pixel runs the whole march). Op-count
       // against the measured roster (`kifs` 2.97 ms at tier 0, ~20 iters WITH an
-      // escape) says the true tier-0 cost is materially higher — likely 2-4x —
+      // escape) says the true tier-0 cost is materially higher â€” likely 2-4x â€”
       // than the sub-4 ms number sitting in sceneCost.ts to clear
       // slotBudget.test.ts. `uMaxSteps` is wired to the quality governor.
       // ACTION: run `/bench`; if tier 0 is over ~4 ms, either cut the step
@@ -1031,7 +1041,7 @@ export const SCENES: SceneDef[] = [
       // `speed` -> beat-rate multiplier (drastic + energy). `complexity` ->
       // march depth (rides on the quality tier). `density` -> @mla inversion
       // strength (the source's constant 9). `tilt` -> static 4D angle offset.
-      // `contrast` -> tanh clip point. No `shape`/`fill` — an inversion-folded
+      // `contrast` -> tanh clip point. No `shape`/`fill` â€” an inversion-folded
       // 4D lattice has no silhouette family or coverage dial to bind them to.
       license: 'original',
       contract: {
@@ -1041,7 +1051,7 @@ export const SCENES: SceneDef[] = [
           '*': { complexity: 'depth', density: 'inversion', tilt: '4D angle', contrast: 'clip' },
         },
       },
-      // Subject only — a full-frame 4D lattice flythrough that owns the whole
+      // Subject only â€” a full-frame 4D lattice flythrough that owns the whole
       // frame, same as `kifs` / `wingfold` / `truchet`.
       roles: ['primary'],
       // Beat-locked by construction (floor(T)+sqrt(F) IS the animation), so it
@@ -1051,15 +1061,15 @@ export const SCENES: SceneDef[] = [
       moods: ['groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // NOT /bench-MEASURED — see the CEILING note above. A 77-step 4D march,
+      // NOT /bench-MEASURED â€” see the CEILING note above. A 77-step 4D march,
       // ~10 length()/transcendental ops per step, no early-out. Heavier
       // per-pixel than `kifs`; lighter than `neonjungle`.
       performanceCost: 'high',
       compatibleWith: [],
-      // Peaks at `building` — a locking, tightening lattice reads as a build —
+      // Peaks at `building` â€” a locking, tightening lattice reads as a build â€”
       // where `truchet` peaks at `peak` and `wingfold` at `aggressive`.
       moodFit: { groove: 0.72, building: 0.86, peak: 0.8, aggressive: 0.74 },
-      // Flat screen-space 4D math, no engine-camera concept — declared only for
+      // Flat screen-space 4D math, no engine-camera concept â€” declared only for
       // CameraDirector.test.ts's variety invariant, same as `kifs` / `truchet`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
@@ -1072,24 +1082,24 @@ export const SCENES: SceneDef[] = [
     metadata: {
       // mrange's Shadertoy "Moving without travelling". Header declares
       // `// License CC0`; bundled helpers are IQ (MIT) + mercury/hg_sdf (MIT
-      // option) + trivial public snippets — consistent with CC0 -> `license:
+      // option) + trivial public snippets â€” consistent with CC0 -> `license:
       // 'original'`, same basis as `truchet` / `maze` / `malachite`. Credit +
       // helper licences spelled out in TravellingScene.tsx's header.
       //
       // FORCED LIVE by explicit request. Its SCENE_COST_MS row is a FABRICATED
       // ceiling (3.9), off by ~5-7x: this is the heaviest shader in the roster
-      // by a wide margin — 4 stacked planes, each running one `warp()` plus a
+      // by a wide margin â€” 4 stacked planes, each running one `warp()` plus a
       // 4-tap finite-difference `normal()` (= 5 warps/plane), each warp being an
       // eye SDF + a kaleidoscope fold + 5 fbm. True tier-0 cost is ~20-30 ms,
       // ~10-15 ms at the bottom tier. The budget model will mis-schedule this;
       // `compatibleWith: []` keeps the damage to one bad transition.
       // ACTION: cut `normal()` to a 2-tap, drop to 2 planes, let the governor
-      // pull `uOctaves` to 2, then `/bench` — or move to DISABLED_SCENES.
+      // pull `uOctaves` to 2, then `/bench` â€” or move to DISABLED_SCENES.
       //
       // `speed` -> flythrough rate (drastic + energy). `complexity` -> fbm
       // octave count (2..4, governor-capped). `density` -> kaleidoscope
       // repetitions (source const 50). `tilt` -> static frame roll. `contrast`
-      // -> postProcess saturation. No `shape`/`fill` — a plane-stack flythrough
+      // -> postProcess saturation. No `shape`/`fill` â€” a plane-stack flythrough
       // has no silhouette family or coverage dial to bind them to.
       license: 'original',
       contract: {
@@ -1104,21 +1114,21 @@ export const SCENES: SceneDef[] = [
           },
         },
       },
-      // Subject only — a full-bleed flythrough that owns the whole frame and its
+      // Subject only â€” a full-bleed flythrough that owns the whole frame and its
       // own camera, same as `maze` / `neonjungle` / `truchet`.
       roles: ['primary'],
-      // A slow hypnotic drift, never frantic — starts at `mellow`, and the
+      // A slow hypnotic drift, never frantic â€” starts at `mellow`, and the
       // kick-pop + energy throttle carry it to `peak`.
       moods: ['mellow', 'groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // NOT /bench-MEASURED — see the CEILING note above. The dearest shader in
+      // NOT /bench-MEASURED â€” see the CEILING note above. The dearest shader in
       // the roster: ~100 fbm + ~24 eye SDFs per pixel, ~5-7x the tier-0 budget
       // bar. `/bench` + an optimisation pass before this is anything but manual.
       performanceCost: 'high',
       compatibleWith: [],
       moodFit: { mellow: 0.7, groove: 0.8, building: 0.82, peak: 0.76 },
-      // The shader drives its own camera path and never reads the engine's —
+      // The shader drives its own camera path and never reads the engine's â€”
       // declared only for CameraDirector.test.ts's variety invariant, same as
       // `maze` / `neonjungle`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
@@ -1130,12 +1140,12 @@ export const SCENES: SceneDef[] = [
     name: 'Oversaturated Web',
     component: OversaturatedWebScene,
     metadata: {
-      // Shadertoy "Oversaturated web", header declares CC0 — a derivative of
+      // Shadertoy "Oversaturated web", header declares CC0 â€” a derivative of
       // BigWing's https://www.shadertoy.com/view/lscczl. Reads as mrange's.
       // CC0 -> `license: 'original'`, same basis as `truchet` / `maze`.
       license: 'original',
       // LIVE on an ESTIMATE (see sceneCost.ts). The source is 36 cubic-bezier
-      // distance solves/px (6 planes x 6 strands) + 6 hextile + ~36 hashes —
+      // distance solves/px (6 planes x 6 strands) + 6 hextile + ~36 hashes â€”
       // heavier than `truchet`, over the tier-0 bar at native res. This port
       // keeps the curves but makes it fundable: `density` dial = strands/node
       // (2..6, default 4), `complexity` dial = plane count (3..6, default 5,
@@ -1154,25 +1164,25 @@ export const SCENES: SceneDef[] = [
           '*': { complexity: 'depth', density: 'strands', fill: 'fov', tilt: 'roll', contrast: 'exposure' },
         },
       },
-      // Subject only — a full-bleed glow flythrough that owns its own camera,
+      // Subject only â€” a full-bleed glow flythrough that owns its own camera,
       // same as `truchet` / `maze` / `neonjungle`.
       roles: ['primary'],
-      // Saturated, pulsing, relentless forward motion — driving/hard half,
+      // Saturated, pulsing, relentless forward motion â€” driving/hard half,
       // overlapping `truchet` / `kifs` territory.
       moods: ['groove', 'building', 'peak', 'aggressive'],
       // `bass` stands in for the kick-onset routing (`s.onKick` -> strand/node
       // glow surge), same convention as `malachite` / `matrix`.
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // NOT /bench-MEASURED — documented estimate (see sceneCost.ts). ~20
+      // NOT /bench-MEASURED â€” documented estimate (see sceneCost.ts). ~20
       // bezier solves/px at neutral dials, rendered offscreen and upscaled.
-      // Priced by comparison against `kifs` (2.97 ms) / `truchet` — confirm
+      // Priced by comparison against `kifs` (2.97 ms) / `truchet` â€” confirm
       // with /bench.
       performanceCost: 'high',
       // Owns the frame; nothing composites with a full-bleed glow flythrough.
       compatibleWith: [],
       moodFit: { groove: 0.76, building: 0.82, peak: 0.86, aggressive: 0.8 },
-      // The shader frames itself — flat screen-space math, no engine camera.
+      // The shader frames itself â€” flat screen-space math, no engine camera.
       // Declared only for CameraDirector.test.ts's variety invariant, same as
       // `kifs` / `truchet`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
@@ -1188,8 +1198,8 @@ export const SCENES: SceneDef[] = [
       // `orbs` claimed the `effect` role once, then lost it when the licence
       // sweep quarantined its Shadertoy-derived source into the withheld
       // list below. The ledger's own prescribed fix was "a LICENSED scene
-      // willing to claim the role" — the pattern `malachite` already used for
-      // `background` — so this is that scene for `effect`, not a revival of
+      // willing to claim the role" â€” the pattern `malachite` already used for
+      // `background` â€” so this is that scene for `effect`, not a revival of
       // `orbs`.
       license: 'original',
       roles: ['effect'],
@@ -1201,7 +1211,7 @@ export const SCENES: SceneDef[] = [
       performanceCost: 'low',
       compatibleWith: [],
       moodFit: { groove: 0.7, building: 0.85, peak: 0.95, aggressive: 0.9 },
-      // Flat 2D screen-space math, no camera concept at all — inert here,
+      // Flat 2D screen-space math, no camera concept at all â€” inert here,
       // declared only for CameraDirector.test.ts's variety invariant, same
       // reasoning as `heap`/`kaleido` in the withheld list below.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
@@ -1215,7 +1225,7 @@ export const SCENES: SceneDef[] = [
     metadata: {
       license: 'original',
       roles: ['effect'],
-      // Section changes and build peaks happen at any mood, unlike a drop —
+      // Section changes and build peaks happen at any mood, unlike a drop â€”
       // so this fires far more broadly than `shock`, and is tuned dimmer and
       // shorter (1.8s vs 4.0s) so it reads as a marker rather than a second
       // instance of the same kind of punctuation.
@@ -1245,13 +1255,13 @@ export const SCENES: SceneDef[] = [
       license: 'original',
       roles: ['effect'],
       // `transient` fires on far more onsets than `drop` or a section change,
-      // so the mitigation is the COOLDOWN (>2s — see effectLifecycle.test.ts's
+      // so the mitigation is the COOLDOWN (>2s â€” see effectLifecycle.test.ts's
       // "does not fire an effect on every transient"), not a sub-second
       // duration: this engine's own effect-lifetime contract holds "under
       // about a second reads as a dropped frame" for every effect regardless
       // of how often its trigger fires. `effectEnvelope`'s fast-rise, long-
-      // decay shape still reads as a quick pop at 1.2s — the decay dominates
-      // the lifetime at any duration — so the punctuation feel survives the
+      // decay shape still reads as a quick pop at 1.2s â€” the decay dominates
+      // the lifetime at any duration â€” so the punctuation feel survives the
       // longer floor.
       effect: { triggers: ['transient'], durationSec: 1.2, cooldownSec: 2.5 },
       moods: ['groove', 'building', 'peak', 'aggressive'],
@@ -1268,7 +1278,7 @@ export const SCENES: SceneDef[] = [
   // Four scenes closing counted gaps in the live roster: one background scene
   // total (malachite alone), zero scenes declaring `silence`, and no
   // strobe/blinder archetype despite it being the most-used tool in techno
-  // and DnB. See docs — the plan this batch executes computed those counts
+  // and DnB. See docs â€” the plan this batch executes computed those counts
   // directly from this array rather than estimating them.
   {
     id: 'nebula',
@@ -1284,17 +1294,17 @@ export const SCENES: SceneDef[] = [
         },
       },
       roles: ['background'],
-      // Stops at groove, one step short of malachite's own peak ceiling —
+      // Stops at groove, one step short of malachite's own peak ceiling â€”
       // this ground should never compete for attention, even less than
       // malachite does.
       moods: ['ambient', 'mellow', 'groove'],
       bands: ['bass', 'mid', 'energy'],
       intensity: 'calm',
-      // NOT /bench-measured — see NebulaDriftScene.tsx's own header for the
+      // NOT /bench-measured â€” see NebulaDriftScene.tsx's own header for the
       // full op-count reasoning. Anchored against malachite's measured row
       // just below (0.72-0.76ms): 3 fbm calls x <=3 octaves = <=9 noise()
       // samples per pixel, against malachite's 5 fbm calls x <=5 octaves =
-      // <=25 samples — roughly a third of the per-pixel noise cost, using the
+      // <=25 samples â€” roughly a third of the per-pixel noise cost, using the
       // same hash-based value noise. paletteRamp adds one small FIXED Oklab
       // term on top (not one that scales with octave count). Priced flat,
       // same shape as malachite's own near-flat row, since the only tier
@@ -1321,20 +1331,20 @@ export const SCENES: SceneDef[] = [
         },
       },
       roles: ['background'],
-      // The universal, always-safe background — the one scene on the roster
+      // The universal, always-safe background â€” the one scene on the roster
       // meant to sit under EVERY mood including silence, unlike malachite
       // (stops at peak) and nebula (stops at groove).
       moods: ['silence', 'ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'high', 'energy'],
       intensity: 'calm',
-      // NOT /bench-measured — see DustFieldScene.tsx's own header. Three
+      // NOT /bench-measured â€” see DustFieldScene.tsx's own header. Three
       // fixed-count `dustLayer()` calls (no loop at all, so no loop-bound
-      // question even arises), each 5 hash() evals + 2 smoothstep()s — no
+      // question even arises), each 5 hash() evals + 2 smoothstep()s â€” no
       // fbm, no domain warp, no iteration. Roughly the per-call cost of a
       // SINGLE octave of malachite's noise(), called 3x total per pixel
       // against malachite's up to 25 noise() evaluations under the hood.
       // Priced well under malachite's measured 0.72-0.76ms row, flat across
-      // tiers (declares no quality.knobs response — nothing here scales with
+      // tiers (declares no quality.knobs response â€” nothing here scales with
       // an octave/step count to gate). Replace with a real /bench sweep.
       performanceCost: 'low',
       compatibleWith: ['plasma', 'pointcloud', 'dissolve'],
@@ -1357,7 +1367,7 @@ export const SCENES: SceneDef[] = [
     component: HoldScene,
     metadata: {
       license: 'original',
-      // No contract — deliberately. See HoldScene.tsx's header: the one
+      // No contract â€” deliberately. See HoldScene.tsx's header: the one
       // value that looks like a dial (breath rate) is not exposed, since
       // handing a performer control over "how is the show breathing right
       // now" fights the scene's own concept.
@@ -1366,11 +1376,11 @@ export const SCENES: SceneDef[] = [
       bands: ['energy', 'bass'],
       intensity: 'calm',
       // NOT /bench-measured. Two closed-form scalar ops per pixel (one sin,
-      // one exp), no loop, no texture read — at or under the roster's `low`
+      // one exp), no loop, no texture read â€” at or under the roster's `low`
       // floor, likely the cheapest entry on it. See shock/flare/spark's own
       // rows below for the same op-count-comparison convention this follows.
       performanceCost: 'low',
-      // Empty deliberately, not an oversight — see the scene's own header.
+      // Empty deliberately, not an oversight â€” see the scene's own header.
       // As primary during near-total silence, nothing on the live roster
       // belongs paired with a near-black field; as background, real silence
       // means no competing primary is fighting for the slot above it.
@@ -1389,13 +1399,13 @@ export const SCENES: SceneDef[] = [
     metadata: {
       license: 'original',
       roles: ['effect'],
-      // `effect`, not `overlay` — deliberate: this is the one scene with a
+      // `effect`, not `overlay` â€” deliberate: this is the one scene with a
       // genuine physical-safety concern (photosensitive seizure triggers),
       // and `effect` is the only role with an engine-enforced minimum gap
       // (cooldownSec) and a hard lifetime cap (durationSec). See
       // StrobeBarsScene.tsx's header for the full safety design, including a
       // second, independent 333ms hard flash-rate floor enforced in the
-      // scene's own update() — cooldownSec bounds how often the WHOLE effect
+      // scene's own update() â€” cooldownSec bounds how often the WHOLE effect
       // fires; that floor bounds how many hard-contrast pulses can happen
       // inside one firing, which cooldownSec cannot see.
       effect: { triggers: ['drop'], durationSec: 1.5, cooldownSec: 16 },
@@ -1403,16 +1413,430 @@ export const SCENES: SceneDef[] = [
       bands: ['bass', 'energy'],
       intensity: 'high',
       // NOT /bench-measured. A floor/fract bar pattern plus three
-      // smoothsteps, no loop, no noise, no division — no uRes/aspect
+      // smoothsteps, no loop, no noise, no division â€” no uRes/aspect
       // correction needed either, since bar position only reads vUv.x.
       // Cheaper than shock/flare/spark's own exp()-based falloffs, so priced
       // at or below their row.
       performanceCost: 'low',
       compatibleWith: [],
       moodFit: { peak: 0.9, aggressive: 0.95 },
-      // Flat 2D screen-space math, no camera concept at all — inert here,
+      // Flat 2D screen-space math, no camera concept at all â€” inert here,
       // declared only for CameraDirector.test.ts's variety invariant, same
       // reasoning shock/flare/spark give for their own identical block.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'gyroid',
+    name: 'Gyroid Flux',
+    component: GyroidFluxScene,
+    metadata: {
+      // Shadertoy source, supplied directly by the requester and credited as
+      // CC0 -> `license: 'original'`, same basis as `beats` / `harkonnen` /
+      // `web`. No URL was given with the paste â€” see GyroidFluxScene.tsx's
+      // header if a source page turns up later.
+      //
+      // FORCED LIVE by explicit request. A 150-step march with NO hit-based
+      // early-out (every pixel accumulates glow for every step it is given â€”
+      // same shape as `beats`, not `maze`). Op-count against the two nearest
+      // analogues lands 7-22 ms at tier 0 depending on method (kifs-scaled vs
+      // beats-scaled â€” see the .tsx header for both), well past
+      // `slotBudget.test.ts`'s `< sceneBudget(0)/2 â‰ˆ 4ms` bar either way.
+      // `SCENE_COST_MS.gyroid` is priced at the pessimistic (kifs-scaled) end
+      // of that range â€” a documented worst-case estimate, not a fabricated
+      // ceiling built to clear the test. ACTION: run `/bench` and replace it
+      // with a measurement.
+      //
+      // `speed` -> flight/orbit + domain-warp clock rate. `shape` -> warp
+      // amount. `complexity` -> lattice cell frequency. `density` -> glow-band
+      // thickness. `contrast` -> glow falloff sharpness. `fill` -> zoom.
+      // `tilt` -> static camera-wobble offset (replaces the source's mouse
+      // look, which this project has no equivalent input for).
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'warp',
+            complexity: 'scale',
+            density: 'thickness',
+            fill: 'zoom',
+            tilt: 'wobble',
+          },
+        },
+      },
+      // Subject only â€” a full-bleed drift through an infinite lattice that
+      // owns its own camera, same as `maze` / `neonjungle` / `tunnel`.
+      roles: ['primary'],
+      // Slow orbital drift and a soft glow-accumulation look read cooler and
+      // more hypnotic than a committed flythrough like `tunnel` â€” starts at
+      // `ambient` rather than `groove`. No inherent chaos in the structure
+      // itself (same reasoning as `tunnel`), so it stops at `building`
+      // rather than reaching `peak`/`aggressive`.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // FORCED LIVE â€” see the licence note above and SCENE_COST_MS.gyroid in
+      // sceneCost.ts for the worst-case estimate this ceiling is priced from.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed flythrough.
+      compatibleWith: [],
+      moodFit: { ambient: 0.7, mellow: 0.85, groove: 0.84, building: 0.76 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera â€” declared only for CameraDirector.test.ts's variety
+      // invariant, same as `maze` / `tunnel` / `neonjungle`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'fridaylines',
+    name: 'Friday Lines',
+    component: FridayLinesScene,
+    metadata: {
+      // Shadertoy shader "Crazy friday lines". Header is an explicit, named
+      // CC0 declaration ("mrange has waived all copyright...") -> `license:
+      // 'original'`, same basis as `beats` / `travelling` / `web`.
+      //
+      // FORCED LIVE by explicit request. 77-step accumulation with a SOFT
+      // exit (z < 49.0, not a hit test) -- most rays still run close to the
+      // full count. `SCENE_COST_MS.fridaylines` is a documented worst-case
+      // op-count estimate, not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`. See FridayLinesScene.tsx for the full port
+      // notes. ACTION: run `/bench` and replace it with a measurement.
+      //
+      // `speed` -> clock rate. `shape` -> breathing amplitude (static to full
+      // pulse). `complexity` -> first-inversion constant. `density` -> line
+      // thickness. `contrast` -> tanh clip point. `fill` -> zoom. `tilt` ->
+      // static z-twist offset.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'breathe',
+            complexity: 'fold',
+            density: 'thickness',
+            fill: 'zoom',
+            tilt: 'roll',
+          },
+        },
+      },
+      // Subject only -- a full-bleed flythrough that owns its own camera,
+      // same as `gyroid` / `tunnel`.
+      roles: ['primary'],
+      // A pulsing, colourful lattice with no inherent violence in its
+      // structure -- same reasoning as `gyroid` / `tunnel` for stopping
+      // short of aggressive.
+      moods: ['groove', 'building', 'peak'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above and SCENE_COST_MS.fridaylines.
+      performanceCost: 'high',
+      compatibleWith: [],
+      moodFit: { groove: 0.78, building: 0.84, peak: 0.8 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera -- declared only for CameraDirector.test.ts's variety
+      // invariant, same as `gyroid` / `tunnel`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'javazone',
+    name: 'JavaZone Lattice',
+    component: JavaZoneLatticeScene,
+    metadata: {
+      // Shadertoy shader "JavaZone 2026 Shader". Header is an explicit, named
+      // CC0 declaration, identical wording to `fridaylines`' -> `license:
+      // 'original'`, same basis as `beats` / `travelling` / `web` /
+      // `fridaylines`.
+      //
+      // FORCED LIVE by explicit request. 77-step accumulation with NO
+      // early-out at all -- the closest true analogue is `beats` (same
+      // author, same shape). `SCENE_COST_MS.javazone` is a documented
+      // worst-case op-count estimate, not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`. See JavaZoneLatticeScene.tsx for the full port
+      // notes, including why its beat clock reuses `beats`' exported
+      // `beatsPosition()` rather than reimplementing the fix its own audit
+      // already found necessary. ACTION: run `/bench` and replace the
+      // estimate with a measurement.
+      //
+      // `speed` -> beat-position rate (+energy, matches beats). `shape` ->
+      // lattice cell radius. `complexity` -> surface roughness. `density` ->
+      // z-twist rate. `contrast` -> tanh clip point. `fill` -> zoom. `tilt`
+      // -> static twist offset.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'cell',
+            complexity: 'roughness',
+            density: 'twist',
+            fill: 'zoom',
+            tilt: 'roll',
+          },
+        },
+      },
+      // Subject only -- a full-bleed flythrough that owns its own camera,
+      // same as `beats` / `gyroid` / `tunnel`.
+      roles: ['primary'],
+      // Beat-locked by construction (the on-beat flash IS the animation's
+      // anchor, same as `beats`), so it starts at `groove` and tops out at
+      // `aggressive` -- same range as `beats` for the same reason.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above and SCENE_COST_MS.javazone.
+      // Structurally beats' closest sibling; likely a similar order of cost.
+      performanceCost: 'high',
+      compatibleWith: [],
+      moodFit: { groove: 0.74, building: 0.84, peak: 0.82, aggressive: 0.76 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera -- declared only for CameraDirector.test.ts's variety
+      // invariant, same as `beats` / `gyroid` / `tunnel`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'lattesfold',
+    name: 'LattÃ¨s Fold',
+    component: LattesFoldScene,
+    metadata: {
+      // Shadertoy shader, untitled, supplied directly by the requester and
+      // credited as CC0 -> `license: 'original'`. UNLIKE `fridaylines` /
+      // `javazone`, this paste carries no in-source header, author or licence
+      // declaration at all -- the requester's direct statement is the entire
+      // basis, same provenance class `snowflake` rests on ("a witnessed
+      // generation, no upstream to audit"). See LattesFoldScene.tsx's header
+      // for the full disclosure, and if a source page turns up later that is
+      // where to add it.
+      //
+      // FORCED LIVE by explicit request, and by a wide margin the heaviest of
+      // the four new shaders in this batch -- very likely the heaviest scene
+      // in the whole roster even after a hoist fix that removed most of its
+      // redundant per-iteration trig (see LattesFoldScene.tsx's header). Up
+      // to 90 outer accumulation steps, EACH running an inner fold up to 12
+      // times: up to 1080 total fold iterations per pixel, before even the
+      // Lattes warp or the secondary depth-band pass. For scale, `harkonnen`'s
+      // entire per-pixel fractal budget is ~52 iterations.
+      // `SCENE_COST_MS.lattesfold` is a documented worst-case op-count
+      // estimate, not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`; `pixelBudget` here is already markedly more
+      // aggressive than its siblings' for the same reason. ACTION: run
+      // `/bench` and replace the estimate with a measurement; this one
+      // plausibly needs real optimisation beyond the hoist fix, not just a
+      // lower `pixelBudget`, before it is anything but a manual pick.
+      //
+      // `speed` -> clock rate. `shape` -> Lattes iteration depth. `complexity`
+      // -> inner-fold depth (user dial only, never tier-gated -- same
+      // reasoning as harkonnen's fractal depth). `density` -> lattice cell
+      // size. `contrast` -> brightness divisor. `fill` -> zoom. `tilt` ->
+      // rotates the coordinate feeding the Lattes warp.
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'chaos',
+            complexity: 'fold depth',
+            density: 'scale',
+            fill: 'zoom',
+            tilt: 'roll',
+          },
+        },
+      },
+      // Subject only -- a full-bleed flythrough that owns its own camera,
+      // same as `gyroid` / `tunnel`.
+      roles: ['primary'],
+      // Chaotic, dense, and relentless -- reads harder-edged than
+      // `fridaylines`' pulsing lattice or `javazone`'s beat-locked corridor,
+      // closer to `heap` / `wingfold` territory.
+      moods: ['building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above for the iteration-count
+      // reasoning (likely the roster's single heaviest scene) and
+      // SCENE_COST_MS.lattesfold in sceneCost.ts for the estimate itself.
+      performanceCost: 'high',
+      compatibleWith: [],
+      moodFit: { building: 0.78, peak: 0.86, aggressive: 0.84 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera -- declared only for CameraDirector.test.ts's variety
+      // invariant, same as `gyroid` / `tunnel`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'butterfly',
+    name: 'Butterfly Field',
+    component: ButterflyFieldScene,
+    metadata: {
+      // Requester-supplied shader paste with NO title, author or licence
+      // header. The `common` + `buffer a` (self-sampling `iChannel0` feedback)
+      // + `image` structure identifies it as a Shadertoy multipass shader with
+      // no upstream record to cite -- same provenance class as `lattesfold`
+      // ("the requester's direct statement is the entire basis") and
+      // `snowflake` ("a witnessed generation, no upstream to audit"), so
+      // `license: 'original'` follows the roster's established convention for
+      // requester-supplied pastes. `provenance.spdx` is SPDX NOASSERTION -- the
+      // honest reading of an unmarked paste -- and ButterflyFieldScene.tsx's
+      // header is where a source URL goes if one ever turns up.
+      license: 'original',
+      provenance: {
+        source:
+          'Supplied directly by the requester; no title, author or licence header. ' +
+          'common + buffer A feedback + image pass structure identifies it as a Shadertoy multipass shader.',
+        spdx: 'NOASSERTION',
+      },
+      // `speed` -> flap + flow clock rate. `shape` -> wing harmonic amount
+      // (rounded blob to full butterfly). `complexity` -> spark density (how
+      // fine the point grid is). `density` -> how far the spark halo reaches
+      // past the body. `fill` -> zoom. `tilt` -> static field roll. `contrast`
+      // -> exposure hardness + point sharpness + where the solid body begins.
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+          contrast: 0.5,
+        },
+        paramLabels: {
+          '*': { complexity: 'sparks', density: 'spread', fill: 'zoom', tilt: 'roll', contrast: 'ink' },
+        },
+      },
+      // Subject only -- a centred butterfly owns the middle of the frame by
+      // construction, same as the other full-bleed 2D shader primaries
+      // (`kifs` / `wingfold` / `snowflake`).
+      roles: ['primary'],
+      // Luminous and flowing rather than frantic -- the wingbeat is bar-locked
+      // and every response is slewed (see the .tsx header's "FLOWY, not
+      // twitchy" note), so it sits in the calmer half and tops out at
+      // `building`, overlapping `snowflake` / `chrome` territory.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      // `bass` stands in for the kick-onset routing (`s.onKick` -> the slow
+      // tail/brightness swell), same convention as `snowflake` / `malachite`.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // NOT /bench-measured -- documented op-count estimate (see the
+      // `SCENE_COST_MS.butterfly` row in sceneCost.ts). A single fullscreen
+      // pass, but the field-line streamline walk re-evaluates the analytic
+      // butterfly field (one `atan` + a 7-term Fourier sum AND its derivative,
+      // ~14 trig) plus a hash EVERY step, up to 44 -- ~2x `kifs`'s iteration
+      // count (2.97 ms, ~20 folds WITH an escape) and no early-out, offset by
+      // the offscreen `pixelBudget`, so priced a bit above it. Step count is
+      // quality-gated (44 -> 12). ACTION: run `/bench`; if tier 0 is at/over
+      // ~5 ms, drop `uMaxSteps` or evaluate the field every other step.
+      performanceCost: 'medium',
+      // Owns the centre of the frame; nothing composites with a full-bleed
+      // silhouette, same as `kifs` / `wingfold` / `snowflake`.
+      compatibleWith: [],
+      moodFit: { ambient: 0.62, mellow: 0.74, groove: 0.78, building: 0.7 },
+      // Flat 2D screen-space field -- no camera concept at all, inert to this
+      // scene's own rendering. Declared only for CameraDirector.test.ts's
+      // variety invariant, same as `kifs` / `wingfold` / `snowflake`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'truchet',
+    name: 'Truchet Kaleidoscope',
+    component: TruchetKaleidoScene,
+    metadata: {
+      // Shadertoy shader "Truchet + Kaleidoscope FTW". Header declares CC0; the
+      // bundled helpers are MIT (iq) / "MIT OR CC-BY-NC-4.0" (mercury, MIT
+      // option applies) / trivial "Unknown" utility snippets â€” consistent with
+      // CC0, so `original`. Reads as mrange's (who releases everything CC0),
+      // same basis as `beats` / `travelling` / `web` â€” no stronger author
+      // confirmation has been sought beyond that, same as those three.
+      license: 'original',
+      // FORCED LIVE by explicit request. `color()` accumulates up to 6
+      // kaleidoscope + Truchet planes per pixel with a dual-ray AA â€” no march
+      // loop, but the AA doubles whatever the base per-pixel cost is. Already
+      // carries its own quality-tier gating (`uPlanes`, 3..6, driven off
+      // `quality.knobs.raymarchSteps`, plus a `pixelBudget`) â€” that wiring
+      // predates this promotion. `SCENE_COST_MS.truchet` is a documented
+      // worst-case op-count estimate (see that row's comment in
+      // sceneCost.ts), not a fabricated ceiling built to clear
+      // `slotBudget.test.ts`. ACTION: run `/bench` and replace it with a
+      // measurement.
+      //
+      // `speed` -> flythrough rate. `complexity` -> kaleidoscope symmetry.
+      // `density` -> Truchet line weight. `fill` -> field of view. `tilt` ->
+      // static roll. No `shape` (nothing to switch) / `contrast` (the grade
+      // curve doesn't take a clean 0..1 dial).
+      contract: {
+        version: 1,
+        params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, tilt: 0.5 },
+        paramLabels: {
+          '*': { complexity: 'symmetry', density: 'line weight', fill: 'fov', tilt: 'roll' },
+        },
+      },
+      // Subject only â€” a full-bleed flythrough that owns its own camera, same
+      // as `maze` / `neonjungle` / `tunnel`.
+      roles: ['primary'],
+      // Relentless forward motion through a strobing pattern â€” driving/hard
+      // half, overlapping `maze` / `wingfold` territory.
+      moods: ['groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'high',
+      // FORCED LIVE -- see the licence note above and SCENE_COST_MS.truchet in
+      // sceneCost.ts. 6-plane per-pixel accumulation + dual-ray AA, each plane
+      // a kaleidoscope fold + Truchet distance field -- likely lighter than
+      // the true raymarchers, priced closer to `web`'s multi-plane accumulator
+      // scaled up for the AA pass.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed flythrough.
+      compatibleWith: [],
+      moodFit: { groove: 0.74, building: 0.82, peak: 0.84, aggressive: 0.8 },
+      // The shader drives its own path/camera and never reads the engine's â€”
+      // declared only for CameraDirector.test.ts's variety invariant, same as
+      // `maze` / `kifs`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
@@ -1425,7 +1849,7 @@ export const SCENES: SceneDef[] = [
  * Kept as real entries rather than deleted or commented out: the loaders and
  * lazy components stay live, so these still typecheck and build, and
  * re-enabling one is moving its entry back into `SCENES`. Nothing selects from
- * this array — automation, the HUD scene bar and `getScene()` all read `SCENES`
+ * this array â€” automation, the HUD scene bar and `getScene()` all read `SCENES`
  * only, so a disabled id degrades to the `SCENES[0]` fallback exactly like an
  * unknown one.
  *
@@ -1443,7 +1867,7 @@ export const SCENES: SceneDef[] = [
  * attribution at all. Nothing truthful goes in a `provenance` record for those,
  * and a plausible-looking one would only make the gap harder to find later.
  * They are permanently unclearable in their current state, which is the real
- * cost of not recording provenance at the moment of import — and the reason
+ * cost of not recording provenance at the moment of import â€” and the reason
  * the tripwire in `sceneLicensing.test.ts` guards the live roster, where new
  * imports actually land.
  */
@@ -1453,14 +1877,14 @@ export const DISABLED_SCENES: SceneDef[] = [
     name: 'Fortress Harkonnen',
     component: FortressHarkonnenScene,
     metadata: {
-      // Disabled on explicit request, unlike its neighbours below — this one's
+      // Disabled on explicit request, unlike its neighbours below â€” this one's
       // licence was already cleared (CC0-based, `license: 'original'`, same
       // basis as `maze` / `malachite` / `truchet`) and its cost estimate was
       // never flagged over budget. Re-enabling is moving this entry back into
       // `SCENES`; nothing else needs to change.
       license: 'original',
       // `speed` -> zoom/macro-cycle rate (drastic + mids). `complexity` ->
-      // fractal iteration depth (user dial only, never tier-gated — kifs F129 /
+      // fractal iteration depth (user dial only, never tier-gated â€” kifs F129 /
       // maze F139). `fill` -> zoom scale. `tilt` -> static frame roll.
       // `contrast` -> the postProcess S-curve strength. No `shape`/`density`.
       contract: {
@@ -1470,24 +1894,24 @@ export const DISABLED_SCENES: SceneDef[] = [
           '*': { complexity: 'iterations', fill: 'zoom', tilt: 'roll', contrast: 'grade' },
         },
       },
-      // Subject only — a full-frame lit fractal relief, same as `kifs` /
+      // Subject only â€” a full-frame lit fractal relief, same as `kifs` /
       // `wingfold`.
       roles: ['primary'],
-      // A slow, monumental zoom — architectural, not frantic. Sits mid-range;
+      // A slow, monumental zoom â€” architectural, not frantic. Sits mid-range;
       // the kick-pop and energy swell carry it up to `peak`.
       moods: ['mellow', 'groove', 'building', 'peak'],
       // `bass` stands in for the kick-onset routing (`s.onKick` -> specular pop
       // + brightness punch), same convention as `malachite` / `matrix`.
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // NOT /bench-MEASURED — documented op-count estimate (see sceneCost.ts).
+      // NOT /bench-MEASURED â€” documented op-count estimate (see sceneCost.ts).
       // ~52 fractal iterations/px at the neutral `complexity`, rendered
       // offscreen and upscaled. Heavier than `wingfold`; confirm with /bench.
       performanceCost: 'high',
       // Owns the frame; nothing composites with a full-bleed fractal relief.
       compatibleWith: [],
       moodFit: { mellow: 0.66, groove: 0.78, building: 0.84, peak: 0.8 },
-      // The shader frames itself — flat screen-space fractal math, no engine
+      // The shader frames itself â€” flat screen-space fractal math, no engine
       // camera. Declared only for CameraDirector.test.ts's variety invariant,
       // same as `kifs` / `wingfold`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
@@ -1500,23 +1924,23 @@ export const DISABLED_SCENES: SceneDef[] = [
     component: TunnelDriftScene,
     metadata: {
       // Shadertoy-derived (see TunnelDriftScene.tsx header) with no licence
-      // attached to the source, so — same reasoning as its neighbours below —
+      // attached to the source, so â€” same reasoning as its neighbours below â€”
       // treated as non-commercial until confirmed otherwise, independent of
       // why it is disabled (which is look/quality, not licensing).
       license: 'unverified',
       // The one quarantined scene whose port recorded an actual URL, so this
       // is the only one where "confirm with the author" is a task somebody can
       // start rather than a dead end. `NOASSERTION` because the source page
-      // carried no licence — not because nobody looked.
+      // carried no licence â€” not because nobody looked.
       provenance: {
         source: 'https://www.shadertoy.com/view/MfVfz3',
         spdx: 'NOASSERTION',
       },
       // Subject only. A fullscreen flythrough owns the whole frame by
-      // construction — there is no ground to sit behind it and nothing sensible
+      // construction â€” there is no ground to sit behind it and nothing sensible
       // to composite over a moving tunnel.
       roles: ['primary'],
-      // Hypnotic and DRIVING, not violent — the opposite pole from `heap`.
+      // Hypnotic and DRIVING, not violent â€” the opposite pole from `heap`.
       // Constant forward motion needs somewhere to be going, which is why it
       // starts at `groove` rather than `ambient`, and why it stops short of
       // `aggressive`: the piece has no chaos in it, so at full aggression it
@@ -1538,7 +1962,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         peak: 0.86,
       },
       // The scene flies its own scripted path and never reads the shared
-      // camera, exactly like FoldPathScene — the flythrough IS the piece.
+      // camera, exactly like FoldPathScene â€” the flythrough IS the piece.
       // Declared anyway for CameraDirector.test.ts's variety invariant.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
@@ -1549,7 +1973,7 @@ export const DISABLED_SCENES: SceneDef[] = [
     name: 'Kernel Panic',
     component: KernelPanicScene,
     metadata: {
-      // ===== NON-COMMERCIAL — see the banner in KernelPanicScene.tsx =====
+      // ===== NON-COMMERCIAL â€” see the banner in KernelPanicScene.tsx =====
       // Unlicensed Shadertoy source; Shadertoy's default is CC BY-NC-SA 3.0, so
       // this is NC absent an explicit grant. Excluded from
       // commerciallyShippableScenes() via this field.
@@ -1567,7 +1991,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       intensity: 'high',
       // The full five-stage chain: four offscreen fullscreen passes plus the
       // display pass, and SIX HalfFloat render targets (ping-pong pairs for A
-      // and B, singles for C and D) — roughly 100 MB resident at 1080p. The
+      // and B, singles for C and D) â€” roughly 100 MB resident at 1080p. The
       // per-pixel work is modest, but four extra passes and that much target
       // memory put it above `trail`, which pays for one pass and two targets.
       // As with `trail`, the budget model counts fragment work and has no
@@ -1597,9 +2021,9 @@ export const DISABLED_SCENES: SceneDef[] = [
       // The strongest provenance in the quarantine: a named work, a named
       // author and a licence the source states itself, rather than Shadertoy's
       // presumed default. No URL was recorded by the port, and one is not
-      // invented here — the citation is what exists.
+      // invented here â€” the citation is what exists.
       provenance: {
-        source: '"The Universe Within" (Shadertoy) — no URL recorded by the port',
+        source: '"The Universe Within" (Shadertoy) â€” no URL recorded by the port',
         author: 'Martijn Steinrucken (BigWings)',
         spdx: 'CC-BY-NC-SA-3.0',
       },
@@ -1609,14 +2033,14 @@ export const DISABLED_SCENES: SceneDef[] = [
       //
       // Deliberately NOT tagged 'background' despite being a plausible fit.
       // The background slot exists but has no authored content yet, and this
-      // scene was composed as a subject — letting it default into the new slot
+      // scene was composed as a subject â€” letting it default into the new slot
       // would debut the composition model with a scene never art-directed for
       // it. Re-add once intentional background scenes exist to compare against.
       roles: ['accent', 'overlay', 'primary'],
       moods: ['ambient', 'mellow', 'groove', 'building'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'medium',
-      // Fullscreen shader, ~36 hash evals/pixel — cheaper than the CPU
+      // Fullscreen shader, ~36 hash evals/pixel â€” cheaper than the CPU
       // O(n^2) link scan it replaced.
       performanceCost: 'high', // measured 6.26 ms GPU @ tier 1 (/bench)
       compatibleWith: ['wireframe', 'chrome', 'pointcloud'],
@@ -1627,10 +2051,10 @@ export const DISABLED_SCENES: SceneDef[] = [
         building: 0.70,
       },
       // The scene's own rendering ignores these entirely (fullscreen quad,
-      // no ctx.camera read — its motion is audio/autonomous-driven, see
+      // no ctx.camera read â€” its motion is audio/autonomous-driven, see
       // NetworkConstellationScene's header comment). But CameraDirector's
       // test suite (CameraDirector.test.ts) enforces that every registered
-      // scene — not just primary ones — declares enough camera-mode variety
+      // scene â€” not just primary ones â€” declares enough camera-mode variety
       // to be framed meaningfully, since the director doesn't know per-scene
       // whether the camera matters. Restored rather than left off: found via
       // a failing `npm run check` I should have run before the first push.
@@ -1654,7 +2078,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       // below, which carry no provenance at all because there is nothing
       // truthful to put in one.
       provenance: {
-        source: '"The Inversion Machine" (Shadertoy) — no URL recorded by the port',
+        source: '"The Inversion Machine" (Shadertoy) â€” no URL recorded by the port',
         author: 'Kali',
         spdx: 'NOASSERTION',
       },
@@ -1676,7 +2100,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         aggressive: 0.9,
       },
       // The field's own coordinate scale is small (see InversionMachineScene's
-      // ANCHOR_DISTANCE comment) — a much closer anchor than other scenes'
+      // ANCHOR_DISTANCE comment) â€” a much closer anchor than other scenes'
       // 8-17 range, tuned to the source shader's original ~1.2-unit distance.
       cameraAnchor: { target: [0, 0, 0], distance: 1.4, height: 0.15 },
       cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
@@ -1696,13 +2120,13 @@ export const DISABLED_SCENES: SceneDef[] = [
       // Dense and glowing enough to carry a frame alone, same reasoning as
       // pointcloud/inversion.
       roles: ['primary'],
-      // A hypnotic flythrough rather than a violent one — sits alongside
+      // A hypnotic flythrough rather than a violent one â€” sits alongside
       // inversion's aggressive slot instead of doubling up on it.
       moods: ['ambient', 'mellow', 'groove', 'building'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
       // Fixed-step heightfield march, up to 600 steps/pixel plus a 20-step
-      // binary-search refine and 4 normal() samples — the heaviest scene in
+      // binary-search refine and 4 normal() samples â€” the heaviest scene in
       // the roster; see FoldPathScene's own quality-governor comment.
       performanceCost: 'high',
       compatibleWith: ['wireframe', 'network', 'ribbons'],
@@ -1713,11 +2137,11 @@ export const DISABLED_SCENES: SceneDef[] = [
         building: 0.7,
       },
       // The scene flies its own scripted path() camera rather than reading
-      // the real one (see FoldPathScene's header comment — the flythrough IS
+      // the real one (see FoldPathScene's header comment â€” the flythrough IS
       // the piece, unlike inversion's orbit-a-static-object case), so these
       // are inert to its own rendering. Declared anyway: every registered
       // scene needs enough camera-mode variety for CameraDirector's own
-      // bookkeeping, per CameraDirector.test.ts — same fix as network.
+      // bookkeeping, per CameraDirector.test.ts â€” same fix as network.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
@@ -1733,15 +2157,15 @@ export const DISABLED_SCENES: SceneDef[] = [
       // is treated as non-commercial until someone actually confirms otherwise
       // with the original author -- not a neutral "maybe fine".
       license: 'unverified',
-      // A fixed, orbitable fold+torus structure — dense enough to carry a
+      // A fixed, orbitable fold+torus structure â€” dense enough to carry a
       // frame alone, same reasoning as the other raymarch scenes.
       roles: ['primary'],
-      // Hypnotic ring-pulse rather than glitchy or violent — spans a wider
+      // Hypnotic ring-pulse rather than glitchy or violent â€” spans a wider
       // mood range than foldpath since it has real punch at peak too.
       moods: ['mellow', 'groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // 100-step adaptive SDF march, 6-iteration fold per step — cheaper
+      // 100-step adaptive SDF march, 6-iteration fold per step â€” cheaper
       // than inversion (no per-step normal calc) but still substantial.
       performanceCost: 'medium', // measured 1.99 ms GPU @ tier 1 (/bench)
       compatibleWith: ['wireframe', 'network', 'ribbons'],
@@ -1753,7 +2177,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       },
       // Real camera, like inversion: the fold+torus structure sits fixed at
       // the origin (only its internal fold rotates), so orbiting it is the
-      // natural fit — see TorusFoldScene's header comment for the
+      // natural fit â€” see TorusFoldScene's header comment for the
       // camera-vs-self-contained decision this session settled on.
       cameraAnchor: { target: [0, 0, 0], distance: 3.3, height: 0 },
       cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
@@ -1773,16 +2197,16 @@ export const DISABLED_SCENES: SceneDef[] = [
       // Handle and date are all the source gave; JuliaWingsScene's header
       // quotes its description verbatim. No title, no URL, no licence.
       provenance: {
-        source: 'Shadertoy, 2015-05-07 ("1st version, need to optim and do some proper AA") — no URL recorded by the port',
+        source: 'Shadertoy, 2015-05-07 ("1st version, need to optim and do some proper AA") â€” no URL recorded by the port',
         author: '@christinacoffin',
         spdx: 'NOASSERTION',
       },
-      // Vivid and dense enough to hold a frame alone — deliberately not
+      // Vivid and dense enough to hold a frame alone â€” deliberately not
       // accent/overlay: this one was explicitly tuned brighter than the
       // roster's usual budget (see JuliaWingsScene's BRIGHTNESS comment),
       // which would read as too loud composited as a layer over a primary.
       roles: ['primary'],
-      // Broad range on purpose — a hypnotic, colorful piece rather than a
+      // Broad range on purpose â€” a hypnotic, colorful piece rather than a
       // violent one, versatile enough to hold peak too.
       moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'high', 'energy'],
@@ -1799,7 +2223,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         peak: 0.82,
       },
       // Pure 2D math, no ray/camera concept at all (unlike inversion/
-      // torusfold) — inert to this scene's own rendering, same as network/
+      // torusfold) â€” inert to this scene's own rendering, same as network/
       // foldpath. Declared anyway for CameraDirector.test.ts's invariant:
       // every registered scene needs real camera-mode variety.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
@@ -1820,17 +2244,17 @@ export const DISABLED_SCENES: SceneDef[] = [
       // The record that makes `attribution` mean something. CC BY 4.0 obliges
       // this project to credit the author and to indicate modification, and
       // until this field existed the only place that credit lived was a prose
-      // comment in HeapCorruptionScene.tsx — unreadable to the credits screen
+      // comment in HeapCorruptionScene.tsx â€” unreadable to the credits screen
       // that decision is waiting on. `noticePath` is absent because the licence
       // text is not vendored: naming CC BY 4.0 is not the same as shipping it,
       // and that gap is part of what "pending where the credit lives" means.
       provenance: {
         source: 'https://www.pvv.ntnu.no/~torhr/shaders/',
-        author: 'Tor Ringstad, 2026 — "Heap Corruption"',
+        author: 'Tor Ringstad, 2026 â€” "Heap Corruption"',
         spdx: 'CC-BY-4.0',
       },
       // Subject only. It fills the frame with a dense, high-contrast grid, so
-      // compositing anything over it — or it over anything — just fights.
+      // compositing anything over it â€” or it over anything â€” just fights.
       roles: ['primary'],
       // Its whole character is decay under pressure, which needs energy to read
       // as anything. In `ambient` it would sit near-healthy and inert, so it is
@@ -1850,7 +2274,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         peak: 0.88,
         aggressive: 0.9,
       },
-      // Pure 2D screen-space math — no ray, no camera concept at all, so these
+      // Pure 2D screen-space math â€” no ray, no camera concept at all, so these
       // are inert to its own rendering. Declared because CameraDirector.test.ts
       // requires every registered scene to offer real framing variety, the same
       // reason network/foldpath/juliawings declare them.
@@ -1869,14 +2293,14 @@ export const DISABLED_SCENES: SceneDef[] = [
       // is treated as non-commercial until someone actually confirms otherwise
       // with the original author -- not a neutral "maybe fine".
       license: 'unverified',
-      // Layer-only, exactly like `ribbons` — three soft orbs on black have
+      // Layer-only, exactly like `ribbons` â€” three soft orbs on black have
       // nowhere near enough structure to carry a frame as the subject, but they
       // composite beautifully over one.
       //
       // This is the roster's strongest BACKGROUND and EFFECT candidate: it is
       // the cheapest scene here by a wide margin, and its per-orb glow gives it
       // the contrast dynamics a dimmed ground needs to still read as alive.
-      // Neither role is claimed yet because both are inert — nothing selects
+      // Neither role is claimed yet because both are inert â€” nothing selects
       // `background`, and an `effect` scene must additionally drive itself to
       // visual zero by `slotProgress` 1, which this does not yet do.
       contract: {
@@ -1892,7 +2316,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'calm',
       // Three length() calls and three divides per pixel. No march, no noise,
-      // no loop — comfortably the cheapest scene in the roster, cheaper even
+      // no loop â€” comfortably the cheapest scene in the roster, cheaper even
       // than `network`.
       performanceCost: 'low',
       compatibleWith: ['wireframe', 'chrome', 'dissolve', 'pointcloud', 'foldpath', 'juliawings'],
@@ -1906,7 +2330,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         groove: 0.63,
         building: 0.58,
       },
-      // Flat 2D screen-space math, no camera concept at all — inert here, and
+      // Flat 2D screen-space math, no camera concept at all â€” inert here, and
       // declared only for CameraDirector.test.ts's variety invariant.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
@@ -1928,7 +2352,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       // palette, which does have a URL. Recorded as the tutorial rather than
       // the article because the article covers one function, not the scene.
       provenance: {
-        source: 'kishimisu, "An Introduction to Shader Art Coding" — no URL recorded by the port',
+        source: 'kishimisu, "An Introduction to Shader Art Coding" â€” no URL recorded by the port',
         author: 'kishimisu; palette() after Inigo Quilez (https://iquilezles.org/articles/palettes)',
         spdx: 'NOASSERTION',
       },
@@ -1941,7 +2365,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         paramLabels: { '*': { complexity: 'layers', density: 'fold', contrast: 'edge' } },
       },
       roles: ['primary'],
-      // Same territory as `tunnel` — rhythmic and hypnotic — but the silhouette
+      // Same territory as `tunnel` â€” rhythmic and hypnotic â€” but the silhouette
       // is radial rather than forward, which is the reason to carry both. The
       // moodFit peaks differ so they do not simply substitute for each other:
       // `tunnel` peaks at `building` (flying toward something IS a build), this
@@ -1950,7 +2374,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
       // Four iterations of fract/length/sin/pow plus a cosine palette each.
-      // No march, no noise field, no hashing — cheaper than `network`'s ~36
+      // No march, no noise field, no hashing â€” cheaper than `network`'s ~36
       // hash evaluations per pixel, and an order of magnitude under the
       // raymarchers. Iteration count is still governed; see uIters.
       performanceCost: 'medium', // measured 3.15 ms GPU @ tier 1 (/bench)
@@ -1963,7 +2387,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         building: 0.86,
         peak: 0.88,
       },
-      // Flat 2D fractal math — no ray, no camera concept at all, exactly like
+      // Flat 2D fractal math â€” no ray, no camera concept at all, exactly like
       // `juliawings`. Inert to its own rendering; declared only because
       // CameraDirector.test.ts requires every registered scene to offer real
       // framing variety.
@@ -1982,8 +2406,8 @@ export const DISABLED_SCENES: SceneDef[] = [
       // is treated as non-commercial until someone actually confirms otherwise
       // with the original author -- not a neutral "maybe fine".
       license: 'unverified',
-      // Subject only. Sparse enough on paper to make a good accent — one thin
-      // glowing stroke on black — but it is the roster's only scene that pays
+      // Subject only. Sparse enough on paper to make a good accent â€” one thin
+      // glowing stroke on black â€” but it is the roster's only scene that pays
       // for a render-target pair, and spending two extra fullscreen passes on a
       // decoration is the wrong trade. Revisit if it ever earns its keep.
       roles: ['primary'],
@@ -1993,8 +2417,8 @@ export const DISABLED_SCENES: SceneDef[] = [
       moods: ['mellow', 'groove', 'building'],
       bands: ['bass', 'mid', 'energy'],
       intensity: 'medium',
-      // Two fullscreen passes rather than one — the accumulate pass plus the
-      // display pass — and a pair of HalfFloat render targets resident for as
+      // Two fullscreen passes rather than one â€” the accumulate pass plus the
+      // display pass â€” and a pair of HalfFloat render targets resident for as
       // long as it is mounted. The per-pixel work is modest (five sin() from
       // f()/grad(), one texture fetch), so the tier is driven by the extra pass
       // and the VRAM, not by shader complexity. This is a different KIND of
@@ -2003,7 +2427,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       performanceCost: 'medium',
       compatibleWith: [],
       // Deliberately overlapping `orbs` and `ribbons` at the calm end without
-      // beating them — those are layers, this is a subject, so they coexist
+      // beating them â€” those are layers, this is a subject, so they coexist
       // rather than compete. Peaks at `groove` where a drifting stroke has
       // something to move against.
       moodFit: {
@@ -2011,7 +2435,7 @@ export const DISABLED_SCENES: SceneDef[] = [
         groove: 0.88,
         building: 0.78,
       },
-      // Flat 2D screen-space, no camera concept — the `juliawings` pattern.
+      // Flat 2D screen-space, no camera concept â€” the `juliawings` pattern.
       // Declared only for CameraDirector.test.ts's variety invariant.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
@@ -2025,7 +2449,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
       // Source states an explicit non-commercial licence. See
       // KNOWN_NC_SOURCE_IDS and docs/ISSUES.md for the audit this came from.
-      // ===== NON-COMMERCIAL — see the banner in SynthGridScene.tsx =====
+      // ===== NON-COMMERCIAL â€” see the banner in SynthGridScene.tsx =====
       // CC BY-NC-SA 3.0. Must not ship in a commercial build, marketplace
       // listing or paid release without separate permission from the author.
       // nonCommercialSceneIds() derives the packaging exclusion list from this
@@ -2035,7 +2459,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       // frame completely.
       roles: ['primary'],
       // Retro-futurist and propulsive rather than chaotic. Needs energy to
-      // justify the forward travel, and tops out before `aggressive` — the
+      // justify the forward travel, and tops out before `aggressive` â€” the
       // palette is neon nostalgia, not violence.
       moods: ['groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'energy'],
@@ -2068,36 +2492,36 @@ export const DISABLED_SCENES: SceneDef[] = [
     name: 'Crystal Fold',
     component: CrystalFoldScene,
     metadata: {
-      // HELD OUT ON ARRIVAL, not moved out — added directly from a pasted,
+      // HELD OUT ON ARRIVAL, not moved out â€” added directly from a pasted,
       // unattributed Shadertoy-style snippet (`mainImage`/`iTime`/
       // `iResolution` API, no author or licence comment attached). Shadertoy's
       // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so per
       // F01/F02 in docs/ISSUES.md this is treated as non-commercial until the
-      // actual source is confirmed original or permissively licensed — not a
+      // actual source is confirmed original or permissively licensed â€” not a
       // neutral "maybe fine". Move this entry into SCENES once that happens.
       license: 'unverified',
       // Subject only. An orbiting-camera 3D fractal raymarch owns the frame by
       // construction, same reasoning as `torusfold`/`inversion`.
       // Ported from the lilim branch, which declared these three as flat
       // metadata. Same fields, same values, wrapped in the versioned
-      // envelope this side uses — see ./contract.ts.
+      // envelope this side uses â€” see ./contract.ts.
       contract: {
         version: 1,
         params: { speed: 0.5, shape: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
         paramLabels: {
-        // The source's own knob names — none of the canonical keys say this
+        // The source's own knob names â€” none of the canonical keys say this
         // on their own.
         '*': { shape: 'fold width', complexity: 'iterations', fill: 'zoom', tilt: 'elevation' },
         },
       },
       roles: ['primary'],
-      // A slow, ornate orbit rather than anything violent — closest in spirit
+      // A slow, ornate orbit rather than anything violent â€” closest in spirit
       // to `torusfold`'s hypnotic ring-pulse, so it shares that range.
       moods: ['mellow', 'groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
       // NOT MEASURED. Up to 64 march steps, each evaluating up to 12 fold
-      // iterations of rotate/abs/subtract — cheaper per-iteration than
+      // iterations of rotate/abs/subtract â€” cheaper per-iteration than
       // `kifs`'s fold (no division) but wrapped in an outer march loop `kifs`
       // doesn't have, and both loops are quality/param-governed. Tagged `high`
       // on comparison with the roster's other raymarchers rather than
@@ -2112,11 +2536,11 @@ export const DISABLED_SCENES: SceneDef[] = [
         peak: 0.78,
       },
       // The shader drives its own orbiting camera internally and never reads
-      // the engine's real one — inert here, declared only for
+      // the engine's real one â€” inert here, declared only for
       // CameraDirector.test.ts's variety invariant, same as `kifs`/`wingfold`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-      // No `density` — nothing in an iterated box-fold has a discrete element
+      // No `density` â€” nothing in an iterated box-fold has a discrete element
       // count for it to bind to, same reasoning as `kifs`/`wingfold`.
     },
   },
@@ -2129,7 +2553,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       // user pasted in, written in a Shadertoy idiom (`mainImage` / `iTime` /
       // `iChannel0` FFT-texture path) with a descriptive header but NO author,
       // licence or source URL. The header does carry an "AudioVis:"-prefixed
-      // porting note, which suggests it was written for this project — but that
+      // porting note, which suggests it was written for this project â€” but that
       // is a style signal, not provenance. Per F01/F02 in docs/ISSUES.md it is
       // `unverified` (Shadertoy's default for an unmarked upload is CC
       // BY-NC-SA 3.0) until the user confirms it is their original work or
@@ -2137,7 +2561,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       license: 'unverified',
       // `zoom` (fill) / `glow` (contrast -> emissive gain) / `detail`
       // (complexity -> greeble density) / signed framing `tilt`. `speed` runs
-      // the shader's authored 1x clock at neutral. No `shape`/`density` — a
+      // the shader's authored 1x clock at neutral. No `shape`/`density` â€” a
       // fixed-composition SDF face has no silhouette family or element count.
       contract: {
         version: 1,
@@ -2149,7 +2573,7 @@ export const DISABLED_SCENES: SceneDef[] = [
       // Subject only: a wall + floor + machined head that owns the whole frame,
       // same as the other full-bleed shader primaries.
       roles: ['primary'],
-      // Industrial, brutalist, mechanical — the jaw pumps on the kick, the eyes
+      // Industrial, brutalist, mechanical â€” the jaw pumps on the kick, the eyes
       // track mids, the digits extend on highs. Sits in the driving/hard half,
       // not the calm one; same lane as `kifs`.
       moods: ['groove', 'building', 'peak', 'aggressive'],
@@ -2161,10 +2585,10 @@ export const DISABLED_SCENES: SceneDef[] = [
       // upscaled. Heavier than `kifs`; confirm with `/bench`.
       performanceCost: 'high',
       compatibleWith: [],
-      // Same 0.6-0.9 band as `kifs`, weighted a touch harder toward the top —
+      // Same 0.6-0.9 band as `kifs`, weighted a touch harder toward the top â€”
       // the hard-edged machined look reads more aggressive than a fractal.
       moodFit: { groove: 0.78, building: 0.82, peak: 0.86, aggressive: 0.84 },
-      // Flat 2D SDF, no camera concept — the shader frames itself. Declared
+      // Flat 2D SDF, no camera concept â€” the shader frames itself. Declared
       // only for CameraDirector.test.ts's variety invariant, same as `kifs`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
@@ -2176,24 +2600,24 @@ export const DISABLED_SCENES: SceneDef[] = [
     component: NeonJungleScene,
     metadata: {
       // Ported from glslop "NEON // JUNGLE v7" (ISF), credited in-source to
-      // "Craig". CC0-1.0 — same provenance basis as `maze` (`gstbkfmm`) and
-      // `malachite`: platform generation, no fork lineage — so `original`, not
+      // "Craig". CC0-1.0 â€” same provenance basis as `maze` (`gstbkfmm`) and
+      // `malachite`: platform generation, no fork lineage â€” so `original`, not
       // `unverified`. The in-source credit is kept in NeonJungleScene.tsx's
       // header. NOTE: the plan's `SceneProvenance` field (source URL / author /
       // SPDX / credit string) would replace this comment; it does not exist yet.
       license: 'original',
       // HELD OUT ON ARRIVAL, not moved out. This is a full two-world volumetric
-      // raymarcher — STEPS 190 primary march PLUS a second RSTEPS 60 reflection
+      // raymarcher â€” STEPS 190 primary march PLUS a second RSTEPS 60 reflection
       // march on every water/puddle pixel, per-step volumetric integration in
       // both, calcNormal(4x)/calcAO(5x)/softShadow(up to 20x) each re-running
       // the whole scene SDF. It will NOT clear slotBudget.test.ts's tier-0
-      // `< sceneBudget(0)/2 ≈ 4ms` bar as-is, and `/bench` (the only
+      // `< sceneBudget(0)/2 â‰ˆ 4ms` bar as-is, and `/bench` (the only
       // instrument) cannot run from CI. Move into SCENES once an optimised pass
       // benches under that bar AND a SCENE_COST_MS row is measured for it.
       //
       // `speed` -> flight rate (drastic + energy). `complexity` -> the D1/D2/D3
       // detail tiers. `fill` -> lens width. `tilt` -> sun azimuth. `contrast`
-      // -> neon gain. No `shape`/`density` — a scripted flythrough has no
+      // -> neon gain. No `shape`/`density` â€” a scripted flythrough has no
       // silhouette family or element count to bind them to.
       contract: {
         version: 1,
@@ -2205,13 +2629,13 @@ export const DISABLED_SCENES: SceneDef[] = [
       // Subject only: a first-person flythrough that owns the whole frame and
       // its own camera, same as `maze`/`tunnel`/`crystalfold`.
       roles: ['primary'],
-      // Starts at `mellow` for the lagoon leg, tops out at `peak` — the neon
+      // Starts at `mellow` for the lagoon leg, tops out at `peak` â€” the neon
       // city + rain + transit flashes are the loud half. Sits in `kifs`/`maze`
       // territory but the lagoon side pulls its low end down.
       moods: ['mellow', 'groove', 'building', 'peak'],
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'high',
-      // NOT MEASURED — see the licence note above. Heavier than every disabled
+      // NOT MEASURED â€” see the licence note above. Heavier than every disabled
       // raymarcher (`tunnel`, `crystalfold`): two full SDF worlds, a second
       // reflection march, per-step volumetrics. `/bench` before promotion.
       performanceCost: 'high',
@@ -2220,58 +2644,8 @@ export const DISABLED_SCENES: SceneDef[] = [
       // Held inside the roster's 0.6-0.9 band, weighted toward the build.
       moodFit: { mellow: 0.62, groove: 0.78, building: 0.84, peak: 0.8 },
       // The shader flies its own scripted path and never reads the engine
-      // camera — declared only for CameraDirector.test.ts's variety invariant,
+      // camera â€” declared only for CameraDirector.test.ts's variety invariant,
       // same as `maze`/`tunnel`/`crystalfold`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'truchet',
-    name: 'Truchet Kaleidoscope',
-    component: TruchetKaleidoScene,
-    metadata: {
-      // Shadertoy shader "Truchet + Kaleidoscope FTW". Header declares CC0; the
-      // bundled helpers are MIT (iq) / "MIT OR CC-BY-NC-4.0" (mercury, MIT
-      // option applies) / trivial "Unknown" utility snippets — consistent with
-      // CC0, so `original`. HELD OUT ON ARRIVAL pending (1) the shader author
-      // confirmed (reads as mrange's, who releases CC0) and (2) a real /bench:
-      // `color()` accumulates up to 6 kaleidoscope + Truchet planes per pixel
-      // with a dual-ray AA — no march loop but unmeasured, and it may not clear
-      // slotBudget.test.ts's tier-0 `< sceneBudget(0)/2 ≈ 4ms` bar. `uPlanes`
-      // is wired to the quality governor so a bench can run per tier. Move into
-      // SCENES + add a SCENE_COST_MS row once both are settled.
-      license: 'original',
-      // `speed` -> flythrough rate. `complexity` -> kaleidoscope symmetry.
-      // `density` -> Truchet line weight. `fill` -> field of view. `tilt` ->
-      // static roll. No `shape` (nothing to switch) / `contrast` (the grade
-      // curve doesn't take a clean 0..1 dial).
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 0.5, density: 0.5, fill: 0.5, tilt: 0.5 },
-        paramLabels: {
-          '*': { complexity: 'symmetry', density: 'line weight', fill: 'fov', tilt: 'roll' },
-        },
-      },
-      // Subject only — a full-bleed flythrough that owns its own camera, same
-      // as `maze` / `neonjungle` / `tunnel`.
-      roles: ['primary'],
-      // Relentless forward motion through a strobing pattern — driving/hard
-      // half, overlapping `maze` / `wingfold` territory.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT MEASURED — see the licence note. 6-plane per-pixel accumulation +
-      // dual-ray AA, each plane a kaleidoscope fold + Truchet distance field.
-      // No march loop, so likely lighter than the raymarchers, but confirm
-      // with /bench before trusting it near the tier-0 layer-funding bar.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a full-bleed flythrough.
-      compatibleWith: [],
-      moodFit: { groove: 0.74, building: 0.82, peak: 0.84, aggressive: 0.8 },
-      // The shader drives its own path/camera and never reads the engine's —
-      // declared only for CameraDirector.test.ts's variety invariant, same as
-      // `maze` / `kifs`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
@@ -2282,7 +2656,7 @@ export const DISABLED_SCENES: SceneDef[] = [
  * Every scene whose SOURCE is non-commercial, tracked independently of the
  * roster.
  *
- * Licence facts must not disappear when a scene is temporarily disabled — that
+ * Licence facts must not disappear when a scene is temporarily disabled â€” that
  * is exactly when someone would re-enable it later having forgotten. The
  * licensing test asserts against this list intersected with what is actually
  * registered.
@@ -2294,23 +2668,23 @@ export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic']
  * commercial use. **A packaging or marketplace build must exclude these.**
  *
  * Derived from metadata rather than hand-maintained as a list, so a new scene
- * cannot be added and quietly forgotten — the only way to be shippable is to
+ * cannot be added and quietly forgotten â€” the only way to be shippable is to
  * declare it.
  */
 /**
  * Does this scene's licence forbid, or fail to confirm permission for,
- * commercial use? A pure predicate over one scene's metadata — exported (not
+ * commercial use? A pure predicate over one scene's metadata â€” exported (not
  * just inlined into {@link nonCommercialSceneIds}) so the licensing test can
  * exercise the real check against `DISABLED_SCENES` entries directly, rather
  * than duplicating the condition or depending on the live roster happening to
- * contain a restricted scene, which will not always be true — the whole point
+ * contain a restricted scene, which will not always be true â€” the whole point
  * of the roster is to drive that count toward zero.
  *
  * **An absent `license` reads as `unverified`, so it is restricted** (F01).
  * The previous default was `original`, which inverted the type's own stated
  * policy: a scene added with no licence field passed the commercial filter by
  * saying nothing, and saying nothing is exactly what an unattributed paste or
- * an ISF import does. The failure was silent in both directions that matter —
+ * an ISF import does. The failure was silent in both directions that matter â€”
  * nothing in development surfaces it, and the build it breaks is the one being
  * sold. Every live scene now declares a licence explicitly, which is what makes
  * this default affordable.
@@ -2344,7 +2718,7 @@ export function getScene(id: string): SceneDef {
   return SCENES.find((s) => s.id === id) ?? SCENES[0]
 }
 
-/** Resolved manifests, memoized per scene id — computed once, not per-frame. */
+/** Resolved manifests, memoized per scene id â€” computed once, not per-frame. */
 const manifestCache = new Map<string, SceneManifestExt>()
 
 /**
@@ -2373,7 +2747,7 @@ export function getResolvedManifest(id: string): SceneManifestExt {
  * {@link getPrimaryScenesForMood} shorthand): several scenes are layer-only
  * (`ribbons` is `['accent','overlay']`) yet carry the highest `moodFit` in
  * their moods, so an unfiltered pick installs a scene as the subject that was
- * authored to composite over one — that was a real bug, since `requestScene`
+ * authored to composite over one â€” that was a real bug, since `requestScene`
  * has no role check of its own.
  */
 export function getScenesForMood(mood: MoodState, role?: SceneRole): SceneDef[] {
@@ -2390,7 +2764,7 @@ export function getPrimaryScenesForMood(mood: MoodState): SceneDef[] {
 /**
  * Every registered scene that can occupy the effect slot.
  *
- * Empty today — no effect scenes are authored yet — and that is a supported
+ * Empty today â€” no effect scenes are authored yet â€” and that is a supported
  * steady state, not an error. Callers treat an empty result as "there is
  * nothing to fire" and carry on, which is what lets the effect machinery ship
  * ahead of its content.
@@ -2405,7 +2779,7 @@ export function getEffectScenes(): SceneDef[] {
 }
 
 /**
- * Weighted-random pick with recency avoidance — the "good mix" primitive
+ * Weighted-random pick with recency avoidance â€” the "good mix" primitive
  * both AutoPilot and PerformanceDirector use instead of deterministically
  * taking the single best-fit scene every time.
  *
@@ -2413,29 +2787,29 @@ export function getEffectScenes(): SceneDef[] {
  * rank 1) meant only the top 1-2 `moodFit` scenes for a mood were EVER
  * reachable, no matter how many others were registered for it; (2) ties in
  * `moodFit` resolve by `SCENES[]` array order (stable sort), which
- * structurally favors whichever scene sits earliest — `wireframe` is
+ * structurally favors whichever scene sits earliest â€” `wireframe` is
  * `SCENES[0]` and is deliberately tagged for every mood as the safe
  * fallback, so it kept winning ties across the board. Fixing the algorithm
  * generalizes to every scene rather than special-casing wireframe's numbers.
  *
  * `recentIds` should be ordered most-recent-first. Recency is a soft
- * multiplicative penalty, not a hard exclusion — a mood with only 2-3
+ * multiplicative penalty, not a hard exclusion â€” a mood with only 2-3
  * registered scenes (e.g. `aggressive`) must still be able to return
  * something rather than dead-end because both options were "recent."
  *
- * ## `currentVA` — fit onto the CONTINUOUS read, not just the 7-way label
+ * ## `currentVA` â€” fit onto the CONTINUOUS read, not just the 7-way label
  * (audit c2)
  *
  * `mood` alone routes every candidate through the same discrete `moodFit`
- * column regardless of how far into `groove` (say) the section actually is —
+ * column regardless of how far into `groove` (say) the section actually is â€”
  * two `groove` passages can differ a great deal in how bright, how tense, how
  * energised they are, and `moodFit` cannot see that. Passed a live
  * valence/arousal read (`performanceState.valence`/`.arousal` in
  * production), each candidate's OWN position in that space is derived from
- * its existing `moodFit` table (`deriveVA` — no new authoring, see
+ * its existing `moodFit` table (`deriveVA` â€” no new authoring, see
  * `moodValenceArousal.ts`) and candidates whose derived position sits nearer
  * the live read get a further boost on top of their discrete mood fit.
- * Bounded to at most halving the weight of the worst-placed candidate — this
+ * Bounded to at most halving the weight of the worst-placed candidate â€” this
  * sharpens the existing preference, it does not replace it, since `moodFit`
  * is authored judgment this function has no reason to override.
  */
@@ -2443,11 +2817,11 @@ export function pickVariedScene(
   candidates: readonly SceneDef[],
   mood: MoodState,
   recentIds: readonly string[],
-  /** Optional per-candidate weight multiplier — e.g. PerformanceDirector uses
+  /** Optional per-candidate weight multiplier â€” e.g. PerformanceDirector uses
    *  this to keep preferring whichever scene expresses the current dominant
    *  band, a signal `moodFit` alone doesn't carry. */
   boost?: (scene: SceneDef) => number,
-  /** Live valence/arousal read — see the doc above. Omitted, every existing
+  /** Live valence/arousal read â€” see the doc above. Omitted, every existing
    *  call site and every existing test is unaffected. */
   currentVA?: ValenceArousal,
 ): SceneDef | undefined {
@@ -2463,7 +2837,7 @@ export function pickVariedScene(
   const weights = candidates.map((scene) => {
     // Floor above zero: every candidate keeps a real (if small) chance,
     // which is what actually breaks the "only the top pick is reachable"
-    // problem — a hard rank cutoff would just move the ceiling, not remove it.
+    // problem â€” a hard rank cutoff would just move the ceiling, not remove it.
     const fit = Math.max(0.2, scene.metadata.moodFit?.[mood] ?? 0.5)
     const recentIndex = recentIds.indexOf(scene.id)
     // Decaying penalty: the most recently shown scene is heavily
@@ -2492,8 +2866,8 @@ export function pickVariedScene(
  *
  * ## Why the directors need this at all
  *
- * The mode primitive has existed since Scene Contract v1 — declared modes,
- * `useSceneMode`, per-mode labels, mode-scoped contract summaries — and until
+ * The mode primitive has existed since Scene Contract v1 â€” declared modes,
+ * `useSceneMode`, per-mode labels, mode-scoped contract summaries â€” and until
  * now **nothing but the HUD could reach it**. `setSceneMode` had exactly one
  * caller, a click handler. So a scene with three authored looks showed one of
  * them for the entire life of an autonomous show, and the other two existed
@@ -2503,8 +2877,8 @@ export function pickVariedScene(
  * declares, that the autonomy cannot use. A mode nothing selects is not variety,
  * it is dead weight in a file.
  *
- * Deterministic from `rotation` for the same reason `pickPalette` is — a
- * recorded set has to replay identically — and it refuses to return the current
+ * Deterministic from `rotation` for the same reason `pickPalette` is â€” a
+ * recorded set has to replay identically â€” and it refuses to return the current
  * mode so a "change" is always visible. Returns undefined when the scene has no
  * modes or only one, which is most of the roster today.
  */
@@ -2514,8 +2888,8 @@ export function pickVariedMode(
   rotation: number,
 ): string | undefined {
   // Deliberately NOT via getSceneContract, which falls back to SCENES[0] for an
-  // unknown id. That fallback is right for rendering — a stale persisted id
-  // should still draw something — but wrong for a selector: asked to choose a
+  // unknown id. That fallback is right for rendering â€” a stale persisted id
+  // should still draw something â€” but wrong for a selector: asked to choose a
   // mode for a scene that does not exist, the honest answer is "none", not
   // "here is one belonging to a different scene", which would then be stored
   // against the bogus id.
@@ -2567,8 +2941,8 @@ export function validateSceneDef(def: SceneDef): string[] {
   if (def.metadata.moods.length === 0) issues.push(`Scene "${def.id}" needs at least one mood.`)
   if (def.metadata.bands.length === 0)
     issues.push(`Scene "${def.id}" needs at least one audio band.`)
-  // Checked, not required. An absent budget is the normal case — the engine
-  // derives one from `performanceCost` — but a PRESENT one that is malformed or
+  // Checked, not required. An absent budget is the normal case â€” the engine
+  // derives one from `performanceCost` â€” but a PRESENT one that is malformed or
   // out of range is a mistake worth refusing, because it would otherwise be
   // silently discarded and the scene would render at a resolution its author
   // did not choose and was never told about.
@@ -2614,7 +2988,7 @@ export function validateSceneDef(def: SceneDef): string[] {
  * was registered from outside. See `resolvePixelBudget`.
  *
  * Goes through {@link getScene}, so an unknown id resolves to the fallback
- * scene's budget rather than throwing — the same degradation every other
+ * scene's budget rather than throwing â€” the same degradation every other
  * metadata read gets. That matters more here than elsewhere: this feeds the
  * render-scale solve every frame, and a stale layer id must not be able to
  * produce a `NaN` budget and a full-resolution canvas.
@@ -2632,7 +3006,7 @@ export function scenePixelBudget(def: SceneDef): number {
  * A scene's Scene Contract, or undefined if it does not declare one.
  *
  * Goes through {@link getScene}, so an unknown id resolves to the fallback
- * scene's contract rather than throwing — the same degradation a stale
+ * scene's contract rather than throwing â€” the same degradation a stale
  * persisted sceneId already gets everywhere else.
  */
 export function getSceneContract(id: string): SceneContract | undefined {
@@ -2649,7 +3023,7 @@ export function isSteerable(id: string): boolean {
  *
  * Deliberately NOT `getScene(id).metadata.roles.includes(role)`: `getScene`
  * falls back to `SCENES[0]` for an unknown id, so that spelling answers
- * whatever `SCENES[0]`'s own roles happen to be for every typo — true for
+ * whatever `SCENES[0]`'s own roles happen to be for every typo â€” true for
  * `'primary'` specifically, since that fallback is primary-capable by
  * invariant, which is the opposite of what a guard is for. An id that names no
  * registered scene cannot hold any role.
@@ -2657,7 +3031,7 @@ export function isSteerable(id: string): boolean {
  * The one shared check behind every scene picker in the UI (the subject grid,
  * the layer dropdowns) and behind `store.requestScene`/`setLayer`. A single
  * function here, rather than each surface re-deriving "is this scene eligible"
- * its own way, is what keeps them from being able to disagree — see F180,
+ * its own way, is what keeps them from being able to disagree â€” see F180,
  * where exactly that disagreement (a picker offering a scene the store would
  * refuse) was the bug.
  */
@@ -2668,12 +3042,12 @@ export function canHoldRole(id: string, role: SceneRole): boolean {
 
 /**
  * May this scene be made the SUBJECT? `canHoldRole(id, 'primary')`, named for
- * the call site — every caller here means "can this become the show".
+ * the call site â€” every caller here means "can this become the show".
  *
  * Exists because promoting a non-primary scene into the subject slot fails
  * SILENTLY and spectacularly. `effect` scenes are pinned in `SceneManager` as
  * idle entries so a firing costs no shader compile, and the commit path promotes
- * a warm entry found BY ID — so requesting one as the subject adopted its pinned
+ * a warm entry found BY ID â€” so requesting one as the subject adopted its pinned
  * effect entry with `role` still `'effect'`, retired the real primary, and left a
  * scene reading `slotProgress` at 0 through `effectEnvelope`, which is 0 there by
  * contract. Black frame, no error. `store.requestScene` is the choke point every
@@ -2717,7 +3091,7 @@ export function sceneContracts(modes?: Record<string, string>): SceneContractSum
  * build, future marketplace). Call before the app mounts so it appears in the
  * scene bar and can be picked by the autonomy directors.
  *
- * Intentionally has no in-repo callers — it is public API documented in
+ * Intentionally has no in-repo callers â€” it is public API documented in
  * README.md / ARCHITECTURE.md, not dead code. Do not "clean it up".
  */
 export function registerScene(def: SceneDef) {
