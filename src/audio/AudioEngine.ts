@@ -13,7 +13,9 @@ import {
   type SilenceConfig,
 } from './bandNormalizer'
 import { computeLowBands, computeSpectralBands, writeLinearSpectrum } from './spectralFeatures'
-import { energyTargetOf, stepEnergy } from './energyTarget'
+import { applyAnalyserRange } from './analyserRange'
+import { evictExpired, fftAdvanced, makeWaveProbe } from './frameGating'
+import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from './energyTarget'
 import { meanSquareToLufs } from './loudness'
 import { SectionTracker } from './SectionTracker'
 import { createEmptyFeatures, type AudioFeatures } from './types'
@@ -306,16 +308,14 @@ class AudioEngine {
   private lastGridIndex = -1
   private beatHoldUntil = -1
   /**
-   * Last frame's time-domain samples at three probe indices. When all three are
-   * unchanged the `AnalyserNode` has not advanced (render loop outrunning the
-   * audio callback — real above a few hundred fps, and whenever a tab is
-   * throttled), so re-running onset/percussion detection would only feed
-   * `flux ≈ 0` samples into the adaptive threshold and dilute it. `NaN` until
-   * the first frame and after every reset.
+   * Probe state for {@link fftAdvanced}: last frame's time-domain samples at
+   * three indices. When all three are unchanged the `AnalyserNode` has not
+   * advanced (render loop outrunning the audio callback), so re-running
+   * onset/percussion detection would only feed `flux ≈ 0` samples into the
+   * adaptive threshold and dilute it. `NaN` until the first frame and after
+   * every reset.
    */
-  private waveProbe0 = NaN
-  private waveProbeMid = NaN
-  private waveProbeLast = NaN
+  private waveProbe = makeWaveProbe()
 
   private bands = {
     rms: new BandNormalizer(),
@@ -523,6 +523,7 @@ class AudioEngine {
     const analyser = ctx.createAnalyser()
     analyser.fftSize = FFT_SIZE
     analyser.smoothingTimeConstant = 0
+    applyAnalyserRange(analyser)
     source.connect(analyser)
     this.attachMidTap(ctx, source)
     source.connect(ctx.destination) // the user hears the track
@@ -608,6 +609,7 @@ class AudioEngine {
     const analyser = ctx.createAnalyser()
     analyser.fftSize = FFT_SIZE
     analyser.smoothingTimeConstant = 0
+    applyAnalyserRange(analyser)
     source.connect(filter)
     filter.connect(analyser)
     this.midFilter = filter
@@ -620,6 +622,7 @@ class AudioEngine {
     const lowAnalyser = ctx.createAnalyser()
     lowAnalyser.fftSize = LOW_FFT_SIZE
     lowAnalyser.smoothingTimeConstant = 0
+    applyAnalyserRange(lowAnalyser)
     source.connect(lowAnalyser)
     this.lowAnalyser = lowAnalyser
 
@@ -693,6 +696,7 @@ class AudioEngine {
     const analyser = ctx.createAnalyser()
     analyser.fftSize = FFT_SIZE
     analyser.smoothingTimeConstant = 0 // we do our own smoothing
+    applyAnalyserRange(analyser)
     source.connect(analyser)
     this.attachMidTap(ctx, source)
     // Recording tap: never routed to speakers, mixed into canvas captures.
@@ -781,9 +785,7 @@ class AudioEngine {
     this.beatHoldUntil = -1
     // Force the next frame to count as "FFT advanced" — a fresh source's first
     // frame must never be mistaken for a duplicate of the previous source's last.
-    this.waveProbe0 = NaN
-    this.waveProbeMid = NaN
-    this.waveProbeLast = NaN
+    this.waveProbe = makeWaveProbe()
     this.silenceSince = 0
     this.dropUntil = -1
     this.bpmEstimator.reset()
@@ -834,14 +836,7 @@ class AudioEngine {
     // rates (or a throttled tab) the render loop outruns the audio callback and
     // getFloatFrequencyData re-reads the same FFT — those frames must not feed
     // the onset/percussion detectors (see fftAdvanced usage below).
-    const w0 = f.waveform[0]
-    const wMid = f.waveform[f.waveform.length >> 1]
-    const wLast = f.waveform[f.waveform.length - 1]
-    const fftAdvanced =
-      w0 !== this.waveProbe0 || wMid !== this.waveProbeMid || wLast !== this.waveProbeLast
-    this.waveProbe0 = w0
-    this.waveProbeMid = wMid
-    this.waveProbeLast = wLast
+    const advanced = fftAdvanced(f.waveform, this.waveProbe)
 
     // --- Spectrum (dB → linear magnitude, clamped to the 0..1 contract) ---
     // f.spectrum now spans the full FFT_SIZE/2 (0..Nyquist), and the clamp
@@ -916,14 +911,15 @@ class AudioEngine {
     // saturated `energy` silently breaks drop detection (`recent > before * K`
     // cannot be met once both sides pin at the ceiling).
     //
-    // The broadband term is still `f.rms`. F171 was meant to swap it for the
-    // K-weighted `f.loudness`, but an 8-track A/B in the calibrate harness
-    // showed the naive swap shifts the dominant mood on 3/8 tracks (see
-    // `features.ts`): `f.loudness` (BandNormalized momentary K-weighted RMS)
-    // has no low tail, so quiet passages stop reading as low-energy. The swap
-    // needs a distribution-matching remap + a full-corpus re-derivation, which
-    // is not done. `f.loudness` is still computed above for the panels / LUFS.
-    f.energy = stepEnergy(f.energy, energyTargetOf(f.bass, f.mid, f.high, f.rms), delta)
+    // The broadband term is `f.rms` blended with a 25% share of the K-weighted
+    // `f.loudness` (audit item 12B). Deliberately a minority share: the naive
+    // full swap F171 tried moved the dominant mood on 3/8 reference tracks, and
+    // this is a quarter of that perturbation. Derivation in `energyTarget.ts`.
+    f.energy = stepEnergy(
+      f.energy,
+      energyTargetOf(f.bass, f.mid, f.high, broadbandEnergyTerm(f.rms, f.loudness)),
+      delta,
+    )
 
     // --- Independent drum hits + broadband onset ---
     // Both are flux-diff detectors, so they only make sense on a frame where the
@@ -934,7 +930,7 @@ class AudioEngine {
     // suppresses real onsets. `computeSpectralBands` still ran above, so
     // `prevMag` holds the last real magnitudes and the next live frame diffs
     // across the gap correctly.
-    if (fftAdvanced) {
+    if (advanced) {
       // Drum hits: separate from the broadband onset — that one owns beat
       // TIMING, this owns which part of the kit fired.
       this.percussionDetector.update(f.percussion, spectral, now, delta, f.silence)
@@ -943,16 +939,11 @@ class AudioEngine {
       // flux. The ring is evicted by age, not count, so its statistics cover a
       // fixed wall-clock window at any render fps.
       this.fluxHistory.push({ t: now, v: spectral.bassFlux })
-      // The `- 1e-6` makes this hold exactly 60 samples at a steady 60 fps
-      // (bit-identical to the old fixed count, so the F121 onset calibration is
-      // preserved) despite float drift in the frame clock — while still being a
-      // true ~1 s window at any other frame rate.
-      while (
-        this.fluxHistory.length > 0 &&
-        now - this.fluxHistory[0].t >= FLUX_WINDOW_SEC - 1e-6
-      ) {
-        this.fluxHistory.shift()
-      }
+      // Evicted by AGE, not count — see `frameGating.evictExpired`. Holds
+      // exactly 60 samples at a steady 60 fps (bit-identical to the fixed count
+      // this replaced, so the F121 onset calibration is preserved) while
+      // staying a true 1 s window at any other frame rate.
+      evictExpired(this.fluxHistory, now, FLUX_WINDOW_SEC)
       if (this.fluxHistory.length > 20 && !f.silence) {
         let mean = 0
         for (const e of this.fluxHistory) mean += e.v

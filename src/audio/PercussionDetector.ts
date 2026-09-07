@@ -17,6 +17,8 @@
  * has to stay here.)
  */
 
+import { evictExpired } from './frameGating'
+
 /**
  * Rolling flux-history window in SECONDS, matching the main onset detector.
  * Was a fixed 60-sample count — "≈ 1 s at 60 fps", but 2 s at 30 fps and 0.4 s
@@ -89,11 +91,10 @@ class BandDetector {
     out.env = Math.max(0, out.env - out.env * Math.min(1, delta * this.cfg.decay))
 
     this.history.push({ t: now, v: flux })
-    // The `- 1e-6` keeps this exactly 60 samples at a steady 60 fps (unchanged
-    // from the old fixed count, robust to frame-clock float drift) while staying
-    // a true ~1 s window at any other frame rate.
-    while (this.history.length > 0 && now - this.history[0].t >= HISTORY_SEC - 1e-6)
-      this.history.shift()
+    // Evicted by AGE, not count — see `frameGating.evictExpired`. Exactly 60
+    // samples at a steady 60 fps (unchanged from the fixed count this replaced)
+    // while staying a true 1 s window at any other frame rate.
+    evictExpired(this.history, now, HISTORY_SEC)
     // Need enough history for mean/σ to mean anything, and a silent passage
     // must not fire on noise-floor jitter.
     if (this.history.length < MIN_SAMPLES || silence) return
