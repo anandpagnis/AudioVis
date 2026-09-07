@@ -27,7 +27,7 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  * each). That is ~100 fbm + ~24 eye SDFs per pixel. Op-count against `kifs`
  * (2.97 ms at tier 0, ~160 heavy ops/px) puts the true tier-0 cost around
  * **20-30 ms**, ~10-15 ms even at the bottom tier — far past
- * `slotBudget.test.ts`'s `< sceneBudget(0)/2 = 4 ms` layer-funding bar.
+ * `slotBudget.test.ts`'s `< sceneBudget(0)/2 = 5.05 ms` layer-funding bar.
  *
  * The `SCENE_COST_MS` row in sceneCost.ts is therefore a FABRICATED ceiling
  * (3.9), not an estimate. Consequence: the auto-director's budget model will

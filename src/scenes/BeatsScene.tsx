@@ -23,7 +23,7 @@ import { drastic } from '../engine/sceneParams'
  * loop. Op-count comparison against the measured roster (`kifs` 2.97 ms at
  * tier 0, ~20 KIFS iterations *with* an escape) puts this several times dearer
  * per pixel, so it was not expected to clear `slotBudget.test.ts`'s tier-0
- * `< sceneBudget(0)/2 = 4 ms` layer-funding bar honestly priced — and `/bench`
+ * `< sceneBudget(0)/2 = 5.05 ms` layer-funding bar honestly priced — and `/bench`
  * (the only instrument that could settle it) cannot run from CI. It is
  * registered live in `index.ts`'s `SCENES` array anyway, by explicit request,
  * not because the cost is known to be safe. Its `SCENE_COST_MS` row in

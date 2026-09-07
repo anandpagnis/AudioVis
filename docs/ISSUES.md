@@ -8404,10 +8404,11 @@ things a curator will hit and should not have to rediscover.
       `npm run typecheck`, `npm run lint` clean; **1512 passed, 1 skipped**,
       same pre-existing F181b failure, no new failures; `npm run build` clean.
 
-- [ ] **F196 · Three scenes now solve to 1.00 at 4K, paying an offscreen blit
+- [x] **F196 · Three scenes now solve to 1.00 at 4K, paying an offscreen blit
       for a buffer that is already native** — `NebulaDriftScene.tsx` (live),
-      `TruchetKaleidoScene.tsx`, `LumenMaskScene.tsx` (both in
-      `DISABLED_SCENES`).
+      `TruchetKaleidoScene.tsx` (live — promoted out of `DISABLED_SCENES` by
+      the expanding-scenes merge after this entry was written),
+      `LumenMaskScene.tsx` (`DISABLED_SCENES`).
 
       Fallout from F195's re-anchor, found while correcting that entry's own
       numbers. `createShaderScene`'s spec doc (`:157-159`) says plainly that a
@@ -8430,6 +8431,49 @@ things a curator will hit and should not have to rediscover.
       or drop the declaration entirely and accept native on every panel
       including 5K. Both want the `/bench` sweep F195 already says these
       eleven need.
+
+      **Fixed — and the scope was wider than this entry stated.** All three
+      solved to 1.00 not merely at 4K but on **1080p and 1440p as well**: 8.9
+      and 8.3 MP both exceed a 1080p frame's 2.07 MP outright, so the budget
+      was inert at the ceiling on every panel the project targets, not just the
+      largest one.
+
+      **Where the values came from.** `solveScale` selects a resolution only
+      when its solve lands strictly inside both clamps:
+
+          0.16 * fullMP  <  pixelBudget  <  fullMP
+
+      Per panel that admits `B in (0.33, 2.07)` at 1080p, `(0.59, 3.69)` at
+      1440p and `(1.33, 8.29)` at 4K. The intersection — the only range that
+      binds on all three — is **`B in (1.33, 2.07)`**.
+
+      | scene | old | new | 1080p | 1440p | 4K | basis |
+      |---|---|---|---|---|---|---|
+      | `nebula` | 8.9 | **2.0** | 0.98 | 0.74 | 0.49 | top of the window |
+      | `lumen` | 8.3 | **2.0** | 0.98 | 0.74 | 0.49 | same |
+      | `truchet` | 8.9 / 5.6 | **1.6 / 1.0** | 0.88 | 0.66 | 0.44 | its cost row's own resolution |
+
+      `truchet` is reverted to its exact pre-F195 pair rather than moved into
+      the window, because `SCENE_COST_MS.truchet` was priced AT 1.6/1.0 and
+      F195 raised the budget without re-pricing it. The row is arithmetically
+      consistent with 1.6/1.0 and with nothing else — its tier-2 -> tier-3 step
+      (4.2 -> 3.2, 1.31x) tracks that pair's branch flip (1.600 -> 1.327 MP,
+      1.21x) with `uPlanes` flat at 3 across both rungs. Under 8.9 the scene
+      rendered 8.294 MP: **5.18x** the pixels its declared cost describes, a
+      true tier-0 cost near **35 ms** against a table reading 6.8. Reverting
+      makes the declared row true again instead of inventing a number to sit
+      under an unmeasured resolution. See F200.
+
+      **What this does NOT do.** Lowering a budget is a resolution defence.
+      `lumen` still has no per-pixel defence at all and `truchet` is still over
+      the tier-0 bar (6.8 vs 5.05) — and cannot be brought under it by
+      resolution, since `MIN_RENDER_SCALE` floors its 4K buffer at 1.327 MP,
+      which still prices at 5.64 ms. F197 and F199 are untouched by this fix.
+
+      Cost checked at each new value before committing to it: `nebula`'s row
+      was reasoned at 1.6 MP and tops out at 0.34 ms, so 2.0 MP is ~0.43 ms
+      against a 5.05 ms bar. NOT re-benched — each scene's header carries the
+      worked arithmetic.
 
 - [ ] **F197 · Three scenes have no quality-governor response of any kind** —
       `FortressHarkonnenScene.tsx`, `LumenMaskScene.tsx` (both
@@ -8457,6 +8501,35 @@ things a curator will hit and should not have to rediscover.
       `harkonnen` is `performanceCost: 'high'`. Recorded rather than fixed
       because deciding needs the same `/bench` numbers F195 and F196 are both
       waiting on.
+
+      **All three re-verified against source; the entry is accurate. One of the
+      three is now settled, two remain open.**
+
+      - `dustfield` — **settled: it genuinely has nothing worth cutting.** Its
+        entire per-pixel cost is three fixed `dustLayer()` calls, each a
+        handful of `hash()` calls and two `smoothstep()`s: no loop, no fbm, no
+        octave count, no iteration count, no march. There is no knob to gate
+        because there is no expensive term to gate, which is the same posture
+        `snowflake` / `matrix` / `wireframe` take under F111. Its cost row is
+        **0.18 ms flat**, the third cheapest in the roster and 28x clear of the
+        5.05 ms tier-0 bar. Adding a `quality.knobs` read here would be
+        ceremony, not defence. Closing the `dustfield` third of this entry as
+        correct-as-designed rather than leaving the question open.
+      - `harkonnen` and `lumen` — confirmed exactly as written. `harkonnen`
+        reads `quality.knobs.raymarchSteps` at one site only, selecting a
+        `pixelBudget` branch; `lumen` contains no `quality.knobs` read of any
+        kind. Both are in `DISABLED_SCENES` and cost no live frame today.
+        Deliberately NOT given a new tier-sensitivity code path: neither has
+        been run since the merge, no tool in this repo catches a GLSL
+        regression, and inventing a governor response for a shader nobody is
+        watching is real risk against no live benefit.
+
+      **F196's fix does not close this.** `lumen`'s budget was lowered
+      (8.3 -> 2.0) in that pass, which lowers the FLOOR it imposes on a weak
+      machine but adds no lever the governor can pull. A resolution defence and
+      a per-pixel-complexity defence are different things, and this entry
+      exists so the two are not conflated — the note is now repeated in
+      `LumenMaskScene.tsx` at the declaration itself.
 
 - [x] **F198 · The governor's "known one-off" suspension blinds the p95 window
       but NOT the EMA — and the EMA is the gate that actually fires. A single
@@ -8659,6 +8732,189 @@ things a curator will hit and should not have to rediscover.
 
       Found while verifying the expanding-scenes merge, not by the suite.
 
+      **Fix 1 has landed; fix 2 has not.** `slotBudget.test.ts` now collects
+      every over-budget scene and asserts once at the end, so one accepted
+      failure can no longer mask another. Running it reveals the blind spot was
+      **wider than this entry recorded — seven scenes, not six**: this entry's
+      table enumerated only the merge's own six and missed `travelling`
+      (30.0 ms), which is live, sits at index 13 immediately after `beats`, and
+      was therefore the FIRST scene the abort ever hid. The complete list the
+      gate now reports, against the 5.05 ms bar:
+
+          lattesfold 45.00  travelling 30.00  gyroid 18.00  beats 15.20
+          javazone 13.00    fridaylines 11.00  truchet 6.80
+
+      Fix 2 (re-price or demote) is deliberately NOT attempted here — see F200,
+      which finds the rows themselves are not stated on a comparable basis.
+
+- [ ] **F200 · The new scenes' cost rows are not normalised for the internal
+      resolution each scene renders at, so the op-count comparisons behind them
+      are not like-for-like — and this is the most likely explanation of F199's
+      failures** — `src/engine/sceneCost.ts`.
+
+      F199 asks whether its seven over-budget scenes are genuinely too heavy or
+      merely pessimistically estimated. This entry is evidence for the second,
+      found while trying to act on F199's fix 2.
+
+      **A row in this file is resolution-specific by construction.** The file's
+      own header says a number is `gpu.meanMs + js.meanMs` measured with "each
+      scene's own `pixelBudget` solve" — so a row means "this scene's cost AT
+      the resolution that scene renders at", not at native.
+
+      The estimated rows for the promoted scenes were derived by scaling
+      ITERATION COUNT against a reference row, with no term for the reference's
+      resolution. `GyroidFluxScene.tsx`'s header shows the method verbatim: "vs
+      `kifs` ... 150 steps is 7.5x the iteration count ... Scaling the count
+      alone: ~18-22 ms", and 18.0 is what the row carries. But the two scenes
+      do not render the same frame:
+
+      | scene | budget | renders (fullMP 8.29) |
+      |---|---|---|
+      | `kifs` | none declared | **8.294 MP** (native) |
+      | `beats` | 6.7 / 3.9 | 6.700 MP |
+      | `gyroid` | 1.2 / 0.7 | **1.200 MP** |
+      | `javazone` | 1.2 / 0.7 | 1.200 MP |
+      | `fridaylines` | 1.1 / 0.65 | 1.100 MP |
+      | `lattesfold` | 0.5 / 0.3 | 1.327 MP (floored) |
+      | `butterfly` | 1.6 / 1.0 | 1.600 MP |
+
+      `gyroid` renders **6.9x fewer pixels than `kifs`** and its cost is
+      per-pixel with no early-out, yet it is priced at 6x `kifs`'s measured
+      2.97 ms on an iteration-count ratio alone. Carrying the resolution term
+      through the same comparison puts it near 2.6 ms (kifs-scaled) or 1.8 ms
+      (beats-scaled) — under the 5.05 ms bar rather than 3.6x over it.
+
+      The pattern is not confined to the new scenes. `web`'s row says "rendered
+      offscreen at 0.8 MP ... minus the resolution cut" and still prices at
+      3.4 ms, ABOVE `kifs`'s 2.97 at 10x the pixels; `butterfly`'s says "offset
+      by the offscreen `pixelBudget`" and prices above `kifs` likewise. The
+      words are present in several rows; the arithmetic is not.
+
+      **Deliberately not fixed by rewriting the rows.** Re-deriving seven rows
+      downward — which would make `slotBudget.test.ts` go green — is exactly
+      the "fabricated pass-the-test number" this file's own comments forbid in
+      four separate places, and the underlying op-count estimates are unmeasured
+      regardless of how they are scaled. The resolution term is a real omission
+      and the direction of the correction is not in doubt; its magnitude needs
+      the `/bench` sweep every one of these rows already asks for. Logged so
+      that sweep is read against the right question.
+
+      Two related corrections DID land, because each rests on arithmetic rather
+      than on re-estimating:
+
+      - `truchet` (see F196) was rendering **5.18x** the pixels its own row
+        describes, making its true tier-0 cost ~35 ms against a declared 6.8.
+      - `nebula` and `lumen` were rendering at full native for the same reason.
+
+      **Update: the resolution term has now been carried through for
+      `gyroid`/`fridaylines`/`javazone`/`lattesfold`/`truchet`/`travelling`**
+      (`sceneCost.ts`, each row's own comment shows the arithmetic). This
+      entry drew a line between two different things and declined to touch
+      either: (1) the underlying op-count RATIO (is `gyroid` really 7.5x
+      `kifs`'s iteration count? — still genuinely unmeasured, still untouched
+      here, still wants `/bench`) and (2) the resolution term this entry
+      itself says is missing from the arithmetic that turns that ratio into a
+      cost-at-current-settings number. Fixing (2) is not the same act as (1):
+      it takes an already-accepted, already-documented estimate and applies
+      `solveScale(declaredBudget, 3840, 2160, 1)^2` — a deterministic function
+      of a number each scene already declares, not a new guess about the
+      scene's own weight — the same operation `sceneBudget()`'s own solver
+      performs at runtime for every frame these scenes render. The two rows
+      this entry computed by hand as a sanity check land almost exactly on
+      that formula's output (`gyroid` "near 2.6 ms (kifs-scaled)" here vs
+      2.88 ms from the formula; both clamp to `solveScale`'s 0.4 floor at 4K,
+      which is most of the remaining gap). (1) remains exactly as open as this
+      entry left it — every row's comment still says NOT /bench-measured, and
+      still asks for one.
+
+- [x] **F201 · `src/scenes/index.ts` carries 266 mojibake-corrupted characters,
+      one of them in a user-visible scene name** — `src/scenes/index.ts`.
+
+      Every non-ASCII character in the file was double-encoded: the text was
+      decoded as CP1252 and re-encoded as UTF-8, so `—` became `â€"`, `≈` became
+      `â‰ˆ`, `→` became `â†'` and `è` became `Ã¨`. 266 occurrences across four
+      distinct sequences, and an inventory confirmed there were NO correctly
+      encoded non-ASCII characters left to protect — the corruption was total.
+
+      Introduced by commit `52edd6d` ("Merge expanding-scenes: five fullscreen
+      shader scenes"). Bisected against the file's own history: `ded1683`
+      (pre-merge), `a127db0` (add five scenes) and `ba54790` (the F195
+      re-anchor) all carry **zero**; the merge resolution carries all 266. The
+      corruption is confined to this one file — `src/engine` and `src/ui` have
+      none.
+
+      **One of them shipped to the UI.** Line 1633 read `name: 'LattÃ¨s Fold'`,
+      which is the string the scene bar and HUD render, so the roster displayed
+      "LattÃ¨s Fold" to users. The other 265 are in comments.
+
+      **Fixed** by replacing the four sequences with their correct characters
+      (CRLF line endings verified preserved, 3108 unchanged). Nothing in the
+      toolchain catches this class of defect: `tsc`, `eslint` and `vitest` are
+      all indifferent to a mojibake string literal, exactly as they are to a
+      black-frame shader.
+
+- [x] **F202 · The tier-0 admission bar was quoted as "~4 ms" in eleven places;
+      it is 5.05 ms** — `src/engine/sceneCost.ts`, six scene files,
+      `src/scenes/index.ts`.
+
+      `slotBudget.test.ts`'s admission bar is `sceneBudget(0) / 2` =
+      `(TIER_BUDGET_MS[0] - (POST_CHAIN_MS + FEEDBACK_MS)) / 2` =
+      `(11 - 0.9) / 2` = **5.05 ms**. Eleven comments across seven files told a
+      reader it was approximately 4 — including four `ACTION:` lines whose
+      whole purpose is to tell a future maintainer what threshold to bench
+      against, and which therefore set a target 21% too strict.
+
+      Almost certainly stale rather than invented: 4.0 is what the expression
+      yields at an earlier `TIER_BUDGET_MS[0]`, and nothing re-derived the
+      figure when that constant moved. Precisely the failure the repo's own
+      standing rule about not writing an unverified threshold into a comment
+      exists to prevent, which is why it is recorded rather than quietly fixed.
+
+      **Fixed** — all eleven now state 5.05 ms, each re-derived from the
+      constants rather than copied from a sibling comment.
+
+- [x] **F203 · `sceneCost.ts`'s `neonjungle` row says "FORCED LIVE by explicit
+      request"; `neonjungle` is in `DISABLED_SCENES`** — `src/engine/sceneCost.ts`.
+
+      Enumerating `SCENES` and `DISABLED_SCENES` directly puts `neonjungle` in
+      the disabled array (28 live, 16 disabled), and `slotBudget.test.ts`'s
+      roster sweep never sees it — consistent with F195's table, which also
+      lists it as DISABLED. The cost row's claim is simply wrong, and it is the
+      kind of wrong that matters: the row is priced at 38.0 ms at tier 0, so a
+      reader trusting the comment would believe the live roster carries a scene
+      dearer than every other by a wide margin.
+
+      **Fixed** — the comment now states plainly that this scene is disabled,
+      not live, and why the wrong claim mattered. The 38.0 ms row itself is
+      untouched, same as this entry originally proposed; only the false "live"
+      claim is corrected.
+
+- [ ] **F204 · `lattesfold`'s 24-iteration depth-band loop is a constant-folded
+      no-op** — `src/scenes/LattesFoldScene.tsx`.
+
+      The secondary pass runs `for (int i = 0; i < 24; i++) { float S = 2.0 -
+      abs(p.x * sin(0.2 * p.z) + p.y * cos(0.2 * p.z)); p3 += t3 * S; if (S <
+      0.001) break; }` — but `p` is initialised to `vec3(0.0)` and is never
+      assigned inside the loop, so both products are identically zero and `S`
+      is **2.0 on every iteration**. The whole loop reduces to
+      `p3 += t3 * 48.0`, and the `break` can never be taken.
+
+      The scene's own header documents the cause honestly (the source read a
+      local it never assigned; the port pinned it to zero rather than leave it
+      undefined) and correctly calls the result "a fixed-step (2.0) scan" — so
+      this is a known consequence, not an undiscovered bug, and it is recorded
+      here only because two things follow from it that the header does not say:
+
+      1. `SCENE_COST_MS.lattesfold`'s comment cites "the secondary 24-step
+         depth-band pass" as part of what justifies the 45.0 ms estimate. It
+         contributes essentially nothing — a decent compiler folds it to one
+         add — so that estimate is overstated by whatever weight was given to
+         it, which compounds F200.
+      2. Collapsing it to `p3 += t3 * 48.0` in source would be behaviour-
+         identical and would remove 24 iterations of doubt. Not done here: it
+         is a live shader nobody has run since the merge, no tool in this repo
+         catches a GLSL regression, and the honest sequencing is `/bench` first.
+
 ## Verification status
 
 `npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1512 tests**
@@ -8689,6 +8945,27 @@ override (root cause of a second "not live" symptom) and discovered
 `HUD.tsx` itself is unreachable from any route this app serves — see F194
 for the full trace. Re-verified: typecheck clean, lint clean, **same 1512
 passed / 1 skipped / 1 pre-existing F181b failure**, build clean.
+
+**Budget-correctness pass: F196 fixed, F197 narrowed, F199 fix 1 landed,
+F200-F204 opened.** `slotBudget.test.ts` now collects failures and asserts
+once, so the roster gate can no longer abort at its first accepted failure —
+it reports **seven** over-budget live scenes where CI had been showing one, and
+F199's own table had predicted six (it missed `travelling`). Three offscreen
+budgets re-anchored down so they select a resolution again instead of solving
+to native on every panel (`nebula` 8.9 -> 2.0, `lumen` 8.3 -> 2.0, `truchet`
+8.9/5.6 -> 1.6/1.0). 266 mojibake characters repaired in `src/scenes/index.ts`,
+one of them a user-visible scene name. Eleven comments corrected that stated
+the tier-0 bar as ~4 ms when it is 5.05 ms.
+
+No cost row was re-priced and no scene was moved to `DISABLED_SCENES`: F200
+finds the rows are not stated on a comparable resolution basis, so re-pricing
+them would be guessing in the direction the test wants, and demoting scenes a
+human explicitly forced live on the strength of estimates this pass has reason
+to distrust would be the same error pointed the other way. Both wait on
+`/bench`. Verified: typecheck clean, lint clean (0 errors, 0 warnings),
+**1517 passed / 1 skipped / 1 failure** — unchanged in count from the baseline
+this pass started at, and the one failure is the same `slotBudget.test.ts`
+assertion, now reporting the full honest list rather than only `beats`.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`
 have not been run end-to-end in a foregrounded browser since these changes, and

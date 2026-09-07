@@ -35,7 +35,7 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  *   - `hash()` swapped for a sine-free version (it was called ~36x/pixel)
  *
  * The `SCENE_COST_MS` row is a documented estimate, not a /bench measurement.
- * Run `/bench`; if tier 0 lands at or above `sceneBudget(0)/2` (~4 ms), drop
+ * Run `/bench`; if tier 0 lands at or above `sceneBudget(0)/2` (5.05 ms), drop
  * `density`'s default, cut `complexity`, or move this to DISABLED_SCENES.
  * Flip `#define USE_BEZIER 0` for straight strands if you need more headroom.
  *

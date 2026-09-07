@@ -18,7 +18,7 @@ import { drastic } from '../engine/sceneParams'
  * plus a SECOND `RSTEPS 60` reflection march on every water / puddle pixel,
  * per-step volumetric integration in both, `calcNormal` (4x) + `calcAO` (5x) +
  * `softShadow` (up to 20x) all re-running the entire scene SDF. As-is it will
- * not clear `slotBudget.test.ts`'s tier-0 `< sceneBudget(0)/2 ≈ 4 ms` bar, and
+ * not clear `slotBudget.test.ts`'s tier-0 `< sceneBudget(0)/2 = 5.05 ms` bar, and
  * there is no way to measure it from CI (`/bench` is manual, in-browser,
  * single-GPU). It stays here until an optimised pass benches under that bar;
  * promotion is then a one-object move into `SCENES` plus a `SCENE_COST_MS` row.

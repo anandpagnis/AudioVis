@@ -261,35 +261,58 @@ export const NebulaDriftScene = createShaderScene<NebulaDriftState>({
   // resolution: the buffer sat near 40% linear whatever the display or the
   // hardware.
   //
-  // 8.9 is 1.6 x 5.5556 — the ratio from `maze`'s chosen re-anchor (0.9 -> 5.0),
-  // applied uniformly to all eleven affected scenes so their RELATIVE ordering
-  // (which encodes real measured cost differences) survives intact.
+  // ## Re-anchored again 8.9 -> 2.0 (F196/F200)
   //
-  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  // F195 set 8.9 as 1.6 x 5.5556 — the ratio from `maze`'s chosen re-anchor
+  // (0.9 -> 5.0), applied UNIFORMLY to all eleven scenes it touched. That
+  // uniform factor is what broke this one. F195's own table records this
+  // scene's pre-anchor 4K solve as **0.44**, which is ABOVE `solveScale`'s
+  // 0.40 clamp — so unlike `maze` (0.40, genuinely pinned and the scene the
+  // 5.5556x was derived from), `nebula` never had the clamp problem the
+  // re-anchor existed to fix. It was swept up in a roster-wide multiply and
+  // pushed straight out the other end: 8.9 MP exceeds a 4K panel outright, so
+  // every display up to and including 4K solved to 1.00 and paid
+  // `createShaderScene`'s extra fullscreen blit for a buffer that was already
+  // native — the exact overhead the spec doc (`:157-159`) says to omit
+  // `pixelBudget` to avoid. Inert at the ceiling where it had been inert at
+  // the floor, which is F196.
   //
-  //     OLD  0.44 / 0.44 / 0.44 / 0.44 / 0.44
-  //     NEW  1.00 / 1.00 / 1.00 / 1.00 / 1.00     buffer @ tier 0: 3840x2160
+  // ## Why 2.0 — the window where the budget actually binds
   //
-  // Flat across the tiers, and not by accident: the budget is a plain number
-  // with no threshold to flip and `solveScale` has no tier multiplier, so this
-  // scene's resolution never varied by tier and still does not. The re-anchor
-  // moved where the flat line sits; it did not add rungs to it.
+  // `solveScale` = `clamp(sqrt(B / fullMP), 0.4, 1)`. The budget SELECTS a
+  // resolution only when that solve lands strictly inside the clamps, i.e.
   //
-  // ## KNOWN RISK: this raises the FLOOR, and the governor cannot lower it
+  //     0.16 * fullMP  <  B  <  fullMP
   //
-  // With no tier multiplier on this path the quality governor CANNOT claw
-  // resolution back on this scene under load, so raising the budget raises the
-  // floor of what a weak machine must render, not just the ceiling. On a
-  // 2560x1664 MacBook Air this goes from 0.61 to 1.00 (native) at every tier —
-  // ~2.7x the pixels, with no resolution move available at any tier. The ladder
-  // can still cut per-pixel cost (`uOctaves` off `noiseOctaves`, see below) but
-  // never pixel COUNT.
+  // Per panel, that admits:
   //
-  // 8.9 MP also exceeds a 4K panel, so on any display up to and including 4K
-  // this renders at scale 1.00 and pays `createShaderScene`'s extra fullscreen
-  // blit for a buffer that is already native — the overhead the spec doc says
-  // to omit `pixelBudget` to avoid. It only starts doing work above 4K (5K
-  // solves ~0.78). Known and accepted for now, pending a fresh `/bench`.
+  //     1080p  fullMP 2.07  ->  B in (0.33, 2.07)
+  //     1440p  fullMP 3.69  ->  B in (0.59, 3.69)
+  //     4K     fullMP 8.29  ->  B in (1.33, 8.29)
+  //
+  // The intersection is **B in (1.33, 2.07)** — the only range that binds on
+  // all three. 2.0 sits at the top of it, giving up the least resolution while
+  // still selecting one everywhere:
+  //
+  //     panel   OLD 8.9        NEW 2.0
+  //     1080p   1.00 native    0.98  (2.0 MP)
+  //     1440p   1.00 native    0.74  (2.0 MP)
+  //     4K      1.00 native    0.49  (2.0 MP)
+  //     5K      0.78           0.40  floor (2.36 MP)
+  //
+  // Above 4K it floors, and that is the benign direction: the floor renders
+  // MORE than the budget asked for, so the scene is under-throttled rather
+  // than under-resolved. Flat across tiers either way — the budget is a plain
+  // number with no threshold to flip and `solveScale` has no tier multiplier.
+  //
+  // ## Cost check at the new value
+  //
+  // `SCENE_COST_MS.nebula` tops out at 0.34 ms, and that row's own comment
+  // states it was reasoned at `pixelBudget 1.6`. 2.0 MP is 1.25x that, so
+  // ~0.43 ms — against a `sceneBudget(0)/2` bar of 5.05 ms, clear by ~12x.
+  // Re-anchoring DOWN also moves the F195 risk note the safe way: this scene's
+  // floor on a 2560x1664 MacBook Air drops from 1.00 (native) back to 0.74,
+  // and the ladder keeps its per-pixel lever (`uOctaves` off `noiseOctaves`).
   //
   // ## Why a BACKGROUND's budget still matters
   //
@@ -300,7 +323,7 @@ export const NebulaDriftScene = createShaderScene<NebulaDriftState>({
   // "a soft upscale is invisible under a subject" is a fair claim about this
   // layer's own pixels, but it was propping up a number that had stopped
   // selecting any resolution at all.
-  pixelBudget: 8.9,
+  pixelBudget: 2.0,
   uniforms: () => ({
     uPhase: { value: 0 },
     uScale: { value: 1.2 },

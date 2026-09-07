@@ -22,18 +22,23 @@ import { drastic } from '../engine/sceneParams'
  *  2. **A real /bench sweep.** `color()` accumulates up to 6 kaleidoscope +
  *     Truchet planes per pixel with a dual-ray AA. No march loop, but each
  *     plane runs `smoothKaleidoscope` + `truchet_df` + several smoothsteps —
- *     unmeasured, and it may not clear `slotBudget.test.ts`'s tier-0
- *     `< sceneBudget(0)/2 ≈ 4ms` bar. `uPlanes` (below) is wired to the
- *     quality governor so a bench can be run at each tier.
+ *     unmeasured, and it does NOT clear `slotBudget.test.ts`'s tier-0
+ *     `< sceneBudget(0)/2` bar. That bar is **5.05 ms**, not the "≈ 4ms" this
+ *     header used to quote: `TIER_BUDGET_MS[0]` (11) minus `POST_CHAIN_MS` +
+ *     `FEEDBACK_MS` (0.9), halved. `SCENE_COST_MS.truchet` puts tier 0 at 6.8.
+ *     `uPlanes` (below) is wired to the quality governor so a bench can be run
+ *     at each tier.
  *
- *     That sweep now has to be run against a bigger frame than the one this
- *     scene used to render. `pixelBudget` was re-anchored 1.6/1.0 -> 8.9/5.6
- *     (see the declaration below for the reasoning), taking tier 0 on a 4K
- *     panel from 0.44 linear to 1.00 — full native, about 5.2x the internal
- *     pixels, and the per-plane `smoothKaleidoscope` + `truchet_df` work is
- *     per-pixel. No ms figure is asserted here because none was ever measured;
- *     the point is that a bench taken at the old budget would understate the
- *     scene by roughly that factor and could not be used to clear the bar.
+ *     `pixelBudget` was re-anchored 1.6/1.0 -> 8.9/5.6 by F195 and has now
+ *     been REVERTED to 1.6/1.0 (see the declaration below for the full
+ *     reasoning). Under 8.9 this scene rendered at full native on any panel up
+ *     to 4K — about 5.2x the internal pixels its own `SCENE_COST_MS` row was
+ *     priced at, putting its true tier-0 cost near 35 ms rather than 6.8. The
+ *     revert makes the declared row describe the resolution the scene actually
+ *     renders at, so a bench run now measures the thing the table claims.
+ *     Resolution alone still cannot clear the bar: `MIN_RENDER_SCALE` floors
+ *     the buffer at 1.327 MP on a 4K panel, which prices this scene at 5.64 ms
+ *     even at its cheapest possible resolution.
  *
  * Promotion = move the object literal into `SCENES` + add a `SCENE_COST_MS`
  * row from the sweep.
@@ -399,43 +404,56 @@ export const TruchetKaleidoScene = createShaderScene<TruchetState>({
   // with engine/renderScale.ts: no `combinePixelBudgets` reciprocal sum, no
   // `quality.knobs.pixelBudgetScale` tier multiplier on this path.
   //
-  // ## Re-anchored 1.6/1.0 -> 8.9/5.6
+  // ## Re-anchored 1.6/1.0 -> 8.9/5.6 (F195), then REVERTED to 1.6/1.0 (F196/F200)
   //
-  // The old pair was chosen against the 1080p/laptop displays the roster was
-  // developed on. On a 4K panel 1.6 MP solves to 0.44 and the 1.0 branch falls
-  // through `solveScale`'s 0.4 clamp entirely, so the declared number had
-  // stopped carrying information and the buffer was pinned near 40% linear —
-  // a ~2.4x upscale — whatever the display or the hardware. 8.9/5.6 is the
-  // roster-wide 5.5556x re-anchor (from `maze`'s 0.9 -> 5.0), which keeps this
-  // scene the most generous of the four: it is the cheapest, no march loop.
+  // F195 applied a uniform 5.5556x to eleven scenes, derived from `maze` —
+  // whose 4K solve was 0.40, i.e. pinned ON `solveScale`'s clamp, which is the
+  // defect the re-anchor existed to fix. This scene's pre-anchor 4K solve was
+  // **0.44** by F195's own table: above the clamp, binding correctly, not
+  // suffering that defect. It was multiplied anyway, and 8.9 MP exceeds a 4K
+  // panel outright, so tiers 0-2 solved to 1.00 and paid `createShaderScene`'s
+  // extra fullscreen blit for a buffer that was already native — the overhead
+  // the spec doc (`:157-159`) says to omit `pixelBudget` to avoid. That is
+  // F196.
   //
-  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  // ## Why revert rather than pick a new number
   //
-  //     OLD  0.44 / 0.44 / 0.44 / 0.40 / 0.40
-  //     NEW  1.00 / 1.00 / 1.00 / 0.82 / 0.82     buffer @ tier 0: 3840x2160
+  // Because `SCENE_COST_MS.truchet` was priced AT the old 1.6/1.0 pair, and
+  // F195 explicitly did not re-price it ("every measured-ms figure in these
+  // eleven headers was taken at the old budget"). The row is internally
+  // consistent with 1.6/1.0 and with nothing else — its tier-2 -> tier-3 step
+  // (4.2 -> 3.2, 1.31x) tracks the 1.6 -> 1.0 branch flip's pixel ratio
+  // (1.600 -> 1.327 MP, 1.21x) with `uPlanes` flat at 3 across both rungs;
+  // there is no other lever at that step that could explain it.
   //
-  // The only tier sensitivity on this path is the `>= 50` threshold below
-  // flipping the budget between branches: tiers 0-2 take 8.9, tiers 3-4 take
-  // 5.6. At 1440p and 1080p both branches solve to 1.00.
+  // So under 8.9 this scene rendered **5.18x** the pixels its own declared
+  // cost describes (8.294 MP against the 1.600 MP the row assumes), making its
+  // true tier-0 cost ~**35 ms**, not the 6.8 the table reports. Reverting to
+  // 1.6/1.0 makes the declared row TRUE again rather than inventing a fresh
+  // number to sit under a resolution nobody measured. 4K solves, from
+  // `solveScale`:
   //
-  // ## KNOWN RISK: this raises the FLOOR, and the governor cannot lower it
+  //     F195's 8.9/5.6   1.00 / 1.00 / 1.00 / 0.82 / 0.82   (native, blit for nothing)
+  //     REVERTED 1.6/1.0 0.44 / 0.44 / 0.44 / 0.40 / 0.40   (1.600 / 1.327 MP)
   //
-  // `solveScale` has no tier multiplier, so the quality governor CANNOT claw
-  // resolution back on this scene under load. Raising the budget raises the
-  // floor of what a weak machine must render, not just the ceiling: on a
-  // 2560x1664 MacBook Air this scene goes from 0.61 to 1.00 (native) at every
-  // tier — ~2.7x the pixels, with no governor move available at any tier.
-  // 8.9 MP now exceeds a 4K panel outright, so tiers 0-2 render at scale 1.00
-  // and pay `createShaderScene`'s extra fullscreen blit for a buffer that is
-  // already native — the exact cost the spec doc says to omit `pixelBudget` to
-  // avoid. The declaration still earns its place at tiers 3-4 on 4K and on
-  // anything larger (a 5K panel solves ~0.78), but on 1440p and below it is now
-  // inert at the ceiling where it used to be inert at the floor.
+  // At 1440p 1.6 solves to 0.66 and at 1080p to 0.88 — binding, not native, on
+  // every panel from 1080p up, which is what F196 asked for. The tier-3/4
+  // branch does sit on the 0.40 clamp at 4K; that is the benign direction (the
+  // floor renders MORE than the budget asked for), and it is the state F195
+  // found this scene in, not a new regression.
   //
-  // The ladder can still cut per-pixel cost — `uPlanes` drops the plane count
-  // off the governor's iteration knob — but not pixel COUNT. Known and
-  // accepted for now, pending the `/bench` this scene needs before promotion.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 8.9 : 5.6),
+  // ## STILL OVER THE TIER-0 BAR, and it cannot be fixed from here (F199)
+  //
+  // 6.8 ms against `sceneBudget(0)/2` = 5.05 ms. Resolution cannot close that
+  // gap: `MIN_RENDER_SCALE` 0.40 floors the buffer at 0.16 * 8.294 = 1.327 MP,
+  // so the cheapest this scene can EVER render on the reference display is
+  // 6.8 * (1.327 / 1.600) = **5.64 ms** — still over the bar at any
+  // `pixelBudget` whatsoever. Closing it needs a per-pixel cut (fewer planes,
+  // or dropping the dual-ray AA) or a `/bench` showing the estimate is
+  // pessimistic. Left LIVE deliberately: it was force-promoted by explicit
+  // request, and the estimate is unmeasured — `slotBudget.test.ts` now reports
+  // it rather than aborting before it, which is where that decision belongs.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.6 : 1.0),
   uniforms: () => ({
     uFly: { value: 0 },
     uShock: { value: 0 },

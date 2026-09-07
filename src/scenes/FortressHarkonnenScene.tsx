@@ -51,7 +51,7 @@ import { drastic } from '../engine/sceneParams'
  *
  * The `SCENE_COST_MS` row is a documented op-count estimate (see sceneCost.ts).
  * With the cuts above it is plausibly ~3.5 ms at tier 0, under
- * `slotBudget.test.ts`'s `< sceneBudget(0)/2 ≈ 4ms` bar — but `pow`/`tanh`
+ * `slotBudget.test.ts`'s `< sceneBudget(0)/2 = 5.05 ms` bar — but `pow`/`tanh`
  * cost is unpredictable on weak GPUs. Run `/bench` and re-price; if it comes in
  * over the bar it must move to DISABLED_SCENES or take further cuts.
  *

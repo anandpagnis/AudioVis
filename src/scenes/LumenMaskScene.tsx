@@ -509,20 +509,43 @@ export const LumenMaskScene = createShaderScene<LumenMaskState>({
   // no lever left to give any of it back. On a 2560x1664 MacBook Air this scene
   // goes from 0.59 to 1.00 (native): ~2.8x the pixels, permanently.
   //
-  // 8.3 MP also exceeds a 4K panel, so on any display up to and including 4K
-  // this now renders at scale 1.00 and pays `createShaderScene`'s extra
-  // fullscreen blit for a buffer that is already native — the exact overhead
-  // the spec doc says to omit `pixelBudget` to avoid. The budget only starts
-  // doing work above 4K (a 5K panel solves ~0.75). It is inert at the ceiling
-  // now where it used to be inert at the floor.
+  // ## Re-anchored again 8.3 -> 2.0 (F196/F200)
   //
-  // The op count is still an ESTIMATE and this scene has never been /bench'd.
-  // The estimate was reasoned at the old budget, so whatever it was worth it
-  // now describes a frame with ~5.5x the internal pixels at tier 0 on 4K; the
-  // cost is per-pixel, so the real figure is higher by about that factor. No
-  // number is invented to replace it — it wants a sweep, and that sweep is now
-  // also what decides whether the risk above is acceptable.
-  pixelBudget: 8.3,
+  // F195's 5.5556x was derived from `maze`, whose 4K solve was 0.40 — pinned
+  // ON the clamp, which is the defect that re-anchor existed to fix. F195's
+  // own table records THIS scene's pre-anchor 4K solve as **0.43**, above the
+  // clamp: `lumen` never had that defect and was multiplied anyway. 8.3 MP
+  // exceeds a 4K panel, so every display up to and including 4K solved to 1.00
+  // and paid `createShaderScene`'s extra fullscreen blit for a buffer that was
+  // already native — the overhead the spec doc (`:157-159`) says to omit
+  // `pixelBudget` to avoid. That is F196.
+  //
+  // 2.0 is the same value and the same derivation as `nebula`'s (see that
+  // scene's note for the worked window). `solveScale` binds only when
+  // `0.16 * fullMP < B < fullMP`; intersected across 1080p/1440p/4K that is
+  // **B in (1.33, 2.07)**, and 2.0 sits at the top of it:
+  //
+  //     panel   OLD 8.3        NEW 2.0
+  //     1080p   1.00 native    0.98  (2.0 MP)
+  //     1440p   1.00 native    0.74  (2.0 MP)
+  //     4K      1.00 native    0.49  (2.0 MP)
+  //     5K      0.75           0.40  floor (2.36 MP)
+  //
+  // ## This does NOT fix the no-tier-response gap (F197)
+  //
+  // Stated plainly because the two are easy to conflate: lowering a budget is
+  // a RESOLUTION defence, and this scene's problem is that it has no per-pixel
+  // defence at all — it reads no `quality.knobs` value anywhere, so the
+  // governor still cannot cut its octaves, steps or iterations under load. The
+  // re-anchor lowers the floor this scene imposes (2560x1664 MacBook Air: 1.00
+  // native -> 0.74) but adds no lever. F197 tracks the missing lever and is
+  // NOT closed by this edit.
+  //
+  // The op count remains an ESTIMATE; this scene has never been /bench'd, and
+  // it is in DISABLED_SCENES so it costs no live frame today. No cost number
+  // is invented here — the estimate wants a sweep, and that sweep is also what
+  // decides whether the F197 gap is worth closing before any promotion.
+  pixelBudget: 2.0,
   uniforms: () => ({
     uT: { value: 0 },
     uBass: { value: 0 },
