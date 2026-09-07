@@ -245,11 +245,12 @@ export interface AudioFeatures {
    * master from a dull or lossy-encoded one (most lossy codecs brick-wall
    * around 15–19 kHz). Adaptively normalized like the other bands.
    *
-   * Surfaced on the contract but NOT yet consumed anywhere. It reads as a
-   * natural harshness/shimmer cue for `MoodEstimator`, but the calibration
-   * corpus (96 kbps) has nothing up here, so a wired weight would be untunable
-   * — wiring waits for a lossless A/B. Same "computed and exposed first"
-   * pattern as `air` / `key` / `vocalPresence` before them.
+   * Consumed by `MoodEstimator` as a small additive bias on `ambient` (beside
+   * `air`) and `aggressive` (beside `spectralRolloff`), bounded by
+   * `SPARKLE_WEIGHT` = 0.06 — see that constant for the derivation and for the
+   * BandNormalizer caveat that keeps the weight low: on lossy material this
+   * band holds only codec dither, and the normalizer stretches dither to full
+   * scale exactly as it would stretch real shimmer.
    */
   sparkle: number
   /** Spectral centroid 0..1 (dark → bright). */

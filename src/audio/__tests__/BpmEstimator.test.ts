@@ -187,6 +187,117 @@ describe('BpmEstimator', () => {
     expect(Math.abs(est.bpm - 152)).toBeLessThan(6)
   })
 
+  // --- The logged F121 transition, reproduced literally (audit item 3) ------
+  //
+  // A live session log caught `bpm` reading 136.6 and then 102.5 in samples
+  // 0.25 s apart, after which 102.5 held for the rest of the session.
+  //
+  // Worth stating precisely, because it is easy to mis-file as an octave bug:
+  // 136.6 / 102.5 = 1.3327, and log2(1.3327) = 0.4143. The octave gates in
+  // `evaluate()` test `|log2(ratio)| - 1| < 0.15`, so at 0.4143 they do NOT
+  // fire — this is a 4:3 metrical reinterpretation (a dotted/triplet reading),
+  // not a half/double-time flip. What holds it is therefore the
+  // persist-before-jump gate (`stableCount >= 2`), which is the direct
+  // implementation of "require SUSTAINED contra-evidence, not one ambiguous
+  // reading". These tests pin that, and pin that it is hysteresis rather than
+  // a freeze.
+
+  /**
+   * Lock the grid to 136.6 on onsets plus a matching stream of degara-style
+   * reads (confidence 0, exactly as degara reports), then inject `contraSec`
+   * of 102.5 reads before returning to 136.6. Returns the lowest BPM the grid
+   * ever showed.
+   *
+   * `freshSec` is 0.4 against a 0.05 s tick, so a read expires unless it is
+   * re-sent every tick — otherwise one `setModelTempo` call would stay fresh
+   * for its 8 s default and "one reading" could not be distinguished from a
+   * sustained stream.
+   */
+  function lowestBpmAfterContraEvidence(contraSec: number): number {
+    const est = new BpmEstimator()
+    const period = 60 / 136.6
+    let t = 0
+    let next = 0
+    while (t < 16) {
+      if (t >= next) {
+        est.addOnset(t, 1)
+        next += period
+      }
+      est.setModelTempo(136.6, 0, t, 0.4)
+      est.update(t)
+      t += 0.05
+    }
+    expect(Math.abs(est.bpm - 136.6)).toBeLessThan(5)
+
+    const start = t
+    let lowest = Infinity
+    while (t < start + 12) {
+      if (t >= next) {
+        est.addOnset(t, 1)
+        next += period
+      }
+      const inWindow = t >= start + 1 && t < start + 1 + contraSec
+      est.setModelTempo(inWindow ? 102.5 : 136.6, 0, t, 0.4)
+      est.update(t)
+      lowest = Math.min(lowest, est.bpm)
+      t += 0.05
+    }
+    return lowest
+  }
+
+  it('holds 136.6 through a BRIEF 102.5 reinterpretation — the logged transition (F121)', () => {
+    // Up to 1 s of contra-evidence — two evaluations at the 0.5 s evaluate
+    // cadence — never moves the grid at all. `stableCount` needs to reach 2,
+    // which takes three consecutive agreeing evaluations.
+    for (const contraSec of [0.05, 0.3, 0.55, 1.0]) {
+      expect(lowestBpmAfterContraEvidence(contraSec)).toBeGreaterThan(120)
+    }
+  })
+
+  it('is hysteresis, not a freeze: SUSTAINED contra-evidence does re-interpret', () => {
+    // The converse guard, and what makes the test above non-vacuous: the same
+    // harness DOES move the grid once the evidence is sustained past the gate.
+    // Measured boundary sits between 1.0 s and 1.5 s.
+    expect(lowestBpmAfterContraEvidence(1.5)).toBeLessThan(110)
+    expect(lowestBpmAfterContraEvidence(3.0)).toBeLessThan(110)
+  })
+
+  it('recovers to 136.6 once the ambiguous reading passes', () => {
+    // The logged failure was not just the dip — 102.5 HELD for the rest of the
+    // session. Even where contra-evidence is long enough to move the grid, the
+    // return of consistent 136.6 reads must bring it back.
+    const est = new BpmEstimator()
+    const period = 60 / 136.6
+    let t = 0
+    let next = 0
+    const drive = (until: number, modelBpm: (now: number) => number) => {
+      while (t < until) {
+        if (t >= next) {
+          est.addOnset(t, 1)
+          next += period
+        }
+        est.setModelTempo(modelBpm(t), 0, t, 0.4)
+        est.update(t)
+        t += 0.05
+      }
+    }
+    drive(16, () => 136.6)
+    drive(19, () => 102.5) // 3 s — past the gate
+    drive(31, () => 136.6)
+    expect(Math.abs(est.bpm - 136.6)).toBeLessThan(5)
+  })
+
+  it('the logged ratio really is 4:3, not an octave — so the octave gate cannot be what holds it', () => {
+    // Guards the reasoning above against a future reader "simplifying" the
+    // persist gate away on the assumption that octaveLock covers this case.
+    const ratio = 136.6 / 102.5
+    expect(ratio).toBeCloseTo(1.3327, 4)
+    const octaves = Math.abs(Math.log2(ratio))
+    expect(octaves).toBeCloseTo(0.4143, 4)
+    // The gate in evaluate() is `|octaves - 1| < 0.15`.
+    expect(Math.abs(octaves - 1)).toBeGreaterThan(0.15)
+  })
+
   it('does NOT lock the octave from a cold start, so a real ½/2× seed still corrects', () => {
     // Regression guard for the continuity lock: it must only resist LEAVING a
     // dense-confirmed level, never block acquiring the right one. Seed at

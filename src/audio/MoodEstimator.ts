@@ -72,6 +72,47 @@ const DANCE_MAX = 12
 const DANCE_LO = 1.0
 const DANCE_SPAN = 5.0
 const DANCE_WEIGHT = 0.12
+/**
+ * `f.sparkle` (16 kHz–Nyquist) as a small additive bias on the two terms that
+ * already read the top of the spectrum: `ambient`'s air/breath term and
+ * `aggressive`'s rolloff term (audit item 4).
+ *
+ * ## Deriving the weight
+ *
+ * Its peers in those same two expressions are `f.air * 0.15` (ambient) and
+ * `f.spectralRolloff * 0.12` (aggressive). Sparkle is the least trustworthy of
+ * the three, so by the same rule `DANCE_WEIGHT` follows against `partyBonus`
+ * — a shakier signal biases less — it is set to half the smaller peer:
+ * `0.12 / 2 = 0.06`.
+ *
+ * ## Why it MUST stay small, and additive
+ *
+ * The trap here is assuming `f.sparkle` is ≈0 on material with nothing up
+ * there. It is not. `f.sparkle` is normalized by a `BandNormalizer` whose
+ * reference is a running maximum of the band's OWN value, seeded from the
+ * first real sample, with no absolute floor (`PEAK_GUARD` is 1e-9,
+ * deliberately below every real band value — see bandNormalizer.ts). So on a
+ * lossy encode brick-walled at ~15.5 kHz the 16 kHz+ band holds only codec
+ * dither, and the normalizer stretches that dither across the full 0..1 range
+ * exactly as it would stretch genuine cymbal shimmer. Nothing in the
+ * normalized value distinguishes the two cases. That is why an earlier pass
+ * measured a reasoned weight shifting the mood mix on the 8-track set and left
+ * this cue un-wired.
+ *
+ * The term is therefore ADDITIVE and bounded by `SPARKLE_WEIGHT`, never a
+ * multiplier on an existing factor: the worst case — sparkle pinned at 1.0 by
+ * stretched dither — adds at most 0.06 to a score, and is gated by the same
+ * `calm` / `loud` factor as the peer term beside it, so it cannot fire on a
+ * passage that is not already sparse (ambient) or already loud (aggressive).
+ * `MoodEstimator.test.ts` pins that bound directly rather than trusting it.
+ *
+ * Still unvalidated against real material, and honestly labelled as such: the
+ * calibration corpus is 96 kbps with nothing above ~15.5 kHz, so
+ * `npm run calibrate` cannot see this term any more than it can see
+ * `danceBonus`. A lossless A/B is still owed.
+ */
+const SPARKLE_WEIGHT = 0.06
+
 /** crestFactor → 0..1 dynamics, calibrated to the corpus (p10 2.19, p90 3.01)
  * rather than the code's old 1..10 assumption. */
 const CREST_LO = 1.9
@@ -308,6 +349,11 @@ export class MoodEstimator {
     const bassCarries = band(f.bass, BASS_CARRIES - 0.15, 1.01) // bass is doing the work
     const bassHeavy = smoothStep(f.bass, BASS_HEAVY_LO, BASS_HEAVY_HI) // enough to rule OUT mellow
     const justDropped = f.time - this.lastDropAt < 8
+    // Top-octave shimmer, bounded by SPARKLE_WEIGHT before it reaches either
+    // consumer. `clamp01` is what makes the bound hold for ANY input, not just
+    // the 0..1 a BandNormalizer happens to produce — the two mood terms below
+    // are then provably additive-bounded by SPARKLE_WEIGHT.
+    const sparkleCue = clamp01(f.sparkle) * SPARKLE_WEIGHT
 
     /**
      * MusiCNN's `party` head as a groove bonus. Separates club material from
@@ -332,16 +378,15 @@ export class MoodEstimator {
       // Quiet AND sparse AND not silent. Breath/air and dynamic headroom lean
       // this way, but only while the passage is already sparse.
       //
-      // `f.sparkle` (16 kHz+) is a natural fit here and in `aggressive`, but it
-      // is deliberately NOT wired yet: the calibration corpus is 96 kbps and
-      // has nothing above ~15.5 kHz, so a weight tuned against it is meaningless
-      // and one set by reasoning measurably shifted the mood mix on the 8-track
-      // set. It stays a computed, tested, contract-level cue until it can be
-      // A/B'd on lossless material. See {@link AudioFeatures.sparkle}.
+      // `sparkleCue` sits beside `f.air` on the same `calm` gate: 16 kHz+
+      // shimmer is the same kind of evidence as 9–16 kHz air, just less
+      // trustworthy, so it carries 0.06 against air's 0.15. See SPARKLE_WEIGHT
+      // for why it is additive and bounded rather than a multiplier.
       ambient:
         band(e, 0, E_AMBIENT_HI) * calm * 0.9 +
         (f.silence ? 0 : 0.05) +
         f.air * 0.15 * calm +
+        sparkleCue * calm +
         dynamics * 0.1 * calm,
 
       // Soft energy AND bright-ish AND NOT bass-heavy AND holding steady.
@@ -377,8 +422,11 @@ export class MoodEstimator {
       // High energy AND busy AND (bright OR fast) AND fluxy — the harshness
       // cluster. Noisy texture, a top-heavy spectrum and pushed loudness each
       // add on top — but all energy-gated, so a quiet noisy pad isn't
-      // "aggressive". (`f.sparkle` belongs here too but is not wired yet — see
-      // the ambient term.)
+      // "aggressive". `sparkleCue` joins them on the same `loud` gate as
+      // `spectralRolloff`, at half its weight (see SPARKLE_WEIGHT): a genuinely
+      // hot top octave is harshness evidence, but on lossy material the same
+      // number can be stretched dither, so it must not be able to carry the
+      // term on its own.
       aggressive:
         band(e, E_HARD_LO, 1.01) *
           (0.3 + busy * 0.7) *
@@ -386,6 +434,7 @@ export class MoodEstimator {
           (0.6 + f.flux * 0.4) +
         noisy * 0.28 * band(e, E_HARD_LO - 0.15, 1.01) +
         f.spectralRolloff * 0.12 * loud +
+        sparkleCue * loud +
         pushed * 0.1 * loud,
     }
   }

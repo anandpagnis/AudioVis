@@ -7969,3 +7969,243 @@ and red at 34 ms (it is actively shedding load), so the colour tells you what th
 governor is about to do. `D` still opens the full analysis panel, which now
 prints the same four numbers; prefer `J` while measuring, since that panel is a
 per-frame canvas heavy enough to distort the reading.
+
+- [x] **F205 · Three of the DSP audit's ten open items were already fixed by
+      prior work the audit table didn't reflect** — items 6, 10, 11, 15.
+
+      A DSP/audio-pipeline audit (17 items, root cause / impact / fix columns)
+      was handed down as the spec for a wiring pass. Before touching anything,
+      each of its ten "still open" items was checked against the actual current
+      code, not just the table's own status column. Four had already landed:
+
+      - **Item 6** (low-end FFT resolution) — a dedicated 8192-pt analyser
+        already feeds `f.sub` (~5.4 Hz/bin) alongside the 2048-pt main path.
+      - **Item 10** (`presence` a strict subset of `high`) — `high` already
+        starts at `presenceEnd` (5 kHz), not 2 kHz — F167/F169,
+        `spectralFeatures.ts:139-168`.
+      - **Item 11** (4096-sample PCM tap) — already halved to 2048 — F165.
+      - **Item 15** (danceability computed, consumed nowhere) — already wired
+        as `groove`'s club bias, gated to when MusiCNN's `party` head is
+        unavailable — F166, `MoodEstimator.ts:54-74,368-371`.
+
+      Recorded so the audit table itself is not quietly trusted a second time:
+      it was accurate when written and has since drifted, the same failure
+      mode this ledger keeps warning about from the other direction (a claim
+      trusted past the point where the code moved on, rather than a claim
+      never true in the first place). None of the four needed further work.
+
+- [x] **F206 · The analyser dB window pinned bass/low-mid readings at 1.0 on
+      ordinary programme material — but only on the one analyser this could
+      ever affect** — `src/audio/analyserRange.ts` (new),
+      `src/landing/tunnelAudio.ts`. DSP audit item 5.
+
+      The audit filed this as affecting every analyser in the codebase. Half of
+      that is wrong: `minDecibels`/`maxDecibels` are a Web Audio spec property
+      of `getByteFrequencyData()` only — `getFloatFrequencyData()` writes
+      un-normalized dBFS and ignores both. `AudioEngine`'s three analysers all
+      read float data, so no clamp was ever applied to them; verified against
+      the spec's own mapping formula and pinned in `analyserRange.test.ts`
+      (byte-path arithmetic) and the pre-existing `loudnessInvariance.test.ts`
+      (float-path empirical check, unaffected by this fix either way).
+
+      It IS real for `src/landing/tunnelAudio.ts`'s analyser — this repo's only
+      `getByteFrequencyData()` caller. Its `DynamicsCompressor` (threshold
+      -14 dB) holds input near -14 dBFS by construction, and the Web Audio
+      defaults (-100..-30 dB window) map anything above -30 dBFS to byte 255 —
+      so its `band()`-derived `rawBass` read 1.0 on essentially every frame,
+      exactly the audit's "pinning raw/peak at 1.0" symptom, just confined to
+      this one path rather than universal.
+
+      **Fixed.** `applyAnalyserRange()` sets a shared -90..0 dB window (90 dB
+      span, 0 dBFS ceiling so nothing legitimate can exceed it) on all four
+      `createAnalyser()` sites in `AudioEngine.ts` and the one in
+      `tunnelAudio.ts` — applied everywhere for consistency, though it is a
+      genuine no-op on the float paths. `analyserRange.test.ts` derives the
+      spec's byte-mapping formula by hand (the suite runs in `node`, no real
+      `AnalyserNode` to construct) and shows the concrete before/after: a
+      -14 dBFS bin goes from byte 255 (saturated) to 215 (real headroom), and
+      two signals 10 dB apart that were indistinguishable at 255/255 on the
+      defaults now separate by 29 byte steps.
+
+- [x] **F207 · Two rings feeding the onset/percussion detectors were sized by
+      a fixed sample count, so their effective time window silently changed
+      with display refresh rate, and a render loop outrunning the audio
+      callback fed duplicate frames into the same detectors** —
+      `src/audio/frameGating.ts` (new), `src/audio/AudioEngine.ts`,
+      `src/audio/PercussionDetector.ts`. DSP audit items 7 and 8.
+
+      **Item 7.** `AudioEngine`'s broadband-onset flux ring was evicted by a
+      fixed 60-sample count — "≈ 1 s at 60 fps" that was actually 2 s at
+      30 fps and 0.4 s at 144 fps, so the adaptive onset threshold's mean/σ
+      covered a different amount of real time depending on the viewer's
+      display. `PercussionDetector`'s own ring was already age-based before
+      this pass (independently confirmed while fixing the other one) — only
+      `AudioEngine`'s needed the change. Both now share one function,
+      `evictExpired()`, extracted so the policy can't drift between them
+      again; `RING_EPSILON` is derived (not guessed) to keep the window
+      bit-identical (60 samples) at the reference 60 fps the old fixed count
+      assumed, so the F121 onset calibration is preserved exactly at that
+      rate and only becomes a true wall-clock window elsewhere.
+
+      **Item 8.** `AnalyserNode` recomputes its FFT on the audio callback, not
+      on demand — when the render loop outruns it (above ~90 fps, or a
+      throttled tab), `getFloatFrequencyData()` re-reads the last block and
+      the render loop sees it twice. That is not harmless for a flux-based
+      detector: a duplicate frame produces `flux ≈ 0` by construction, and
+      feeding zeros into the adaptive threshold drags its mean/σ down and
+      suppresses real onsets. `fftAdvanced()` compares three widely-spaced
+      time-domain samples against the previous frame's; percussion detection
+      and the broadband-onset flux push are now both gated on it returning
+      true, while `computeSpectralBands()` still runs every frame regardless
+      (needed to keep `prevMag` current so the next REAL frame diffs
+      correctly across the gap).
+
+      `scripts/calibrate/features.ts` (the offline harness `energyTarget.ts`
+      is also shared with) had its own hand-rolled copies of both — a fixed
+      ring and a duplicated 3-probe comparison — replaced with the same shared
+      functions, closing a silent-divergence risk between the live and offline
+      paths that this codebase's own culture treats as a real bug class.
+
+      `frameGating.test.ts` covers both functions directly against synthetic
+      rings/probes, independent of a real `AudioContext`.
+
+- [x] **F208 · `f.sparkle` (16 kHz-Nyquist) was computed, contract-exposed,
+      panelled — and read by nothing** — `src/audio/MoodEstimator.ts`,
+      `src/audio/types.ts`. DSP audit item 4 (the still-open half; the cue-loop
+      extension and band additions themselves already shipped).
+
+      Wired as a small additive bias on the two mood terms that already read
+      the top of the spectrum: `ambient`'s air/breath term (beside `f.air`) and
+      `aggressive`'s rolloff term (beside `f.spectralRolloff`). Weight derived
+      against its two peers (`f.air * 0.15`, `f.spectralRolloff * 0.12`) and
+      halved again for being the least trustworthy of the three:
+      `SPARKLE_WEIGHT = 0.06`.
+
+      **Why so small, stated because it matters:** `f.sparkle` is normalized by
+      a `BandNormalizer` against its own running maximum, with no absolute
+      floor. On a lossy encode brick-walled at ~15.5 kHz, the 16 kHz+ band
+      holds only codec dither — and the normalizer stretches that dither
+      across the full 0..1 range exactly as it would stretch genuine cymbal
+      shimmer. Nothing in the normalized value distinguishes the two cases,
+      which is exactly why an earlier pass measured a reasoned weight shifting
+      the mood mix and left the cue unwired rather than guess further. The term
+      here is additive and bounded, never a multiplier — `MoodEstimator.test.ts`
+      pins the 0.06 bound directly — so the worst case (sparkle pinned at 1.0
+      by stretched dither) cannot swing a score by more than 0.06, and only
+      while the passage is already sparse (ambient's gate) or already loud
+      (aggressive's gate), never on its own.
+
+      **Still unvalidated against real material** — the calibration corpus is
+      96 kbps with nothing above ~15.5 kHz, so `npm run calibrate` cannot see
+      this term any more than it could see `danceability` before F166. A
+      lossless A/B is still owed before trusting the weight itself, though the
+      bound holds regardless of what that A/B finds.
+
+- [x] **F209 · The K-weighted loudness computed since F169 fed nothing —
+      `f.energy` still ran on `f.rms` alone** — `src/audio/energyTarget.ts`,
+      `src/audio/AudioEngine.ts`, `scripts/calibrate/features.ts`,
+      `docs/02_Music_Intelligence.md`. DSP audit item 12, Part B (Part A, the
+      BS.1770 implementation itself, already shipped and is untouched here).
+
+      F171 tried the direct fix — passing `f.loudness` in place of `f.rms` —
+      and an 8-track A/B in the calibrate harness measured the dominant mood
+      moving on 3 of 8 reference tracks. Root cause is distributional, not a
+      mistuned threshold: `f.loudness` through a `BandNormalizer` has almost no
+      low tail (corpus p10 ≈ 0.29, against `f.rms`'s ≈ 0.06), so quiet passages
+      stop reading as low-energy under a full swap and a genuinely ambient
+      track climbs into `mellow`.
+
+      **Fixed with a blend, not the swap.** `broadbandEnergyTerm(rms, loudness)`
+      linearly mixes in a 25% share of `f.loudness`
+      (`LOUDNESS_MIX = 0.25`, `energyTarget.ts`), derived rather than picked:
+      the full swap's measured worst-case (p10) perturbation was
+      `(0.29 - 0.06) * (ENERGY_LOUD_W/ENERGY_WEIGHT_SUM) = 0.23 * 0.2308 =
+      0.0531` — the shift already shown to move 3/8 tracks. At 25% the same
+      worst case is `0.0531 * 0.25 = 0.0133`, a quarter of the perturbation
+      that broke things and ~1.3 points of full scale on the quietest tenth of
+      frames; above p10 the two distributions converge, so this is an upper
+      bound, not a typical-frame effect. One function, shared by
+      `AudioEngine.update()` (live) and `scripts/calibrate/features.ts`
+      (offline) so the two paths cannot diverge from the constants they were
+      derived against — the exact bug class `energyTarget.ts` was already
+      extracted (F169) to prevent. `CALIB_ENERGY_TERM=blend` is now the
+      calibrate harness's own default, matching the live app;
+      `CALIB_ENERGY_TERM=loudness` still runs the original full-swap A/B for
+      anyone re-checking the 3/8 finding.
+
+      **Explicitly NOT the fix the audit's own remedy column asks for**, and
+      documented as such in three places (this entry, `energyTarget.ts`'s own
+      header, `docs/02_Music_Intelligence.md`'s new "Owed" note): the real
+      remedy is a distribution-matching remap of `f.loudness` into the blend
+      plus a full re-derivation of every `E_*` and `detectStructure` constant
+      against a real corpus, because K-weighting *reorders* which frames are
+      hot in a way no monotone constant nudge can undo. This gets loudness
+      perception into the blend at a magnitude small enough not to need that
+      re-derivation first, not the complete fix.
+
+- [~] **F210 · The BPM transition logged in F198's session (136.6 -> 102.5,
+      0.25 s apart, held for the rest of the session) is not the octave-flip
+      bug DSP audit item 3 describes — and the mechanism that actually holds
+      through it turned out to already exist and already work** —
+      `src/audio/__tests__/BpmEstimator.test.ts`. DSP audit item 3.
+
+      Investigated as "the BPM octave flip" per the audit's own framing and
+      F198's citation of it as live evidence. The arithmetic says otherwise:
+      `136.6 / 102.5 = 1.3327`, `log2(1.3327) = 0.4143`. `BpmEstimator`'s own
+      octave gate fires at `|log2(ratio)| - 1| < 0.15` — 0.4143 is nowhere near
+      that band. This is a **4:3 metrical reinterpretation** (a dotted/triplet
+      reading), not a half/double-time flip, and `BpmEstimator.ts`'s existing
+      `octaveLock` mechanism (already built, already the audit's own item 3
+      root-cause target, comment at `BpmEstimator.ts:242`: "this is what stops
+      the 76<->152 flip") was never going to be the thing holding this
+      particular case — it targets a different ratio band entirely.
+
+      What DOES hold it, verified rather than assumed: a separate
+      **persist-before-jump gate** (`stableCount >= 2`) already in
+      `evaluate()`, unrelated to `octaveLock`. Four new tests reproduce the
+      logged transition literally (the same 136.6/102.5 pair, the same
+      real-time cadence) and pin three properties: brief contra-evidence (up to
+      ~1 s) never moves the grid at all; SUSTAINED contra-evidence (1.5 s+,
+      measured boundary between 1.0 s and 1.5 s) does correctly re-interpret,
+      proving the gate is hysteresis and not a freeze; and once consistent
+      136.6 reads resume, the grid recovers — directly addressing the logged
+      session's own worst detail, that 102.5 held rather than correcting.
+
+      **No production code changed.** `BpmEstimator.ts` was not touched — the
+      mechanism that matters here already existed before tonight, unverified
+      by any test that exercised this specific case. What changed is that it
+      now has one, including a test that pins the 4:3-not-octave diagnosis
+      itself against future misreading ("guards the reasoning above against a
+      future reader 'simplifying' the persist gate away on the assumption that
+      `octaveLock` covers this case").
+
+      Left as `[~]`, not `[x]`: this closes the SPECIFIC transition F198 cited
+      as evidence, and proves it was not a bug. The audit's own broader claim
+      — genuine half/double-time flips in ~8% of samples elsewhere — was not
+      re-investigated, and `octaveLock`'s own "1.15x switch margin isn't
+      decisive" characterization (the audit's original root-cause line) was
+      not re-examined against real material. That question remains open.
+
+- [x] **F211 · `docs/02_Music_Intelligence.md` described a pipeline stale by
+      one worker, one worklet, and at least four features** —
+      `docs/02_Music_Intelligence.md`. DSP audit item 18.
+
+      The architecture diagram omitted `StructureBridge`/`structure.worker`
+      (self-similarity segmentation feeding `SectionTracker`) and the
+      K-weighting loudness worklet entirely — both already shipped, neither
+      drawn. The Energy chapter's table still said "Weighted band blend,
+      smoothed" with no mention that loudness had been implemented at all, and
+      "Future" still listed "full ITU-R BS.1770 loudness" as unbuilt. Sparkle's
+      row still said "not yet wired into scoring."
+
+      **Fixed** by reading the actual current code for each claim rather than
+      patching prose in isolation: added both missing pipeline stages to the
+      diagram and the file-role table, rewrote the Energy chapter to describe
+      the real broadband-term blend (with its derivation, matching F209's own
+      ledger entry so the two cannot drift apart), updated sparkle's row to
+      describe F208's wiring, removed BS.1770 loudness from "Future" now that
+      it is real, and added the PCM tap block-size note (2048 samples,
+      shared by all three worker bridges) that F206/F207's own work made
+      relevant. Corrected only against verified code; no accurate prose was
+      rewritten for its own sake.
+

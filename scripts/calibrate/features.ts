@@ -23,7 +23,8 @@ import { MoodEstimator } from '../../src/audio/MoodEstimator'
 import { PercussionDetector } from '../../src/audio/PercussionDetector'
 import { PhraseDetector } from '../../src/audio/PhraseDetector'
 import { computeLowBands, computeSpectralBands } from '../../src/audio/spectralFeatures'
-import { energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
+import { evictExpired, fftAdvanced, makeWaveProbe } from '../../src/audio/frameGating'
+import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
 import { OfflineLoudness } from '../../src/audio/loudness'
 import { createEmptyFeatures, type AudioFeatures } from '../../src/audio/types'
 import { frequencyDataDb } from './fft'
@@ -35,14 +36,18 @@ const FLUX_WINDOW_SEC = 1.0
 const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
 
 /**
- * Dev A/B knob for the broadband energy term (F171). `loudness` runs the blend
- * with `f.loudness` (K-weighted) instead of `f.rms`; default is `f.rms`, which
- * matches the live app. Read once — this file is typechecked under the DOM
+ * Dev A/B knob for the broadband energy term.
+ *
+ * Default `blend` is what the live app runs: `f.rms` with a 25% share of the
+ * K-weighted `f.loudness` (audit item 12B, see `energyTarget.ts`). The other
+ * two are the endpoints of that mix, kept so the A/B stays reproducible —
+ * `rms` is the pre-item-12B baseline, `loudness` the naive full swap F171
+ * tried and rejected. Read once; this file is typechecked under the DOM
  * tsconfig (no `@types/node`), hence the `globalThis` access.
  */
 const ENERGY_TERM_MODE =
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-    ?.CALIB_ENERGY_TERM ?? 'rms'
+    ?.CALIB_ENERGY_TERM ?? 'blend'
 
 /** Optional per-frame hook for a synthetic model tempo read (Essentia stand-in). */
 export interface StepHooks {
@@ -147,10 +152,8 @@ export function runTrack(
   // C7: age-windowed, not a fixed 60-count. C8: skip stale frames (never true
   // here — this harness steps at a fixed 60 Hz over real decoded audio — but
   // mirrored so the code paths match AudioEngine.).
-  let fluxHistory: { t: number; v: number }[] = []
-  let waveProbe0 = NaN
-  let waveProbeMid = NaN
-  let waveProbeLast = NaN
+  const fluxHistory: { t: number; v: number }[] = []
+  const waveProbe = makeWaveProbe()
   let lastOnsetTime = -10
   let silenceSince = 0
   let lastGridIndex = -1
@@ -184,13 +187,8 @@ export function runTrack(
     frequencyDataDb(lowFrame, LOW_FFT_SIZE, lowFreqDb)
 
     // C8 — did the FFT advance? (Always yes here; see the declaration comment.)
-    const w0 = waveform[0]
-    const wMid = waveform[512]
-    const wLast = waveform[1023]
-    const fftAdvanced = w0 !== waveProbe0 || wMid !== waveProbeMid || wLast !== waveProbeLast
-    waveProbe0 = w0
-    waveProbeMid = wMid
-    waveProbeLast = wLast
+    // Same shared helper the live engine uses, so the two can't drift.
+    const advanced = fftAdvanced(waveform, waveProbe)
 
     // --- AudioEngine.ts update() ---
     const nyquist = sampleRate / 2
@@ -243,25 +241,29 @@ export function runTrack(
     f.spectralFlatness += (spectral.spectralFlatness - f.spectralFlatness) * Math.min(1, delta * 8)
     f.spectralRolloff += (spectral.spectralRolloff - f.spectralRolloff) * Math.min(1, delta * 8)
     f.crestFactor += (crestRaw - f.crestFactor) * Math.min(1, delta * 4)
-    // F171: the broadband energy term is still `f.rms`. Flipping it to
-    // `f.loudness` (K-weighted) is deferred — an 8-track A/B showed the naive
-    // swap moves the dominant mood on 3/8 tracks (ambient->mellow on genuinely
-    // ambient material; a hysteresis lock-up to 'silence' on a quiet intro)
-    // because `f.loudness` via BandNormalizer has no low tail (corpus p10 0.29
-    // vs `f.rms` 0.06), and a monotone constant re-derivation can't undo a
-    // frame REORDERING. The real swap needs a distribution-matching remap of
-    // `f.loudness` into the blend + a full 1500-track re-derivation.
-    // `CALIB_ENERGY_TERM=loudness` runs that A/B; default stays `f.rms`.
-    const loudTerm = ENERGY_TERM_MODE === 'loudness' ? f.loudness : f.rms
+    // Broadband energy term. Default matches the live app: mostly `f.rms` with
+    // a 25% share of K-weighted `f.loudness` (audit item 12B). The naive FULL
+    // swap that F171 tried moved the dominant mood on 3/8 tracks — ambient →
+    // mellow on genuinely ambient material, and a hysteresis lock-up to
+    // 'silence' on a quiet intro — because `f.loudness` via BandNormalizer has
+    // no low tail (corpus p10 0.29 vs `f.rms` 0.06), and a monotone constant
+    // re-derivation cannot undo a frame REORDERING. The blend is a quarter of
+    // that perturbation; the full remap is still owed. Both endpoints stay
+    // reachable through CALIB_ENERGY_TERM for the A/B.
+    const loudTerm =
+      ENERGY_TERM_MODE === 'loudness'
+        ? f.loudness
+        : ENERGY_TERM_MODE === 'rms'
+          ? f.rms
+          : broadbandEnergyTerm(f.rms, f.loudness)
     f.energy = stepEnergy(f.energy, energyTargetOf(f.bass, f.mid, f.high, loudTerm), delta)
 
     // --- Percussion + broadband onset (AudioEngine.ts: gated on fftAdvanced) ---
-    if (fftAdvanced) {
+    if (advanced) {
       percussionDetector.update(f.percussion, spectral, now, delta, f.silence)
 
       fluxHistory.push({ t: now, v: spectral.bassFlux })
-      while (fluxHistory.length > 0 && now - fluxHistory[0].t >= FLUX_WINDOW_SEC - 1e-6)
-        fluxHistory.shift()
+      evictExpired(fluxHistory, now, FLUX_WINDOW_SEC)
       if (fluxHistory.length > 20 && !f.silence) {
         let mean = 0
         for (const e of fluxHistory) mean += e.v

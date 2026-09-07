@@ -217,21 +217,79 @@ describe('MoodEstimator', () => {
     expect(aggressiveScoreFor(0.9)).toBeGreaterThan(aggressiveScoreFor(0.05))
   })
 
-  it('ignores f.sparkle — it is a contract-level cue, not wired into scoring yet', () => {
-    const scoreWith = (sparkle: number) =>
+  // --- f.sparkle wiring (audit item 4) -----------------------------------
+  //
+  // The claim being pinned is deliberately narrow: sparkle SHARPENS the two
+  // terms that already read the top of the spectrum, and is bounded hard
+  // enough that it cannot decide the mood race on its own. That bound is the
+  // whole safety argument for wiring an un-A/B-able cue, so it is asserted
+  // rather than trusted — see SPARKLE_WEIGHT in MoodEstimator.ts.
+
+  /** A loud, busy, bright frame — the `aggressive` corner of the space. */
+  const harshFrame = (sparkle: number) =>
+    run(5, 0.02, (f) => {
+      f.silence = false
+      f.energy = 0.75
+      f.bass = 0.6
+      f.confidence = 0.7
+      f.centroid = 0.5
+      f.flux = 0.5
+      f.bpm = 140
+      f.sparkle = sparkle
+    }).mood.scores
+
+  it('raises the aggressive score with sparkle, on the same loud gate as spectralRolloff', () => {
+    expect(harshFrame(1).aggressive).toBeGreaterThan(harshFrame(0).aggressive)
+  })
+
+  it('raises the ambient score with sparkle on a quiet sparse passage', () => {
+    const quiet = (sparkle: number) =>
       run(5, 0.02, (f) => {
         f.silence = false
-        f.energy = 0.75
-        f.bass = 0.6
-        f.confidence = 0.7
-        f.centroid = 0.5
-        f.flux = 0.5
-        f.bpm = 140
+        f.energy = 0.12
+        f.bass = 0.05
+        f.confidence = 0.2
+        f.centroid = 0.3
+        f.flux = 0.02
         f.sparkle = sparkle
       }).mood.scores
-    const lo = scoreWith(0)
-    const hi = scoreWith(1)
-    expect(hi.aggressive).toBeCloseTo(lo.aggressive, 10)
-    expect(hi.ambient).toBeCloseTo(lo.ambient, 10)
+    expect(quiet(1).ambient).toBeGreaterThan(quiet(0).ambient)
+  })
+
+  it('bounds its whole contribution by SPARKLE_WEIGHT (0.06) even at sparkle = 1', () => {
+    const lo = harshFrame(0)
+    const hi = harshFrame(1)
+    // Additive and gated, so the swing cannot exceed the weight itself. This is
+    // the bound the "safe to wire without a lossless A/B" argument rests on.
+    expect(hi.aggressive - lo.aggressive).toBeGreaterThan(0)
+    expect(hi.aggressive - lo.aggressive).toBeLessThanOrEqual(0.06 + 1e-9)
+    expect(hi.ambient - lo.ambient).toBeLessThanOrEqual(0.06 + 1e-9)
+  })
+
+  it('clamps an out-of-range sparkle so the bound holds for any input', () => {
+    // A BandNormalizer only ever emits 0..1, but the bound must not DEPEND on
+    // that — a future raw-valued producer must not be able to blow the term up.
+    const sane = harshFrame(1)
+    const absurd = harshFrame(50)
+    expect(absurd.aggressive).toBeCloseTo(sane.aggressive, 12)
+  })
+
+  it('cannot flip the winner on its own: a clear groove frame stays groove at sparkle = 1', () => {
+    // The discrimination-sharpening claim, stated as its converse. Sparkle
+    // pinned at full scale — the stretched-dither worst case on lossy material
+    // — must not reorder a mood race that was not already a near-tie.
+    const groove = (sparkle: number) =>
+      run(10, 0.02, (f) => {
+        f.silence = false
+        f.energy = 0.6
+        f.bass = 0.6
+        f.confidence = 0.8
+        f.centroid = 0.4
+        f.flux = 0.2
+        f.bpm = 120
+        f.sparkle = sparkle
+      })
+    expect(groove(0).mood.state).toBe('groove')
+    expect(groove(1).mood.state).toBe('groove')
   })
 })
