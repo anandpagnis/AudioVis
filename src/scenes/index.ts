@@ -61,6 +61,7 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   dustfield: () => import('./DustFieldScene').then((m) => ({ default: m.DustFieldScene })),
   hold: () => import('./HoldScene').then((m) => ({ default: m.HoldScene })),
   strobe: () => import('./StrobeBarsScene').then((m) => ({ default: m.StrobeBarsScene })),
+  limitless: () => import('./LimitlessScene').then((m) => ({ default: m.LimitlessScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -172,6 +173,7 @@ const NebulaDriftScene = lazyScene('nebula')
 const DustFieldScene = lazyScene('dustfield')
 const HoldScene = lazyScene('hold')
 const StrobeBarsScene = lazyScene('strobe')
+const LimitlessScene = lazyScene('limitless')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -1413,6 +1415,104 @@ export const SCENES: SceneDef[] = [
       // Flat 2D screen-space math, no camera concept at all — inert here,
       // declared only for CameraDirector.test.ts's variety invariant, same
       // reasoning shock/flare/spark give for their own identical block.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'limitless',
+    name: 'Limitless',
+    component: LimitlessScene,
+    metadata: {
+      // Ported from lilim's own scenes/limitless.js, written on the lilim
+      // branch of this project — see LimitlessScene.tsx's header for the full
+      // port record (scope, uniform collisions, determinism, what F210/F211
+      // leave out).
+      license: 'original',
+      contract: {
+        version: 1,
+        // A literal, not an import of LimitlessScene.tsx's own `LIMITLESS_MODES`
+        // — every scene here is a dynamic `import()` for code-splitting (see
+        // this file's own header), and a static import of a lazy chunk's
+        // export would pull the whole scene (shader source included) into this
+        // eagerly-loaded roster bundle. Same convention `crystal-shard-cage`'s
+        // `modes: ['crystal', 'shard', 'cage']` above already uses. The two
+        // lists drifting apart is a real risk this duplication creates —
+        // `limitless.modes.test.ts` asserts they match, on top of what it
+        // already asserts about the shader correspondence.
+        modes: [
+          'none',
+          'smear',
+          'droste',
+          'infinite',
+          'corridor',
+          'cube',
+          'planet',
+          'shatter',
+          'prism',
+          'breathe',
+          'sort',
+          'thresh',
+          'solar',
+          'halftone',
+          'vhs',
+        ],
+        // `mode` deliberately absent here — omitting it falls back to
+        // `modes[0]` ('none') via resolveSceneParams, same as `crystal-shard-
+        // cage`'s own contract does. A photo scene whose first frame is the
+        // photo, undistorted, is the right thing to open on (see the scene's
+        // own header).
+        params: { speed: 0.5, shape: 0.5, complexity: 0.5, fill: 0.5, contrast: 0.5 },
+        // `density`/`tilt` omitted: nothing in any of the 15 modes reads
+        // either one. `shape` only does something in `infinite` (the
+        // rect-to-circle frame morph) — hidden everywhere else, lilim's own
+        // "dead slider" rule, same mechanism `harkonnen`'s `tilt` and
+        // `beats`'s `shape` already use elsewhere in this file.
+        paramLabels: { '*': { shape: null }, infinite: { shape: 'shape' } },
+      },
+      // Subject only — the shader paints every pixel including its own
+      // ground (`blending: THREE.NoBlending`, see the scene's own
+      // declaration), so there is nothing left for a layer underneath to
+      // show through. Same reasoning `kifs`/`malachite`/`snowflake` give for
+      // their own `compatibleWith: []`.
+      roles: ['primary'],
+      // Deliberately wide: which of the 15 modes is actually showing is a
+      // contract param, not something this scene or the director knows about
+      // at the SceneMetadata level, and they range from `solar`/`breathe`
+      // (genuinely calm) to `shatter`/`vhs`/`prism` (hard-edged and
+      // strobe-adjacent). The default mode ('none': the plain photo, full
+      // brightness) is itself mood-neutral, which is the honest basis for
+      // this range rather than a guess at whichever mode a preset might pick.
+      moods: ['ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      // Not uniformly high: the default mode is one texture fetch at full
+      // brightness. Several of the 15 (shatter/prism/vhs/sort) read as hard
+      // and energetic once selected, but that is a mode choice, not this
+      // scene's baseline.
+      intensity: 'medium',
+      // NOT /bench-measured — see LimitlessScene.tsx's own `pixelBudget`
+      // comment for the full op-count reasoning (smear's two fbm(vec3) calls
+      // against malachite's measured 0.76 ms at a smaller budget). One step
+      // up from malachite's `low`, not `high` — no raymarch, no loop deeper
+      // than sort's bounded 24-tap walk.
+      performanceCost: 'medium',
+      compatibleWith: [],
+      // Matches the mood range above: present but not dominant across the
+      // board, lowest at the aggressive end since the scene's OWN default
+      // mode does not escalate the way a purpose-built aggressive scene's
+      // shader does — an explicit preset picking `shatter`/`vhs` is what
+      // would actually earn that end of the range, not this scene by itself.
+      moodFit: {
+        ambient: 0.55,
+        mellow: 0.6,
+        groove: 0.62,
+        building: 0.6,
+        peak: 0.55,
+        aggressive: 0.45,
+      },
+      // Flat fullscreen shader, no camera concept at all — inert here,
+      // declared only for CameraDirector.test.ts's variety invariant, same
+      // as `kifs`/`chrome`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },

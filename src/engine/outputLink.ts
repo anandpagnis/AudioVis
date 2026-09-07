@@ -100,6 +100,20 @@ export const LOOK_FIELDS = [
   'cueFollow',
   'cues',
   'debugPostFx',
+  // The photo `limitless` warps, as a data URL. The one look field that is a
+  // payload rather than a setting, and it has to travel this way: the console
+  // owns the file picker (that is where the click is) and the output window
+  // owns the GL texture, and neither a `File` nor a canvas survives the
+  // structured clone this channel does. The direct-reference path above
+  // (`handSource`) is not an alternative — it is consumed once on arrival,
+  // whereas an output window opened LATE has to be able to ask for the current
+  // look and be handed the photo with it, which is exactly what `hello` +
+  // `snapshotLook` does for every other field here.
+  //
+  // Sized for this wire at the picker: long edge <=1600px, JPEG q0.85, so tens
+  // of KB. Not persisted (see the store's own note) — a `postMessage` this size
+  // every time it changes is fine; a localStorage write of it is not.
+  'limitlessPhoto',
 ] as const
 
 export type LookField = (typeof LOOK_FIELDS)[number]

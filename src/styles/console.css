@@ -664,6 +664,76 @@
   color: #fff;
 }
 
+/* ---------- limitless photo ---------- */
+
+.photo-drop-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.photo-drop {
+  position: relative;
+  min-height: 120px;
+  border-radius: 9px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.photo-drop.drag {
+  border-color: rgba(120, 240, 190, 0.7);
+  background: rgba(60, 220, 150, 0.08);
+}
+
+.photo-drop.has-photo {
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.photo-drop-hint {
+  padding: 0 16px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.photo-drop-preview {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  display: block;
+}
+
+.photo-drop-input {
+  /* Not display:none — a display:none input cannot be given focus, and
+     `.photo-drop`'s own onKeyDown opens THIS input on Enter/Space, so it has
+     to stay a real, focusable, tabbable element. Not sized over the drop
+     zone either, unlike a typical "invisible file input" trick: doing that
+     would let the input's own native click/drop handling race the div's
+     (which is what actually resizes/encodes the file, drop included) for the
+     same click or drop event. Clipped to 1px instead — present, focusable,
+     invisible, and out of the way of every pointer interaction. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.photo-drop-error {
+  color: rgba(255, 130, 130, 0.85);
+  font-size: 11px;
+}
+
 /* ---------- sliders ---------- */
 
 .big-slider {
