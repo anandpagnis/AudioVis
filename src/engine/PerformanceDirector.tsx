@@ -217,6 +217,7 @@ export function PerformanceDirector() {
     // accent/overlay layers (only set here) almost never appear.
     if (!s.autoPilot || s.status !== 'running' || f.silence) return
     if (cueState.governed) return // authored cues own the journey
+    if (performanceState.djCam.active) return // a DJ-cam cutaway owns the frame
     if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
 
     // Hold the subject through a confirmed build-up — recomposing mid-riser is

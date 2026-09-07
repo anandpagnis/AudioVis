@@ -140,3 +140,49 @@ describe('the whole composition is reported back up on telemetry', () => {
     expect(LINK_SRC).toMatch(/activeEffects:\s*performanceState\.layers\.effects\.map/)
   })
 })
+
+/**
+ * The manual DJ-cam punch has to survive the trip to the output window, and —
+ * like the filter request — the failure mode is silent in both directions: a
+ * Console button that does nothing, with no error anywhere.
+ *
+ *  1. `pendingDjCam` / `djCamRequestNonce` have to be LOOK FIELDS. The console
+ *     runs no `DjCamDirector`; nothing there consumes the punch, so a request
+ *     not mirrored downward reaches nobody — the same bug `pendingSceneId` and
+ *     `pendingFilterId` each record having hit once.
+ *  2. `djCamEnabled` / `djCamDeviceId` ride down too, so the output window's
+ *     director sees the same opt-in and device the operator chose.
+ *  3. `djCamActive` is REPORTED back up on telemetry, not inferred from
+ *     `sceneId` — the director owns `performanceState.djCam` and fires
+ *     autonomously, so the Console button reads real output state. Same
+ *     treatment `filterId` got.
+ */
+describe('the manual DJ-cam punch crosses the window boundary', () => {
+  it('mirrors the punch, its nonce, and the opt-in state downward', () => {
+    expect(LOOK_FIELDS).toContain('pendingDjCam')
+    expect(LOOK_FIELDS).toContain('djCamRequestNonce')
+    expect(LOOK_FIELDS).toContain('djCamEnabled')
+    expect(LOOK_FIELDS).toContain('djCamDeviceId')
+  })
+
+  it('bumps the nonce on every punch, so a second identical toggle still publishes', () => {
+    const s = () => useStore.getState()
+    s().requestDjCam()
+    const first = s().djCamRequestNonce
+    expect(s().pendingDjCam).toBe('toggle')
+
+    // The output window consumes and clears ITS copy; this window's stays put.
+    s().clearDjCamRequest()
+
+    s().requestDjCam()
+    expect(s().djCamRequestNonce).toBeGreaterThan(first)
+    s().clearDjCamRequest()
+  })
+
+  it('reports the live cutaway back up on telemetry rather than letting the console guess', () => {
+    // Source check, labelled as one for the reason the filter test gives:
+    // `Telemetry` is an interface with no runtime key list, and standing up two
+    // BroadcastChannel windows to read one bool back tests the harness.
+    expect(LINK_SRC).toMatch(/djCamActive:\s*performanceState\.djCam\.active/)
+  })
+})

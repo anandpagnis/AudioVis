@@ -591,6 +591,58 @@
   border-color: rgba(120, 240, 190, 0.6);
 }
 
+/* ---------- dj cam ---------- */
+
+/* The camera thumbnail reuses `.mirror` wholesale — the same black 16/9 box,
+   the "live" ring and the empty-state label — so this only namespaces it and
+   trims the gap to the punch button under it. */
+.djcam-preview {
+  margin: 2px 0;
+}
+
+/* Both DJ Cam buttons opt out of `.toggle-wide`'s `margin-top: auto`: that rule
+   pins a single trailing toggle to the bottom of a column, and these two sit
+   mid-column, in a fixed order under the preview. */
+.djcam-punch,
+.djcam-autofire {
+  margin-top: 6px;
+}
+
+/* Dead until a camera stream is connected — `.toggle-wide` has no disabled look
+   of its own because nothing else disables one. */
+.djcam-punch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Connect button + device picker on one row: the button stays a fixed hit
+   target, the picker takes the rest of the width. */
+.djcam-setup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.djcam-setup .tile {
+  flex: 0 0 auto;
+  min-height: 40px;
+}
+
+.djcam-setup .fx-select {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+
+/* Permission denied / no device / track ended — surfaced like the transport's
+   own start failures. */
+.djcam-error {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #ffb3bd;
+}
+
 /* ---------- palettes ---------- */
 
 .palette-families {

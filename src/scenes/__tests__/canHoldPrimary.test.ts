@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest'
 import HUD_SRC from '../../ui/HUD.tsx?raw'
 import CONSOLE_SRC from '../../ui/Console.tsx?raw'
 import { LAYER_ROLES } from '../../store'
-import { SCENES, canHoldPrimary, canHoldRole, getEffectScenes } from '../index'
+import { MOOD_STATES } from '../../audio/types'
+import {
+  HIDDEN_PICKER_IDS,
+  SCENES,
+  canHoldPrimary,
+  canHoldRole,
+  getEffectScenes,
+  getScenesForMood,
+} from '../index'
 
 /**
  * The subject slot will not accept a scene that cannot hold it.
@@ -79,11 +87,18 @@ describe('the HUD picker', () => {
     expect(HUD_SRC).not.toMatch(/\bSCENES\[idx\]/)
   })
 
-  it("derives that list from the same predicate as the store's guard", () => {
+  it("derives that list from the same predicate as the store's guard, minus HIDDEN_PICKER_IDS", () => {
     // If the picker's filter and `canHoldPrimary` ever disagree, the UI offers a
     // chip that `requestScene` silently declines — which looks exactly like the
     // original bug to anyone using it.
-    expect(HUD_SRC).toMatch(/PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*roles\.includes\('primary'\)/s)
+    //
+    // The one sanctioned divergence: `djcam` is `canHoldPrimary`-true (the
+    // DJ-cam director requests it by id) but is filtered out of the picker via
+    // `HIDDEN_PICKER_IDS`. The store's guard must NOT apply that set, so the two
+    // predicates are "identical except the picker also drops hidden ids".
+    expect(HUD_SRC).toMatch(
+      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*roles\.includes\('primary'\).*!HIDDEN_PICKER_IDS\.has\(s\.id\)/s,
+    )
   })
 })
 
@@ -123,9 +138,12 @@ describe('the Console picker', () => {
     expect(CONSOLE_SRC).not.toMatch(/\{SCENES\.map\(/)
   })
 
-  it("derives PICKABLE_SCENES from canHoldRole, so it can't drift from the store's own guard", () => {
+  it("derives PICKABLE_SCENES from canHoldRole (minus HIDDEN_PICKER_IDS), so it can't drift from the store's own guard", () => {
+    // Same one sanctioned divergence as the HUD block: `djcam` is
+    // primary-eligible for the store but hidden from this grid, its only
+    // by-hand entry being the dedicated "Cut to DJ Cam" button.
     expect(CONSOLE_SRC).toMatch(
-      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*canHoldRole\(.*'primary'\)/s,
+      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*canHoldRole\(.*'primary'\).*!HIDDEN_PICKER_IDS\.has\(s\.id\)/s,
     )
   })
 
@@ -159,6 +177,58 @@ describe('the Console picker', () => {
       CONSOLE_SRC.match(/requestScene\(/g)?.length,
       'Console.tsx should have exactly one requestScene call site: the subject grid',
     ).toBe(1)
+  })
+})
+
+/**
+ * DJ Cam is the deliberate exception: primary-capable at the store, absent from
+ * every by-hand picker.
+ *
+ * `DjCamDirector` (useFrame -87) is the only caller that ever requests `djcam` —
+ * on its auto trigger, or from the Console's dedicated "Cut to DJ Cam" button
+ * (which goes through `store.requestDjCam()`, never `requestScene`). So
+ * `canHoldPrimary('djcam')` has to stay true or the cutaway never commits,
+ * while `djcam` must never surface as a scene chip, a number-key target or a
+ * Console subject tile. `HIDDEN_PICKER_IDS` is what both surfaces filter on.
+ */
+describe('DJ Cam: primary-capable, hidden from every by-hand picker', () => {
+  it('is a registered, primary-capable scene', () => {
+    const djcam = SCENES.find((s) => s.id === 'djcam')
+    expect(djcam, 'djcam must be in SCENES, not DISABLED_SCENES').toBeDefined()
+    expect(djcam?.metadata.roles).toEqual(['primary'])
+    expect(canHoldPrimary('djcam')).toBe(true)
+    expect(canHoldRole('djcam', 'primary')).toBe(true)
+  })
+
+  it('is in HIDDEN_PICKER_IDS', () => {
+    expect(HIDDEN_PICKER_IDS.has('djcam')).toBe(true)
+  })
+
+  it('never enters an automatic pool: empty moods, no moodFit', () => {
+    const djcam = SCENES.find((s) => s.id === 'djcam')
+    expect(djcam?.metadata.moods).toEqual([])
+    expect(djcam?.metadata.moodFit).toBeUndefined()
+    for (const mood of MOOD_STATES) {
+      expect(getScenesForMood(mood).map((s) => s.id), mood).not.toContain('djcam')
+    }
+  })
+
+  it('is filtered out of both by-hand pickers via HIDDEN_PICKER_IDS', () => {
+    // Source-order checks, matching this file's convention: standing up the HUD
+    // or the console just to read a filtered array is not this suite's job.
+    // `canHoldPrimary('djcam')` is true (asserted above), so the ONLY thing
+    // keeping it off both grids is the `!HIDDEN_PICKER_IDS.has(s.id)` term.
+    expect(HUD_SRC).toMatch(
+      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*!HIDDEN_PICKER_IDS\.has\(s\.id\)/s,
+    )
+    expect(CONSOLE_SRC).toMatch(
+      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*!HIDDEN_PICKER_IDS\.has\(s\.id\)/s,
+    )
+    // Imported from the registry, not re-declared locally where it could drift.
+    expect(HUD_SRC).toMatch(/import\s*\{[^}]*\bHIDDEN_PICKER_IDS\b[^}]*\}\s*from\s*'\.\.\/scenes'/)
+    expect(CONSOLE_SRC).toMatch(
+      /import\s*\{[^}]*\bHIDDEN_PICKER_IDS\b[^}]*\}\s*from\s*'\.\.\/scenes'/,
+    )
   })
 })
 

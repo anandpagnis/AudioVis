@@ -289,6 +289,24 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // a 2-tap, drop `furthest` 4->2, then /bench — or move `travelling` to
   // DISABLED_SCENES.
   travelling: [30.0, 27.0, 22.0, 18.0, 15.0],
+
+  // --- DJ Cam (dj-cam), NOT /bench-MEASURED — engineering estimate ---------
+  // `djcam` is not a shader scene: it blits the shared DJ-camera
+  // `VideoTexture` to a fullscreen quad through a small broadcast-grade
+  // fragment shader (cover-fit UVs, 2.39:1 letterbox bars, a soft vignette, a
+  // contrast/desaturation pull and a faint energy-tied grain — a handful of
+  // closed-form ops, no loop, no fbm, no geometry). The one cost a shader row
+  // does not carry is the per-frame upload of the decoded video frame into the
+  // texture, which the browser compositor has usually done already. Priced a
+  // notch above the closed-form effect shaders (`shock`/`strobe`, ~0.06-0.08)
+  // to cover that upload, and an order of magnitude below `wireframe`
+  // (0.63-0.78, real 3D line geometry). Flat across every tier: the grade
+  // reads no `quality.knobs`, so the only tier lever is the resolution solve,
+  // priced separately. NOT run through {@link SCENE_COST_MODEL} (that needs a
+  // real multi-resolution measurement; a fabricated regression would
+  // manufacture false precision). ACTION: run `/bench` and replace this with a
+  // measurement once a headless harness exists.
+  djcam: [0.15, 0.15, 0.15, 0.15, 0.15],
 }
 
 /**

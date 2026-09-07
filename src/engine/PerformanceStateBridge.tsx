@@ -205,9 +205,17 @@ export function PerformanceStateBridge() {
     p.activeScene = s.sceneId
     // Effects are NOT mirrored from the store — EffectDirector owns that list
     // outright, so it must survive this write untouched.
-    p.layers.background = s.layerSceneIds.background
-    p.layers.accent = s.layerSceneIds.accent
-    p.layers.overlay = s.layerSceneIds.overlay
+    //
+    // While a DJ-cam cutaway is up, no scene layer composites over the DJ's
+    // face: the tenancy desires are held null here (PerformanceDirector is
+    // suppressed too, so nothing re-adds one) and restored the frame the
+    // cutaway releases. `DjCamDirector` runs at -87, after this, so the store
+    // desires still show for the single hard-cut-in frame — invisible against
+    // the cut.
+    const djCamUp = p.djCam.active
+    p.layers.background = djCamUp ? null : s.layerSceneIds.background
+    p.layers.accent = djCamUp ? null : s.layerSceneIds.accent
+    p.layers.overlay = djCamUp ? null : s.layerSceneIds.overlay
     p.palette = s.paletteId
     p.mood = m.state
 

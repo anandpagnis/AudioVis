@@ -348,6 +348,37 @@ interface AppState {
    */
   filterRequestNonce: number
 
+  /**
+   * A manual DJ-cam punch the operator pressed by hand, waiting for
+   * `DjCamDirector` to act on it. The exact shape of {@link pendingFilterId}
+   * above and there for the same reason: `DjCamDirector` owns
+   * `performanceState.djCam` and rewrites it every frame, so a UI setting that
+   * field directly would be stomped one frame later. The punch flows THROUGH
+   * the director — requested here, consumed there. `'toggle'` flips the
+   * cutaway: enter it while inactive, exit it while active.
+   *
+   * Transient, and deliberately absent from `partialize` below, matching
+   * `pendingFilterId`: a one-shot punch is meaningless a reload later, and
+   * persisting it would cut to a camera at nobody seconds into the next
+   * session.
+   */
+  pendingDjCam: 'toggle' | null
+  /**
+   * Bumped on every {@link requestDjCam}, and — exactly as
+   * {@link filterRequestNonce} is for the filter — the reason punching the DJ
+   * cam a second time from the console works at all.
+   *
+   * `outputLink` publishes the look only when a `LOOK_FIELDS` value actually
+   * changes, and only the CONTROL window publishes; the output window applies
+   * looks and never echoes back. So when the output's `DjCamDirector` consumes
+   * a punch and calls `clearDjCamRequest()`, it clears its OWN copy while the
+   * console's stays at `'toggle'`. A second punch would then write a value
+   * identical to what the console already held, nothing would publish, and the
+   * output would never hear it. A monotonic counter makes every punch
+   * distinguishable. Nothing reads its value; only that it changed matters.
+   */
+  djCamRequestNonce: number
+
   uiHidden: boolean
   debugOpen: boolean
   /** Lightweight fps / frame-time / tier readout. Separate from `debugOpen`
@@ -416,6 +447,23 @@ interface AppState {
   micDevices: MicDevice[]
   micDeviceId: string | null
 
+  /**
+   * Opt-in: may `DjCamDirector` cut away to a live camera of the DJ on its own
+   * at a rare high point of the set? Persisted, the `autoPilot` / `moodDrive`
+   * pattern. Governs the AUTOMATIC trigger only — the Console's manual
+   * "Cut to DJ Cam" punch works whenever a camera stream is connected,
+   * regardless of this flag.
+   */
+  djCamEnabled: boolean
+  /** Cameras offered to the Console's DJ-cam picker. Scratch, like
+   *  {@link micDevices}: a device list is only valid for this session's
+   *  hardware and permission grant, so it is rebuilt on demand and excluded
+   *  from `partialize`. */
+  djCamDevices: { id: string; label: string }[]
+  /** The camera the operator picked for the DJ-cam cutaway, or null for the
+   *  browser default. Persisted, like {@link micDeviceId}. */
+  djCamDeviceId: string | null
+
   startAudio: (kind: SourceKind, deviceId?: string) => Promise<void>
   startAudioFile: (file: File) => Promise<void>
   /**
@@ -448,6 +496,15 @@ interface AppState {
    *  reads `pendingFilterId`, valid id or not, so an unknown id cannot wedge
    *  the queue. */
   clearFilterRequest: () => void
+  /** Ask `DjCamDirector` to punch the DJ cam on its next frame — enter the
+   *  cutaway if it is not up, exit it if it is. Like {@link requestFilter}
+   *  there is nothing for a caller to check: the director consumes the punch
+   *  whatever state it is in. See {@link AppState.pendingDjCam}. */
+  requestDjCam: () => void
+  /** Clear a consumed punch. Called by `DjCamDirector` on the frame it reads
+   *  `pendingDjCam`, so an unconsumed request cannot re-fire forever —
+   *  matching `clearFilterRequest`. */
+  clearDjCamRequest: () => void
   setLayer: (role: LayerRole, id: string | null, opts?: { auto?: boolean }) => void
   setLayerFx: (role: LayerRole, patch: Partial<LayerFx>) => void
   setResponseTuning: (patch: Partial<ResponseTuning>) => void
@@ -456,6 +513,8 @@ interface AppState {
   removeBandMapping: (id: string) => void
   toggleAutoPilot: () => void
   toggleMoodDrive: () => void
+  /** Flip the DJ-cam auto opt-in ({@link AppState.djCamEnabled}). */
+  toggleDjCam: () => void
   commitScene: () => void
   setPalette: (id: string, opts?: { auto?: boolean }) => void
   toggleUi: () => void
@@ -489,6 +548,12 @@ interface AppState {
 
   refreshDevices: () => Promise<void>
   setMicDevice: (id: string) => void
+  /** Enumerate camera devices into {@link AppState.djCamDevices}. Best-effort
+   *  and label-poor until a getUserMedia grant exists, exactly like
+   *  {@link refreshDevices} for microphones. */
+  refreshDjCamDevices: () => Promise<void>
+  /** Remember the camera the operator picked for the DJ-cam cutaway. */
+  setDjCamDevice: (id: string) => void
 }
 
 /**
@@ -531,6 +596,8 @@ export const useStore = create<AppState>()(
       paletteId: 'aurora',
       pendingFilterId: null,
       filterRequestNonce: 0,
+      pendingDjCam: null,
+      djCamRequestNonce: 0,
 
       uiHidden: false,
       debugOpen: false,
@@ -559,6 +626,7 @@ export const useStore = create<AppState>()(
 
       autoPilot: true,
       moodDrive: true,
+      djCamEnabled: false,
       lastManualAt: 0,
 
       responseTuning: { attack: 1, release: 1, subdivision: 1 },
@@ -578,6 +646,8 @@ export const useStore = create<AppState>()(
 
       micDevices: [],
       micDeviceId: null,
+      djCamDevices: [],
+      djCamDeviceId: null,
 
       startAudio: async (kind, deviceId) => {
         // Ignore re-entrant starts. The start card disables its buttons while
@@ -838,6 +908,15 @@ export const useStore = create<AppState>()(
         set((s) => ({ pendingFilterId: id, filterRequestNonce: s.filterRequestNonce + 1 })),
       clearFilterRequest: () => set({ pendingFilterId: null }),
 
+      // Same plain hand-off as `requestFilter` above, to the one component that
+      // owns `performanceState.djCam` — `DjCamDirector`, where every rule about
+      // whether the cutaway may start already lives. The nonce bump is
+      // load-bearing across the window boundary, not bookkeeping — see
+      // {@link AppState.djCamRequestNonce}.
+      requestDjCam: () =>
+        set((s) => ({ pendingDjCam: 'toggle', djCamRequestNonce: s.djCamRequestNonce + 1 })),
+      clearDjCamRequest: () => set({ pendingDjCam: null }),
+
       setLayer: (role, id, opts) => {
         if (id === get().sceneId) id = null
         // A scene not authored for this role must never be mounted in it.
@@ -932,6 +1011,7 @@ export const useStore = create<AppState>()(
 
       toggleAutoPilot: () => set((s) => ({ autoPilot: !s.autoPilot })),
       toggleMoodDrive: () => set((s) => ({ moodDrive: !s.moodDrive })),
+      toggleDjCam: () => set((s) => ({ djCamEnabled: !s.djCamEnabled })),
       commitScene: () => {
         const pending = get().pendingSceneId
         if (pending) {
@@ -1115,6 +1195,20 @@ export const useStore = create<AppState>()(
       },
 
       setMicDevice: (id) => set({ micDeviceId: id }),
+
+      refreshDjCamDevices: async () => {
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices()
+          const cams = devices
+            .filter((d) => d.kind === 'videoinput')
+            .map((d, i) => ({ id: d.deviceId, label: d.label || `Camera ${i + 1}` }))
+          set({ djCamDevices: cams })
+        } catch {
+          /* device enumeration is best-effort */
+        }
+      },
+
+      setDjCamDevice: (id) => set({ djCamDeviceId: id }),
     }),
     {
       name: 'audiovis-settings',
@@ -1173,6 +1267,7 @@ export const useStore = create<AppState>()(
         quality: s.quality,
         autoPilot: s.autoPilot,
         moodDrive: s.moodDrive,
+        djCamEnabled: s.djCamEnabled,
         responseTuning: s.responseTuning,
         bandMappings: s.bandMappings,
         layerFx: s.layerFx,
@@ -1183,6 +1278,7 @@ export const useStore = create<AppState>()(
         userPresets: s.userPresets,
         favoriteIds: s.favoriteIds,
         micDeviceId: s.micDeviceId,
+        djCamDeviceId: s.djCamDeviceId,
       }),
       onRehydrateStorage: () => (state) => {
         // The engine reads tuning directly (no store subscription in the audio

@@ -55,6 +55,7 @@ function applySharedLook(patch: Record<string, unknown>) {
  *   ?output                              the projector window (engine/projector.ts)
  *   ?quality=low                         pin render quality
  *   ?intensity=1.2&speed=0.8&reactivity=1.4
+ *   ?djcam        enable the DJ-cam auto trigger  (?djcam=on also punches on load)
  *
  * URL values win over persisted localStorage state.
  */
@@ -90,6 +91,21 @@ export function applyUrlParams() {
     const raw = q.get(param)
     if (raw === '1' || raw === 'true') patch[key] = true
     else if (raw === '0' || raw === 'false') patch[key] = false
+  }
+
+  // DJ Cam: `?djcam` (or `?djcam=1`) turns on the automatic cutaway trigger for
+  // this session; `?djcam=on` ALSO fires one manual punch on load, so the
+  // broadcast grade can be iterated on without waiting for a real drop. The
+  // punch rides the same one-shot request the Console button uses — `pendingDjCam`
+  // plus a bumped `djCamRequestNonce`, both `LOOK_FIELDS` — which `DjCamDirector`
+  // in the output window consumes on its first frame.
+  const djcam = q.get('djcam')
+  if (djcam !== null && djcam !== '0' && djcam !== 'false') {
+    patch.djCamEnabled = true
+    if (djcam === 'on') {
+      patch.pendingDjCam = 'toggle'
+      patch.djCamRequestNonce = useStore.getState().djCamRequestNonce + 1
+    }
   }
 
   const quality = q.get('quality')

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
+import { performanceState } from './performanceState'
 import { analyseLuma, applyExposureSample, SAMPLE_INTERVAL_SEC, type LumaSample } from './exposure'
 
 /**
@@ -71,6 +72,13 @@ export function ExposureSampler() {
     // Wall clock, so the loop's time constant is the same on every machine —
     // see SAMPLE_INTERVAL_SEC.
     if (clock.elapsedTime - lastSampleAt.current < SAMPLE_INTERVAL_SEC) return
+    // The DJ-cam cutaway is a lit room / a face — brighter and flatter than any
+    // scene. Sampling it would drive the servo to pull the whole show down for
+    // the length of the cutaway and spend ~30 s easing back after. Stop
+    // sampling entirely while it is up (the flag stays true through the release
+    // fade): `exposure.gain` holds at its last value and the slow servo resumes
+    // from there once sampling restarts.
+    if (performanceState.djCam.active) return
     if (busy.current) return
     lastSampleAt.current = clock.elapsedTime
 

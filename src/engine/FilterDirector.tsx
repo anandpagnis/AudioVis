@@ -323,7 +323,8 @@ export function FilterDirector() {
       !s.autoPilot ||
       s.status !== 'running' ||
       f.silence ||
-      cueState.governed
+      cueState.governed ||
+      performanceState.djCam.active
 
     const next = advanceFilter({
       active: active.current,

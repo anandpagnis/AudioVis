@@ -61,6 +61,7 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   dustfield: () => import('./DustFieldScene').then((m) => ({ default: m.DustFieldScene })),
   hold: () => import('./HoldScene').then((m) => ({ default: m.HoldScene })),
   strobe: () => import('./StrobeBarsScene').then((m) => ({ default: m.StrobeBarsScene })),
+  djcam: () => import('./DjCamScene').then((m) => ({ default: m.DjCamScene })),
 }
 
 /** Scene chunks whose import() has resolved — drives SceneManager's warm gate. */
@@ -172,6 +173,7 @@ const NebulaDriftScene = lazyScene('nebula')
 const DustFieldScene = lazyScene('dustfield')
 const HoldScene = lazyScene('hold')
 const StrobeBarsScene = lazyScene('strobe')
+const DjCamScene = lazyScene('djcam')
 
 export type SceneRole = 'background' | 'primary' | 'accent' | 'overlay' | 'effect'
 
@@ -1417,7 +1419,106 @@ export const SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
   },
+  {
+    id: 'djcam',
+    name: 'DJ Cam',
+    component: DjCamScene,
+    metadata: {
+      // The operator's own camera feed — nothing ported, no upstream to
+      // credit — so `original`, same basis as `hold`. The broadcast grade
+      // itself lives in DjCamScene.tsx's own fragment shader.
+      license: 'original',
+      // Primary-capable ONLY so `store.requestScene('djcam', { immediate:
+      // true })` is accepted. `DjCamDirector` (useFrame -87) is the sole
+      // caller — its auto trigger, or the Console "Cut to DJ Cam" punch
+      // button (which routes through `store.requestDjCam()`, never
+      // `requestScene`). `moods: []` keeps it out of every automatic pool
+      // for free: `getScenesForMood` filters on `moods.includes(mood)`, so
+      // `getPrimaryScenesForMood` never returns it and no autonomy director
+      // (AutoPilot / PerformanceDirector / EffectDirector / FilterDirector)
+      // can pick it. `HIDDEN_PICKER_IDS` (just below `SCENES`) then keeps it
+      // out of every by-hand picker.
+      roles: ['primary'],
+      moods: [],
+      // The grain gain rides `ctx.b.energy`; `energy` is the honest band.
+      // Not selection-affecting — nothing reads `bands` for a `moods: []`
+      // scene.
+      bands: ['energy'],
+      // A graded video blit: no motion of its own, no focal geometry.
+      intensity: 'calm',
+      // One `VideoTexture` fullscreen blit plus a cheap grade — cover-fit
+      // UVs, contrast/desat, a radial vignette, two `step` letterbox bars,
+      // one hash for grain. No loop, no march. Priced flat across every
+      // COST_TIER in `SCENE_COST_MS`. ACTION: confirm with `/bench`.
+      performanceCost: 'low',
+      // Direct (non-offscreen) render path — a photographic feed gains
+      // nothing from a downscale-then-upscale, and cover-fit + letterbox are
+      // computed against the full drawing buffer.
+      fillBound: false,
+      // A lone opaque primary — nothing composites over a camera feed
+      // (PerformanceStateBridge also holds the layer desires null while the
+      // cutaway is up).
+      compatibleWith: [],
+      // No `moodFit` — it is never chosen by fit, and a `moodFit` entry over
+      // the empty `moods` fails `registry.test.ts`'s "moodFit only scores
+      // moods the scene claims".
+      //
+      // Scene Contract — the broadcast grade, tunable live from the Console
+      // with no code edit (`contract.test.ts` then applies). Every dial is
+      // authored so the NEUTRAL 0.5 position IS the locked cinemascope look —
+      // 2.39:1 letterbox, vignette ~0.3, ~15% desaturation, a gentle contrast
+      // lift, a very faint energy-scaled grain — and deviates from there.
+      // `fill` grows the bars (0.5 => 2.39:1, higher => tighter). `shape`
+      // (vignette) is one of the two keys `sceneSteer.ts` declines, so the
+      // vignette stays a human-only control. `speed` and `tilt` are
+      // deliberately undeclared — a static insert has neither.
+      contract: {
+        version: 1,
+        params: {
+          fill: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+        },
+        paramLabels: {
+          // The grade's own words — the canonical keys do not say this alone.
+          // `contrast` is left unlabeled so the HUD shows the canonical name.
+          '*': {
+            fill: 'letterbox',
+            shape: 'vignette',
+            complexity: 'desaturation',
+            density: 'grain',
+          },
+        },
+      },
+      // Inert — a flat fullscreen quad has no meshes to frame — but
+      // `CameraDirector.test.ts` fails a `roles: ['primary']` scene with no
+      // `cameraAnchor`, so it carries the standard boilerplate exactly as
+      // `hold` / `kifs` / `wingfold` do.
+      cameraAnchor: { target: [0, 0, 0], distance: 10, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
 ]
+
+/**
+ * Scene ids that CAN hold the primary role — so `store.requestScene` and the
+ * autonomy directors accept them — but must never appear in a by-hand scene
+ * picker.
+ *
+ * `djcam` is the only member and the whole reason this exists. It declares
+ * `roles: ['primary']` so `DjCamDirector`'s `requestScene('djcam', { immediate:
+ * true })` commits, but a DJ-cam cutaway has to go through that director every
+ * time: it owns the hard-cut in, the scene-owned dip out, the auto-exposure
+ * freeze, and the suppression of the other directors. Its one manual entry is
+ * the Console "Cut to DJ Cam" button, which routes through
+ * `store.requestDjCam()`, never `requestScene`. `HUD.tsx` and `Console.tsx`
+ * both AND `!HIDDEN_PICKER_IDS.has(s.id)` into their `PICKABLE_SCENES` filter;
+ * `canHoldPrimary` and the store's own guard deliberately do NOT, so the
+ * director's request still succeeds. See `canHoldPrimary.test.ts`.
+ */
+export const HIDDEN_PICKER_IDS = new Set(['djcam'])
 
 /**
  * Registered, built, and deliberately WITHHELD from the roster.
@@ -2564,7 +2665,12 @@ export function validateSceneDef(def: SceneDef): string[] {
   if (!def.id.trim()) issues.push('Scene id is required.')
   if (!def.name.trim()) issues.push(`Scene "${def.id}" needs a display name.`)
   if (def.metadata.roles.length === 0) issues.push(`Scene "${def.id}" needs at least one role.`)
-  if (def.metadata.moods.length === 0) issues.push(`Scene "${def.id}" needs at least one mood.`)
+  // A mood pins a scene into the autonomy pools. `HIDDEN_PICKER_IDS` scenes are
+  // deliberately reachable ONLY through their own director (`djcam` via
+  // `DjCamDirector`), never mood-selected and never picker-listed, so an empty
+  // `moods` is the honest declaration there — not a dead scene.
+  if (def.metadata.moods.length === 0 && !HIDDEN_PICKER_IDS.has(def.id))
+    issues.push(`Scene "${def.id}" needs at least one mood.`)
   if (def.metadata.bands.length === 0)
     issues.push(`Scene "${def.id}" needs at least one audio band.`)
   // Checked, not required. An absent budget is the normal case — the engine

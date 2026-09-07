@@ -80,8 +80,9 @@ CurrentState (Zustand store)
 1. SceneManager ticks audio → fresh `AudioFeatures`.
 2. AutoPilot (−90): drop edge → peak/aggressive scene; mood change → mood-fit scene; imminent prediction → prefetch target.
 3. CueTimeline (−88): if beat matches cue → apply full look snapshot.
-4. PerformanceDirector (−85): on `sectionChange` or 16-beat phrase fallback → rank compatible scenes by mood + dominant band → request primary + optional layer.
-5. SceneManager: preload chunk, warm shader, commit on downbeat, crossfade ~2 beats.
+4. DjCamDirector (−87): opt-in. On a rare high-confidence drop (or the Console "Cut to DJ Cam" punch) → hard-cut to the `djcam` scene, hold a phrase, then dip back. While `performanceState.djCam.active` the directors below stand down. See `docs/13_DJ_Cam.md`.
+5. PerformanceDirector (−85): on `sectionChange` or 16-beat phrase fallback → rank compatible scenes by mood + dominant band → request primary + optional layer.
+6. SceneManager: preload chunk, warm shader, commit on downbeat, crossfade ~2 beats.
 
 ---
 
@@ -90,9 +91,14 @@ CurrentState (Zustand store)
 | Component | File | Trigger | Action |
 |-----------|------|---------|--------|
 | AutoPilot | `AutoPilot.tsx` | Drop edge, mood change, imminent prediction | `requestScene`, palette nudge |
+| DjCamDirector | `DjCamDirector.tsx` | Rare high-confidence drop, or Console punch (opt-in) | Cut to the DJ camera, hold a phrase, dip back |
 | PerformanceDirector | `PerformanceDirector.tsx` | Section change, phrase fallback | Primary + accent/overlay |
 | CueTimeline | `CueTimeline.tsx` | Beat index match | Full look apply |
 | SceneManager | `SceneManager.tsx` | Pending request | Downbeat commit, fade |
+
+> **Note:** "DjCamDirector" is unrelated to `CameraDirector` — that one runs 3D
+> virtual-camera moves (orbit/push/handheld) per scene. DjCamDirector cuts the
+> whole show to a live webcam feed of the DJ.
 
 ---
 

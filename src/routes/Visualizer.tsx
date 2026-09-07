@@ -3,6 +3,7 @@ import { Stage } from '../engine/Stage'
 import { Console } from '../ui/Console'
 import { audioEngine } from '../audio/AudioEngine'
 import { claimSource, isOutput } from '../engine/outputLink'
+import { djCamSource } from '../engine/djCamSource'
 import { preloadAllScenes } from '../scenes'
 import { useStore } from '../store'
 
@@ -99,6 +100,10 @@ function useHandedSource() {
       // own `status` follows the source, which is what the post chain and the
       // directors gate on.
       if (src.kind === 'file') void useStore.getState().startAudioFile(src.file)
+      // The camera is not an audio source — it feeds `DjCamScene`'s texture, not
+      // the analysis graph — so it goes straight to its own singleton and never
+      // touches `status`.
+      else if (src.kind === 'camera') djCamSource.adoptStream(src.stream)
       else void useStore.getState().startHandedStream(src.stream, src.kind === 'system')
     }
     tick()

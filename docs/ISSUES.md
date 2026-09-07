@@ -7952,7 +7952,7 @@ things a curator will hit and should not have to rediscover.
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1483 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1561 tests**
 (1 skipped — see F108; 1 pre-existing failure, see F181b), build.
 
 Not yet verified against real music. The eight reference tracks in `testfolder/`

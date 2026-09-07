@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { MOOD_STATES } from '../../audio/types'
-import { getCompatibleScenes, SCENES } from '../../scenes'
+import { getCompatibleScenes, HIDDEN_PICKER_IDS, SCENES } from '../../scenes'
 import { selectPrimaryCandidates } from '../PerformanceDirector'
 
-const PRIMARIES = SCENES.filter((s) => s.metadata.roles.includes('primary'))
+// `djcam` is `roles: ['primary']` so `requestScene` accepts it, but it carries
+// `moods: []` and is reached only through `DjCamDirector` — never this
+// director's mood pools. `HIDDEN_PICKER_IDS` is the same carve-out the HUD /
+// Console pickers apply.
+const PRIMARIES = SCENES.filter(
+  (s) => s.metadata.roles.includes('primary') && !HIDDEN_PICKER_IDS.has(s.id),
+)
 const MOODS = MOOD_STATES.filter((m) => m !== 'silence')
 
 /**

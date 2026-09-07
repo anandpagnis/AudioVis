@@ -19,6 +19,7 @@ import {
   getScenePixelBudget,
   getSceneContract,
   getScenesForMood,
+  getPrimaryScenesForMood,
   pickVariedMode,
   registerScene,
   scenePixelBudget,
@@ -329,5 +330,23 @@ describe('pickVariedMode', () => {
       if (m) seen.add(m)
     }
     expect(seen.size).toBe(modes.length - 1)
+  })
+})
+
+describe('djcam — primary-capable but out of every automatic pool', () => {
+  it('is registered in SCENES with a unique id and the primary role', () => {
+    const djcam = SCENES.filter((s) => s.id === 'djcam')
+    expect(djcam, 'djcam must be in SCENES, not DISABLED_SCENES').toHaveLength(1)
+    expect(djcam[0].metadata.roles).toContain('primary')
+  })
+
+  it('is never returned by getPrimaryScenesForMood, for any mood', () => {
+    // `moods: []` keeps it out of `getScenesForMood` entirely, so AutoPilot,
+    // PerformanceDirector and the exit-nudge pool never see it. The cam is
+    // reached only through DjCamDirector, never normal rotation.
+    for (const mood of MOOD_STATES) {
+      const ids = getPrimaryScenesForMood(mood).map((s) => s.id)
+      expect(ids, `mood "${mood}"`).not.toContain('djcam')
+    }
   })
 })

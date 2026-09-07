@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { SCENES, canHoldRole, getEffectScenes, type SceneDef } from '../scenes'
+import { SCENES, canHoldRole, getEffectScenes, HIDDEN_PICKER_IDS, type SceneDef } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
 
 /**
@@ -12,8 +12,15 @@ import { LAYER_ROLES, type LayerRole } from '../store'
  * `PICKABLE_SCENES`, which this mirrors — the fix landed there first because
  * that surface was the one actually reported broken, and this one carries the
  * identical `SCENES.map` + `requestScene` pattern.
+ *
+ * `HIDDEN_PICKER_IDS` is the same carve-out `HUD.tsx` applies: `djcam` is
+ * primary-capable for the store and the DJ-cam director, but hidden from this
+ * grid — its only by-hand entry is the dedicated "Cut to DJ Cam" button, which
+ * calls `store.requestDjCam()` rather than `requestScene`.
  */
-const PICKABLE_SCENES = SCENES.filter((s) => canHoldRole(s.id, 'primary'))
+const PICKABLE_SCENES = SCENES.filter(
+  (s) => canHoldRole(s.id, 'primary') && !HIDDEN_PICKER_IDS.has(s.id),
+)
 
 /**
  * The scenes eligible for each composition slot.
@@ -67,6 +74,7 @@ import {
   sendCommand,
   type Telemetry,
 } from '../engine/outputLink'
+import { djCamSource } from '../engine/djCamSource'
 import { LENS_STYLES } from '../engine/opticalRack'
 import {
   filterUnusableReason,
@@ -712,6 +720,8 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
           flourish through the same queue. */}
       <IsfFilters tele={tele} />
 
+      <DjCam tele={tele} />
+
       <button className={`toggle-wide ${fx.enabled ? 'on' : ''}`} onClick={() => set({ enabled: !fx.enabled })}>
         Manual post FX
         <small>{fx.enabled ? 'you are driving' : 'directors are driving'}</small>
@@ -874,6 +884,157 @@ function IsfFilters({ tele }: { tele: Telemetry | null }) {
         <span className="filter-now-mix">{Math.round(Math.max(0, Math.min(1, mix)) * 100)}%</span>
       </div>
     </>
+  )
+}
+
+/**
+ * DJ Cam — punch to a live camera of the DJ, and see when the cutaway is up.
+ *
+ * The two-part shape of {@link IsfFilters} directly above, for the same
+ * reasons. The **fire** is a request on the cross-window wire: `requestDjCam()`
+ * sets `pendingDjCam`, and `DjCamDirector` in the OUTPUT window consumes it and
+ * commits the cutaway — a `djcam` takeover has to go through the director that
+ * owns the hard-cut in, the scene-owned dip out, the exposure freeze and the
+ * suppression of the other directors. The **readout** — `Cut to DJ Cam` <->
+ * `Return to scenes` — comes off `tele.djCamActive`, not a local guess:
+ * whether `djcam` is the scene on screen is a fact only the window running the
+ * show has.
+ *
+ * The auto toggle (`djCamEnabled`) governs the AUTOMATIC trigger alone. A hand
+ * punch works with it off — the operator is asking explicitly — exactly as
+ * `FilterDirector` still fires a hand pick with `ISF_AUTOFIRE_ENABLED` false.
+ *
+ * The camera is acquired HERE, inside the operator's click, and handed to the
+ * output window by direct reference: a freshly opened output window has no user
+ * activation to call `getUserMedia` with. The same constraint that puts audio
+ * acquisition in this window. See engine/djCamSource.ts.
+ */
+function DjCam({ tele }: { tele: Telemetry | null }) {
+  const enabled = useStore((s) => s.djCamEnabled)
+  const deviceId = useStore((s) => s.djCamDeviceId)
+  const devices = useStore((s) => s.djCamDevices)
+  const active = tele?.djCamActive ?? false
+
+  // `djCamSource` is a plain module singleton — no store, no subscription, the
+  // same posture as `performanceState`. Poll it so the punch button's disabled
+  // state and the error line track the real stream rather than a stale copy.
+  const [ready, setReady] = useState(false)
+  const [srcError, setSrcError] = useState<string | null>(null)
+  useEffect(() => {
+    const poll = () => {
+      setReady(djCamSource.ready)
+      setSrcError(djCamSource.status.error)
+    }
+    poll()
+    const id = window.setInterval(poll, 250)
+    return () => window.clearInterval(id)
+  }, [])
+
+  // The device list only carries real labels once a camera permission has been
+  // granted, so refresh on mount and again after every acquire.
+  useEffect(() => {
+    void useStore.getState().refreshDjCamDevices()
+  }, [])
+
+  const connect = useCallback(() => {
+    void djCamSource
+      .acquire(useStore.getState().djCamDeviceId ?? undefined)
+      .then(() => useStore.getState().refreshDjCamDevices())
+      .catch(() => {})
+  }, [])
+
+  return (
+    <>
+      <h3 className="fx-head">dj cam{enabled ? '' : ' · autofire off'}</h3>
+
+      <DjCamPreview />
+
+      <button
+        className={`toggle-wide djcam-punch ${active ? 'on' : ''}`}
+        disabled={!ready}
+        title={
+          ready
+            ? active
+              ? 'cut back to the scene rotation now'
+              : 'punch to the live camera now — ignores the auto cooldown and warm-up'
+            : 'connect a camera first'
+        }
+        onClick={() => useStore.getState().requestDjCam()}
+      >
+        {active ? 'Return to scenes' : 'Cut to DJ Cam'}
+        <small>
+          {ready ? (active ? 'cutaway is live' : 'manual punch') : 'no camera connected'}
+        </small>
+      </button>
+
+      <div className="djcam-setup">
+        <button className="tile" onClick={connect}>
+          {ready ? 'Reconnect camera' : 'Connect camera'}
+        </button>
+        {devices.length > 0 && (
+          <label className="fx-select">
+            <span>device</span>
+            <select
+              value={deviceId ?? ''}
+              onChange={(e) => useStore.getState().setDjCamDevice(e.target.value)}
+            >
+              {devices.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
+      <button
+        className={`toggle-wide djcam-autofire ${enabled ? 'on' : ''}`}
+        onClick={() => useStore.getState().toggleDjCam()}
+      >
+        DJ Cam autofire
+        <small>{enabled ? 'director cuts away on a rare big drop' : 'manual punch only'}</small>
+      </button>
+
+      {srcError && <p className="djcam-error">{srcError}</p>}
+    </>
+  )
+}
+
+/**
+ * A live thumbnail of the camera the DJ will be cut to.
+ *
+ * The {@link Mirror} shape — a `<video>` with `srcObject` set, `autoPlay muted
+ * playsInline` — pointed at the stream `djCamSource` holds on its own shared
+ * `<video>` rather than at the output canvas. A second sink on one
+ * `MediaStream` costs nothing, so the DJ can frame the shot with the cutaway
+ * down. Polled, not subscribed, for the same reason the parent is.
+ */
+function DjCamPreview() {
+  const ref = useRef<HTMLVideoElement>(null)
+  const [live, setLive] = useState(false)
+
+  useEffect(() => {
+    const sync = () => {
+      const v = ref.current
+      if (!v) return
+      const stream = (djCamSource.video.srcObject as MediaStream | null) ?? null
+      if (v.srcObject !== stream) {
+        v.srcObject = stream
+        if (stream) void v.play().catch(() => {})
+      }
+      setLive(djCamSource.ready)
+    }
+    sync()
+    const id = window.setInterval(sync, 250)
+    return () => window.clearInterval(id)
+  }, [])
+
+  return (
+    <div className={`mirror djcam-preview ${live ? 'live' : ''}`}>
+      <video ref={ref} autoPlay muted playsInline />
+      {!live && <span className="mirror-empty">no camera</span>}
+    </div>
   )
 }
 

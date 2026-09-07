@@ -9,7 +9,7 @@ import {
   type LayerRole,
   type Quality,
 } from '../store'
-import { SCENES, getScene, getSceneContract } from '../scenes'
+import { SCENES, getScene, getSceneContract, HIDDEN_PICKER_IDS } from '../scenes'
 /**
  * The scenes a user may pick as the SUBJECT.
  *
@@ -19,10 +19,18 @@ import { SCENES, getScene, getSceneContract } from '../scenes'
  * running scene and rendered a black frame. `requestScene` refuses them now, so
  * this is about not presenting an action that silently declines.
  *
+ * `HIDDEN_PICKER_IDS` is the second, narrower exclusion: `djcam` is
+ * primary-capable so the DJ-cam director can `requestScene('djcam')`, but it
+ * must never be a by-hand chip or a number-key target — its only manual entry
+ * is the Console "Cut to DJ Cam" button. The store's own guard does not apply
+ * this set, and must not.
+ *
  * Module scope, not a `useMemo`: `SCENES` is a static registry and this is the
  * same array on every render.
  */
-const PICKABLE_SCENES = SCENES.filter((s) => s.metadata.roles.includes('primary'))
+const PICKABLE_SCENES = SCENES.filter(
+  (s) => s.metadata.roles.includes('primary') && !HIDDEN_PICKER_IDS.has(s.id),
+)
 import {
   liveParamKeys,
   paramLabel,

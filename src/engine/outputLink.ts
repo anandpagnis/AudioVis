@@ -89,6 +89,17 @@ export const LOOK_FIELDS = [
   // publishes nothing at all. See the store's own note on the field.
   'pendingFilterId',
   'filterRequestNonce',
+  // The DJ-cam manual punch, and its nonce, cross the wire for the exact
+  // reasons the filter pair above does: nothing in the console consumes a
+  // punch — `DjCamDirector` runs in the OUTPUT window — and the output never
+  // echoes its consume back, so without a value that changes every press a
+  // second punch would publish nothing. `djCamEnabled` and `djCamDeviceId`
+  // ride along so the auto opt-in and the chosen camera reach the window that
+  // actually runs the director and (via the handed stream) shows the camera.
+  'pendingDjCam',
+  'djCamRequestNonce',
+  'djCamEnabled',
+  'djCamDeviceId',
   'layerSceneIds',
   'paletteId',
   'params',
@@ -162,6 +173,19 @@ export interface Telemetry {
   filterId: string | null
   /** 0..1 wet/dry of {@link filterId}; 0 when nothing is firing. */
   filterMix: number
+  /**
+   * Whether the DJ-cam cutaway is live this instant.
+   *
+   * Reported, not inferred, for the same reason as {@link filterId}: the
+   * console cannot know it. `DjCamDirector` runs in the OUTPUT window, cuts to
+   * the camera autonomously on a drop AND on the console's manual punch, and
+   * releases it on a structure boundary or a stream drop — so what is on
+   * screen is a fact only that window has. The Console's "Cut to DJ Cam" /
+   * "Return to scenes" button reads this rather than guessing from `scene`.
+   *
+   * Sourced from `performanceState.djCam.active`.
+   */
+  djCamActive: boolean
   /**
    * What is ACTUALLY drawing in each layer slot — the MOUNTED state, not the
    * desire.
@@ -328,6 +352,7 @@ export function handoffInFlight(): boolean {
 export type HandedSource =
   | { kind: 'file'; file: File }
   | { kind: 'mic' | 'system'; stream: MediaStream }
+  | { kind: 'camera'; stream: MediaStream }
 
 interface LinkGlobals {
   __avSource?: HandedSource | null
@@ -685,6 +710,7 @@ export function publishTelemetry(nowMs = performance.now()): void {
       hasSource: audioEngine.running,
       filterId: performanceState.filter.id,
       filterMix: performanceState.filter.mix,
+      djCamActive: performanceState.djCam.active,
       // Two allocations per packet — this literal and the `map` below — and
       // both are judged fine rather than left unexamined. The no-allocation
       // rule `performanceState`'s header states is about the 60fps render

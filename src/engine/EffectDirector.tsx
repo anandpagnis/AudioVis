@@ -194,7 +194,12 @@ export function EffectDirector() {
     // directors. Punctuation is not a composition choice: a DJ who picked a
     // scene by hand did not thereby ask for drops to stop being marked. Cue
     // governance is still respected — an authored show owns its own moments.
-    const suppressed = !s.autoPilot || s.status !== 'running' || f.silence || cueState.governed
+    const suppressed =
+      !s.autoPilot ||
+      s.status !== 'running' ||
+      f.silence ||
+      cueState.governed ||
+      performanceState.djCam.active
 
     p.layers.effects = advanceEffects({
       active: p.layers.effects,

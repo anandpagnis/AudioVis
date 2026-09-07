@@ -225,6 +225,23 @@ export interface PerformanceState {
   filter: { id: string | null; mix: number }
 
   /**
+   * DJ-cam cutaway state. Single-writer: `DjCamDirector` (-87) only. Readers:
+   * `ExposureSampler` (freezes the auto-exposure servo while the cam is up),
+   * the suppression guards in `AutoPilot` / `PerformanceDirector` /
+   * `EffectDirector` / `FilterDirector`, `DjCamScene` (reads `releasing` to run
+   * its own fade to black), and `publishTelemetry` (→ the Console "Cut to DJ
+   * Cam" button, off `active`).
+   *
+   * `active: false` ⇒ ignore every other field. `manual` selects the hold
+   * rule: an auto cutaway releases on the next structure boundary past a beat
+   * floor, a manual one holds until it is punched out or hits the dead-man
+   * ceiling. `releasing` is true during the ~0.6 s the outgoing cutaway spends
+   * fading itself to black before the return scene commits — `active` stays
+   * true through it so the suppression and the exposure freeze hold.
+   */
+  djCam: { active: boolean; since: number; manual: boolean; releasing: boolean }
+
+  /**
    * Raw-ish audio the optical racks need, published here rather than read
    * directly by the executor.
    *
@@ -342,6 +359,7 @@ export const performanceState: PerformanceState = {
   mirror: { segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0, mix: 0 },
   lens: { amount: 0, style: 0 },
   filter: { id: null, mix: 0 },
+  djCam: { active: false, since: 0, manual: false, releasing: false },
   rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0 },
   transitionStyle: 'dissolve',
   transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1 },

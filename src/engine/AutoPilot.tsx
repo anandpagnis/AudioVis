@@ -323,6 +323,7 @@ export function AutoPilot() {
 
     if (!s.autoPilot || s.status !== 'running' || f.silence) return
     if (cueState.governed) return // authored cues own the journey
+    if (performanceState.djCam.active) return // a DJ-cam cutaway owns the frame
     if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
     // Baseline the stale clock the first time automation is actually live,
     // rather than at component mount (which can be well before playback
