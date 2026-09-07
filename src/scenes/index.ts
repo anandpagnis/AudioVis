@@ -1426,7 +1426,7 @@ export const SCENES: SceneDef[] = [
     metadata: {
       // Ported from lilim's own scenes/limitless.js, written on the lilim
       // branch of this project — see LimitlessScene.tsx's header for the full
-      // port record (scope, uniform collisions, determinism, what F210/F211
+      // port record (scope, uniform collisions, determinism, what F212/F213
       // leave out).
       license: 'original',
       contract: {

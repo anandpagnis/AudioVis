@@ -316,7 +316,7 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // guess and a resolution-parametric one; this scene has neither a
   // multi-resolution measurement nor a per-tier complexity cut to model.
   // ACTION: run `/bench` and replace with a measurement, ideally per-mode
-  // (F212 already flags that `none`/`solar`/`halftone` are one texture fetch
+  // (F214 already flags that `none`/`solar`/`halftone` are one texture fetch
   // and could run a much larger budget than `smear` needs).
   limitless: [3.8, 3.8, 3.8, 3.8, 3.8],
 }

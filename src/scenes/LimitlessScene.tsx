@@ -23,7 +23,7 @@ import { useStore } from '../store'
  *   shatter, prism, breathe, sort, thresh, solar, halftone, vhs
  *
  * Six are deliberately NOT ported and their lilim source is not copied in at
- * all — see F210 in `docs/ISSUES.md` for what a Phase 2 needs. `melt`, `mosh`,
+ * all — see F212 in `docs/ISSUES.md` for what a Phase 2 needs. `melt`, `mosh`,
  * `coral`, `scanline` and `windows` each need an auxiliary ping-pong
  * render-target simulation (lilim's `tSim` + `simQuad` + `ensureSim`), which
  * `createShaderScene` has no support for; `terrain` is not a fragment-shader
@@ -87,7 +87,7 @@ import { useStore } from '../store'
  * ## What else was dropped, and why it is not a loss
  *
  * `uFlipX` and `uLive` both existed for lilim's camera feed, which is not
- * ported (see F211 — a live `MediaStream` has no way across this codebase's
+ * ported (see F213 — a live `MediaStream` has no way across this codebase's
  * two-window boundary yet). Rather than ship two uniforms permanently pinned at
  * zero, both are removed and their effect folded out algebraically:
  *
@@ -241,7 +241,7 @@ function defaultPhoto(): HTMLCanvasElement {
  * Wrap an image or canvas as the source texture.
  *
  * lilim's `makeTexture`, minus its `VideoTexture` branch — no video source can
- * reach this window yet (F211). `MirroredRepeatWrapping` is load-bearing rather
+ * reach this window yet (F213). `MirroredRepeatWrapping` is load-bearing rather
  * than decorative: `fit()` deliberately samples outside 0..1 at most `fill`
  * settings, and mirroring is what makes that read as a continuation of the
  * picture instead of a smeared edge clamp.
@@ -605,7 +605,7 @@ export const FRAG = /* glsl */ `
     //
     // liveF was max(uLive, uMode == 0 ? 1.0 : 0.0) in lilim, where uLive marked
     // a camera feed holding a normal-exposure baseline at rest. No camera source
-    // can reach this window (F211), so uLive is gone and this is what it
+    // can reach this window (F213), so uLive is gone and this is what it
     // collapses to: 'none' alone keeps full brightness, every physics mode takes
     // the full energy sweep.
     float liveF = uMode == 0 ? 1.0 : 0.0;
@@ -630,7 +630,7 @@ export const FRAG = /* glsl */ `
  *
  * lilim's `stamp`, `simOwner`, `scroll`, `ripplePos`, `rippleAmt`, `splatAng`
  * and `splat` are all absent: every one of them existed only to drive the sim
- * or terrain modes, which are not ported (F210).
+ * or terrain modes, which are not ported (F212).
  */
 interface LimitlessState {
   /** Speed-scaled, audio-reactive phase. lilim's `phase`. */
@@ -754,7 +754,7 @@ export const LimitlessScene = createShaderScene<LimitlessState>({
   // `halftone` are one texture fetch and would happily run at native
   // resolution while `smear` would not — and `createShaderScene` supports it
   // (see `MazeFlightScene`). Deliberately not done tonight: it cannot be
-  // tuned without looking at it. Logged as F212.
+  // tuned without looking at it. Logged as F214.
   pixelBudget: 1.8,
   uniforms: () => ({
     // Created here, not at module scope: this touches the DOM and allocates a
