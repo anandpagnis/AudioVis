@@ -44,6 +44,16 @@ const SEED = 0x5ca77e
  *             The frag shader's brightness term keeps a small, transient
  *             contribution from the wave for legibility, but it is the least
  *             of the four channels the hit now drives.
+ *
+ *   b.energy -> also nudges the vertical scanline's OWN sweep rate (`uTime`,
+ *             the JS-side `timeRef` accumulator below). Flagged in review as
+ *             the one remaining sub-effect in this scene with no audio term
+ *             at all: everything above already answers bass/transient/kick/
+ *             high, but the scanline swept at a flat `params.speed`-scaled
+ *             rate regardless of what the track was doing. `1 + b.energy *
+ *             0.6` reduces to the old behaviour exactly at b.energy == 0, so
+ *             a quiet passage sweeps at the same rate it always did; a loud
+ *             one sweeps up to 1.6x faster.
  */
 
 export const PCD_VERT = /* glsl */ `
