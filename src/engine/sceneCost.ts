@@ -452,6 +452,36 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // drop `uMaxSteps`, evaluate the field every OTHER step, or lower
   // `pixelBudget`.
   butterfly: [3.8, 3.3, 2.7, 2.2, 1.8],
+
+  // `limitless` — NOT /bench-measured. See LimitlessScene.tsx's own
+  // `pixelBudget` comment for the full op-count reasoning; restated here
+  // arithmetically. Dominant mode is `smear`: 8 true `snoise(vec3)` calls per
+  // pixel (two `fbm()`, 4 octaves each). `SIMPLEX3D_GLSL`'s own doc prices
+  // that call at "roughly an order of magnitude more expensive per sample"
+  // than the cheap hash-noise `malachite` uses (measured 0.76 ms at a 1.3 MP
+  // budget for up to 25 samples). 8 snoise samples ~ 80 hash-noise-equivalent
+  // samples, ~3.2x malachite's per-pixel cost; this scene's own 1.8 MP budget
+  // is 1.385x malachite's 1.3 MP. Combined: ~4.4x malachite's row, ~3.4 ms —
+  // rounded up for the estimate's own uncertainty, landing at 3.8, comfortably
+  // inside the tier-0 `< sceneBudget(0)/2` (5.05 ms) admission bar with real
+  // margin, matching the `pixelBudget` comment's own "holds the worst mode
+  // well inside the bar" framing.
+  //
+  // FLAT across all five tiers, deliberately, not tapered: unlike
+  // `beats`/`travelling`/`gyroid` and their `quality.knobs.raymarchSteps`
+  // gating, nothing in this scene's `update()` reads `quality.knobs` at all —
+  // every one of the 15 modes runs the same per-pixel work regardless of
+  // tier, so a taper would invent a mechanism that is not actually there (the
+  // same honesty `dustfield`'s F197 finding already established for a
+  // no-governor-response scene). The one real tier lever is the ENGINE's own
+  // `solveScale`, which this row does not need to account for separately —
+  // see `SCENE_COST_MODEL`'s own doc on the difference between a flat-tier
+  // guess and a resolution-parametric one; this scene has neither a
+  // multi-resolution measurement nor a per-tier complexity cut to model.
+  // ACTION: run `/bench` and replace with a measurement, ideally per-mode
+  // (F214 already flags that `none`/`solar`/`halftone` are one texture fetch
+  // and could run a much larger budget than `smear` needs).
+  limitless: [3.8, 3.8, 3.8, 3.8, 3.8],
 }
 
 /**

@@ -9221,3 +9221,102 @@ per-frame canvas heavy enough to distort the reading.
       relevant. Corrected only against verified code; no accurate prose was
       rewritten for its own sake.
 
+
+
+- [ ] **F212 · `limitless` ports 15 of lilim's 21 modes; six need engine
+      primitives this app does not have** — `src/scenes/LimitlessScene.tsx`.
+
+      `melt`, `mosh`, `coral`, `scanline` and `windows` each need an auxiliary
+      ping-pong render-target simulation — lilim's `tSim` + `simQuad` +
+      `ensureSim`, updated every frame independently of the display shader
+      that reads it. `terrain` is not a fragment-shader mode at all: lilim
+      runs it as a SEPARATE 3D scene (its own `THREE.Scene`,
+      `PerspectiveCamera`, and a displaced heightfield mesh), swapped in for
+      the fullscreen quad entirely while active.
+
+      `createShaderScene` (`src/engine/createShaderScene.tsx`) has neither
+      primitive — every scene it builds is exactly one compiled material
+      drawn onto exactly one fullscreen quad, either directly or through one
+      offscreen `pixelBudget` render target. Adding either is a real change
+      to the single most heavily fragile, most heavily documented file in
+      this engine (F138/F139/F143/F144/F145/F146/F147 all live there, each
+      one a stall this session traced and closed) — not attempted tonight for
+      exactly that reason: an unverified new invariant in that file risks
+      reopening one of those.
+
+      Two additions would close this, done separately from each other:
+
+      1. An opt-in ping-pong pair on `ShaderSceneSpec` — a second compiled
+         material + a pair of swapped render targets, driven by its own
+         `simUpdate` callback before the main `update()` runs each frame, so
+         `melt`/`mosh`/`coral`/`scanline`/`windows` become a matter of
+         porting their `simUniforms`/`simQuad` fragment shaders against an
+         engine primitive rather than hand-rolling render-target management
+         inside one scene.
+      2. A path for a scene to declare it wants a full separate `THREE.Scene`
+         + camera instead of the fullscreen-quad model — closer to how
+         `MazeFlightScene`'s raymarcher already diverges from a purely 2D
+         shader, but `terrain` needs an actual mesh and displacement, not
+         just a different fragment body.
+
+      Every piece of lilim's `limitless.js` module state that existed only to
+      feed these six (`stamp`, `simOwner`, `scroll`, `ripplePos`/`rippleAmt`,
+      `splat`/`splatAng`) is left out of the port entirely rather than kept
+      dead — nothing here half-implements a mode it cannot finish.
+
+- [ ] **F213 · `limitless` has no way to take a live camera feed — only a
+      dropped photo** — `src/engine/limitlessPhoto.ts`, `src/store.ts`.
+
+      lilim's `makeTexture()` accepts a `VideoTexture` from an
+      `HTMLVideoElement` — a dropped clip or a live `getUserMedia()` camera
+      feed — as readily as a static image; every one of the 15 ported modes
+      reads `tSrc` fresh each frame regardless of what kind of source backs
+      it, so nothing in the SHADER side of this port stands in the way.
+
+      What stands in the way is this app's two-window split
+      (`src/engine/outputLink.ts`): the console window owns whatever UI would
+      request camera permission and hold the `MediaStream`; the output
+      window owns the WebGL context that would actually consume it as a
+      texture. `limitlessPhoto`'s own channel (`LOOK_FIELDS`, a
+      `postMessage`-carried data URL) is not a route for this — a
+      `MediaStream` does not survive a structured clone, and even if it did,
+      re-encoding live video to a data URL every frame is not a serious
+      option. `outputLink.ts` already has a DIFFERENT channel for
+      once-consumed direct references (its own "two channels, deliberately
+      different" note, cited from `store.ts`'s own `limitlessPhoto` doc
+      comment) — reserved today for a `MediaStream`/audio file the output
+      window takes once and owns from then on, which is the shape a camera
+      feed actually needs, unlike a durable look value a late-opening output
+      window has to be able to ask for and receive.
+
+      Closing this means routing camera permission + `getUserMedia()`
+      through that direct-reference channel instead, and would restore
+      lilim's `uFlipX` (selfie-mirroring) and `uLive` (a live source holds a
+      normal-exposure baseline at rest instead of the full energy sweep) —
+      both algebraically removed from this port's shader for exactly this
+      reason (see `LimitlessScene.tsx`'s own header), not because either was
+      hard to port, only because neither uniform could ever be anything but
+      permanently zero without this.
+
+- [ ] **F214 · `limitless`'s `pixelBudget` is one flat number for all 15
+      modes, and the cheapest and priciest are not close** —
+      `src/scenes/LimitlessScene.tsx`, `src/engine/sceneCost.ts`.
+
+      `createShaderScene` already supports a PER-FRAME function budget
+      (`pixelBudget: () => number`, read by `MazeFlightScene` off
+      `quality.knobs.raymarchSteps` — see that spec field's own doc), so
+      nothing engine-side blocks a per-MODE budget; `limitless` just does not
+      use one. Tonight's flat 1.8 MP is priced against `smear` (two
+      `fbm(vec3)` calls, eight true `snoise` evaluations per pixel — the
+      dominant mode), so `none`/`solar`/`halftone` (one texture fetch each)
+      and the other single-fetch-and-closed-form modes are rendering at a
+      resolution `smear` needs and they do not, giving up sharpness with no
+      matching gain.
+
+      Not attempted tonight because a real per-mode number needs the same
+      thing every other NOT-/bench-measured row in `sceneCost.ts` is already
+      waiting on: a browser, not an op count. `P.mode` (the resolved mode
+      name, already read in `update()` for the `breathe`-specific recursion
+      gate) is exactly what a `pixelBudget: () => number` closure would
+      switch on; the shape of the fix is not in question, only the numbers.
+

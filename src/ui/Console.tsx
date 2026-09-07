@@ -74,6 +74,7 @@ import {
   ISF_FILTERS,
   isFilterSelectable,
 } from '../engine/isfFilterRoster'
+import { resizeAndEncodePhoto } from '../engine/limitlessPhoto'
 import { selectableStyles } from '../engine/transitions'
 import { DEBUG_POSTFX_KEYS, type DebugPostFx, type DebugPostFxKey } from '../store'
 
@@ -107,6 +108,18 @@ export function Console() {
         <Section title="Scene">
           <SceneGrid tele={tele} />
         </Section>
+        {/* Shown only while `limitless` is the actual primary — a photo does
+            nothing for any other scene, and a drop zone with nowhere to send
+            its result reads as broken rather than merely irrelevant. Gated on
+            `tele.scene` (the OUTPUT window's real current primary) rather than
+            a picker's own last click, so this panel tracks what the audience
+            is actually seeing through a crossfade, same as the `pill dim`
+            scene readout above. */}
+        {tele?.scene === 'limitless' && (
+          <Section title="Photo">
+            <PhotoDrop />
+          </Section>
+        )}
         <Section title="Colour">
           <PaletteGrid />
         </Section>
@@ -563,6 +576,110 @@ function PaletteGrid() {
         <small>{moodDrive ? 'mood scales your sliders' : 'sliders as set'}</small>
       </button>
     </>
+  )
+}
+
+/* --------------------------------------------------------------- limitless */
+
+/**
+ * Drop, or pick, the photo the `limitless` scene warps.
+ *
+ * Only ever mounted while that scene is actually the output's current
+ * primary (see `Console()`'s own gate above) — a drop zone with nowhere to
+ * send its result would read as broken rather than merely irrelevant.
+ *
+ * `resizeAndEncodePhoto` does the real work (resize, JPEG, data URL); this
+ * component is the drop/pick surface plus the preview and the two failure
+ * modes a person can actually hit — a non-image file, and a corrupt one.
+ * `busy`/`failed` are local `useState`, deliberately not store state: they
+ * describe THIS panel's own in-flight encode, never anything the output
+ * window needs to know about, and both self-clear on the next attempt.
+ */
+function PhotoDrop() {
+  const photo = useStore((s) => s.limitlessPhoto)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+
+  const acceptFile = useCallback((file: File | undefined) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setFailed(true)
+      return
+    }
+    setBusy(true)
+    setFailed(false)
+    resizeAndEncodePhoto(file)
+      .then((dataUrl) => {
+        useStore.getState().setLimitlessPhoto(dataUrl)
+        setBusy(false)
+      })
+      .catch(() => {
+        setBusy(false)
+        setFailed(true)
+      })
+  }, [])
+
+  return (
+    <div className="photo-drop-wrap">
+      <div
+        className={`photo-drop ${dragOver ? 'drag' : ''} ${photo ? 'has-photo' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-label="Drop a photo, or press Enter to choose one"
+        onClick={() => inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            inputRef.current?.click()
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragOver(true)
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          acceptFile(e.dataTransfer.files[0])
+        }}
+      >
+        {photo ? (
+          <img className="photo-drop-preview" src={photo} alt="" />
+        ) : (
+          <span className="photo-drop-hint">
+            {busy ? 'encoding…' : 'drop a photo, or click to choose'}
+          </span>
+        )}
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          className="photo-drop-input"
+          onChange={(e) => {
+            acceptFile(e.target.files?.[0])
+            // Reset so choosing the SAME file twice in a row still fires
+            // onChange — the input's own value otherwise short-circuits it.
+            e.target.value = ''
+          }}
+        />
+      </div>
+      {failed && <small className="photo-drop-error">that file could not be read as an image</small>}
+      {photo && (
+        <button
+          className="toggle-wide"
+          onClick={() => {
+            setFailed(false)
+            useStore.getState().setLimitlessPhoto(null)
+          }}
+        >
+          Clear photo
+          <small>back to the generated placeholder</small>
+        </button>
+      )}
+    </div>
   )
 }
 

@@ -459,6 +459,31 @@ interface AppState {
    */
   debugPostFxOverrides: Partial<Record<DebugPostFxKey, boolean>>
 
+  /**
+   * The photo the `limitless` scene warps, as a re-encoded data URL, or `null`
+   * for its own generated placeholder.
+   *
+   * A data URL rather than a `File` or a canvas because of the two-window
+   * split: the console owns the file picker, the output window owns the WebGL
+   * texture, and `outputLink.ts` mirrors the look between them over a
+   * `BroadcastChannel`. A live `File` handle or an `ImageBitmap` does not
+   * survive a structured clone (see that file's "Two channels, deliberately
+   * different" note) — the direct-reference path exists but is reserved for
+   * `MediaStream`s and audio files it consumes once, whereas this is durable
+   * look state that a late-opening output window has to be able to ask for and
+   * receive. A string is the only shape that fits that. `Console.tsx` caps the
+   * long edge at 1600px and re-encodes as JPEG before storing, so this is tens
+   * of KB, not megabytes.
+   *
+   * In `LOOK_FIELDS`, so it reaches the window that actually renders.
+   *
+   * Deliberately excluded from `partialize` below, for the same reason
+   * `debugPostFx` is: a multi-hundred-KB data URL has no business in
+   * localStorage, where it would compete with the presets and cues for a 5 MB
+   * quota and could fail the whole persist write.
+   */
+  limitlessPhoto: string | null
+
   /** Mood-driven automation. */
   autoPilot: boolean
   moodDrive: boolean
@@ -582,6 +607,9 @@ interface AppState {
    *  override flags, it snapshots nothing), `false` releases all of them
    *  back to auto in one action. */
   setAllDebugPostFxOverrides: (on: boolean) => void
+  /** Set (or clear, with `null`) the photo `limitless` warps. Already-encoded
+   *  data URL — the resize/encode happens at the picker. */
+  setLimitlessPhoto: (dataUrl: string | null) => void
 
   applyPreset: (p: Preset) => void
   saveCurrentPreset: (name: string) => void
@@ -661,6 +689,7 @@ export const useStore = create<AppState>()(
       // Fresh on every load, deliberately — see this field's own doc on
       // `AppState` for why it must never be persisted.
       debugPostFxOverrides: {},
+      limitlessPhoto: null,
 
       autoPilot: true,
       moodDrive: true,
@@ -1122,6 +1151,7 @@ export const useStore = create<AppState>()(
           for (const key of DEBUG_POSTFX_KEYS) all[key] = true
           return { debugPostFxOverrides: all }
         }),
+      setLimitlessPhoto: (dataUrl) => set({ limitlessPhoto: dataUrl }),
 
       applyPreset: (p) => {
         const contract = getSceneContract(p.sceneId)
