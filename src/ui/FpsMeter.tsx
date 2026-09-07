@@ -97,24 +97,29 @@ const FLOOR_TIER = TIER_BUDGET_MS.length - 1
  * MEASURED display interval — quality.ts's own `STEP_DOWN_MEAN_RATIO`, which it
  * does not export, mirrored here for the same reason the p95 band above is.
  *
- * Ratio-of-refresh rather than absolute ms on purpose: 18.3 ms is late on a
+ * Ratio-of-refresh rather than absolute ms on purpose: 25.0 ms is late on a
  * 60 Hz panel and catastrophic on a 144 Hz one, and `quality.refreshIntervalMs`
  * is a measurement of the actual display.
  *
  * ## Why the mean and not p95
  *
- * The governor's `overloaded` is `mean > r * 1.1 || p95 > r * 1.5`, and only
- * the first half is reproducible here. `perf.ms` is `ema.current`, the exact
- * value handed to `quality.tick`. `perf.p95` is NOT: it is the deliberately
- * **unfiltered** display sampler, which includes scene transitions, DPR resizes
- * and shader compiles, while the governor reads the filtered
- * `frameSampler`-derived figure (`PerfMonitor.tsx:160-164, 418, 488` — the two
- * must not be the same value). Worse, that window is 10 s wide, so ORing it in
- * would pin `FLOOR` on for ten seconds after any single transition hitch. A
- * marker that lights on every crossfade teaches the reader to ignore it, which
- * costs more than the state it was added to show.
+ * The governor's `overloaded` is `mean > r * 1.5 || p95 > r * 1.5` (raised from
+ * `1.1`/`1.5` 2026-09-07 — see `STEP_DOWN_MEAN_RATIO`'s own doc in quality.ts
+ * for why the two axes now share a line), and only the first half is
+ * reproducible here. `perf.ms` is `ema.current`, the display EMA — approximate
+ * even before that change, since the governor itself reads a SEPARATE
+ * suspension-aware EMA as of F198 (see PerfMonitor.tsx), not this one; close
+ * enough for a visual marker, not byte-exact. `perf.p95` is NOT reproducible
+ * at all: it is the deliberately **unfiltered** display sampler, which
+ * includes scene transitions, DPR resizes and shader compiles, while the
+ * governor reads the filtered `frameSampler`-derived figure
+ * (`PerfMonitor.tsx:160-164, 418, 488` — the two must not be the same value).
+ * Worse, that window is 10 s wide, so ORing it in would pin `FLOOR` on for ten
+ * seconds after any single transition hitch. A marker that lights on every
+ * crossfade teaches the reader to ignore it, which costs more than the state
+ * it was added to show.
  */
-const STARVE_MEAN_RATIO = 1.1
+const STARVE_MEAN_RATIO = 1.5
 
 /**
  * Consecutive 5 Hz samples the starved condition must hold before it is shown —

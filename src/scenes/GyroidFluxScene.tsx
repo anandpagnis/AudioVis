@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
+import { slew } from '../engine/response'
 import { bipolar, drastic } from './contract'
 
 /**
@@ -180,6 +181,9 @@ interface GyroidState {
   rawT: number
   /** Kick brightness flash, decaying. */
   shock: number
+  /** `s.mids`, slewed — see `update()`'s own note on why the raw band feeds
+   *  a rate rather than a position. */
+  midsSlew: number
 }
 
 export const GyroidFluxScene = createShaderScene<GyroidState>({
@@ -205,11 +209,24 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     uColB: { value: new THREE.Color().copy(COL_B_BASE) },
     uMaxSteps: { value: 150 },
   }),
-  state: () => ({ rawT: 0, shock: 0 }),
+  state: () => ({ rawT: 0, shock: 0, midsSlew: 0 }),
   update({ u, s, P, pal, st, dt, ctx }) {
-    // One accumulator; tt and the warp phase are both reconstructed from it
-    // in-shader at the source's authored ratio (0.46 : 0.6) — see the header.
-    st.rawT += dt * (1 + s.mids * 0.6) * drastic(P.speed)
+    // Slowed and smoothed on direct request (2026-09-07): this clock's rate
+    // used to read `s.mids` — a live audio envelope, not itself smoothed —
+    // DIRECTLY into a multiplier every frame, so the flight/warp speed
+    // visibly sped up and slowed down on every raw fluctuation of the mids
+    // band, reading as jerky rather than a flow. `slew()` (the same
+    // exponential-approach rate limiter `MazeFlightScene`'s skip decay and
+    // this file's own `st.shock` below use, just applied to the INPUT here
+    // instead of the output) tracks the real mids trend within a few tenths
+    // of a second while erasing frame-to-frame jitter; unlike `beatsPosition`
+    // (see `JavaZoneLatticeScene`'s own note below), nothing about this
+    // free-running clock is grid-locked to the track's tempo, so both the
+    // base rate and the reactive swing are free to move — base cruise
+    // roughly halved (1.0 -> 0.5) and the swing's own amplitude cut by the
+    // same ratio (0.6 -> 0.3) rather than only slowing one of the two.
+    st.midsSlew = slew(st.midsSlew, s.mids, dt, 3, 3)
+    st.rawT += dt * (0.5 + st.midsSlew * 0.3) * drastic(P.speed)
 
     if (s.onKick > 0) st.shock = Math.min(1.5, st.shock + s.onKick)
     st.shock *= Math.exp(-dt * 4.0)

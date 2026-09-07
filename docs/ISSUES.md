@@ -9320,3 +9320,80 @@ per-frame canvas heavy enough to distort the reading.
       gate) is exactly what a `pixelBudget: () => number` closure would
       switch on; the shape of the fix is not in question, only the numbers.
 
+
+- [x] **F215 · The quality governor's smoothed demote gate was raised from
+      ~18.3 ms to ~25.0 ms on direct request** — `src/engine/quality.ts`.
+
+      Reported live, while testing `gyroid`/`javazone`/`lattesfold`: those
+      scenes were reading as demoted and jerky, and by feel — direct
+      observation of the running show, not this session's own /bench
+      estimates — light. Asked plainly: "make it so that 25ms of p95 is
+      fine."
+
+      `STEP_DOWN_P95_RATIO` was already exactly that (1.5x = ~25.0 ms at
+      60 Hz) — the actual trigger for the two heavier of the three was almost
+      certainly the OTHER axis, `STEP_DOWN_MEAN_RATIO` (1.1x = ~18.3 ms),
+      which demotes on a SUSTAINED cost well under what the request called
+      fine. Raised to 1.5, matching `STEP_DOWN_P95_RATIO` exactly rather than
+      landing between the two numbers, so 25 ms governs the decision on
+      either axis and neither can demote below it.
+
+      **This is not free, and the file's own history says so plainly.** The
+      surrounding comment block documents a real session where the OLD tight
+      ratio was the fix for a governor sitting inert at `mean 18.7ms` while
+      frame rate was measurably falling. 1.5x tolerates a frame costing 24 ms
+      EVERY SINGLE FRAME, sustained, forever, as fine — `STEP_DOWN_P95_RATIO`'s
+      tail-hitch catch is now doing all of the demote work the mean axis used
+      to share. Accepted on direct instruction for the specific scenes named,
+      but this is a GLOBAL constant, so it now governs the whole roster, not
+      just those three. If a lighter touch turns out to matter later, a
+      per-scene cost override is the alternative that keeps the mean axis
+      meaningful for everything else while still letting a specific
+      misjudged-heavy scene run past it.
+
+      `CONSECUTIVE_OVERBUDGET_RATIO` (the fast sudden-spike emergency path,
+      audit c11) used to alias `STEP_DOWN_MEAN_RATIO` outright. Split into its
+      own independent constant, held at the original 1.1 — a scene suddenly
+      costing 40 ms/frame for five frames running is an unrelated failure mode
+      from "24 ms sustained is fine," and letting the alias drift up with it
+      would have silently disabled a frame's worth of hitch protection nobody
+      asked to relax. `FpsMeter.tsx`'s `STARVE_MEAN_RATIO` (a hand-synced
+      mirror, asserted by its own test) raised to match.
+
+      Separately, `gyroid`/`javazone` slowed and smoothed: both scenes fed a
+      live, unsmoothed audio band (`s.mids`, `s.energy`) straight into a
+      motion-rate multiplier every frame, so the flight/lattice speed visibly
+      sped up and slowed down on the band's own raw jitter — likely a real
+      part of what read as "jerky," independent of any tier demotion at all.
+      Both now slew that term (`engine/response.ts`'s exponential-approach
+      limiter) before using it, and the reactive swing's own amplitude is
+      cut roughly in half or more on each (gyroid 0.6->0.3, javazone
+      0.4->0.15). `javazone`'s `beatsPosition` call itself (the actual
+      tempo-lock) was deliberately left untouched — that function's own doc
+      is explicit that its multiplier reproduces the real beat grid exactly
+      at neutral energy, and detuning it would reopen the phase-drift bug
+      that lock exists to close; the same precedent already governed a
+      near-identical "slow down 4D Beats" request against `beats` itself.
+
+      **Open, not resolved: `lattesfold` specifically.** This session's own
+      same-night analysis (F199/F214) found it to be, by a wide margin, the
+      heaviest scene in the entire roster — a 45 ms native-resolution
+      op-count estimate that still lands at 7.2 ms even after the most
+      aggressive `pixelBudget` this roster carries, 42% over the tier-0
+      layer-funding bar even at the engine's resolution floor. The live
+      report that it reads as "very light" directly contradicts that
+      estimate. Both cannot be right, and this entry does not attempt to
+      adjudicate which — the governor-threshold change above helps it (and
+      every scene) tolerate more sustained cost without demoting, which is
+      the safe, general fix; a scene-specific "never below tier 1" pin was
+      NOT added, because that would mean either trusting the live report
+      over the estimate outright (reopening exactly the risk F199/F214 exist
+      to name — a machine that genuinely cannot afford this scene, with
+      nothing left to shed) or trusting the estimate over what was actually
+      observed running (second-guessing direct testimony with a guess this
+      session already labelled "NOT /bench-measured" throughout). A real
+      `/bench` run is what would settle it either way, and remains the
+      correct next step before either number is trusted over the other.
+
+      `npm run typecheck`, `npm run lint` clean; **1563 passed, 1 skipped**,
+      no failures, no change in count.

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
+import { slew } from '../engine/response'
 import { beatsPosition } from './BeatsScene'
 import { bipolar, drastic } from './contract'
 
@@ -148,6 +149,10 @@ interface JavaZoneState {
   beats: number
   /** Extra beat-flash boost, decaying. */
   shock: number
+  /** `s.energy`, slewed — see `update()`'s own note on why the raw band
+   *  feeds `beatsPosition`'s multiplier through a smoother rather than
+   *  directly. */
+  energySlew: number
 }
 
 export const JavaZoneLatticeScene = createShaderScene<JavaZoneState>({
@@ -168,14 +173,30 @@ export const JavaZoneLatticeScene = createShaderScene<JavaZoneState>({
     uFlash: { value: 1 },
     uMaxSteps: { value: 77 },
   }),
-  state: () => ({ beats: 0, shock: 0 }),
+  state: () => ({ beats: 0, shock: 0, energySlew: 0 }),
   update({ u, s, P, st, dt, ctx }) {
     // Phase-locked to the engine's real beat grid, exactly as beats' own
     // audit fixed it -- see the header's port notes.
+    //
+    // Smoothed and slowed on direct request (2026-09-07): `beatsPosition`'s
+    // own multiplier is deliberately NOT the axis to touch for either ask —
+    // `BeatsScene.beatsPosition`'s own doc is explicit that `mult === 1`
+    // (energy 0, `drastic(speed)` neutral) reproduces the real beat grid
+    // exactly, and de-tuning that base would reopen the phase-drift bug that
+    // lock exists to close (see the near-identical prior request against
+    // `beats` itself, handled there by touching `uSpin`'s rate instead of
+    // this multiplier — same reasoning applies here). What moved instead: the
+    // `s.energy` term riding on top of the lock, which used to read the raw
+    // band straight into the multiplier every frame — a live, unsmoothed
+    // signal directly speeding up and slowing down a beat-locked clock reads
+    // as jerky rather than musical. Slewed the same way `GyroidFluxScene`'s
+    // mids term now is, and its own swing cut by more than half (0.4 -> 0.15)
+    // for "slow down" — the lock at neutral energy is unchanged either way.
+    st.energySlew = slew(st.energySlew, s.energy, dt, 3, 3)
     st.beats = beatsPosition(
       ctx.f.beatIndex,
       ctx.f.beatProgress,
-      (1 + s.energy * 0.4) * drastic(P.speed),
+      (1 + st.energySlew * 0.15) * drastic(P.speed),
     )
     if (s.onKick > 0) st.shock = Math.min(1.5, st.shock + s.onKick)
     st.shock *= Math.exp(-dt * 3.5)
