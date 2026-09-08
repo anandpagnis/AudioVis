@@ -79,12 +79,18 @@ function ControlSurface() {
 }
 
 /**
- * Start whatever the control window handed us.
+ * Start whatever the control window hands us — now, or later.
  *
  * Polled rather than pushed: this window is still loading while the control
- * window is putting the source down, and there is no listener to push into
- * until React has mounted. A short poll is simpler than a second handshake and
- * ends the moment a source arrives.
+ * window is putting the first source down, and there is no listener to push
+ * into until React has mounted.
+ *
+ * The poll does NOT stop after the first source. The audio source lands once at
+ * startup, but the DJ-cam stream is handed over whenever the operator clicks
+ * "Connect camera" — seconds or minutes later, and again on every reconnect. A
+ * one-shot claim (the original shape) meant the camera never reached this
+ * window and the "Cut to DJ Cam" punch did nothing. `claimSource` clears the
+ * slot on read, so an idle poll is just a cheap `null` check.
  */
 function useHandedSource() {
   useEffect(() => {
@@ -92,19 +98,18 @@ function useHandedSource() {
     const tick = () => {
       if (!alive) return
       const src = claimSource()
-      if (!src) {
-        window.setTimeout(tick, 100)
-        return
+      if (src) {
+        // Routed through the store rather than the engine so the output
+        // window's own `status` follows the source, which is what the post
+        // chain and the directors gate on.
+        if (src.kind === 'file') void useStore.getState().startAudioFile(src.file)
+        // The camera is not an audio source — it feeds `DjCamScene`'s texture,
+        // not the analysis graph — so it goes straight to its own singleton and
+        // never touches `status`.
+        else if (src.kind === 'camera') djCamSource.adoptStream(src.stream)
+        else void useStore.getState().startHandedStream(src.stream, src.kind === 'system')
       }
-      // Routed through the store rather than the engine so the output window's
-      // own `status` follows the source, which is what the post chain and the
-      // directors gate on.
-      if (src.kind === 'file') void useStore.getState().startAudioFile(src.file)
-      // The camera is not an audio source — it feeds `DjCamScene`'s texture, not
-      // the analysis graph — so it goes straight to its own singleton and never
-      // touches `status`.
-      else if (src.kind === 'camera') djCamSource.adoptStream(src.stream)
-      else void useStore.getState().startHandedStream(src.stream, src.kind === 'system')
+      window.setTimeout(tick, 100)
     }
     tick()
     return () => {
