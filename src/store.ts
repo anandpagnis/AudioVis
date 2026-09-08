@@ -636,6 +636,31 @@ let handoffToken = 0
 const OUTPUT_REQUIRED =
   'No output window. Open the output window first — it is where the show runs.'
 
+/**
+ * How long the control window waits, after successfully handing a stream to
+ * the output window, for telemetry to confirm the output side actually
+ * picked it up and started (`adoptOutputStatus` moving `status` off
+ * `'starting'`).
+ *
+ * Before this existed, a hand-off that silently never reached the output
+ * side — the popup reused a stale/wedged window, `useHandedSource`'s poll
+ * never ran, the output window's own start threw somewhere not surfaced —
+ * left the console showing "Starting… cancel" forever: no error, nothing to
+ * act on, and "cancel" itself only resets the OUTPUT window's copy of
+ * `status` (it runs `cancelStartAudio` there via `sendCommand`), which the
+ * console has no way to learn about while `handoffInFlight()` is still
+ * suppressing telemetry adoption — so the button did not even unstick the
+ * screen that showed it.
+ *
+ * Sized well under `HANDOFF_GRACE_MS` (70 s, which times the OPERATOR'S OWN
+ * picker dialog): a real hand-off that DID land completes in about a
+ * second (`startWithStream` -> `connectStream` is synchronous once the
+ * context resumes, capped at 3 s by `resumeSafely`, plus one
+ * `TELEMETRY_INTERVAL_MS` tick to report it) — so 15 s is generous slack for
+ * a slow context resume, not a window to keep the operator waiting on.
+ */
+const HANDOFF_CONFIRM_TIMEOUT_MS = 15_000
+
 /** One place to turn a start failure into something a human can act on. */
 function describeStartError(err: unknown): string {
   if (err instanceof DOMException && err.name === 'NotAllowedError') {
@@ -759,6 +784,19 @@ export const useStore = create<AppState>()(
             // on telemetry a moment later — see adoptOutputStatus.
             set({ status: 'starting', sourceType: kind })
             if (kind === 'mic') void get().refreshDevices()
+            // See HANDOFF_CONFIRM_TIMEOUT_MS's own doc: a hand-off that never
+            // reaches (or never starts in) the output window used to leave
+            // this card on "Starting…" forever, no error, nothing to act on.
+            window.setTimeout(() => {
+              if (token !== handoffToken) return
+              if (get().status !== 'starting') return
+              set({
+                status: 'error',
+                error:
+                  'The output window never confirmed receiving the source. It may be stuck on an old page — close it and click a source button again to open a fresh one.',
+                sourceType: null,
+              })
+            }, HANDOFF_CONFIRM_TIMEOUT_MS)
           } catch (err) {
             endHandoff()
             if (token !== handoffToken) return
@@ -804,7 +842,7 @@ export const useStore = create<AppState>()(
         // A File clones fine, but it travels the same way as a stream so there
         // is one hand-off path rather than two.
         if (!isOutput()) {
-          handoffToken++
+          const token = ++handoffToken
           beginHandoff()
           if (!handSource({ kind: 'file', file })) {
             endHandoff()
@@ -813,6 +851,17 @@ export const useStore = create<AppState>()(
           }
           // See the note in startAudio: the output window confirms.
           set({ status: 'starting', sourceType: 'file' })
+          // See HANDOFF_CONFIRM_TIMEOUT_MS's own doc — same gap, same fix.
+          window.setTimeout(() => {
+            if (token !== handoffToken) return
+            if (get().status !== 'starting') return
+            set({
+              status: 'error',
+              error:
+                'The output window never confirmed receiving the file. It may be stuck on an old page — close it and click a source button again to open a fresh one.',
+              sourceType: null,
+            })
+          }, HANDOFF_CONFIRM_TIMEOUT_MS)
           return
         }
         try {

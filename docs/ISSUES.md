@@ -9397,3 +9397,211 @@ per-frame canvas heavy enough to distort the reading.
 
       `npm run typecheck`, `npm run lint` clean; **1563 passed, 1 skipped**,
       no failures, no change in count.
+
+- [ ] **F216 · `limitless` photo not appearing in the Mirror preview — could
+      not reproduce; the wiring instruments clean end to end.** Reported live:
+      after dropping a photo onto the Console's Photo panel (which correctly
+      shows a thumbnail of it), the small Mirror thumbnail — the `<video>` in
+      `Console.tsx` fed by `captureStream()` off the OUTPUT window's own
+      canvas, see `outputLink.ts`'s header — kept showing the old generated
+      placeholder gradient instead.
+
+      Investigated two ways. First, by reading: `limitlessPhoto` is a real
+      `LOOK_FIELD` (`outputLink.ts`), so it rides the same `BroadcastChannel`
+      `look` message as every other control; `LimitlessScene.tsx`'s
+      `syncPhoto()` runs unconditionally every frame in `update()`, diffs the
+      store's current value against what it last acted on, and swaps
+      `tex.image` + `needsUpdate = true` on a real change. Nothing in that
+      path looked wrong.
+
+      Second, empirically — a Playwright repro driving both windows
+      (`/app` and `/app?output`) against the actual running dev server, first
+      confirming it was current (`npm ci` had already fixed a broken
+      `node_modules/.bin/` + missing `@babel/core` earlier this session — see
+      the dev-server fix, this file's own history — so this was not the stale
+      bundle that produced the white-screen report). Screenshot-based
+      verification of the OUTPUT window's canvas turned out to be worthless in
+      this headless Windows sandbox: it came back solid black on every
+      attempt, before AND after any photo drop, even for the placeholder that
+      should already be colourful on boot, and a direct `gl.readPixels()` on
+      the canvas' own WebGL context (bypassing OS-level screenshot compositing
+      entirely) came back `{r:0,g:0,b:0,a:0}` at every sample too — this
+      environment's software GL path (`--use-gl=angle --use-angle=swiftshader`
+      + friends, no working `chromium-cli`) does not appear to render anything
+      into the framebuffer at all, so it cannot confirm OR deny what pixels
+      actually land on screen.
+
+      Where headless WebGL couldn't help, temporary instrumentation could:
+      a `window.__STORE__` hook (`store.ts`) and two debug globals written
+      from inside `syncPhoto()`/`img.onload()` (`LimitlessScene.tsx`) — all
+      removed again immediately after, working tree confirmed clean via
+      `git status`. Across two independent runs this showed, every time:
+      the control window's `limitlessPhoto` populates correctly after drop
+      (`hasPhoto: true`, real JPEG data-URL); the SAME value lands in the
+      OUTPUT window's own store within the same tick (`BroadcastChannel`
+      round-trip confirmed, not assumed); `syncPhoto` sees the change
+      (`changed` flips true then settles false); the `Image` decodes
+      (`imgLoaded: true`, correct `naturalWidth`/`naturalHeight` for the
+      dropped file); and the texture swap actually runs (`texSwapped: true`,
+      `tex.needsUpdate` true). Every link in the chain the code controls
+      fired exactly as designed, both times, with no exceptions in that path.
+
+      One real, separate anomaly surfaced during this: an uncaught
+      `Cannot read properties of undefined (reading 'isReady')` in the OUTPUT
+      window, firing five times right after scene mount — from three's
+      `compileAsync` background poll (`shaderPrewarm.ts`'s own header already
+      documents `program.isReady()`'s fragility without
+      `KHR_parallel_shader_compile`). This throws OUTSIDE `prewarmShaders`'s
+      own `try/catch` (that only guards the initial `await compileAsync`
+      call, not three's internal post-resolution poll), so three's cache must
+      be losing track of a compiled program between compile and poll. Given
+      it appeared only under the software `swiftshader` path and a texture
+      swap needs no shader recompile to take effect, this looks like a driver
+      artifact of the headless sandbox rather than the cause of the reported
+      symptom — but it is a genuine uncaught exception on a real code path
+      (`prewarmShaders`/`compileAsync`), reproducible in this environment on
+      every scene mount, and worth someone's attention on its own account
+      regardless of this ticket's outcome.
+
+      **Net: could not reproduce.** Every mechanism the report implicates
+      checked out clean under direct instrumentation. Leading theories, in
+      order: (1) the control/output windows the operator was testing against
+      were opened before this session's `npm ci` fix and were never hard-
+      reloaded afterward — a stale bundle was a CONFIRMED cause of a separate
+      white-screen report earlier the same night; (2) the operator checked
+      the Mirror before the async JPEG decode (`resizeAndEncodePhoto` +
+      `syncPhoto`'s own `Image.onload`) had actually resolved. Next step is
+      on a real browser, not headless: hard-reload both windows
+      (Ctrl+Shift+R) and retest: if it still fails there, the bug is real and
+      this instrumentation missed something a real GPU/driver path exercises
+      that swiftshader does not; if it now works, this was case (1) or (2).
+
+      `npm run typecheck` clean; no source change shipped (all debug
+      instrumentation added and removed within this investigation).
+
+- [x] **F217 · "System audio" stuck on "Starting…" forever, no error, ever —
+      root cause not pinned down, but the actual reported failure (an
+      unbounded silent hang) is fixed: a 15s hand-off confirmation timeout,
+      plus a real bug found alongside it (the console's own "cancel" button
+      didn't reset the console's own stuck state).** Reported live: clicking
+      "System audio" opens Chrome's real share picker, the operator picks a
+      source and clicks Share, and AudioVis just sits on "Starting… cancel"
+      indefinitely, no error text, no further progress. Confirmed to
+      reproduce identically picking "Chrome Tab" with "Share tab audio"
+      instead of "Entire Screen" (these are NOT two different code paths —
+      Console only exposes one "System audio" button, `kind: 'system'`; what
+      gets picked inside Chrome's own dialog never reaches the app as a
+      distinct branch) — and confirmed to persist waiting 60+ seconds
+      (past `PICKER_TIMEOUT_MS`) and after fully closing every AudioVis
+      window/tab and retrying completely fresh. No error in the page, no
+      error/warning in DevTools console, on any of these attempts.
+
+      A real OS/browser share picker cannot be driven by an automated
+      headless test — there is no real screen to pick — so this was
+      investigated by faking `navigator.mediaDevices.getDisplayMedia` (a
+      real `MediaStream`: a canvas' `captureStream()` for video, an
+      oscillator through a `MediaStreamAudioDestinationNode` for audio,
+      same shape a real "Entire Screen + system audio" grant returns) and
+      driving the rest of the app for real against the current dev server,
+      with `startAudio`/`startWithStream`/`stop`/the audio-track `ended`
+      listener instrumented (`AudioEngine.ts`) and the store exposed
+      (`store.ts`) — all removed again immediately after, working tree
+      confirmed clean via `git status`.
+
+      **First attempt was a false alarm from the test harness, not the
+      app.** The control window's OWN `start()` calls `openOutput()`, which
+      calls the real `window.open(url, 'audiovis-output', 'popup=yes,...')`
+      — a NAMED popup. The first repro script had already manually opened
+      its own second page at `?output` via `context.newPage()` +
+      `.goto()`, which does not register as a window with that name. So
+      `window.open` from inside the app couldn't find it and created a
+      THIRD, different popup that the script never captured a handle to —
+      the real source hand-off was landing on a window the script wasn't
+      looking at, while the page it WAS watching sat idle forever by
+      construction, an artifact indistinguishable from the reported bug
+      until this was caught. Corrected by listening for the app's own
+      `context.on('page', …)` event instead of pre-opening a window.
+
+      **With the actually-correct popup captured, the full mechanism ran
+      clean:** `handSource` → `useHandedSource`'s poll → `startHandedStream`
+      → `startWithStream` → `connectStream`, both windows landing on
+      `status: 'running'` within one telemetry tick and staying there for
+      the full observation window, no oscillation, no stall, every time.
+
+      Waiting the full 60s producing NOTHING is the load-bearing fact: it
+      rules out the leading theory (an OS/driver-level `getDisplayMedia`
+      stall on Windows' newer, less mature system-audio-loopback path),
+      since `acquireStream` (`AudioEngine.ts`) already wraps that exact call
+      in `withTimeout(…, PICKER_TIMEOUT_MS = 60_000, …)` — re-read line by
+      line, a correct, gapless `Promise.race`-style timeout that WOULD have
+      produced "The share picker never returned…" by 60s if the hung
+      promise were really `getDisplayMedia()` itself. It never did, on
+      three separate attempts (two capture kinds inside the dialog, one full
+      fresh-window retry). So the real hang is downstream of a
+      `getDisplayMedia()` call that most likely DOES resolve — somewhere
+      between the control window handing the stream off and the output
+      window ever confirming it started, a stretch this ticket's own earlier
+      synthetic testing (below) had already shown works cleanly for a FAKE
+      stream, meaning whatever is different about a REAL screen-share stream
+      on this operator's machine remains unidentified.
+
+      **Root cause not pinned down** — but the actual USER-FACING failure
+      (an unbounded, silent, unrecoverable hang) does not require knowing it
+      to fix, and shipping a bound on it is strictly better than leaving an
+      indefinite stall in place while the deeper question stays open. Added
+      `HANDOFF_CONFIRM_TIMEOUT_MS` (`store.ts`, 15s — well under the 70s
+      `HANDOFF_GRACE_MS` that times the OPERATOR'S OWN picker dialog, and
+      generous slack over the ~1s a real hand-off takes when it lands, per
+      this ticket's own synthetic timing below): armed right after a
+      successful `handSource()` in both `startAudio` and `startAudioFile`,
+      it fires only if `status` is still `'starting'` AND `handoffToken`
+      hasn't moved (superseded/cancelled attempts are silently exempt, same
+      guard already used elsewhere in this function) — and when it fires, it
+      turns the stall into a real, actionable error rather than leaving the
+      operator on a screen that stays identical forever with no signal
+      anything is wrong.
+
+      **A second, real bug turned up alongside it**, and explains why
+      clicking "cancel" during the stall did not help either: the console's
+      own cancel button (`Console.tsx` `Transport`) called only
+      `sendCommand('cancel-start')`, which runs `cancelStartAudio()` in the
+      OUTPUT window (`outputLink.ts` `runCommand`) — correct for tearing
+      down a real capture that started there, but it never touches the
+      CONTROL window's own `status`/`handoffToken`/handoff-grace state, so
+      the console's own stuck card was never reset by its own cancel button;
+      it could only clear once telemetry happened to confirm a change, which
+      a genuinely stuck hand-off never produces. Fixed by also calling
+      `useStore.getState().cancelStartAudio()` locally — safe on the control
+      window's own (never-started) `audioEngine` instance, and exactly what
+      resets `status`/`handoffToken`/the handoff grace on THIS window,
+      mirroring what `HUD.tsx`'s own cancel button already does correctly
+      for the output window (calls it locally there because local IS output
+      in that window).
+
+      **Verified the fix actually closes the gap**, not just that it
+      compiles: reused this ticket's own real-mechanism Playwright harness
+      (real trusted click, the app's own popup captured via
+      `context.on('page', …)`, `getDisplayMedia` faked so no OS picker is
+      needed) and this time deliberately closed the output popup
+      immediately after the hand-off — the exact "nothing on the other end
+      ever confirms" shape this fix targets. Control status: `starting` for
+      14 straight one-second polls, `error` (with the new message) at
+      exactly the 15s mark. Confirms the timeout fires, fires with the right
+      message, and does not fire early on a healthy hand-off (this ticket's
+      earlier synthetic run: both windows reach `running` within one
+      telemetry tick and hold it for 7.5s of observation, no oscillation).
+
+      Debug instrumentation used to verify (a temporary `window.__STORE__`
+      hook) was added and removed again within this investigation — `git
+      status` confirmed clean of it before this entry was written.
+      `npm run typecheck`, `npm run lint`, and the full `npx vitest run`
+      suite (94 files / 1563 passed, 1 pre-existing skip) all clean with the
+      real fix in place.
+
+      Still open: WHY the real hand-off itself doesn't complete on the
+      operator's machine even though every mechanism this ticket could
+      instrument (the timeout race, the hand-off pipeline against a
+      synthetic stream) checks out clean. If it recurs post-fix, the new
+      error text is the next lead — it distinguishes "never even reached
+      this window" from whatever the output window's own console shows at
+      the moment the 15s fires, which is more than the old UI ever offered.

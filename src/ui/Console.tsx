@@ -301,7 +301,24 @@ function Transport({
       {status === 'starting' && (
         <p className="transport-note">
           Starting…{' '}
-          <button className="link-btn" onClick={() => sendCommand('cancel-start')}>
+          <button
+            className="link-btn"
+            onClick={() => {
+              // Two resets, not one. `sendCommand` tears down whatever the
+              // OUTPUT window actually started (its own real AudioContext /
+              // capture — this window has none). But this window's own
+              // "Starting…" card is driven by ITS OWN `status`, which that
+              // command never touches — it only runs `cancelStartAudio` over
+              // in the output window's copy of the store. Without the local
+              // call below, this button did nothing the operator could see:
+              // the card stayed on "Starting…" until either telemetry
+              // happened to confirm a real start/stop (which a truly stuck
+              // hand-off never produces) or `HANDOFF_CONFIRM_TIMEOUT_MS`
+              // eventually gave up on its own.
+              sendCommand('cancel-start')
+              useStore.getState().cancelStartAudio()
+            }}
+          >
             cancel
           </button>
         </p>
