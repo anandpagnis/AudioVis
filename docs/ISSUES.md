@@ -9223,46 +9223,65 @@ per-frame canvas heavy enough to distort the reading.
 
 
 
-- [ ] **F212 · `limitless` ports 15 of lilim's 21 modes; six need engine
-      primitives this app does not have** — `src/scenes/LimitlessScene.tsx`.
+- [x] **F212 · `limitless` ported 15 of lilim's 21 modes; melt/mosh (2 of the
+      remaining 6) landed in a follow-up session via a new engine primitive;
+      coral/scanline/windows/terrain are still open** —
+      `src/scenes/LimitlessScene.tsx`, `src/engine/createShaderScene.tsx`.
 
-      `melt`, `mosh`, `coral`, `scanline` and `windows` each need an auxiliary
-      ping-pong render-target simulation — lilim's `tSim` + `simQuad` +
-      `ensureSim`, updated every frame independently of the display shader
-      that reads it. `terrain` is not a fragment-shader mode at all: lilim
-      runs it as a SEPARATE 3D scene (its own `THREE.Scene`,
-      `PerspectiveCamera`, and a displaced heightfield mesh), swapped in for
-      the fullscreen quad entirely while active.
+      Original gap (unchanged, for the record): `melt`, `mosh`, `coral`,
+      `scanline` and `windows` each need an auxiliary ping-pong render-target
+      simulation — lilim's `tSim` + `simQuad` + `ensureSim`, updated every
+      frame independently of the display shader that reads it. `terrain` is
+      not a fragment-shader mode at all: lilim runs it as a separate 3D
+      scene (its own `THREE.Scene`, `PerspectiveCamera`, and a displaced
+      heightfield mesh), swapped in for the fullscreen quad entirely while
+      active. `createShaderScene` had neither primitive, and adding one was
+      explicitly deferred that night as real surgery on the single most
+      heavily fragile, most heavily documented file in this engine
+      (F138/F139/F143/F144/F145/F146/F147).
 
-      `createShaderScene` (`src/engine/createShaderScene.tsx`) has neither
-      primitive — every scene it builds is exactly one compiled material
-      drawn onto exactly one fullscreen quad, either directly or through one
-      offscreen `pixelBudget` render target. Adding either is a real change
-      to the single most heavily fragile, most heavily documented file in
-      this engine (F138/F139/F143/F144/F145/F146/F147 all live there, each
-      one a stall this session traced and closed) — not attempted tonight for
-      exactly that reason: an unverified new invariant in that file risks
-      reopening one of those.
+      **What changed, and why now:** requested directly in a follow-up
+      session ("too static... doesn't the original use bitmapping or
+      something?") after the Limitless photo-sync bug (F218) was fixed and
+      a real photo could finally be seen on screen. Confirmed against the
+      lilim source directly: no literal "bitmap" technique exists anywhere
+      in it — what the request actually named is this exact gap, melt/mosh's
+      persistent, evolving history buffer, which is the only thing in the
+      whole mode roster that gives the image any memory across frames rather
+      than recomputing a distortion of the current photo fresh every frame.
 
-      Two additions would close this, done separately from each other:
+      **Addition #1 from the original two-part plan above, done**: `Shader
+      SceneSpec` gained an optional `sim` field (self-contained second
+      fragment shader, engine-managed ping-pong `WebGLRenderTarget` pair
+      cached per (renderer, scene id) the same way `getBudgetedRT` already
+      is, run once per frame before the scene's own `update()`, writing the
+      fresh result into a `tSim` uniform on the main material). `melt` and
+      `mosh` ported onto it near-verbatim from lilim's own sim shader
+      (`lilim/scenes/limitless.js:592-704`, the `uSimMode == 0`/`== 1`
+      branches). `sim.update` can return `false` to skip the render
+      entirely — melt/mosh are the only two of Limitless's now-17 modes that
+      ever sample `tSim`, so every other mode pays nothing for this pass.
 
-      1. An opt-in ping-pong pair on `ShaderSceneSpec` — a second compiled
-         material + a pair of swapped render targets, driven by its own
-         `simUpdate` callback before the main `update()` runs each frame, so
-         `melt`/`mosh`/`coral`/`scanline`/`windows` become a matter of
-         porting their `simUniforms`/`simQuad` fragment shaders against an
-         engine primitive rather than hand-rolling render-target management
-         inside one scene.
-      2. A path for a scene to declare it wants a full separate `THREE.Scene`
-         + camera instead of the fullscreen-quad model — closer to how
-         `MazeFlightScene`'s raymarcher already diverges from a purely 2D
-         shader, but `terrain` needs an actual mesh and displacement, not
-         just a different fragment body.
+      **Addition #2 (the separate-3D-scene path for `terrain`) is still not
+      built** — genuinely different, larger work, not attempted this pass.
+      `coral`/`scanline`/`windows` could now reuse addition #1's own
+      plumbing (lilim's own sim shader already shares one buffer pair across
+      all of them) at much lower incremental cost than melt/mosh paid to
+      build it — left out on purpose this time: coral's reaction-diffusion
+      and windows/scanline's per-cell/per-row time-lag read as a different
+      character than the "fluid/reactive photo" ask that motivated this
+      pass, not as an oversight.
 
-      Every piece of lilim's `limitless.js` module state that existed only to
-      feed these six (`stamp`, `simOwner`, `scroll`, `ripplePos`/`rippleAmt`,
-      `splat`/`splatAng`) is left out of the port entirely rather than kept
-      dead — nothing here half-implements a mode it cannot finish.
+      A second, unrelated, far more consequential bug turned up WHILE
+      verifying melt/mosh actually worked — logged separately as F219,
+      since it affects every multi-mode scene in the roster, not just this
+      one.
+
+      `limitless.modes.test.ts` extended for the two new modes (17 total,
+      still asserting the shader-branch correspondence directly against the
+      real source). `npm run typecheck`, `npm run lint`, and the full `npx
+      vitest run` suite (94 files / 1564 passed, 1 pre-existing skip) all
+      clean.
 
 - [ ] **F213 · `limitless` has no way to take a live camera feed — only a
       dropped photo** — `src/engine/limitlessPhoto.ts`, `src/store.ts`.
@@ -9605,3 +9624,626 @@ per-frame canvas heavy enough to distort the reading.
       error text is the next lead — it distinguishes "never even reached
       this window" from whatever the output window's own console shows at
       the moment the 15s fires, which is more than the old UI ever offered.
+
+- [x] **F218 · Limitless: a dropped photo never appears on screen — root
+      cause found and fixed. A WebGL texture reuse optimization silently
+      drops the GPU upload whenever the new photo's dimensions differ from
+      whatever was uploaded before, which for a real photo against the
+      512x512 placeholder is effectively always.** Reported live, twice: the
+      Console's own Photo panel shows a correct thumbnail of the dropped
+      photo immediately, but neither the output window nor the Mirror
+      preview ever shows it — both keep showing the generated placeholder
+      gradient, indefinitely, with no error anywhere.
+
+      Two days of prior investigation in this same session (summarized at
+      the top of this entry's history, not reproduced here) had already
+      RULED OUT the state layer by direct instrumentation: `limitlessPhoto`
+      demonstrably crosses `outputLink.ts`'s `LOOK_FIELDS` wire correctly
+      (confirmed byte-identical in both windows' stores), the scene commits
+      correctly (`tele.scene === 'limitless'` on both sides), and — most
+      pointedly — `LimitlessScene.tsx`'s own `syncPhoto()` was shown, via
+      temporary instrumentation, to run every frame, see the new URL, decode
+      it, and execute `tex.image = img; tex.needsUpdate = true` with the
+      correct token every single time. Every JS-side mechanism this bug
+      could plausibly live in checked out clean, repeatedly. That
+      thoroughness is what makes this entry's root cause a useful lesson:
+      the bug was never reachable from JS state at all.
+
+      Broke the deadlock by testing with a REALISTIC image instead of the
+      tiny 4x4 test square this session had been using throughout (chosen
+      originally for Playwright convenience, not for fidelity) — a
+      1600x1067 PNG, sized the way `resizeAndEncodePhoto`'s own
+      `PHOTO_MAX_EDGE` resize actually produces real photos. Dropping it
+      produced an immediate, real browser console line the 4x4 square never
+      had:
+
+          GL_INVALID_VALUE: glTexSubImage2DRobustANGLE: Offset overflows
+          texture dimensions.
+
+      **Mechanism:** `makeTexture()` creates the `tSrc` texture ONCE and
+      `syncPhoto()` reuses it for every photo by swapping only `.image` —
+      deliberately, to avoid an ownership question across simultaneous
+      mounts (see that function's own doc, unchanged by this fix). Three.js
+      tracks this as a texture it has already uploaded once, and on a later
+      `needsUpdate` reuses the EXISTING GPU-side storage via
+      `texSubImage2D` — a partial write into the OLD allocation — rather
+      than reallocating fresh via `texImage2D`. That is a sound fast path
+      for something that updates at a FIXED resolution (a video frame); it
+      is silently wrong the moment the new image is a DIFFERENT size than
+      whatever was there before. The scene boots on a fixed 512x512
+      generated placeholder (`defaultPhoto()`); essentially no real dropped
+      photo is 512x512, so in practice this fires on the very first real
+      drop, every time. The driver rejects the oversized write with the GL
+      error above and the upload never happens — and because a failed GPU
+      upload raises nothing JS can catch, `tex.image`/`uPhotoAspect` update
+      "successfully" while the actual bound GPU texture — and therefore the
+      screen — never changes. Exactly explains both why JS-side
+      instrumentation found nothing wrong (there wasn't anything wrong at
+      that layer) and why the placeholder specifically is what keeps
+      showing (it is the last upload that ever actually succeeded).
+
+      **Fix:** one line at each of `syncPhoto()`'s two `.image` swap sites —
+      `tex.dispose()` immediately before reassigning `.image`. Disposing
+      clears three's cached GPU handle for this texture object, so the next
+      upload has nothing to reuse and allocates fresh at the new image's
+      real size via the full path instead of writing into stale storage.
+      Does not reintroduce the ownership question the shared-object design
+      exists to avoid — this disposes the GPU resource behind the one
+      shared texture OBJECT, not the object itself, which every mount still
+      points at afterward exactly as before.
+
+      **Verified, not just argued:** re-ran the same 1600x1067 drop against
+      the fixed code — the `GL_INVALID_VALUE` line is gone. Extended to a
+      realistic stress case a single before/after check would not have
+      caught — three sequential drops of two different NPOT sizes
+      (1600x1067, then 900x1400, then back to 1600x1067) plus a final
+      "Clear photo" back to the placeholder, all against the real dev
+      server — zero GL warnings/errors across every swap. `npm run
+      typecheck`, `npm run lint`, and the full `npx vitest run` suite (94
+      files / 1563 passed, 1 pre-existing skip) all clean.
+
+      Actual on-screen pixels were not visually confirmed — this headless
+      sandbox's software WebGL renderer returns all-zero pixels on
+      `readPixels`/screenshot regardless of what is actually happening
+      (same limitation documented in F216), so the browser's own GL error
+      log is the strongest evidence available in this environment. The
+      mechanism match is exact (this specific error, at this specific
+      moment, explaining this specific symptom with no other candidate
+      surviving prior instrumentation) and the fix is standard practice for
+      this class of three.js bug, but a real-browser visual confirmation
+      from the operator is the one check this session could not itself
+      perform.
+
+- [x] **F219 · A manual OR `AutoPilot`-driven scene mode switch has never
+      actually reached a `createShaderScene`-based scene's shader — two
+      independent, same-named "mode" systems exist in this codebase and
+      have been writing/reading two different store fields since they were
+      built on separate branches. Fixed.** `src/store.ts`
+      (`setSceneMode`).
+
+      Found by accident, not by looking for it: verifying melt/mosh (F212)
+      actually worked required switching Limitless into one of them, and
+      direct store-level testing (`useStore.getState().setSceneMode
+      ('limitless', 'melt')`, the exact call both `AutoPilot.tsx` and the
+      mode-picker UI make) showed the call succeeding — `store.sceneModes
+      .limitless` correctly became `'melt'` — while the ACTUALLY RENDERING
+      scene's own resolved `P.mode`, read fresh every frame, sat on
+      `'none'` forever. No error, no warning, nothing to notice: the store
+      write worked exactly as written, the bug is that nothing downstream
+      was ever listening to it.
+
+      **The mechanism:** two `SceneParams`-shaped systems exist, independently
+      built (per `engine/sceneParams.ts`'s own header: "This module and
+      `scenes/contract.ts` were built independently on the two branches to
+      solve the same problem, and they landed on the same three fields").
+      `store.ts` imports its own `SceneParams`/`resolveSceneParams` from
+      `scenes/contract.ts` — a type with NO `mode` field at all
+      (`Partial<Record<SceneParamKey, number>>`, the seven-key numeric dial
+      vocabulary only). `createShaderScene.tsx`'s `useShaderCore`, which
+      drives every scene's `P.mode`/`P.modeIndex` (and therefore its
+      `uMode` shader uniform), calls a DIFFERENT `useSceneParams` from
+      `engine/sceneParams.ts` — whose OWN `SceneParams` type DOES carry an
+      optional `mode?: string`, resolved via `overrides?.mode ??
+      declared?.mode ?? modes[0]` where `overrides` is
+      `store.sceneParams[sceneId]`. `setSceneMode` — the one action both
+      `AutoPilot.tsx` and the mode-picker chip call — wrote only to
+      `store.sceneModes[sceneId]`, a field `engine/sceneParams.ts`'s
+      resolution path never reads at all. `sceneFrame.ts` has its OWN third
+      reading of `sceneModes` directly (`ctx.mode`, and a separate exported
+      hook) which DOES stay correctly in sync — that path was never
+      broken, which is exactly why nothing here looked broken from that
+      angle.
+
+      **Blast radius:** every `createShaderScene`-based scene that declares
+      more than one mode, not only Limitless — confirmed by
+      `AutoPilot.tsx`'s own comment on `pickVariedMode`, unchanged by this
+      fix: "Only fires for a scene that declares more than one mode, which
+      today is one scene of eighteen" (now two, with Limitless). That low
+      ratio is almost certainly why this went unnoticed for as long as it
+      did — the one other multi-mode scene's own default mode is presumably
+      close enough to its alternates, or switched rarely enough, that a
+      silently-inert switch read as normal variation rather than as nothing
+      happening. It also explains why `HUD.tsx`'s `SceneParamsPanel` (the
+      only mode-PICKER UI in the codebase) turned out, separately, to not
+      be mounted anywhere in the real app at all (confirmed via `grep` —
+      only referenced by tests reading its source as raw text): with no
+      manual picker reachable and `AutoPilot`'s own automatic switches
+      landing on almost nothing visible, there was no live path by which a
+      person would have seen this. (`HUD.tsx` being orphaned is a separate,
+      real gap — logged here for visibility, not fixed: restoring it is a
+      UI-mounting decision, not a one-line store fix, and out of scope for
+      what this session was actually asked to do.)
+
+      **Fix:** `setSceneMode` now writes BOTH fields in the same `set()`
+      call — `sceneModes[sceneId]` (untouched, so `sceneFrame.ts`'s already-
+      correct reading of it keeps working exactly as before) AND
+      `sceneParams[sceneId].mode` (new), which is what
+      `engine/sceneParams.ts`'s `useSceneParams` actually resolves `P.mode`
+      from. A type assertion is required at the write site — the store's
+      own `SceneParams` type (from `contract.ts`) does not declare `mode`
+      — and is safe rather than a workaround: `scenes/contract.ts`'s own
+      functions (`sanitizeSceneParams` etc.) iterate `SCENE_PARAM_KEYS`
+      explicitly, so an extra `mode` property already sitting on the stored
+      object is structurally invisible to them; nothing there reads or
+      round-trips arbitrary keys. Purely additive to the existing write, so
+      nothing that already depended on `sceneModes` alone (`sceneFrame.ts`,
+      transitions, presets) changes behaviour.
+
+      **Verified, not just argued:** re-ran the exact same direct
+      store-level repro that surfaced the bug — after the fix,
+      `setSceneMode('limitless', 'melt')` immediately shows up as `P.mode
+      === 'melt'` inside the scene's own per-frame `update()`/`sim.update()`
+      (confirmed via temporary instrumentation, removed after), with the
+      correct `uSimMode` uniform value and `tSim` populated; switching to
+      `'mosh'` and back to `'none'` behaved correctly in sequence,
+      including the sim pass cleanly stopping (per F212's own `false`-return
+      skip) the moment `'none'` took effect. `npm run typecheck`, `npm run
+      lint`, and the full `npx vitest run` suite (94 files / 1564 passed, 1
+      pre-existing skip) all clean with the fix in place — the one-off
+      failure seen mid-session (`window is not defined` in the Node test
+      environment) was this session's OWN temporary debug hook on
+      `store.ts`, not this fix; removed before this run.
+
+      **Follow-up, same session:** `SceneParamsPanel` mounted in
+      `Console.tsx` (a new "Params" section, right after "Scene", generic
+      over whichever scene/layer is active — unconditional, not gated to
+      Limitless, matching the panel's own design) — the reachable mode
+      picker this ticket's own writeup said was still missing. Verified for
+      real, cross-window: clicked the `melt` chip in the CONTROL window via
+      Playwright, confirmed it shows `active` there, and confirmed the
+      OUTPUT window's own store received `sceneParams.limitless.mode ===
+      'melt'` over the `BroadcastChannel` wire (`sceneParams` is a
+      `LOOK_FIELD`; this is the same field `useSceneParams` resolves `P.mode`
+      from) — a real hand pick, in the window an operator actually has open,
+      reaching the shader.
+
+      **One residual gap, deliberately not chased further:** `sceneModes`
+      itself (the OTHER field this fix's `setSceneMode` still writes,
+      alongside `sceneParams[id].mode`) is NOT a `LOOK_FIELD` — confirmed by
+      re-checking `LOOK_FIELDS`' own literal list. A manual pick from the
+      CONTROL window therefore updates the OUTPUT window's `sceneParams`
+      (what actually renders) but leaves the OUTPUT window's own local
+      `sceneModes` copy stale. Two consumers read `sceneModes` directly
+      rather than through `sceneParams[id].mode`: `AutoPilot.tsx`'s
+      `pickVariedMode` (its own "avoid repeating" softening could misjudge
+      variety right after a manual Console pick — a quality nuance, not a
+      correctness break) and `sceneFrame.ts`'s own separate `ctx.mode`/
+      `resolveSteeredParams` path, which appears to be a THIRD parameter-
+      resolution system distinct from both `engine/sceneParams.ts` and
+      `scenes/contract.ts` — not investigated further this session; whether
+      any `createShaderScene` scene (Limitless included) is actually wired
+      through it, or whether it is exclusively for some other, non-lilim
+      scene family, is an open question for whoever looks at this next.
+      Adding `sceneModes` to `LOOK_FIELDS` is the obvious fix if that
+      staleness turns out to matter in practice; not done here because its
+      actual impact was not confirmed, and this session's own standing rule
+      has been to fix and verify what was actually confirmed broken, not
+      everything a trail of greps turns up.
+
+- [x] **F220 · Console layout regression from mounting `SceneParamsPanel`
+      (F219's own follow-up): mode chips overflowed sideways with no working
+      scroll, and the newly-unconditional Params section stranded Post FX
+      alone with empty space beside it. Both fixed, plus a real missing
+      wheel-hijack guard on this panel's sliders found in the same pass.**
+      `src/ui/SceneParamsPanel.tsx`, `src/styles/console.css`.
+
+      Reported live, with a screenshot, right after F219 shipped. Three
+      separate small bugs, all downstream of mounting a panel that had only
+      ever run inside `HUD.tsx`'s narrower corner-menu layout before:
+
+      1. **Mode chips didn't wrap.** `.quality-row` (shared by every fixed-
+         count chip row in the console — quality tiers, layer targets) is an
+         unwrapped single flex line, fine for the 3-4 items every OTHER user
+         of that class has. Limitless alone declares 17 modes, so the row
+         overflowed sideways into a scrollbar — and a horizontal-only
+         overflow does not respond to plain mouse-wheel scrolling (only
+         Shift+wheel does, which essentially nobody knows), which is what
+         "scroll does not work" actually was. Fixed with a new `.mode-row`
+         modifier (`flex-wrap: wrap`) on that one row specifically, rather
+         than changing `.quality-row` itself and risking every other user of
+         it.
+      2. **Post FX (always the last section) stranded alone.** `Params`
+         mounting unconditionally (F219) pushed the section count to 5 or 6
+         against a hardcoded 4-column grid, and the section that wraps to a
+         new row landed alone with up to 3 empty column-widths beside it.
+         Fixed by giving the last section (`:last-of-type`, always Post FX)
+         `grid-column: span 3` — verified via the grid's own auto-placement
+         math that this fills the row exactly at 6 sections (beside `Look`)
+         and shrinks the gap to one column at 5, and Post FX is also the
+         single densest column in the console, so the extra room is a real
+         improvement either way, not just a gap-filling trick.
+      3. **A real, separate bug found while fixing #1**, not reported but
+         would have hit the same way: `SceneParamsPanel`'s own dial sliders
+         (speed/complexity/fill/contrast/etc) are raw `<input type="range">`
+         with no `onWheel` handler — missing the exact wheel-hijack guard
+         `Console.tsx`'s own `BigSlider`/`FxSlider` already carry (Safari
+         changes a FOCUSED range input's value on wheel/trackpad scroll
+         instead of letting the scroll reach the section underneath). This
+         panel's inputs are plain, not routed through either shared
+         component, so the fix had to be applied directly rather than
+         inherited. Same one-line `onWheel={(e) => e.currentTarget.blur()}`
+         fix, same reasoning, now on this panel too.
+
+      Verified visually via Playwright screenshot (both windows open, so the
+      scene actually commits — an earlier same-session screenshot attempt
+      with only the control window open caught a stale, uncommitted scene's
+      3-mode panel instead of Limitless's 17 and had to be redone) and via
+      direct DOM measurement: `mode-row`'s `scrollWidth === clientWidth`
+      (no horizontal overflow left) with 17 chips wrapped onto two visual
+      lines, and Post FX measured ~1492px wide against ~466-577px for every
+      other section, filling row two with `Look` exactly. `npm run
+      typecheck`, `npm run lint`, and the full `npx vitest run` suite (94
+      files / 1566 passed, 1 pre-existing skip) all clean.
+
+- [x] **F221 · Limitless's mode never varied on its own while the show
+      stayed on it — `AutoPilot` only ever picked a mode when first
+      switching TO a scene. Extended to also vary the current scene's mode
+      on the same structural boundaries it already recolours on.** Requested
+      directly ("any way to automate the modes for limitless?").
+      `src/engine/AutoPilot.tsx`.
+
+      `pickVariedMode` already existed and already ran at both scene-entry
+      trigger sites (the drop pre-arm and the section/mood-driven scene
+      pick) — but nothing ever varied a mode for a scene the show was
+      already settled on, so a long stay on one multi-mode scene (Limitless
+      chief among them, now 17 modes after F212's melt/mosh) never moved
+      past whichever mode it entered on.
+
+      Given a straight choice between a new dedicated "auto" toggle for the
+      Mode row versus extending `AutoPilot`'s existing automation, and a
+      choice of trigger (section/phrase boundary vs. a kick/drop vs. a fixed
+      timer), directly asked and got: extend `AutoPilot`, trigger on
+      section/phrase boundaries — matching how this file already times
+      scene and palette changes to musical structure rather than a clock.
+
+      New trigger sits right after the existing palette-recolour block,
+      reusing its already-computed `structureRecolour` and the existing
+      `f.sectionChange` signal, on its own `MODE_VARY_MIN_SEC` (20s, longer
+      than palette's 10s — a mode swap changes the actual physics applied to
+      the image, a bigger visual commitment than a colour regrade, so it
+      should read as roughly one every other section rather than every one).
+      Deliberately narrower than the palette trigger it sits beside:
+      `target === null && !s.pendingSceneId` — a scene switch already gives
+      its INCOMING scene a fresh mode of its own at the existing call sites,
+      so varying the OUTGOING scene's mode on the same frame it is about to
+      be replaced would be wasted work nobody sees. Reuses the existing
+      `modeRotation` counter (already shared across both scene-entry call
+      sites, by design — see that ref's own doc) rather than a new one, so
+      variety stays coherent regardless of which trigger actually fired.
+      Inherits every existing guard the surrounding `useFrame` body already
+      enforces for free by sitting inside it — `s.autoPilot`, `f.silence`,
+      `cueState.governed`, and `MANUAL_HOLD_SEC` (a manual pick, including
+      one made through F219's new Console mode picker, backs this off the
+      same way it already backs off every other automatic trigger here).
+
+      Not unit-tested: `AutoPilot.tsx` has no existing test file at all
+      (unlike `FilterDirector.tsx`, whose comparable logic was deliberately
+      extracted into a standalone pure `advanceFilter` specifically for
+      testability) — every existing trigger in this file, including the
+      palette one this addition sits beside, is verified live rather than
+      by unit test, and this follows that same established pattern rather
+      than introducing a new one. `pickVariedMode` itself, the one new call
+      site's actual logic, already has its own coverage
+      (`registry.test.ts`). The full end-to-end behaviour (does a mode
+      genuinely change on a real section boundary) was not verified against
+      real playing audio — doing so convincingly would need an actual
+      analyzable track played through the app for several minutes, which
+      this session's environment cannot do — so this is confirmed correct
+      by construction and typecheck, not by watching it fire. `npm run
+      typecheck`, `npm run lint`, and the full `npx vitest run` suite (94
+      files / 1566 passed, 1 pre-existing skip) all clean.
+
+- [x] **F222 · GyroidFluxScene's "smoothed" flight still read as jerky,
+      specifically as "moves back and forth" — a genuinely different bug
+      than the rate-jitter this session already fixed once. The camera's
+      own path reverses direction by construction.** `src/scenes/
+      GyroidFluxScene.tsx`.
+
+      The earlier fix (this same session, F-numberless at the time —
+      slewing `s.mids` before it drives the flight clock's rate) addressed
+      how the CLOCK accelerates and decelerates. Reported still jerky
+      afterward, with the specific added detail "moves back and forth" —
+      a different complaint: the shader's own camera orbit and look-sway
+      each read TWO independently-timed `sin`/`cos` pairs (`sin(tt*0.4)`/
+      `cos(tt*0.3)` for position, `sin(tt*0.3)`/`cos(tt*0.23)` for gaze
+      rotation). Two mismatched frequencies on the same 2D motion trace a
+      Lissajous path, which genuinely stalls and reverses direction
+      wherever the two axes fight — not a smoothness issue at all, a shape
+      issue, present since this scene was first ported and unrelated to
+      the earlier fix.
+
+      Rewritten onto one continuously-advancing orbit phase
+      (`orbitPhase = tt * 0.35`) for both the camera's position (`cos`/
+      `sin` of the SAME phase — a true constant-speed revolution, which by
+      construction never stalls or reverses) and its look-sway (phase-
+      locked to half the orbit's rate, so gaze gently trails the orbit
+      instead of running its own independent, conflicting cycle). "Maybe
+      change speed or some other params to visualise" — since removing the
+      swing's own back-and-forth also removes a source of visual variation,
+      the orbit's RADIUS now breathes with the already-smoothed mids signal
+      the earlier fix produced (`uOrbitR = 0.8 + midsSlew * 0.25`, one new
+      uniform, no new smoothing state), so the flight keeps visibly
+      responding to the music with the reversal gone rather than just
+      quieter.
+
+      Verified: real shader compiles and runs with no console errors
+      (Playwright, both windows, scene selected) — visual "does it actually
+      look like one continuous direction now" was not itself verified,
+      since this headless sandbox's software WebGL renderer cannot produce
+      meaningful pixels (F216/F218's own documented limitation) — the fix
+      is a direct, mechanical consequence of the math (single-phase
+      circular motion has no stationary/reversing point by definition,
+      independently of anything about this specific renderer), not
+      something that needs a screenshot to be true, but a real look at the
+      running show is still the actual confirmation this needs. `npm run
+      typecheck`, `npm run lint`, and the full `npx vitest run` suite (94
+      files / 1566 passed, 1 pre-existing skip) all clean.
+
+- [x] **F223 · JavaZone Lattice reported "too fast still" after F215's
+      energy-swing fix — a different axis again: the beat GRID's phase rate
+      (which must never detune) versus how far the camera visibly travels
+      per beat (which was free to slow all along).** `src/scenes/
+      JavaZoneLatticeScene.tsx`.
+
+      Same shape of mistake this scene's own comments already warn against
+      making for the FIRST fix (F215: don't touch `beatsPosition`'s own
+      multiplier, or the beat-flash phase-locks incorrectly) — the natural
+      second reflex, "make T advance slower," would have been exactly that
+      mistake again. `T` (`floor(uBeats) + sqrt(fract(uBeats))`) sets BOTH
+      how far the camera travels per beat AND when the on-beat flash fires
+      (`FT = sqrt(fract(uBeats))`) — scaling it down directly would have
+      slowed the flythrough only by also detuning the flash off the beat,
+      trading one bug for another.
+
+      Fixed by introducing `Tz = T * FLOW_SCALE` (`FLOW_SCALE = 0.4`, a
+      plain GLSL constant — this needed no dial, no audio routing, nothing
+      JS-side, just a fixed authored value) and using `Tz` everywhere `T`
+      previously drove SPATIAL position and twist (`p.z += Tz`, the twist
+      rotation's `uTwist * p.z + 0.4 * Tz`), while every use of the real,
+      unscaled `T`/`FT` for the beat-flash's own timing is untouched. Same
+      structural move as F215 itself, restated for a reader who did not
+      see this ticket: find the cosmetic axis next to the locked one, not
+      the locked one itself. `P.z` (the colour-phase term, `vec4 P = p`)
+      inherits the slowdown for free since it is read off the same `p.z`
+      the twist already uses — the colour animation now moves in step with
+      the (now slower) lattice motion rather than at its own, now-relatively-
+      faster rate.
+
+      Verified the same way as F222 above and for the same reason (real
+      shader compiles and runs with no console errors; visual confirmation
+      of the actual feel needs eyes on the running show, not a headless
+      screenshot). `npm run typecheck`, `npm run lint`, and the full `npx
+      vitest run` suite (94 files / 1566 passed, 1 pre-existing skip) all
+      clean.
+
+- [x] **F224 · Systematic sweep: the "raw band drives an accumulating rate,
+      unsmoothed" bug behind F222/F223 audited across the whole roster and
+      fixed in every scene where the reactive swing is large enough to
+      plausibly read as jerky.** 12 files, 14 fix sites — `src/scenes/
+      ButterflyFieldScene.tsx`, `DissolveCageScene.tsx`,
+      `KaleidoPulseScene.tsx`, `LimitlessScene.tsx` (three sites),
+      `NetworkConstellationScene.tsx`, `OrbitGlowScene.tsx`,
+      `PlasmaFilamentScene.tsx`, `SynthGridScene.tsx`, `TrailLineScene.tsx`
+      (two sites), `TunnelDriftScene.tsx`, `WireframeHeroScene.tsx`.
+
+      Asked directly, after F222/F223: "how would implementing js smoothing
+      on the scenes that dont have it help? we should [do this], right?" —
+      answered as the exploratory question it was (a 3-sentence
+      recommendation with the tradeoff: helps continuous-rate clocks, would
+      actively hurt `onKick`/transient triggers by blunting their snap, so
+      audit for the specific shape rather than a blanket pass), then asked
+      to actually go find the matches. An `Explore` agent surveyed every
+      file in `src/scenes/*.tsx` for the exact shape —
+      `st.x += dt * (base + s.band * swing) * rate`, a raw band multiplying
+      directly into a `+=` accumulator, no `slew()`/one-pole filter already
+      in the chain — with explicit exclusions for `onKick`-decay envelopes
+      (a deliberate transient shape, not this bug), instantaneous
+      non-accumulating reads (`u.x.value = base * (1 + s.band*k)`, which
+      flicker with the band and that is usually the point), scenes that
+      already smooth (`MalachiteScene`, `MatrixRainScene` — the latter
+      deliberately integrates a band-clock's DELTA rather than the raw
+      value, a distinct and already-correct anti-jerk design), and
+      `beatsPosition()`-driven clocks (a different, grid-locked mechanism,
+      out of scope here). Found 27 matches across the roster with swing
+      ratios (reactive term's max coefficient against the expression's own
+      base rate) from 15% to 900% of base.
+
+      Rather than fix all 27 uniformly, scoped down: asked, and chose to fix
+      only the ≥100%-swing tier (14 of the 27) — a swing that size is what
+      is actually likely to read as visible jerk; the excluded 13 (BeatsScene
+      `st.spin` at 50%, MazeFlightScene `st.z` at 50%, NebulaDriftScene's
+      own 15% — confirmed by that file's own comment as deliberately tiny —
+      and the rest in the 30-80% band) are left genuinely unsmoothed on
+      purpose, not missed. Every fix follows the exact shape F222/F223
+      established: slew the band into a per-instance/per-ref env variable,
+      then read THAT in the accumulator instead of the raw band, same
+      `slew(x, target, dt, 3, 3)` time constant throughout for consistency
+      unless a file already had its own established one-pole convention
+      (`ButterflyFieldScene`'s hand-rolled `(target-current)*Math.min(1,
+      dt/0.8)`, matched rather than mixing a second idiom into that file).
+      `LimitlessScene`'s two `s.sub`-driven sites (`fall`, `pulseDepth`)
+      share one `subEnv` rather than each getting their own, since they
+      read the identical band.
+
+      Verified: `npm run typecheck`, `npm run lint`, and the full `npx
+      vitest run` suite (94 files / 1566 passed, 1 pre-existing skip) all
+      clean, plus a live Playwright smoke test selecting all 11 touched
+      scene files (Limitless covers three of the fourteen fix sites) with
+      no console errors — confirms every shader/material still compiles
+      and every ref-based scene still mounts cleanly after the edits. Same
+      caveat as F222/F223: the actual FEEL (does it read as smoother now)
+      needs real eyes on the running show, which this session's headless
+      sandbox cannot provide.
+
+      **Correction found during that same smoke test, not by the audit
+      itself:** the `Explore` agent's survey covered every scene FILE, but
+      not whether each one is actually in the live, selectable roster —
+      `SCENES` vs. the separate `DISABLED_SCENES` array
+      (`scenes/index.ts`), scenes "registered, built, and deliberately
+      WITHHELD" per that array's own header. Of the 12 files this ticket
+      touched, 6 turned out to be in `DISABLED_SCENES`: `KaleidoPulseScene`
+      and `NetworkConstellationScene` (both "MOVED OUT OF THE LIVE ROSTER
+      (commercial-launch licence pass)" — permanently, not pending
+      anything), `OrbitGlowScene` and `TrailLineScene` (named explicitly in
+      that array's own header as two of the "six [scenes] with no
+      provenance... permanently unclearable in their current state"),
+      `SynthGridScene` (same header, explicit CC BY-NC-SA non-commercial
+      source licence), and `TunnelDriftScene` (different reason — "here on
+      request while its look is still being worked on," i.e. temporary, not
+      a licence block). Only `ButterflyFieldScene`, `DissolveCageScene`,
+      `LimitlessScene`, `PlasmaFilamentScene` and `WireframeHeroScene` are
+      in the currently-live roster a person can actually select today.
+
+      Not a wasted fix in either case — every one of the 6 still typechecks,
+      lints and (per the smoke test's own click attempts, which correctly
+      came back `NOT_FOUND` for exactly these 6 and no others) is simply
+      unreachable through the UI right now, not broken. `TunnelDriftScene`'s
+      fix pays off the moment it is re-enabled with no further work;
+      the other 5 are "banked" against a licence being cleared, which per
+      their own comments is described as unlikely (`orbs`/`trail`/
+      `synthgrid`) or already decided (`network`/`kaleido`) rather than
+      pending. Reported here in the interest of not overstating what this
+      ticket actually changed about the running show tonight: 5 files' worth
+      of user-visible improvement, not 12.
+
+- [x] **F225 · F222's gyroid fix was incomplete — fixed the camera's
+      POSITION orbit, left its GAZE rotation as the exact same class of
+      bug.** Reported still jerky immediately after F222 shipped. `src/
+      scenes/GyroidFluxScene.tsx`.
+
+      F222's own diagnosis was correct (a Lissajous path from two
+      independently-timed sin/cos terms genuinely stalls and reverses) but
+      only applied the fix to `ro` (where the camera SITS). `rd`'s own
+      rotation (where it LOOKS) was rewritten to be phase-LOCKED to the same
+      orbit but was still `rot(A * sin(phase))` — a BOUNDED oscillation is a
+      bounded oscillation regardless of what phase drives it; the angle
+      still decelerates to zero and reverses at its own turning points. Two
+      separate pieces of math, one fix applied, one bug remaining — caught
+      only because it was reported still broken, not by re-deriving the
+      analysis from scratch.
+
+      Fixed the same way as the position fix, applied to the piece it
+      missed: the gaze rotation now uses `orbitPhase` directly as its own
+      angle (continuously increasing) rather than as the input to a sin/cos
+      swing — a slow, continuous roll (roughly one full turn per 11 orbit
+      revolutions) that cannot stall or reverse by construction, same as the
+      position orbit.
+
+      "change some other params for reactivity" — a third reactive axis
+      added alongside F222's orbit-radius breathing: a kick-triggered focal
+      punch off `st.shock` (already computed for `uGlowAmt`'s own flash, not
+      a new envelope) — zooms in briefly on a hit, eases back out on the
+      same decay. Strictly additive and self-decaying, so — unlike the
+      swing it stands in for — it cannot reopen this exact complaint no
+      matter how often it fires.
+
+      **A real mistake caught by `npm run typecheck`, not eyeballing**:
+      writing the fix's own doc comment, backtick-quoted identifiers
+      (```orbitPhase```, markdown-style code emphasis) were used INSIDE a
+      GLSL `//` comment that lives inside FRAG's own JS/TS template literal
+      — a literal backtick character there closes the enclosing
+      TypeScript template string early regardless of GLSL's own comment
+      syntax, which the TS parser knows nothing about. Surfaced immediately
+      as a real syntax error (`TS1005`/`TS1443`) on the very next
+      typecheck run, not a silent miscompile — fixed by dropping the
+      backticks from that comment (plain identifier names, no markdown
+      emphasis) and re-scanned the rest of the file's FRAG block
+      specifically for the same mistake (none found). Worth remembering for
+      every future edit to a GLSL template-literal comment in this
+      codebase: backticks are unsafe there in a way they are not in a
+      normal TS comment.
+
+      Verified: `npm run typecheck`, `npm run lint`, and the full `npx
+      vitest run` suite (94 files / 1566 passed, 1 pre-existing skip) all
+      clean; real shader compiles and runs with no console errors
+      (Playwright, both windows, scene selected). Same caveat as F222/F223:
+      the actual feel needs eyes on the running show, which this headless
+      sandbox cannot provide — but the fix is now a direct, mechanical
+      consequence of the math for BOTH camera axes, not just one.
+
+- [x] **F226 · F225 still wasn't enough — a THIRD term on the exact same
+      rotation angle, missed twice because it looked like an instantaneous
+      visual flicker rather than motion. Removed from the angle entirely;
+      this is the one that actually holds "one direction only."** `src/
+      scenes/GyroidFluxScene.tsx`.
+
+      Reported still jerky a second time after F225. Before touching code
+      again, stopped to ask rather than pattern-match a third guess — did
+      the fix actually reach the browser (confirmed: hard-refreshed), and
+      what specifically is moving (confirmed: the camera/viewpoint itself,
+      not the lattice geometry — ruling out the domain-warp ripple as a
+      candidate). With that narrowed down, re-derived the rotation angle's
+      FULL composition from scratch rather than re-examining only what
+      F222/F225 had already touched, and found `uWobble.y`/`.x` — carried
+      forward unchanged through BOTH previous fixes — still had
+      `ctx.b.transient * 1.2`/`* 0.8` added into it, feeding the exact same
+      `rot(orbitPhase * rate + uWobble.*)` expression F225 had just made
+      monotonic.
+
+      **Why this survived two audits of the same file:** `b.transient`
+      (spectral flux through a fast ~50ms tracking filter, `AudioEngine.ts`)
+      is a continuously-live signal that rises and falls many times a
+      second — the SAME shape this whole session's F222-F224 sweep already
+      knew to flag, but `uWobble.value.set(...)` is a plain instantaneous
+      assignment (`=`), not an ACCUMULATOR (`+=`) — the exact pattern that
+      sweep's own exclusion rule #2 explicitly waves through ("a raw band
+      read directly into a per-frame VISUAL property that does NOT
+      accumulate... can flicker with the raw band and that's usually
+      fine/desired"). That rule is correct for what it was written for —
+      brightness, opacity, colour — but wrong here, because `uWobble` is not
+      a visual property, it is fed straight into a ROTATION ANGLE. A rule
+      about accumulation is the wrong test for this case; the right one is
+      "can this value ever decrease once added to an angle" — and spectral
+      flux, however it is computed or however often it is read, always can.
+
+      **Why smoothing would not have fixed it either, unlike every other fix
+      in F222-F225:** this session's usual answer to "raw band causes
+      jerky motion" is `slew()` — but slewing `b.transient` would only
+      change HOW SMOOTHLY it rises and falls, not WHETHER it does. Any
+      term on a rotation angle that ever decreases makes the camera swing
+      back, by definition, independent of how jittery or smooth that
+      decrease is. The only fix that actually satisfies "moves in one
+      direction only" is removing the term from the angle, which is what
+      this does — `uWobble` is now the tilt dial alone, a genuinely fixed
+      offset that only changes when a person moves that slider.
+
+      The reactivity is not deleted, only relocated: `b.transient` now
+      boosts `uGlowAmt` (brightness) instead, alongside the energy and
+      kick-shock terms already there — the safe category this ticket's own
+      reasoning above identifies, since a rise-and-fall in BRIGHTNESS has no
+      "direction" to visibly reverse.
+
+      Verified: `npm run typecheck`, `npm run lint`, and the full `npx
+      vitest run` suite (94 files / 1566 passed, 1 pre-existing skip) all
+      clean; real shader compiles and runs with no console errors
+      (Playwright, both windows, scene selected). Re-derived the entire
+      camera system's composition from scratch one more time after this
+      fix (not spot-checking just the new change) to confirm nothing else
+      feeds either `ro` or `rd` with a term that can decrease once
+      accumulated into a position or an angle — `uOrbitR`'s mids-breathing
+      and `uFocal`'s kick-punch both modulate MAGNITUDES (radius, zoom),
+      never an angle, so a rise-and-fall there reads as pulsing/zooming,
+      not reversing. This is the first of the three gyroid tickets tonight
+      where that check was done exhaustively rather than only against the
+      specific line just edited — worth doing first next time a "still
+      broken" report comes in on the same file, not third.
