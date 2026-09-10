@@ -62,8 +62,17 @@ import { bipolar, drastic } from './contract'
  *                            drift out of the source's authored ratio.
  *   iMouse                -> dropped; this project has no mouse input. The
  *                            look-direction wobble it drove is now `uWobble`
- *                            (tilt dial, static) plus a transient-driven
- *                            flinch on top (see `update()`).
+ *                            — the tilt dial only, static. Originally also
+ *                            carried a transient-driven flinch; removed
+ *                            (2026-09-11, see `update()`'s own note) once a
+ *                            reported "still jerky, still back and forth"
+ *                            traced to it: `b.transient` rises and falls
+ *                            continuously (spectral flux, ~50ms tracking,
+ *                            not a one-shot decay), and ANY term riding on a
+ *                            rotation ANGLE that rises and falls makes the
+ *                            camera swing out and back by definition — no
+ *                            amount of smoothing changes that, only removing
+ *                            it from the angle does.
  *   mainImage/fragColor   -> main() / gl_FragColor, final * uFade
  *   fragCoord              -> gl_FragCoord.xy
  *
@@ -81,17 +90,22 @@ import { bipolar, drastic } from './contract'
  *   contrast+highs-> glow falloff sharpness (was the constant `8.0`)
  *   fill          -> focal length / zoom (was the constant `1.6`)
  *   tilt          -> static camera-wobble offset (replaces `mo`)
- *   onKick        -> uShock, folded into brightness: decaying flash
+ *   onKick        -> uShock, folded into brightness AND a focal-length punch
+ *                    (see update() — the camera zooms in briefly on a hit)
  *   sub           -> continuous warp-amount swell, distinct from onKick
  *   energy        -> overall glow brightness
+ *   transient     -> overall glow brightness (moved off the camera's
+ *                    rotation angle, 2026-09-11 — see the iMouse port note)
  *
  * ## Band routing
  *
- *   onKick  -> decaying brightness flash (uShock, folded into uGlowAmt)
- *   sub     -> continuous swell added straight onto the warp amount
- *   mids    -> flight/orbit clock rate
- *   highs   -> tighter glow edges (stacks with the contrast dial)
- *   energy  -> overall glow brightness
+ *   onKick    -> decaying brightness flash + focal punch (uShock, folded
+ *                into both uGlowAmt and uFocal)
+ *   sub       -> continuous swell added straight onto the warp amount
+ *   mids      -> flight/orbit clock rate, and the orbit's own radius
+ *   highs     -> tighter glow edges (stacks with the contrast dial)
+ *   energy    -> overall glow brightness
+ *   transient -> overall glow brightness (NOT the camera — see port notes)
  *
  * ## Scene Contract
  *
@@ -111,8 +125,10 @@ export const FRAG = /* glsl */ `
   uniform float uThick;   // density dial -> glow-band thickness, source const 0.0
   uniform float uSharp;   // contrast+highs -> glow falloff sharpness, source const 8.0
   uniform float uFocal;   // fill dial -> zoom, source const 1.6
-  uniform vec2  uWobble;  // tilt (static) + transient (dynamic) -> replaces mouse look
-  uniform float uGlowAmt; // energy + onKick shock -> overall glow brightness, source const 4.6
+  uniform float uOrbitR;  // orbit radius, breathing with mids -- see update()
+  uniform vec2  uWobble;  // tilt dial only, static -> replaces mouse look. Was ALSO
+                           // transient-driven once; removed (2026-09-11) -- see update()
+  uniform float uGlowAmt; // energy + onKick shock + transient -> overall glow brightness, source const 4.6
   uniform vec3  uColA;    // palette-tinted, source const vec3(0.0, 0.25, 1.0)
   uniform vec3  uColB;    // palette-tinted, source const vec3(0.3, 0.3, 1.0)
   uniform int   uMaxSteps;
@@ -137,10 +153,29 @@ export const FRAG = /* glsl */ `
     vec2 uv = (2.0 * gl_FragCoord.xy - uRes.xy) / uRes.y;
 
     float tt = uRawT * 0.46;
-    vec3 ro = vec3(0.8 * sin(tt * 0.4), 0.8 * cos(tt * 0.3), tt);
+    // Single orbit phase, not the source's two independently-timed sin/cos
+    // pairs — see update()'s own note on why that read as "back and forth"
+    // rather than a flow. cos/sin of ONE continuously-advancing phase is a
+    // true constant-speed revolution: it never stalls or reverses, unlike
+    // two mismatched frequencies on X and Y, which trace a Lissajous path
+    // that visibly doubles back on itself wherever the two axes fight.
+    float orbitPhase = tt * 0.35;
+    vec3 ro = vec3(uOrbitR * cos(orbitPhase), uOrbitR * sin(orbitPhase), tt);
     vec3 rd = normalize(vec3(uv, uFocal));
-    rd.yz = rot(0.5 * sin(tt * 0.3) + uWobble.y) * rd.yz;
-    rd.xz = rot(0.6 * cos(tt * 0.23) + uWobble.x) * rd.xz;
+    // Second fix (still reported jerky after the first): the position orbit
+    // above is a true one-directional revolution now, but this gaze sway was
+    // STILL rot(A * sin(phase)) -- a bounded oscillation. Bounded means
+    // exactly what it sounds like: the angle decelerates to zero and reverses
+    // at its own turning points no matter what phase drives it, so this term
+    // alone reproduced the same "back and forth" the position fix could not
+    // touch, being a completely separate piece of math. Fixed the same way as
+    // the orbit itself: orbitPhase used directly as the rotation angle
+    // (continuously increasing, never bounded) rather than as the input to a
+    // sin/cos swing -- a slow, continuous roll that never stalls or reverses,
+    // at a rate slow enough (roughly one full turn per 11 orbit revolutions)
+    // to read as a gentle drift rather than a spin.
+    rd.yz = rot(orbitPhase * 0.09 + uWobble.y) * rd.yz;
+    rd.xz = rot(orbitPhase * 0.11 + uWobble.x) * rd.xz;
 
     float t = 0.0;
     float atten = 1.0;
@@ -203,6 +238,7 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     uThick: { value: 0 },
     uSharp: { value: 8 },
     uFocal: { value: 1.6 },
+    uOrbitR: { value: 0.8 },
     uWobble: { value: new THREE.Vector2(0, 0) },
     uGlowAmt: { value: 4.6 },
     uColA: { value: new THREE.Color().copy(COL_A_BASE) },
@@ -228,6 +264,43 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     st.midsSlew = slew(st.midsSlew, s.mids, dt, 3, 3)
     st.rawT += dt * (0.5 + st.midsSlew * 0.3) * drastic(P.speed)
 
+    // Second, separate fix (2026-09-11): "jerky, moves back and forth" is a
+    // DIFFERENT complaint than the rate-smoothing above already addressed —
+    // that fixed how the CLOCK accelerates/decelerates, not the SHAPE of the
+    // camera path it drives. The source's own orbit (`ro`) and look-sway
+    // (`rd` rotation) each read TWO independently-timed sin/cos terms — a
+    // Lissajous path, which genuinely stalls and reverses direction wherever
+    // the two mismatched frequencies fight, not merely a smoothness issue.
+    // Rewritten in-shader (see FRAG) onto one continuously-advancing orbit
+    // phase: cos/sin of a single ever-increasing angle is a true constant-
+    // speed revolution that never stalls, so the camera now consistently
+    // circles one way while flying forward — "moves in one direction" as
+    // asked, without flattening the path to a straight line.
+    //
+    // First attempt at this only rewrote `ro` (the camera's POSITION) this
+    // way and left `rd`'s own rotation (where it LOOKS) as a bounded
+    // `rot(A * sin(phase))` swing — reported still jerky immediately after,
+    // correctly: a bounded angle reverses at its own turning points no
+    // matter what phase drives it, so that term alone reproduced the exact
+    // same complaint on its own, being completely separate math from the
+    // position fix. Fixed the same way, in FRAG: the gaze rotation now uses
+    // `orbitPhase` directly as its angle (continuously increasing) rather
+    // than as the input to a sin/cos swing — a slow, continuous roll, never
+    // bounded, never reversing.
+    //
+    // "maybe change speed or some other params to visualise" / "change some
+    // other params for reactivity" — three axes now carry the visual life
+    // the removed swing used to supply on its own clock, none of them able
+    // to reopen the same complaint since none of them oscillate:
+    //   1. Orbit RADIUS breathes with the already-smoothed mids signal above.
+    //   2. Focal length (zoom, below) gets a kick-triggered punch off
+    //      `st.shock` — reuses the flash envelope already computed for
+    //      `uGlowAmt`, strictly additive and self-decaying.
+    //   3. The gaze's own slow roll (FRAG) is itself riding on `orbitPhase`,
+    //      which is already mids-modulated via `uRawT`'s own rate above — so
+    //      it already breathes with the music without a fourth signal.
+    u.uOrbitR.value = 0.8 + st.midsSlew * 0.25
+
     if (s.onKick > 0) st.shock = Math.min(1.5, st.shock + s.onKick)
     st.shock *= Math.exp(-dt * 4.0)
 
@@ -242,17 +315,40 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     u.uThick.value = bipolar(P.density, 0.15)
     // contrast 0.5 -> 8.0 (source const); highs tightens further on top
     u.uSharp.value = 8.0 + bipolar(P.contrast, 4.0) + s.highs * 3.0
-    // fill 0.5 -> 1.6 (source const)
-    u.uFocal.value = 1.2 + P.fill * 0.8
-    // tilt replaces the source's mouse look; transient adds a dynamic flinch
-    // on top, larger on X to match the source's own 3.0-vs-1.5 asymmetry.
-    u.uWobble.value.set(
-      bipolar(P.tilt, 3.0) + ctx.b.transient * 1.2,
-      bipolar(P.tilt, 1.5) + ctx.b.transient * 0.8,
-    )
-    // energy + kick flash, both boosts ON TOP of the source const (4.6), so
-    // silence still reproduces the authored brightness rather than dimming it.
-    u.uGlowAmt.value = 4.6 * (1 + s.energy * 0.6) * (1 + st.shock * 0.7)
+    // fill 0.5 -> 1.6 (source const), plus a kick punch: zooms in briefly on
+    // a hit and eases back out on `st.shock`'s own decay — the same signal
+    // already driving `uGlowAmt`'s flash below, reused rather than a second
+    // envelope. A THIRD reactive axis restoring the visual life the removed
+    // gaze-swing (above) used to supply on its own clock, this one strictly
+    // additive and self-decaying rather than oscillating, so it cannot
+    // reopen the same "back and forth" complaint no matter how hard or how
+    // often it fires.
+    u.uFocal.value = 1.2 + P.fill * 0.8 + st.shock * 0.25
+    // tilt replaces the source's mouse look — a fixed user offset only, no
+    // live signal riding on it.
+    //
+    // Third bug in this same rotation angle, found only because "still
+    // jerky" was reported a SECOND time (2026-09-11): `ctx.b.transient` used
+    // to be added here too ("adds a dynamic flinch on top"). Both earlier
+    // fixes made the BASE of this angle (orbitPhase, scaled) genuinely
+    // monotonic — but `b.transient` is spectral flux through a fast ~50ms
+    // tracking filter (see AudioEngine.ts), not a one-shot decay: it rises
+    // and falls continuously as the spectrum changes, many times a second in
+    // a busy mix. Added directly to a ROTATION ANGLE, any term that rises
+    // and falls makes the camera swing out and back, by definition,
+    // regardless of how smooth or jittery that rise-and-fall is — smoothing
+    // it (this session's usual fix for a raw-band problem) would not have
+    // helped here, because the bug was never the smoothness, it was that
+    // ANYTHING added to this specific angle that ever decreases reopens
+    // "back and forth". The only fix that actually holds the "one direction
+    // only" guarantee is removing it from the angle entirely.
+    u.uWobble.value.set(bipolar(P.tilt, 3.0), bipolar(P.tilt, 1.5))
+    // energy + kick flash + the transient reactivity moved off the camera
+    // above, all boosts ON TOP of the source const (4.6), so silence still
+    // reproduces the authored brightness rather than dimming it. Brightness
+    // pulsing with a live signal is the safe place for it — unlike an angle,
+    // there is no "direction" for a rise-and-fall term to visibly reverse.
+    u.uGlowAmt.value = 4.6 * (1 + s.energy * 0.6) * (1 + st.shock * 0.7) * (1 + ctx.b.transient * 0.3)
 
     u.uColA.value.copy(COL_A_BASE).lerp(pal.accent, 0.4)
     u.uColB.value.copy(COL_B_BASE).lerp(pal.glow, 0.4)

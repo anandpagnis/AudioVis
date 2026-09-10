@@ -104,9 +104,18 @@ export const FRAG = /* glsl */ `
     return (e - 1.0) / (e + 1.0);
   }
 
+  // How far the camera travels/twists through the lattice per beat,
+  // independent of the beat GRID's own rate (T below, which the flash at
+  // the bottom of main() needs unscaled to stay locked exactly on the
+  // beat). Slowed on direct request (2026-09-11, "too fast still, slow it
+  // down significantly") -- see update()'s own note on why this axis moved
+  // and not T's.
+  const float FLOW_SCALE = 0.4;
+
   void main() {
     float FT = sqrt(fract(uBeats));
     float T = floor(uBeats) + FT;
+    float Tz = T * FLOW_SCALE;
 
     vec3 rd = normalize(vec3(gl_FragCoord.xy - 0.5 * uRes.xy, uRes.y * uFocal));
     float z = 0.0;
@@ -116,9 +125,9 @@ export const FRAG = /* glsl */ `
       if (idx >= uMaxSteps) break;
 
       vec4 p = vec4(z * rd, 0.0);
-      p.z += T;
+      p.z += Tz;
 
-      mat2 R = mat2(cos(uTwist * p.z + 0.4 * T + uRoll + vec4(0.0, 11.0, 33.0, 0.0)));
+      mat2 R = mat2(cos(uTwist * p.z + 0.4 * Tz + uRoll + vec4(0.0, 11.0, 33.0, 0.0)));
       p.xy *= R;
       vec4 P = p;
       vec4 Sn = sin(117.0 * p);
@@ -192,6 +201,17 @@ export const JavaZoneLatticeScene = createShaderScene<JavaZoneState>({
     // as jerky rather than musical. Slewed the same way `GyroidFluxScene`'s
     // mids term now is, and its own swing cut by more than half (0.4 -> 0.15)
     // for "slow down" — the lock at neutral energy is unchanged either way.
+    //
+    // Still reported "too fast" after that fix (2026-09-11) — a DIFFERENT
+    // axis than the one above: `mult` governs the beat GRID's phase rate
+    // (how fast T itself ticks, which is what must never detune), but how
+    // FAR the camera visibly travels/twists through the lattice for each
+    // tick of T is a wholly separate question, and that is what actually
+    // read as fast. Fixed in FRAG — see `FLOW_SCALE` there — by scaling a
+    // COPY of T used only for spatial position and twist, leaving the real
+    // T (and therefore the on-beat flash's own timing, `FT`) untouched. Same
+    // shape as the fix directly above: find the cosmetic axis next to the
+    // locked one, not the locked one itself.
     st.energySlew = slew(st.energySlew, s.energy, dt, 3, 3)
     st.beats = beatsPosition(
       ctx.f.beatIndex,
