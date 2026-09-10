@@ -225,6 +225,8 @@ function buildEmptyGeometry(): THREE.BufferGeometry {
 
 export function PlasmaFilamentScene() {
   const flow = useRef(0)
+  /** Slewed `f.energy` — see the flow-clock update below. */
+  const energyEnv = useRef(0)
   /** Burst-and-settle scalar (asymmetric slew, see the file-level Band
    *  routing doc) — a single JS-side float, not per-particle work. */
   const burst = useRef(0)
@@ -308,7 +310,15 @@ export function PlasmaFilamentScene() {
         filled.current ? Math.floor(COUNT * state.particleDensity * roleDensity) : 0,
       )
 
-      flow.current += dt * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
+      // `f.energy` slewed before it multiplies in — found in a systematic
+      // audit (2026-09-11) for the "raw band drives an accumulating rate"
+      // pattern reported live and fixed twice elsewhere this session
+      // (GyroidFluxScene, JavaZoneLatticeScene); the reactive swing here
+      // (0.9 against a 0.22 base — over 400%) is the largest of any
+      // continuous term in this file. `f.drop` stays a raw boolean step
+      // deliberately — a drop is meant to read as instantaneous, not eased.
+      energyEnv.current = slew(energyEnv.current, f.energy, dt, 3, 3)
+      flow.current += dt * (0.22 + energyEnv.current * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
 
       u.uFlow.value = flow.current
       u.uBass.value = b.bass

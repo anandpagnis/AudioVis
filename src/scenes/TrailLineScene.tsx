@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { bufferScale } from '../engine/renderScale'
+import { slew } from '../engine/response'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -223,6 +224,9 @@ export function TrailLineScene() {
   const clock = useRef(0)
   const walk = useRef(0)
   const rotWalk = useRef(0)
+  /** Slewed `b.energy`/`b.mid` — see the walk-phase update below. */
+  const energyEnv = useRef(0)
+  const midEnv = useRef(0)
   const hsl = useMemo(() => ({ h: 0, s: 0, l: 0 }), [])
 
   const bufferMaterial = useMemo(
@@ -336,9 +340,16 @@ export function TrailLineScene() {
 
     clock.current += dt * params.speed
     // Every random walk shares one phase, advancing faster as the track opens
-    // up — so the stroke reconfigures more often at high energy.
-    walk.current += dt * (0.45 + b.energy * 1.1) * params.speed
-    rotWalk.current += dt * (0.35 + b.mid * 1.3) * params.speed
+    // up — so the stroke reconfigures more often at high energy. Both bands
+    // slewed before they multiply in — found in a systematic audit
+    // (2026-09-11) for the "raw band drives an accumulating rate" pattern
+    // reported live and fixed twice elsewhere this session (GyroidFluxScene,
+    // JavaZoneLatticeScene); these two swings (244% and 371% of their own
+    // base rates) are the largest pair of any scene in that audit.
+    energyEnv.current = slew(energyEnv.current, b.energy, dt, 3, 3)
+    midEnv.current = slew(midEnv.current, b.mid, dt, 3, 3)
+    walk.current += dt * (0.45 + energyEnv.current * 1.1) * params.speed
+    rotWalk.current += dt * (0.35 + midEnv.current * 1.3) * params.speed
 
     u.uTime.value = clock.current
     u.uWalk.value = walk.current

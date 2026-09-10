@@ -201,6 +201,8 @@ function extractSurface(): { position: Float32Array; normal: Float32Array } {
 export function DissolveCageScene() {
   const gl = useThree((s) => s.gl)
   const dissolve = useRef(0)
+  /** Slewed `b.mid` — see the cage-spin update below. */
+  const midEnv = useRef(0)
   const cycleStart = useRef(-1)
   const cageRef = useRef<THREE.Group>(null)
 
@@ -341,7 +343,13 @@ export function DissolveCageScene() {
       cageMat.linewidth = 1.6 + b.presence * 1.6 + b.pulse * 0.6
 
       if (cageRef.current) {
-        cageRef.current.rotation.y += dt * (0.06 + b.mid * 0.14) * params.speed
+        // Slewed rather than raw `b.mid` — found in a systematic audit
+        // (2026-09-11) for the same "raw band drives an accumulating rate"
+        // pattern reported live and fixed twice elsewhere this session
+        // (GyroidFluxScene, JavaZoneLatticeScene). This file already uses
+        // `slew()` for `dissolve` above; same primitive, same file.
+        midEnv.current = slew(midEnv.current, b.mid, dt, 3, 3)
+        cageRef.current.rotation.y += dt * (0.06 + midEnv.current * 0.14) * params.speed
         // Tempo-locked sway rather than a wall-clock sine: the cage now tilts in
         // time with the track instead of drifting against it.
         cageRef.current.rotation.x = anim.oscillate * 0.12

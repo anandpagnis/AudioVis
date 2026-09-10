@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
+import { slew } from '../engine/response'
 import { useDispose } from '../engine/useDispose'
 import { drastic } from './contract'
 import { effectEnvelope } from './effectEnvelope'
@@ -140,6 +141,8 @@ export function OrbitGlowScene() {
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
   const phase = useRef(0)
+  /** Slewed `b.energy` — see the phase update below. */
+  const energyEnv = useRef(0)
 
   const material = useMemo(
     () =>
@@ -180,7 +183,14 @@ export function OrbitGlowScene() {
     // the orbits speed up as the track builds instead of running independently
     // of it. Floored so a breakdown drifts rather than freezing.
     const tempo = Math.min(1.6, Math.max(0.6, f.bpm / 120))
-    phase.current += dt * (0.35 + b.energy * 0.85) * tempo * params.speed * drastic(p.speed)
+    // `b.energy` slewed before it multiplies in — found in a systematic
+    // audit (2026-09-11) for the "raw band drives an accumulating rate"
+    // pattern reported live and fixed twice elsewhere this session
+    // (GyroidFluxScene, JavaZoneLatticeScene); the reactive swing here (85%
+    // of the base rate) is large enough that an unsmoothed band visibly
+    // jerked the orbit speed frame to frame.
+    energyEnv.current = slew(energyEnv.current, b.energy, dt, 3, 3)
+    phase.current += dt * (0.35 + energyEnv.current * 0.85) * tempo * params.speed * drastic(p.speed)
     u.uPhase.value = phase.current
 
     // Radius: orbits widen on a swell and tighten when the track thins out.

@@ -6,6 +6,7 @@ import { quality, qualityUniforms, applyQualityUniforms } from '../engine/qualit
 import { bufferScale } from '../engine/renderScale'
 import { NOISE3D_GLSL } from '../engine/shaderLib'
 import { useSceneFrame } from '../engine/sceneFrame'
+import { slew } from '../engine/response'
 import { useDispose } from '../engine/useDispose'
 
 /* ==========================================================================
@@ -447,6 +448,8 @@ export function SynthGridScene() {
   const clock = useRef(0)
   const dist = useRef(0)
   const carDist = useRef(0)
+  /** Slewed `b.energy` — see the travel-speed update below. */
+  const energyEnv = useRef(0)
 
   const bufferMaterial = useMemo(
     () =>
@@ -573,7 +576,15 @@ export function SynthGridScene() {
     // Travel accumulates so a changing rate never jumps the world. Tempo sets
     // the baseline, energy opens it up.
     const tempo = Math.min(1.5, Math.max(0.7, f.bpm / 120))
-    const speed = BASE_SPEED * (0.5 + b.energy * 0.9) * tempo * params.speed
+    // `b.energy` slewed before it multiplies in — found in a systematic
+    // audit (2026-09-11) for the "raw band drives an accumulating rate"
+    // pattern reported live and fixed twice elsewhere this session
+    // (GyroidFluxScene, JavaZoneLatticeScene); the reactive swing here (0.9
+    // against a 0.5 base) also drives `carDist` below at 2x this rate, so an
+    // unsmoothed band would have jerked the cars twice as visibly as the
+    // world itself.
+    energyEnv.current = slew(energyEnv.current, b.energy, dt, 3, 3)
+    const speed = BASE_SPEED * (0.5 + energyEnv.current * 0.9) * tempo * params.speed
     dist.current += dt * speed
     // Cars run faster than the world, as in the source.
     carDist.current += dt * speed * 2

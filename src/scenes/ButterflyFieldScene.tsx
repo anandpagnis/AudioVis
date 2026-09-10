@@ -231,6 +231,10 @@ interface ButterflyState {
   flowPhase: number
   /** Slewed `s.energy` — opens flap depth / brightness / halo smoothly. */
   energyEnv: number
+  /** Slewed `s.mids` — see `update()`'s own note; `flowPhase` below was the
+   *  one clock in this file that missed the "flowy not twitchy" treatment
+   *  its neighbour already gets. */
+  midsEnv: number
   /** Decaying kick swell — tail length + brightness. `exp(-dt*2.4)` tail. */
   bloom: number
 }
@@ -266,17 +270,26 @@ export const ButterflyFieldScene = createShaderScene<ButterflyState>({
     uPalStrength: { value: 0.32 },
     uMaxSteps: { value: 36 },
   }),
-  state: () => ({ flapPhase: 0, flowPhase: 0, energyEnv: 0, bloom: 0 }),
+  state: () => ({ flapPhase: 0, flowPhase: 0, energyEnv: 0, midsEnv: 0, bloom: 0 }),
   update({ u, s, P, st, dt }) {
     // --- slewed envelopes: the whole "flowy not twitchy" contract ---------
     st.energyEnv += (s.energy - st.energyEnv) * Math.min(1, dt / 0.8)
+    // `flowPhase` below read raw `s.mids` directly — the one clock in this
+    // file that missed the smoothing its own neighbour (`flapPhase`, via
+    // `energyEnv`) already gets, found in a systematic audit for this exact
+    // pattern (2026-09-11) after the same bug was reported live twice
+    // elsewhere (GyroidFluxScene, JavaZoneLatticeScene). Same one-pole shape
+    // this file already uses for `energyEnv`, not `slew()` — matching the
+    // convention already established here rather than mixing two idioms in
+    // one file.
+    st.midsEnv += (s.mids - st.midsEnv) * Math.min(1, dt / 0.8)
     if (s.onKick > 0) st.bloom = Math.min(1.4, st.bloom + s.onKick)
     st.bloom *= Math.exp(-dt * 2.4)
 
     // --- clocks: accumulators, never `elapsed * rate` -------------------
     const spd = drastic(P.speed)
     st.flapPhase += dt * FLAP_RATE * (1 + st.energyEnv * 0.3) * spd
-    st.flowPhase += dt * (0.3 + s.mids * 0.5) * spd
+    st.flowPhase += dt * (0.3 + st.midsEnv * 0.5) * spd
 
     u.uFlapPhase.value = st.flapPhase
     u.uFlowPhase.value = st.flowPhase

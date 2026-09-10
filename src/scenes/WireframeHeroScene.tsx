@@ -7,7 +7,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
 import { quality } from '../engine/quality'
-import { impulseClock, sinceImpulse } from '../engine/response'
+import { impulseClock, sinceImpulse, slew } from '../engine/response'
 import {
   useSceneFrame,
   useSceneMode,
@@ -225,6 +225,8 @@ export function WireframeHeroScene() {
   const gl = useThree((s) => s.gl)
   const spin = useSpin()
   const dash = useRef(0)
+  /** Slewed `b.high` — see the dash-scroll update below. */
+  const highEnv = useRef(0)
   // Kick-wave propagation state (see the header's Response identity
   // section): when the wave last fired, and how strong that kick was.
   const kickWave = useRef(impulseClock())
@@ -350,8 +352,17 @@ export function WireframeHeroScene() {
       ringMat.color.copy(tint).multiplyScalar((0.3 + b.high * 1.1 + b.pulse * 0.25) * ink)
       ringMat.opacity = Math.min(1, vis * 0.8)
       // Dash scroll accumulates with the highs, so the ring visibly speeds up on
-      // busy hat patterns rather than crawling at a fixed rate.
-      dash.current += dt * (0.1 + b.high * 0.9)
+      // busy hat patterns rather than crawling at a fixed rate. `b.high`
+      // slewed before it multiplies in — found in a systematic audit
+      // (2026-09-11) for the "raw band drives an accumulating rate" pattern
+      // reported live and fixed twice elsewhere this session
+      // (GyroidFluxScene, JavaZoneLatticeScene). This swing (0.9 against a
+      // 0.1 base — 900%) is the largest of any scene in that audit, and the
+      // intent above ("speeds up on busy hats") survives unsmoothed — a
+      // sustained busy passage still reads as sustained highs — the raw
+      // per-frame FFT jitter riding on top of it does not.
+      highEnv.current = slew(highEnv.current, b.high, dt, 3, 3)
+      dash.current += dt * (0.1 + highEnv.current * 0.9)
       ringMat.dashOffset = -dash.current
 
       // ---- Per-edge kick propagation (see header: Response identity) -----

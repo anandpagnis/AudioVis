@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { quality } from '../engine/quality'
+import { slew } from '../engine/response'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { bipolar, drastic } from './contract'
 import { useDispose } from '../engine/useDispose'
@@ -249,6 +250,8 @@ export function TunnelDriftScene() {
   const dpr = useThree((s) => s.viewport.dpr)
   const clock = useRef(0)
   const dist = useRef(0)
+  /** Slewed `b.energy` — see the flight-speed update below. */
+  const energyEnv = useRef(0)
   // Scratch, so the per-frame tinting allocates nothing.
   const tintWall = useMemo(() => new THREE.Color(), [])
   const tintRail = useMemo(() => new THREE.Color(), [])
@@ -303,8 +306,14 @@ export function TunnelDriftScene() {
     clock.current += dt * rate
 
     // Distance ACCUMULATES. Multiplying a running clock by a varying speed
-    // would jump the tunnel backwards whenever the speed fell.
-    const speed = BASE_SPEED * (0.5 + b.energy * 0.6 + anim.explode * 0.8) * rate
+    // would jump the tunnel backwards whenever the speed fell. `b.energy`
+    // slewed before it multiplies in — found in a systematic audit
+    // (2026-09-11) for the "raw band drives an accumulating rate" pattern
+    // reported live and fixed twice elsewhere this session (GyroidFluxScene,
+    // JavaZoneLatticeScene). `anim.explode` stays raw — a director signal,
+    // not a raw FFT band, already shaped upstream.
+    energyEnv.current = slew(energyEnv.current, b.energy, dt, 3, 3)
+    const speed = BASE_SPEED * (0.5 + energyEnv.current * 0.6 + anim.explode * 0.8) * rate
     dist.current += dt * speed
 
     // Turn amplitudes ease over seconds rather than tracking the envelope
