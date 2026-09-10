@@ -167,6 +167,47 @@ export interface ShaderSceneSpec<S = void> {
    * number.
    */
   pixelBudget?: number | (() => number)
+  /**
+   * An optional ping-ponged simulation pass, run once per frame BEFORE the
+   * scene's own {@link update} — a history buffer the scene can read back
+   * next frame (`tPrev`, auto-bound) to build something that evolves rather
+   * than being recomputed fresh from scratch every frame (a flow field, an
+   * advected image, a reaction-diffusion pattern).
+   *
+   * Fully self-contained GLSL, unlike {@link frag}: no
+   * {@link SHADER_SCENE_PRELUDE} is prepended (the sim pass has no fade,
+   * mode, or palette — it is plumbing the main shader consumes, not
+   * something drawn on its own), so `frag` here must declare every uniform
+   * it uses, including `tPrev` itself.
+   *
+   * The freshly-rendered result is written into `tSim` on the scene's MAIN
+   * material — declare `tSim: { value: null }` alongside the scene's own
+   * uniforms (same shape `tSrc` already has) to read it in {@link frag}.
+   *
+   * Costs nothing for the far more common scene that never sets this: every
+   * cache/allocation below is created lazily, only reached when `sim` is
+   * present.
+   */
+  sim?: {
+    /** Sim fragment shader. Self-contained — see this field's own doc. */
+    frag: string
+    /** Sim-specific uniforms beyond the auto-injected `tPrev`. */
+    uniforms?: () => Record<string, THREE.IUniform>
+    /**
+     * Write the sim material's uniforms. Same shape as the main
+     * {@link update}, but `u` is the SIM material's uniforms, not the main
+     * one's — `mainU` is the main one, for a scene whose sim shader needs
+     * to read something the main `update()` already derived (an aspect
+     * ratio, a source texture) without recomputing it twice.
+     *
+     * Return `false` to skip this frame's render entirely — cheaper than
+     * always paying for a pass nothing is currently sampling `tSim` to see
+     * (a scene with several modes and only some of them sim-driven). `tSim`
+     * simply keeps whatever it last held; uniforms are still written either
+     * way, so a mode switch back in doesn't reappear on stale settings.
+     */
+    update: (c: ShaderSceneContext<S> & { mainU: Record<string, THREE.IUniform> }) => void | boolean
+  }
 }
 
 /**
@@ -290,6 +331,10 @@ function getSceneMaterial<S>(gl: THREE.WebGLRenderer, spec: ShaderSceneSpec<S>):
 /** Shared setup: material, geometry, audio state, parameters, frame driver. */
 function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
   const gl = useThree((s) => s.gl)
+  // Only read for spec.sim's own buffer sizing below — every other scene
+  // (no `sim`) never touches these and pays nothing extra for them being here.
+  const size = useThree((s) => s.size)
+  const dpr = useThree((s) => s.viewport.dpr)
   const P = useSceneParams(spec.id)
 
   // Cached across mounts (see getSceneMaterial) — no useDispose for these two;
@@ -363,6 +408,42 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
     u.uBeatSin4.value = beats.sin4
 
     updateLilimState(audio, ctx)
+
+    // Sim step, before the scene's own update: so tSim already holds THIS
+    // frame's fresh result by the time the caller renders the main shader
+    // that samples it. Sized off lilim's own choice for the same job
+    // (`getDrawingBufferSize().multiplyScalar(0.6)`) — a simulation buffer
+    // does not need to match display resolution 1:1, and this scene's own
+    // main offscreen budget (if any) is a separate, later-solved number
+    // `runFrame` has no access to here.
+    if (spec.sim) {
+      const simW = Math.max(1, Math.floor(size.width * dpr * 0.6))
+      const simH = Math.max(1, Math.floor(size.height * dpr * 0.6))
+      const rt = getSimRT(gl, spec, spec.sim, simW, simH)
+      const prev = rt.flip ? rt.a : rt.b
+      const next = rt.flip ? rt.b : rt.a
+      rt.material.uniforms.tPrev.value = prev.texture
+      const shouldRender = spec.sim.update({
+        u: rt.material.uniforms,
+        mainU: u,
+        s: audio,
+        P,
+        pal: ctx.col,
+        dt: ctx.dt,
+        t: elapsed.current,
+        st: sceneState,
+        ctx,
+      })
+      if (shouldRender !== false) {
+        const prevTarget = gl.getRenderTarget()
+        gl.setRenderTarget(next)
+        gl.render(rt.scene, rt.camera)
+        gl.setRenderTarget(prevTarget)
+        rt.flip = !rt.flip
+        if (u.tSim) u.tSim.value = next.texture
+      }
+    }
+
     spec.update({
       u,
       s: audio,
@@ -525,6 +606,93 @@ function getBudgetedRT(gl: THREE.WebGLRenderer, id: string, blending: THREE.Blen
     displayMaterial,
   }
   byId.set(id, created)
+  return created
+}
+
+/** One scene's ping-pong simulation buffers, plus the tiny scene/camera that renders its sim shader. */
+interface SimRT {
+  a: THREE.WebGLRenderTarget
+  b: THREE.WebGLRenderTarget
+  /** true: `a` holds the last rendered frame (so it is `tPrev`, and `b` renders next). Flips every step. */
+  flip: boolean
+  material: THREE.ShaderMaterial
+  scene: THREE.Scene
+  camera: THREE.OrthographicCamera
+}
+
+/**
+ * Per (renderer, scene id), same caching shape as {@link getBudgetedRT} and
+ * for the same reason — a `WebGLRenderTarget` is a real GPU allocation, and
+ * a mount-scoped one would pay for it again on every scene switch.
+ */
+const simRTCache = new WeakMap<THREE.WebGLRenderer, Map<string, SimRT>>()
+
+/**
+ * Half-float, linear-filtered, no mipmaps/depth/stencil — the exact format
+ * `FeedbackPass.ts`'s own history buffer already uses for the same job (a
+ * texture resampled and rewritten every frame under repeated blending,
+ * where an 8-bit target would band/clip).
+ */
+function makeSimTarget(width: number, height: number): THREE.WebGLRenderTarget {
+  const target = new THREE.WebGLRenderTarget(width, height, {
+    type: THREE.HalfFloatType,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: false,
+    stencilBuffer: false,
+  })
+  target.texture.name = `sim:${width}x${height}`
+  return target
+}
+
+function getSimRT<S>(
+  gl: THREE.WebGLRenderer,
+  spec: ShaderSceneSpec<S>,
+  sim: NonNullable<ShaderSceneSpec<S>['sim']>,
+  width: number,
+  height: number,
+): SimRT {
+  let byId = simRTCache.get(gl)
+  if (!byId) {
+    byId = new Map()
+    simRTCache.set(gl, byId)
+  }
+  const existing = byId.get(spec.id)
+  if (existing) {
+    // Grow only — same F147 trade `getBudgetedRT`'s own target already makes
+    // and for the same reason: a live-resized render target is a real GPU
+    // stall hazard, and this buffer only has to be big enough for whatever
+    // the largest active size has been so far this session.
+    if (width > existing.a.width || height > existing.a.height) {
+      const w = Math.max(width, existing.a.width)
+      const h = Math.max(height, existing.a.height)
+      existing.a.dispose()
+      existing.b.dispose()
+      existing.a = makeSimTarget(w, h)
+      existing.b = makeSimTarget(w, h)
+      existing.flip = false
+    }
+    return existing
+  }
+
+  const material = new THREE.ShaderMaterial({
+    vertexShader: FULLSCREEN_VERT,
+    fragmentShader: sim.frag,
+    depthWrite: false,
+    depthTest: false,
+    uniforms: { tPrev: { value: null }, ...sim.uniforms?.() },
+  })
+  const scene = new THREE.Scene()
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material))
+  const created: SimRT = {
+    a: makeSimTarget(width, height),
+    b: makeSimTarget(width, height),
+    flip: false,
+    material,
+    scene,
+    camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
+  }
+  byId.set(spec.id, created)
   return created
 }
 

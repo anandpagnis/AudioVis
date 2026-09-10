@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
+import { slew } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
 import { SIMPLEX3D_GLSL } from '../engine/shaderLib'
 import { useStore } from '../store'
@@ -13,25 +14,41 @@ import { useStore } from '../store'
  * this roster (`malachite`, `kifs`, `maze`, `wingfold`) — written on the lilim
  * branch of this same project, so `license: 'original'`.
  *
- * ## Scope: 15 of lilim's 21 modes
+ * ## Scope: 17 of lilim's 21 modes
  *
- * The 15 ported here are every mode that is **single-pass** — it reads only
- * `tSrc`, the source photo, and nothing else. They port onto this engine's
- * single-quad model with no engine work at all:
+ * 15 of the 17 are **single-pass** — they read only `tSrc`, the source
+ * photo, and nothing else. They ported onto this engine's single-quad model
+ * with no engine work at all.
  *
- *   none, smear, droste, infinite, corridor, cube, planet,
- *   shatter, prism, breathe, sort, thresh, solar, halftone, vhs
+ * `melt` and `mosh` are different: each needs an auxiliary ping-pong
+ * simulation buffer that evolves frame over frame (lilim's own `tSim` +
+ * `simQuad` + `ensureSim`) rather than being recomputed fresh every frame
+ * from just the current photo — this is what actually makes them feel
+ * "fluid"/"alive" rather than a per-frame distortion, and it did require
+ * real engine work: `createShaderScene.tsx` gained a generic, optional
+ * `ShaderSceneSpec.sim` hook (a second, self-contained fragment shader the
+ * engine ping-pongs through its own history buffer once per frame, before
+ * the scene's main `update()` runs, writing the fresh result into `tSim` on
+ * the main material) specifically to carry these two. See that file's own
+ * doc on `sim` for the mechanism; see {@link LIMITLESS_SIM_FRAG} below for
+ * what runs inside it.
  *
- * Six are deliberately NOT ported and their lilim source is not copied in at
- * all — see F212 in `docs/ISSUES.md` for what a Phase 2 needs. `melt`, `mosh`,
- * `coral`, `scanline` and `windows` each need an auxiliary ping-pong
- * render-target simulation (lilim's `tSim` + `simQuad` + `ensureSim`), which
- * `createShaderScene` has no support for; `terrain` is not a fragment-shader
- * mode at all but a separate 3D scene graph (its own `THREE.Scene`,
- * `PerspectiveCamera` and displaced heightfield mesh). Both would mean editing
- * `createShaderScene.tsx`, and every piece of module state that existed only to
- * feed them (`stamp`, `simOwner`, `scroll`, `ripplePos`, `splat`/`splatAng`) is
- * left out with them.
+ * Full display order (lilim's own authored order, six modes removed):
+ *
+ *   none, smear, droste, infinite, corridor, cube, planet, melt,
+ *   shatter, prism, breathe, mosh, sort, thresh, solar, halftone, vhs
+ *
+ * Four are still deliberately NOT ported — F212 in `docs/ISSUES.md` covers
+ * what a further phase needs. `coral` and `scanline`/`windows` could reuse
+ * the SAME `sim` plumbing melt/mosh now use (lilim's own sim shader already
+ * shares one buffer pair across all of them) at much lower incremental cost
+ * than melt/mosh paid to establish it, but are left out of this pass on
+ * purpose — coral's reaction-diffusion and windows/scanline's per-cell/
+ * per-row time-lag are a different character than the "fluid/reactive photo"
+ * ask that motivated this port. `terrain` is not a fragment-shader mode at
+ * all but a separate 3D scene graph (its own `THREE.Scene`,
+ * `PerspectiveCamera` and displaced heightfield mesh) — a materially larger,
+ * different piece of work, not a `sim`-shaped one.
  *
  * ## Mode renumbering — this port does NOT use lilim's branch indices
  *
@@ -41,15 +58,16 @@ import { useStore } from '../store'
  * port: this engine sets `uMode` to the **plain array index** into the
  * `modes` list declared in `SceneMetadata.contract` (see
  * `sceneParams.ts`'s `resolveSceneParams`), so the branch numbers here are
- * sequential 0..14 into {@link LIMITLESS_MODES} and bear no relation to
+ * sequential 0..16 into {@link LIMITLESS_MODES} and bear no relation to
  * lilim's own numbering.
  *
- * {@link LIMITLESS_MODES} keeps lilim's authored DISPLAY order with the six
- * excluded modes removed, which is why it reads `none, smear, droste,` then the
- * spatial batch, then the rest — lilim's own file header calls that order
- * "smear and droste lead, the spatial batch follows, everything else after".
- * `limitless.modes.test.ts` asserts the array's length, uniqueness, and that
- * every index 0..14 has a matching `uMode ==` branch in the shader source.
+ * {@link LIMITLESS_MODES} keeps lilim's authored DISPLAY order with the four
+ * still-excluded modes removed, which is why it reads `none, smear, droste,`
+ * then the spatial batch, then the rest — lilim's own file header calls that
+ * order "smear and droste lead, the spatial batch follows, everything else
+ * after". `limitless.modes.test.ts` asserts the array's length, uniqueness,
+ * and that every index 0..16 has a matching `uMode ==` branch in the shader
+ * source.
  *
  * ## Uniform collisions with SHADER_SCENE_PRELUDE — five, not one
  *
@@ -152,10 +170,10 @@ import { useStore } from '../store'
  * (a user picks "shatter" and sees "prism") is silent, and nothing else in this
  * repo's tooling can see it.
  *
- * Order is lilim's own authored display order with the six unported modes
- * (`windows`, `melt`, `terrain`, `mosh`, `coral`, `scanline`) removed. `none`
- * leads, so it is also the default mode: a photo scene whose first frame is the
- * photo, undistorted, is the right thing to open on.
+ * Order is lilim's own authored display order with the four still-unported
+ * modes (`windows`, `terrain`, `coral`, `scanline`) removed. `none` leads, so
+ * it is also the default mode: a photo scene whose first frame is the photo,
+ * undistorted, is the right thing to open on.
  */
 export const LIMITLESS_MODES = [
   'none', // 0
@@ -165,14 +183,16 @@ export const LIMITLESS_MODES = [
   'corridor', // 4
   'cube', // 5
   'planet', // 6
-  'shatter', // 7
-  'prism', // 8
-  'breathe', // 9
-  'sort', // 10
-  'thresh', // 11
-  'solar', // 12
-  'halftone', // 13
-  'vhs', // 14
+  'melt', // 7
+  'shatter', // 8
+  'prism', // 9
+  'breathe', // 10
+  'mosh', // 11
+  'sort', // 12
+  'thresh', // 13
+  'solar', // 14
+  'halftone', // 15
+  'vhs', // 16
 ] as const
 
 // Photo resize/encode constants (`PHOTO_MAX_EDGE`, `PHOTO_JPEG_QUALITY`) and
@@ -256,6 +276,33 @@ function makeTexture(source: HTMLImageElement | HTMLCanvasElement): THREE.Textur
 }
 
 /**
+ * The one `tSrc` texture object, shared between the main material's
+ * `uniforms()` and the sim's `sim.uniforms()`.
+ *
+ * Both factories are called exactly once each — `getSceneMaterial` and
+ * `getSimRT` (`createShaderScene.tsx`) both cache per (renderer, scene id),
+ * same as everything else this file relies on for `tSrc`'s own cross-mount
+ * persistence (see `syncPhoto`'s own doc). Handing both factories THE SAME
+ * texture OBJECT, rather than two separate ones pointed at the same image,
+ * means `syncPhoto` only ever has to mutate one thing — its `.image` swap
+ * (and, per F218, its `.dispose()`) reaches the sim shader for free, with no
+ * second sync path to keep correct.
+ *
+ * A plain module-level singleton rather than keyed by renderer: this app
+ * only ever has one live output-window renderer at a time by construction
+ * (see `outputLink.ts`'s own header), and a `THREE.Texture` is safe to share
+ * across renderer instances regardless — three tracks each renderer's own
+ * GPU-side upload for a texture object independently, so even the rare
+ * context-loss-remount case uploads correctly to the new renderer without
+ * this needing to change.
+ */
+let sharedPhotoTex: THREE.Texture | null = null
+function sharedPhotoTexture(): THREE.Texture {
+  if (!sharedPhotoTex) sharedPhotoTex = makeTexture(defaultPhoto())
+  return sharedPhotoTex
+}
+
+/**
  * Fragment shader.
  *
  * Exported so the mode test can read the branch numbers out of the real source
@@ -272,6 +319,10 @@ function makeTexture(source: HTMLImageElement | HTMLCanvasElement): THREE.Textur
  */
 export const FRAG = /* glsl */ `
   uniform sampler2D tSrc;
+  // Written by the engine's own sim step (spec.sim, createShaderScene.tsx)
+  // whenever melt/mosh's sim actually rendered this frame — see that
+  // field's own doc. Only melt/mosh sample it.
+  uniform sampler2D tSim;
   uniform float uPhotoAspect, uPhase, uSub, uHighs, uEnergy;
   uniform float uShock, uFall, uTwist, uBreak, uSep, uCells;
   uniform float uComplex, uFill, uContrast;
@@ -435,6 +486,12 @@ export const FRAG = /* glsl */ `
       }
 
     } else if (uMode == 7) {
+      // melt: display the advection simulation. The actual flow/re-stamp
+      // physics live in the sim shader (LIMITLESS_SIM_FRAG, via tSim) --
+      // this branch only shows its output.
+      col = texture2D(tSim, vUv).rgb;
+
+    } else if (uMode == 8) {
       // shatter: voronoi cells fly apart on uBreak
       float cells = uCells;
       vec2 g = uv * cells;
@@ -458,7 +515,7 @@ export const FRAG = /* glsl */ `
       col *= 0.3 + 0.7 * border;
       col += uGlow * (1.0 - border) * uBreak * 0.5;
 
-    } else if (uMode == 8) {
+    } else if (uMode == 9) {
       // prism: RGB channels tear apart along the image's own edges
       vec2 e = vec2(0.005, 0.0);
       vec2 grad = vec2(
@@ -471,7 +528,7 @@ export const FRAG = /* glsl */ `
       col.g = texture2D(tSrc, fit(uv + disp)).g;
       col.b = texture2D(tSrc, fit(uv + disp - sep)).b;
 
-    } else if (uMode == 9) {
+    } else if (uMode == 10) {
       // breathe: the realistic trip. The image never stops being the image;
       // everything is small, slow, and tied to what the picture already contains.
       // slow breathing: the centre swells gently and settles
@@ -501,7 +558,22 @@ export const FRAG = /* glsl */ `
       col.g = texture2D(tSrc, fit(fuv)).g;
       col.b = texture2D(tSrc, fit(fuv - fr)).b;
 
-    } else if (uMode == 10) {
+    } else if (uMode == 11) {
+      // mosh: the sim accumulates where the source moves (tSim.rg is a
+      // displacement field); sampling tSrc through that field drags the
+      // picture's own motion into smears. A little chromatic dispersion
+      // rides the drag direction, the same move the lens rack's own
+      // dispersion makes.
+      vec2 off = texture2D(tSim, vUv).rg;
+      float dm = length(off);
+      vec2 dir = dm > 1e-5 ? off / dm : vec2(0.0);
+      vec2 duv2 = uv + off;
+      col.r = texture2D(tSrc, fit(duv2 + dir * dm * 0.08)).r;
+      col.g = texture2D(tSrc, fit(duv2)).g;
+      col.b = texture2D(tSrc, fit(duv2 - dir * dm * 0.08)).b;
+      col += uAccent * min(1.0, dm * 5.0) * (0.06 + 0.22 * uHighs);
+
+    } else if (uMode == 12) {
       // sort: bright runs stretch into sorted streaks down their columns.
       // Threshold and cut points re-roll per kick (uSeed).
       float cols = 22.0 + 70.0 * clamp((uComplex - 0.3) / 1.5, 0.0, 1.0);
@@ -527,7 +599,7 @@ export const FRAG = /* glsl */ `
       col = mix(col, mx, stretch * 0.55);
       col += uGlow * stretch * 0.10;
 
-    } else if (uMode == 11) {
+    } else if (uMode == 13) {
       // thresh: screen-print posterize. Luminance slams into flat bands while
       // every pixel keeps its own hue, with an inked contour where bands meet.
       // Complexity sweeps the level count; a kick knocks it toward two for a
@@ -543,7 +615,7 @@ export const FRAG = /* glsl */ `
       float line = 1.0 - smoothstep(0.0, ew, min(band, 1.0 - band));
       col *= 1.0 - line * 0.65;
 
-    } else if (uMode == 12) {
+    } else if (uMode == 14) {
       // solar: solarize. Everything past the threshold flips negative; the
       // threshold wanders slowly so the flipped territory breathes, sub pulls it
       // deeper, and a kick widens the flip for a beat.
@@ -552,7 +624,7 @@ export const FRAG = /* glsl */ `
       vec3 m = smoothstep(th - 0.06, th + 0.06, s);
       col = mix(s, 1.0 - s, m);
 
-    } else if (uMode == 13) {
+    } else if (uMode == 15) {
       // halftone: a rotated dot screen, every dot carrying the image's own
       // colour at its cell. Complexity is the pitch, sub swells the dots, kicks
       // click the screen angle.
@@ -570,7 +642,7 @@ export const FRAG = /* glsl */ `
       col = s * m * 1.18;
 
     } else {
-      // vhs (uMode == 14): tape damage -- tracking wobble, a scrolling tear
+      // vhs (uMode == 16): tape damage -- tracking wobble, a scrolling tear
       // band, chroma bleeding sideways off a sharp luma, tape speckle, and the
       // head-switch mess at the bottom of the frame. Kicks slam the tracking.
       //
@@ -620,6 +692,78 @@ export const FRAG = /* glsl */ `
 `
 
 /**
+ * melt/mosh's sim shader — ported near-verbatim from lilim's own `simQuad`
+ * fragment (`lilim/scenes/limitless.js:592-704`, the `uSimMode == 0`/`== 1`
+ * branches only; lilim's `scanline`/`windows`/`coral` branches from that
+ * same shader are not ported, see the header on why).
+ *
+ * Fully self-contained — see `ShaderSceneSpec.sim`'s own doc in
+ * `createShaderScene.tsx` on why: no prelude, so every uniform (including
+ * `tPrev`, which the engine auto-binds to last frame's result before this
+ * runs) is declared here.
+ *
+ * `fitS()` is `fit()` from the main shader, copied rather than shared (a
+ * separate `ShaderMaterial` cannot `#include` a sibling's GLSL function) —
+ * kept in sync by hand, same discipline `PostFXChain`'s own duplicated
+ * helpers already require in this codebase. lilim's own version of this
+ * function also multiplied in a `uFlipX` term; dropped here for the same
+ * reason the main shader's `fit()` already dropped it (see the header — no
+ * camera source reaches this window, F213).
+ */
+export const LIMITLESS_SIM_FRAG = /* glsl */ `
+  precision highp float;
+  uniform sampler2D tPrev, tSrc;
+  uniform float uPhotoAspect, uAspect, uPhase, uFlow, uStamp, uFill;
+  uniform int uSimMode;
+  varying vec2 vUv;
+
+  vec2 fitS(vec2 p) {
+    return p * vec2(1.0 / uPhotoAspect, 1.0) * uFill + 0.5;
+  }
+  float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+  void main() {
+    vec2 p = (vUv - 0.5) * vec2(uAspect, 1.0);
+    // A slow, drifting flow field both modes below read from — ported
+    // verbatim from lilim, which is where the constants come from.
+    vec2 fl = vec2(
+      sin(p.y * 3.1 + uPhase * 1.3) + 0.6 * cos(p.x * 4.7 - uPhase),
+      sin(p.x * 3.7 - uPhase) + 0.6 * cos(p.y * 4.1 + uPhase * 0.8));
+
+    if (uSimMode == 0) {
+      // melt: advect history toward the flow, stamp the source back in on
+      // kicks (uStamp). The 0.997 decay keeps the advected image from
+      // building unbounded contrast over many frames of repeated blending.
+      vec3 prev = texture2D(tPrev, vUv - fl * 0.0016 * uFlow).rgb * 0.997;
+      vec3 src = texture2D(tSrc, fitS(p)).rgb;
+      gl_FragColor = vec4(mix(prev, src, uStamp * 0.35 + 0.0025), 1.0);
+
+    } else {
+      // mosh (uSimMode == 1): normal-flow accumulation. rg holds a
+      // displacement field, b remembers last frame's luminance. Where the
+      // source's own luminance is changing, its local luminance gradient
+      // steers a small optical-flow estimate that accumulates into the
+      // field; a kick (uStamp) zeroes it back to a clean keyframe. A
+      // whisper of the melt flow field keeps a still photo faintly alive.
+      vec4 prev = texture2D(tPrev, vUv);
+      float ln = lum(texture2D(tSrc, fitS(p)).rgb);
+      vec2 e = vec2(0.006, 0.0);
+      vec2 g = vec2(
+        lum(texture2D(tSrc, fitS(p + e.xy)).rgb) - lum(texture2D(tSrc, fitS(p - e.xy)).rgb),
+        lum(texture2D(tSrc, fitS(p + e.yx)).rgb) - lum(texture2D(tSrc, fitS(p - e.yx)).rgb));
+      float It = ln - prev.b;
+      vec2 v = -It * g / (dot(g, g) + 0.015);
+      vec2 off = prev.rg * 0.985
+        + clamp(v, vec2(-0.06), vec2(0.06)) * uFlow * 0.35
+        + fl * 0.00035 * uFlow;
+      off *= 1.0 - uStamp;
+      off = clamp(off, vec2(-0.45), vec2(0.45));
+      gl_FragColor = vec4(off, ln, 1.0);
+    }
+  }
+`
+
+/**
  * Per-instance mutable state.
  *
  * Every field here was a module-level `let` in lilim, which is single-instance
@@ -635,10 +779,19 @@ export const FRAG = /* glsl */ `
 interface LimitlessState {
   /** Speed-scaled, audio-reactive phase. lilim's `phase`. */
   phase: number
+  /** Slewed `s.mids` — feeds `phase`'s own reactive swing. Found in a
+   *  systematic audit (2026-09-11) for the "raw band drives an accumulating
+   *  rate" pattern already fixed live twice this session (GyroidFluxScene,
+   *  JavaZoneLatticeScene). */
+  midsEnv: number
   /** Kick shock, decaying — smear ripple, sort stretch, thresh/solar/vhs. */
   shock: number
   /** The dive, unbounded — droste, infinite, corridor, cube. */
   fall: number
+  /** Slewed `s.sub` — feeds `fall`'s swing and `pulseDepth`'s dive rate,
+   *  same audit as `midsEnv` above. Shared between the two since both read
+   *  the same band. */
+  subEnv: number
   /** droste twist, and the target it eases toward. */
   twist: number
   twistTarget: number
@@ -658,6 +811,16 @@ interface LimitlessState {
   seed: number
   /** infinite/corridor/cube's travelling light, parked far below zero. */
   pulseDepth: number
+  /** melt/mosh's shared re-stamp/reset envelope. 1.5 forces a fresh re-seed
+   *  from `tSrc`; decays toward 0 the same way `st.shock` does. lilim's
+   *  `stamp`, shared across every sim-buffer mode there — here it is only
+   *  ever melt or mosh, which is why one field (not a map) is enough. */
+  stamp: number
+  /** Which mode ('melt' | 'mosh' | '') last owned the sim buffer — a
+   *  mismatch forces a re-stamp so switching between them (or away and
+   *  back) never blends into whatever state the buffer was left holding.
+   *  lilim's `simOwner`. */
+  simOwner: string
   /**
    * The `limitlessPhoto` value this instance last acted on.
    *
@@ -681,12 +844,32 @@ interface LimitlessState {
  * is a per-frame callback outside React — the same one-shot read
  * `GradePass`/`PostFXChain` use for palette state.
  *
- * The texture object is created once in `uniforms()` and then REUSED — only its
- * `.image` is swapped. That is deliberate: `tSrc` lives in a material shared
- * across simultaneous mounts, so allocating a replacement texture per photo
- * raises an ownership question (which instance may dispose the outgoing one,
- * and is the other still pointing at it) that swapping the image simply does
- * not have. It also means no disposal path is needed at all.
+ * The texture OBJECT is created once in `uniforms()` and then REUSED — only
+ * its `.image` is swapped. That is deliberate: `tSrc` lives in a material
+ * shared across simultaneous mounts, so allocating a replacement TEXTURE
+ * OBJECT per photo raises an ownership question (which instance may dispose
+ * the outgoing one, and is the other still pointing at it) that swapping the
+ * image simply does not have.
+ *
+ * `tex.dispose()` right before every swap IS still required, though, and for
+ * a completely different reason than object ownership: found live (F218) by
+ * dropping a real, non-square photo and watching the browser's own GL log,
+ * not by reading the code. Once a WebGL2 texture has been uploaded once, three
+ * reuses its EXISTING, FIXED-SIZE GPU storage on every later `needsUpdate` —
+ * `texSubImage2D` into the old allocation — rather than reallocating for the
+ * new image's own size. That is a legitimate fast path for something like a
+ * same-resolution video frame; it silently breaks the moment the swapped-in
+ * image is a DIFFERENT size than whatever was uploaded before, which for a
+ * user-dropped photo is the common case, not the exception — the placeholder
+ * this starts on is a fixed 512x512 (`defaultPhoto()`), and almost no real
+ * photo shares that. The old, now-too-small allocation cannot hold the new
+ * pixels, the driver logs `GL_INVALID_VALUE: ...Offset overflows texture
+ * dimensions` and drops the write, and — because a failed GPU upload throws
+ * nothing catchable — `tex.image` and `uPhotoAspect` both update correctly
+ * while the SCREEN keeps showing whatever was uploaded last, looking exactly
+ * like the sync never happened at all. `dispose()` clears three's cached GPU
+ * handle for this texture, forcing the next upload to allocate fresh at the
+ * new image's real size instead of writing into the old one.
  */
 function syncPhoto(u: Record<string, THREE.IUniform>, st: LimitlessState): void {
   const url = useStore.getState().limitlessPhoto
@@ -699,6 +882,7 @@ function syncPhoto(u: Record<string, THREE.IUniform>, st: LimitlessState): void 
   if (!url) {
     // Back to the generated placeholder. Deterministic, so this is byte-for-byte
     // the picture the scene booted with — see defaultPhoto()'s own note.
+    tex.dispose()
     tex.image = defaultPhoto()
     tex.needsUpdate = true
     u.uPhotoAspect.value = 1
@@ -709,6 +893,7 @@ function syncPhoto(u: Record<string, THREE.IUniform>, st: LimitlessState): void 
   img.onload = () => {
     // A newer photo (or a clear) landed while this one was decoding.
     if (st.photoToken !== token) return
+    tex.dispose()
     tex.image = img
     tex.needsUpdate = true
     const w = img.naturalWidth || img.width || 1
@@ -755,12 +940,28 @@ export const LimitlessScene = createShaderScene<LimitlessState>({
   // resolution while `smear` would not — and `createShaderScene` supports it
   // (see `MazeFlightScene`). Deliberately not done tonight: it cannot be
   // tuned without looking at it. Logged as F214.
+  //
+  // Also NOT accounted for here: melt/mosh's own sim pass (`spec.sim`,
+  // added this session for F212) is a SEPARATE fullscreen render, sized off
+  // lilim's own 0.6x-drawing-buffer choice independently of this budget —
+  // see `createShaderScene.tsx`'s own doc on `sim`. Only pays its cost while
+  // melt or mosh is the actual active mode (`sim.update` returns `false`
+  // otherwise, skipping the render entirely), so it does not raise the
+  // estimate above for the other 15 modes — but a real `/bench` pass should
+  // measure melt/mosh specifically with this in mind, not assume the same
+  // number covers every mode.
   pixelBudget: 1.8,
   uniforms: () => ({
-    // Created here, not at module scope: this touches the DOM and allocates a
-    // texture, and a lazily-imported scene chunk must cost nothing merely by
-    // being imported. `getSceneMaterial` calls this once per renderer.
-    tSrc: { value: makeTexture(defaultPhoto()) },
+    // Lazily created (touches the DOM, allocates a texture — a
+    // lazily-imported scene chunk must cost nothing merely by being
+    // imported) and shared with `sim.uniforms()` below — see
+    // `sharedPhotoTexture`'s own doc for why they must be the SAME object.
+    tSrc: { value: sharedPhotoTexture() },
+    // Written every frame by the engine's own sim step (createShaderScene's
+    // `spec.sim` support) whenever melt/mosh actually rendered this frame —
+    // see `sim.update` below, which skips the render (and leaves this at
+    // its last value) on every other mode.
+    tSim: { value: null },
     uPhotoAspect: { value: 1 },
     uPhase: { value: 0 },
     uSub: { value: 0 },
@@ -784,10 +985,64 @@ export const LimitlessScene = createShaderScene<LimitlessState>({
     uPulse: { value: -30 },
     uShape: { value: 0 },
   }),
+  sim: {
+    frag: LIMITLESS_SIM_FRAG,
+    uniforms: () => ({
+      // The SAME texture object `uniforms()` above uses — see
+      // `sharedPhotoTexture`'s own doc.
+      tSrc: { value: sharedPhotoTexture() },
+      uPhotoAspect: { value: 1 },
+      uAspect: { value: 1 },
+      uPhase: { value: 0 },
+      uFlow: { value: 1 },
+      uStamp: { value: 1.5 },
+      uFill: { value: 0.75 },
+      uSimMode: { value: 0 },
+    }),
+    update({ u, mainU, s, P, st, dt }) {
+      // Only melt/mosh ever sample tSim — every other mode pays nothing for
+      // this pass beyond the uniform writes below, `false` skips the actual
+      // render (see createShaderScene.tsx's own doc on the return value).
+      const isMosh = P.mode === 'mosh'
+      if (!isMosh && P.mode !== 'melt') return false
+
+      // Switching modes — including melt <-> mosh, which share one buffer —
+      // always re-stamps from tSrc, the same reseed lilim's own `ensureSim`/
+      // `simOwner` check does, so stale state from whichever mode last owned
+      // the buffer never bleeds into the other.
+      if (st.simOwner !== P.mode) {
+        st.simOwner = P.mode
+        st.stamp = 1.5
+      }
+      if (s.onKick) st.stamp = Math.min(1.5, st.stamp + 1.2 * s.onKick) // re-stamp / keyframe
+      st.stamp *= Math.exp(-dt * 4.5)
+
+      const spF = drastic(P.speed)
+      const cxF = 0.3 + 1.5 * P.complexity
+      u.uSimMode.value = isMosh ? 1 : 0
+      // mainU's own uPhotoAspect/uAspect, not re-derived: `uPhotoAspect` is
+      // set once per photo by `syncPhoto` (main `update`, below) and
+      // `uAspect` by the engine from the render-buffer size — both already
+      // correct on mainU, and re-reading them here (rather than duplicating
+      // the write) can only ever lag by the one frame this same-tick photo
+      // swap ordering already costs elsewhere in this file.
+      u.uPhotoAspect.value = mainU.uPhotoAspect.value
+      u.uAspect.value = mainU.uAspect.value
+      // lilim's sim ran its own phase 6x the main one — a faster flow field
+      // than the rest of the scene's motion, ported as-is.
+      u.uPhase.value = st.phase * 6.0
+      u.uFlow.value = (0.5 + s.sub * 2.2) * spF * cxF
+      u.uStamp.value = Math.min(1, st.stamp)
+      u.uFill.value = 1.15 - 0.8 * P.fill
+      return true
+    },
+  },
   state: () => ({
     phase: 0,
+    midsEnv: 0,
     shock: 0,
     fall: 0,
+    subEnv: 0,
     twist: 0.4,
     twistTarget: 0.4,
     breakEnv: 0,
@@ -798,13 +1053,19 @@ export const LimitlessScene = createShaderScene<LimitlessState>({
     lastSlide: -30,
     seed: 0,
     pulseDepth: -30,
+    stamp: 1.5,
+    simOwner: '',
     photoUrl: undefined,
     photoToken: 0,
   }),
   update({ u, s, P, st, dt, t }) {
     const spF = drastic(P.speed)
     const cxF = 0.3 + 1.5 * P.complexity
-    st.phase += dt * (0.035 + s.mids * 0.09) * spF
+    // Both bands slewed before they multiply into an accumulator — see
+    // `midsEnv`/`subEnv`'s own doc for why.
+    st.midsEnv = slew(st.midsEnv, s.mids, dt, 3, 3)
+    st.subEnv = slew(st.subEnv, s.sub, dt, 3, 3)
+    st.phase += dt * (0.035 + st.midsEnv * 0.09) * spF
 
     syncPhoto(u, st)
 
@@ -837,7 +1098,7 @@ export const LimitlessScene = createShaderScene<LimitlessState>({
     st.shock *= Math.exp(-dt * 2.2)
     st.breakEnv *= Math.exp(-dt * (0.4 + (1 - s.energy) * 1.6)) // reassembles in quiet
     st.sepBurst *= Math.exp(-dt * 3.5)
-    st.fall += dt * (0.1 + s.sub * 0.45) * spF
+    st.fall += dt * (0.1 + st.subEnv * 0.45) * spF
     st.twist += (st.twistTarget - st.twist) * (1 - Math.exp(-dt * 4))
 
     // breathe: the lung follows a slow LFO, sub deepens each inhale. A strong
@@ -864,7 +1125,7 @@ export const LimitlessScene = createShaderScene<LimitlessState>({
     u.uCells.value = 4 + Math.round(P.complexity * 10)
     u.uSeed.value = st.seed
     if (st.pulseDepth > -30) {
-      st.pulseDepth += dt * (4 + s.sub * 4) * spF
+      st.pulseDepth += dt * (4 + st.subEnv * 4) * spF
       if (st.pulseDepth > 40) st.pulseDepth = -30
     }
     u.uPulse.value = st.pulseDepth

@@ -136,6 +136,24 @@ const STALE_TARGET_SEC = 25
 const PALETTE_MIN_SEC = 10
 
 /**
+ * Floor between automatic MODE variations on the scene already showing.
+ *
+ * Requested directly ("any way to automate the modes for limitless?") —
+ * `pickVariedMode` already existed and already ran on every scene SWITCH
+ * (see the drop pre-arm and the scene-pick trigger below, both unchanged by
+ * this), but nothing ever varied a mode on a scene the show was already
+ * settled on, so a long stay on one multi-mode scene (Limitless's own 17)
+ * never moved beyond whichever mode it entered on.
+ *
+ * Longer than `PALETTE_MIN_SEC`: a mode swap changes the actual physics
+ * applied to the image (Limitless's `melt` vs `droste` are a bigger visual
+ * commitment than a colour regrade), so it should read as a real occasion
+ * — roughly "every other section" rather than every one — not strobe at the
+ * same cadence recolouring does.
+ */
+const MODE_VARY_MIN_SEC = 20
+
+/**
  * Which palette to move to, or null when there is nowhere to go.
  *
  * Pure and exported for tests. The guarantee that matters is that it never
@@ -274,6 +292,8 @@ export function AutoPilot() {
   const prevDrop = useRef(false)
   const lastPaletteAt = useRef(-Infinity)
   const lastPalettePick = useRef('')
+  /** See {@link MODE_VARY_MIN_SEC}'s own doc. */
+  const lastModeVaryAt = useRef(-Infinity)
   /** `repetitionLabel -> paletteId` recall — see {@link pickPaletteWithRecall}.
    *  A plain mutable ref, matching this component's other palette-cadence
    *  state (`lastPalettePick`, `paletteRotation`) rather than a module-level
@@ -446,6 +466,37 @@ export function AutoPilot() {
         lastPalettePick.current = pick
         lastPaletteAt.current = f.time
         s.setPalette(pick, { auto: true })
+      }
+    }
+
+    // --- Mode: vary the CURRENT scene's own look on the same structural ------
+    // boundaries the palette above reacts to, rather than only ever setting a
+    // mode when the scene itself is first switched to (the drop pre-arm and
+    // scene-pick trigger below already do that; this is what happens while
+    // the show simply stays on one scene for a while).
+    //
+    // `target === null` — deliberately narrower than the palette trigger just
+    // above, which recolours even when a scene switch is also in flight. A
+    // scene switch already gives its INCOMING scene a fresh mode of its own
+    // (`nextMode`/`armMode` below); varying the OUTGOING one's mode on the
+    // same frame it is about to be replaced would be wasted work nobody
+    // sees. `!s.pendingSceneId` is the same reasoning for a switch already
+    // committed but not yet warm.
+    //
+    // `pickVariedMode` itself is the reason this needs no "does this scene
+    // even have modes" guard here: it returns `undefined` for a scene with
+    // fewer than two declared modes (most of the roster), which is simply
+    // not acted on below.
+    if (
+      target === null &&
+      !s.pendingSceneId &&
+      (f.sectionChange || structureRecolour) &&
+      f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC
+    ) {
+      const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++)
+      if (mode) {
+        lastModeVaryAt.current = f.time
+        s.setSceneMode(s.sceneId, mode, { auto: true })
       }
     }
 

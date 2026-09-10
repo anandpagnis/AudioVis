@@ -91,7 +91,19 @@ export function SceneParamsPanel() {
       {modes && (
         <div className="param-row">
           <span>Mode</span>
-          <div className="quality-row">
+          {/* `mode-row` on top of `quality-row`: `quality-row` alone is a
+              single unwrapped flex line everywhere else it is used (a
+              handful of fixed items — quality tiers, layer targets — that
+              always fit). A scene's own mode list is unbounded (Limitless
+              alone declares 17) and does not fit one line, and the
+              unwrapped overflow used to spill sideways into a scrollbar
+              that plain mouse-wheel scrolling cannot reach (only Shift+wheel
+              scrolls a horizontal overflow) — reading as "scroll doesn't
+              work". `.mode-row` (console.css) wraps this one row onto as
+              many lines as it needs instead, so it grows the panel
+              vertically, which the panel's own already-working vertical
+              scroll handles normally. */}
+          <div className="quality-row mode-row">
             {modes.map((m) => (
               <button
                 key={m}
@@ -123,6 +135,16 @@ export function SceneParamsPanel() {
             onDoubleClick={() =>
               useStore.getState().setSceneParam(target.id, key, declared?.[key] ?? DEFAULT_PARAM_VALUE)
             }
+            // Blurs rather than doing nothing — same fix Console.tsx's own
+            // `BigSlider`/`FxSlider` already carry, for the same reason
+            // (their own onWheel doc): Safari changes a FOCUSED range input's
+            // value on wheel/trackpad scroll instead of letting the scroll
+            // reach the section underneath, and this panel is now mounted in
+            // a scrollable Console column dense with exactly these sliders.
+            // This panel's inputs are plain (not routed through either
+            // shared component), so they need the same guard applied
+            // directly rather than inheriting it.
+            onWheel={(e) => e.currentTarget.blur()}
           />
           <em>{resolved[key].toFixed(2)}</em>
         </label>

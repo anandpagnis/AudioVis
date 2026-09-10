@@ -102,8 +102,17 @@ describe('LIMITLESS_MODES <-> shader branch correspondence', () => {
     expect(LIMITLESS_MODES[0]).toBe('none')
   })
 
-  it('excludes every mode that needs an unbuilt engine primitive (F210)', () => {
-    const excluded = ['melt', 'mosh', 'coral', 'scanline', 'windows', 'terrain']
+  it('includes melt and mosh, now that spec.sim exists (F212)', () => {
+    expect(LIMITLESS_MODES as readonly string[]).toContain('melt')
+    expect(LIMITLESS_MODES as readonly string[]).toContain('mosh')
+  })
+
+  it('still excludes every mode that needs an engine primitive melt/mosh did not build (F212)', () => {
+    // coral/scanline/windows could reuse spec.sim's own ping-pong plumbing at
+    // much lower cost now that it exists — still not ported, see the
+    // header's own note on why. terrain is a separate 3D scene graph, not a
+    // sim-shaped gap at all.
+    const excluded = ['coral', 'scanline', 'windows', 'terrain']
     for (const mode of excluded) {
       expect(LIMITLESS_MODES as readonly string[]).not.toContain(mode)
     }

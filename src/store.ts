@@ -1177,7 +1177,33 @@ export const useStore = create<AppState>()(
         // Dropped, not remapped: a mode change can make a parameter inert, and
         // a stored inert value would silently reappear on the way back. The
         // scene's defaults for the new mode are the honest starting point.
-        set({ sceneModes: { ...s.sceneModes, [sceneId]: next } })
+        //
+        // BOTH fields, not just `sceneModes` (F219): this store's own
+        // `SceneParams` (from `scenes/contract.ts`) is a DIFFERENT type from
+        // `engine/sceneParams.ts`'s same-named one — a genuine split between
+        // two systems built independently (see that module's own header on
+        // the same split affecting `resolveSceneParams`). `createShaderScene`
+        // -based scenes (every scene with a `uMode` shader branch, Limitless
+        // included) get `P.mode`/`P.modeIndex` from `useSceneParams`, which
+        // reads `sceneParams[id].mode` — NOT `sceneModes`. Before this fix,
+        // this action updated only the field nothing in that path ever reads:
+        // confirmed live, `setSceneMode` succeeding and `sceneModes[id]`
+        // changing while the actually-rendering scene's own `P.mode` stayed
+        // on whatever it booted with, forever — which silently broke every
+        // manual or `AutoPilot`-driven mode switch for every scene built this
+        // way, not just this session's own melt/mosh addition. The type
+        // assertion is real, not a workaround: the object gains a `mode`
+        // property `scenes/contract.ts`'s own functions (`sanitizeSceneParams`
+        // et al.) never look at — they iterate `SCENE_PARAM_KEYS` explicitly,
+        // so an extra key already sitting on the object structurally cannot
+        // reach them.
+        set({
+          sceneModes: { ...s.sceneModes, [sceneId]: next },
+          sceneParams: {
+            ...s.sceneParams,
+            [sceneId]: { ...s.sceneParams[sceneId], mode: next } as SceneParams,
+          },
+        })
       },
 
       resetSceneParams: (sceneId) =>

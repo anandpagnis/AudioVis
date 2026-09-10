@@ -311,6 +311,24 @@
   min-height: 0;
 }
 
+/* Post FX is always the last section, and the grid above is a fixed 4
+   columns — with `Params` now unconditionally mounted alongside the
+   already-conditional `Photo` panel, the section count varies between 5
+   (no Photo) and 6 (Limitless + Photo), and either way overflows one row.
+   Left at its default single column, the wrapped section landed alone with
+   up to 3 empty column-widths of dead space beside it — worse the more the
+   grid happened to under-fill.
+   Spanning 3 columns instead of fighting that: at 5 sections it still wraps
+   alone but the gap shrinks to one column; at 6, it lands beside `Look` in
+   the auto-placement cursor's next free 3-column run and the row fills
+   exactly, no gap at all. `Post FX` benefits from the width regardless —
+   it is the single densest column (bloom/glitch/vignette/fog/trails, then
+   the mirror and lens racks), so the extra room reads as this section
+   finally getting room to breathe, not as a filler trick. */
+.console-section:last-of-type {
+  grid-column: span 3;
+}
+
 .console-section {
   display: flex;
   flex-direction: column;
@@ -795,6 +813,17 @@
   align-items: center;
   gap: 10px;
   margin-top: auto;
+}
+
+/* `SceneParamsPanel`'s own Mode row — see the component's own comment on why
+   this needs to wrap where every other `.quality-row` user (a handful of
+   fixed items) does not. `margin-top: auto` above is dropped rather than
+   inherited: that rule exists to push a `.quality-row` to the bottom of a
+   taller sibling stack (the quality-tier row in the Look column), which is
+   not this row's context and would misplace a wrapped multi-line block. */
+.mode-row {
+  flex-wrap: wrap;
+  margin-top: 0;
 }
 
 .segmented {

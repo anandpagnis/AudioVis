@@ -77,6 +77,7 @@ import {
 import { resizeAndEncodePhoto } from '../engine/limitlessPhoto'
 import { selectableStyles } from '../engine/transitions'
 import { DEBUG_POSTFX_KEYS, type DebugPostFx, type DebugPostFxKey } from '../store'
+import { SceneParamsPanel } from './SceneParamsPanel'
 
 /**
  * The DJ-facing control surface.
@@ -107,6 +108,19 @@ export function Console() {
       <div className="console-body">
         <Section title="Scene">
           <SceneGrid tele={tele} />
+        </Section>
+        {/* The scene's own named modes and seven-key dial vocabulary
+            (`SceneParamKey` — speed/shape/complexity/density/fill/tilt/
+            contrast), NOT `LookControls`' three GLOBAL params below (those
+            are `intensity`/`speed`/`reactivity`, a different, scene-agnostic
+            concept entirely). `SceneParamsPanel` (`ui/SceneParamsPanel.tsx`)
+            was previously mounted only in `HUD.tsx`, which turned out (F219)
+            not to be reachable anywhere in the running app at all — this is
+            that panel restored to a window an operator can actually see,
+            unconditionally rather than gated on any one scene, since it is
+            generic over whichever scene (and layers) are actually active. */}
+        <Section title="Params">
+          <SceneParamsPanel />
         </Section>
         {/* Shown only while `limitless` is the actual primary — a photo does
             nothing for any other scene, and a drop zone with nowhere to send
@@ -861,8 +875,15 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
           under the static one. They also sit OUTSIDE the `fx-block` below,
           because a filter fire is not a Post FX override at all — the
           director fires these whether or not anyone is driving the chain by
-          hand, and a hand fire is one more flourish through the same queue. */}
-      <IsfFilters tele={tele} />
+          hand, and a hand fire is one more flourish through the same queue.
+
+          ISF filters are scoped to Limitless (`FilterDirector.tsx`'s own
+          gate) — same reasoning `PhotoDrop`'s gate a few lines up already
+          gives for the same `tele?.scene` check: a control with nowhere to
+          land reads as broken rather than merely irrelevant, and here it
+          would be worse than inert — a click while the gate refuses it
+          silently does nothing, no different from a dead button. */}
+      {tele?.scene === 'limitless' && <IsfFilters tele={tele} />}
       {/* Live readout of everything below, reported rather than computed for
           the same reason `IsfFilters` above is: this window cannot see
           `performanceState` (it runs in a separate window with no engine at

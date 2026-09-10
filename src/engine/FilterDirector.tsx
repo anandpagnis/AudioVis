@@ -318,7 +318,17 @@ export function FilterDirector() {
     // the director CHOOSING one while leaving both the manual path
     // (`manualId`, passed independently below) and the natural finish of an
     // already-live flourish untouched. See that constant's own doc.
+    // ISF filters are scoped to Limitless: a distortion filter reads as
+    // punctuation on the photo scene it was built alongside, not as a random
+    // overlay on top of whatever else the show happens to be showing. Gates
+    // BOTH paths the same way — the manual pick below as well as `fired`
+    // here — since the question a scene mismatch raises ("does a filter make
+    // sense on what's actually on screen") applies just as much to a hand
+    // click as to the autonomous rotation.
+    const onLimitless = p.activeScene === 'limitless'
+
     const suppressed =
+      !onLimitless ||
       !ISF_AUTOFIRE_ENABLED ||
       !s.autoPilot ||
       s.status !== 'running' ||
@@ -334,7 +344,7 @@ export function FilterDirector() {
       mood: f.mood.state,
       lastId: lastId.current,
       rotation: rotation.current,
-      manualId,
+      manualId: onLimitless ? manualId : null,
     })
 
     // Runs for a manual fire exactly as for an autonomous one — a hand pick
