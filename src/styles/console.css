@@ -25,6 +25,13 @@
   display: grid;
   grid-template-rows: auto 1fr;
   height: 100vh;
+  /* Never the scroll surface itself — see the file header. `.console-body`'s
+     `min-height: 0` (and each `.console-section`'s own) is what lets the `1fr`
+     row actually clip to the remaining viewport height instead of growing to
+     fit content; this `hidden` is the belt that keeps that clip real rather
+     than relying on nobody ever removing that `min-height: 0` somewhere down
+     the chain. Each section scrolls itself — see `.console-section`. */
+  overflow: hidden;
   gap: 14px;
   padding: 14px;
   color: #e2e7ee;
@@ -324,7 +331,14 @@
    exactly, no gap at all. `Post FX` benefits from the width regardless —
    it is the single densest column (bloom/glitch/vignette/fog/trails, then
    the mirror and lens racks), so the extra room reads as this section
-   finally getting room to breathe, not as a filler trick. */
+   finally getting room to breathe, not as a filler trick.
+
+   Desktop-only: authored against this 4-column grid specifically, so both
+   narrower breakpoints below reset it to `span 1` — demanding 3 columns from
+   a grid that only HAS 1 or 2 forces the browser to synthesize a phantom
+   implicit column just to satisfy the span, which is what was quietly
+   skewing the whole row's widths there (a 2-column `1fr 1fr` grid rendering
+   as three unequal tracks). */
 .console-section:last-of-type {
   grid-column: span 3;
 }
@@ -901,22 +915,6 @@
   color: #fff;
 }
 
-/* A narrow control window stops being a console and becomes a list: let it
-   scroll rather than crushing the hit targets below usable size. */
-@media (max-width: 1100px) {
-  .console-top {
-    grid-template-columns: 1fr;
-  }
-  .console-body {
-    grid-template-columns: 1fr;
-  }
-  .console {
-    overflow: auto;
-    height: auto;
-    min-height: 100vh;
-  }
-}
-
 /* ---------- post fx ---------- */
 
 /* Inert, not hidden. The values still read correctly while the directors are
@@ -1086,23 +1084,35 @@
 }
 
 /* Four columns is the widescreen case; below that the console stops being a
-   console and becomes a list, so let it scroll rather than crushing targets. */
+   console and becomes a list — fewer, wider columns, same fixed-height shell.
+   `.console` and `.app-control` are deliberately untouched here: see
+   `.console`'s own `overflow: hidden` comment for why letting either of them
+   become the scroll surface breaks per-section scrolling instead of fixing
+   it. This query used to do exactly that, and it is not an edge case: a
+   MacBook Air's own logical width (1280-1470px) falls inside it. */
 @media (max-width: 1500px) {
   .console-body {
     grid-template-columns: 1fr 1fr;
   }
-  .console {
-    overflow: auto;
-    height: auto;
-    min-height: 100vh;
+  /* Only two real columns here — see `.console-section:last-of-type`'s own
+     comment for why this must not stay at `span 3`. */
+  .console-section:last-of-type {
+    grid-column: span 1;
   }
-  /* `.console` growing past 100vh here is the point — but `.app-control`
-     (its fixed, inset:0 parent) was still `overflow: hidden` unconditionally,
-     so the extra height had nowhere to go: clipped by the parent with no
-     scrollbar anywhere, `.console`'s own `overflow: auto` never even reached
-     by content since its box grows to fit rather than clipping itself. */
-  .app-control {
-    overflow-y: auto;
+}
+
+/* Narrower still: one column, even more room per section. MUST come AFTER the
+   1500px query above — both match at once below 1100px, same specificity, so
+   whichever is declared LAST wins the cascade for `.console-body`. This used
+   to be declared first, so its single-column collapse never actually applied:
+   the 1500px query's `1fr 1fr` always won, and every section was squeezed
+   into a fraction of the room this breakpoint exists to give it. */
+@media (max-width: 1100px) {
+  .console-top {
+    grid-template-columns: 1fr;
+  }
+  .console-body {
+    grid-template-columns: 1fr;
   }
 }
 
