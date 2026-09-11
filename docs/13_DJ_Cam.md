@@ -5,8 +5,11 @@
 A rare broadcast-style cutaway: at a genuine high point of the set the AI
 director drops the synthetic show and cuts to a **live camera of the DJ**, holds
 it through the moment, then eases back to a real scene. There is also a manual
-"Cut to DJ Cam" punch button on the Console for live use and for tuning the
-look.
+"Cut to DJ Cam" punch button on the Console for live use.
+
+The feed itself is deliberately undecorated — no baked-in grade. Specific looks
+(filters, etc.) are a separate, later addition, layered on through the show's
+own filter system rather than hand-tuned into the scene's shader.
 
 **Naming.** This is _not_ `CameraDirector` (`06_Camera_Director.md`), which runs
 3D virtual-camera moves per scene. DJ Cam replaces the whole frame with a webcam
@@ -19,7 +22,7 @@ feed.
 | File                                | Role                                                                                                                                                                                                                                                                                                                      |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine/djCamSource.ts`             | Module singleton. Owns the `MediaStream` + one shared offscreen `<video>`. `acquire()` runs `getUserMedia` in the **control window** inside a click and hands the stream to the output window via `outputLink.handSource({kind:'camera'})`. Mirrors the mic path (already-denied pre-check, `withTimeout`, `startToken`). |
-| `scenes/DjCamScene.tsx`             | Hand-written R3F scene, id `djcam`. Fullscreen `VideoTexture` quad + a broadcast-grade fragment shader (cover-fit, 2.39:1 letterbox, vignette, desaturation, contrast lift, faint energy-tied grain). Opaque. Reads `ctx.state.djCam.releasing` to fade **itself** to black on the way out.                               |
+| `scenes/DjCamScene.tsx`             | Hand-written R3F scene, id `djcam`. Fullscreen `VideoTexture` quad, cover-fit only — no grade. Opaque. Reads `ctx.state.djCam.releasing` to fade **itself** to black on the way out.                                                                                                                                       |
 | `engine/DjCamDirector.tsx`          | Decide-band director, `useFrame(-87)`. Pure `advanceDjCam(opts)` (enter/hold/exit decision) + a thin wrapper that applies it and owns the exit choreography. Sole writer of `performanceState.djCam`.                                                                                                                     |
 | `engine/performanceState.ts`        | `djCam: { active, since, manual, releasing }`.                                                                                                                                                                                                                                                                            |
 | `store.ts`                          | `djCamEnabled` (persisted opt-in), `djCamDeviceId` / `djCamDevices` (device picker), `pendingDjCam` / `djCamRequestNonce` + `requestDjCam()` / `clearDjCamRequest()` (the manual punch, a one-shot channel copied from `pendingFilterId`).                                                                                |
@@ -55,7 +58,7 @@ pinned by `djCamDirector.test.ts`.
 ## How it enters and leaves
 
 `dipToBlack` (the plan's first choice) is in the engine's `DISABLED_STYLES` and
-coerces to `dissolve`, which ghosts the opaque letterboxed feed. So:
+coerces to `dissolve`, which ghosts an opaque feed. So:
 
 - **Enter — hard cut.** `requestScene('djcam', { immediate: true })`. The right
   edit on a drop, and ghost-free because it never overlaps.
@@ -67,7 +70,7 @@ coerces to `dissolve`, which ghosts the opaque letterboxed feed. So:
   `DjCamScene` ramps its own output to black over `DJCAM_EXIT_FADE_SEC` (**0.6 s**).
   The return scene is requested **non-immediate**, so it commits on a downbeat
   and dissolves up from a frame that is already fully black — smooth, and
-  ghost-free because nothing of the feed is left to bleed through the bars. The
+  ghost-free because nothing of the feed is left to bleed through. The
   32-beat floor exists precisely so the `djcam` subject has cleared
   `MIN_SUBJECT_DWELL_BEATS` (32) and that non-immediate request is accepted; a
   short manual hold falls back to an immediate cut from the already-black feed.
@@ -80,21 +83,14 @@ While `djCam.active` (which stays true through the release fade) `AutoPilot`,
 
 ---
 
-## Tuning the grade
+## Looks — deliberately not here
 
-`djcam` carries a Scene Contract whose neutral 0.5 position **is** the locked
-cinemascope look. Five dials, live from the Console:
-
-| Dial (contract key)           | Effect                                                            |
-| ----------------------------- | ----------------------------------------------------------------- |
-| `fill` — "letterbox"          | bar thickness (0.5 → 2.39:1; higher → tighter; far enough → gone) |
-| `shape` — "vignette"          | radial darkening (human-only; `sceneSteer` declines `shape`)      |
-| `complexity` — "desaturation" | pull toward luma (0.5 → ~15%)                                     |
-| `density` — "grain"           | film-grain amplitude (further scaled by `energy`)                 |
-| `contrast`                    | S-curve lift about mid-grey (0.5 → ~1.12×)                        |
-
-`?djcam=on` enables auto **and** punches one cutaway on load, so the grade can
-be iterated on without waiting for a real drop.
+`djcam` has no Scene Contract and no baked-in grade — the shader is cover-fit
+plus the fade, nothing else. Any look (a filter, a colour treatment, etc.) is a
+separate, later addition through the show's own filter system, not a dial on
+this scene. `?djcam=on` enables auto **and** punches one cutaway on load, so
+the raw feed / hand-off / choreography can be iterated on without waiting for a
+real drop.
 
 ---
 
@@ -107,10 +103,12 @@ be iterated on without waiting for a real drop.
 - `outputLink.test.ts`, `canHoldPrimary.test.ts`, `registry.test.ts` — the
   cross-window wiring, the picker exclusion, and that `djcam` never reaches an
   automatic pool.
-- Live: `npm run dev`, Console → connect a camera, punch "Cut to DJ Cam", tune
-  the grade dials, punch back. For the auto path, play a track with a clear
-  build→drop with `djCamEnabled` on.
+- Live: `npm run dev`, Console → connect a camera, punch "Cut to DJ Cam", punch
+  back. For the auto path, play a track with a clear build→drop with
+  `djCamEnabled` on.
 
 ## Not in scope (v1)
 
-Auto framing / face tracking, picture-in-picture, a MIDI binding for the punch.
+A look/grade for the feed (planned as a follow-up through the filter system,
+not this scene), auto framing / face tracking, picture-in-picture, a MIDI
+binding for the punch.

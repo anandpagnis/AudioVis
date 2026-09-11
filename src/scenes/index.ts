@@ -1975,8 +1975,7 @@ export const SCENES: SceneDef[] = [
     component: DjCamScene,
     metadata: {
       // The operator's own camera feed — nothing ported, no upstream to
-      // credit — so `original`, same basis as `hold`. The broadcast grade
-      // itself lives in DjCamScene.tsx's own fragment shader.
+      // credit — so `original`, same basis as `hold`.
       license: 'original',
       // Primary-capable ONLY so `store.requestScene('djcam', { immediate:
       // true })` is accepted. `DjCamDirector` (useFrame -87) is the sole
@@ -1990,20 +1989,21 @@ export const SCENES: SceneDef[] = [
       // out of every by-hand picker.
       roles: ['primary'],
       moods: [],
-      // The grain gain rides `ctx.b.energy`; `energy` is the honest band.
-      // Not selection-affecting — nothing reads `bands` for a `moods: []`
-      // scene.
+      // Inert — nothing reads `bands` for a `moods: []` scene, and the shader
+      // is not audio-reactive. Declared only because `SceneMetadata` requires
+      // at least one.
       bands: ['energy'],
-      // A graded video blit: no motion of its own, no focal geometry.
+      // A clean video blit: no motion of its own, no focal geometry.
       intensity: 'calm',
-      // One `VideoTexture` fullscreen blit plus a cheap grade — cover-fit
-      // UVs, contrast/desat, a radial vignette, two `step` letterbox bars,
-      // one hash for grain. No loop, no march. Priced flat across every
-      // COST_TIER in `SCENE_COST_MS`. ACTION: confirm with `/bench`.
+      // One `VideoTexture` fullscreen blit, cover-fit UVs only — no grade, no
+      // loop, no march. Deliberately undecorated; specific looks (filters,
+      // etc.) land later through the show's own filter system, not baked into
+      // this shader. Priced flat across every COST_TIER in `SCENE_COST_MS`.
+      // ACTION: confirm with `/bench`.
       performanceCost: 'low',
       // Direct (non-offscreen) render path — a photographic feed gains
-      // nothing from a downscale-then-upscale, and cover-fit + letterbox are
-      // computed against the full drawing buffer.
+      // nothing from a downscale-then-upscale, and cover-fit is computed
+      // against the full drawing buffer.
       fillBound: false,
       // A lone opaque primary — nothing composites over a camera feed
       // (PerformanceStateBridge also holds the layer desires null while the
@@ -2011,37 +2011,8 @@ export const SCENES: SceneDef[] = [
       compatibleWith: [],
       // No `moodFit` — it is never chosen by fit, and a `moodFit` entry over
       // the empty `moods` fails `registry.test.ts`'s "moodFit only scores
-      // moods the scene claims".
-      //
-      // Scene Contract — the broadcast grade, tunable live from the Console
-      // with no code edit (`contract.test.ts` then applies). Every dial is
-      // authored so the NEUTRAL 0.5 position IS the locked cinemascope look —
-      // 2.39:1 letterbox, vignette ~0.3, ~15% desaturation, a gentle contrast
-      // lift, a very faint energy-scaled grain — and deviates from there.
-      // `fill` grows the bars (0.5 => 2.39:1, higher => tighter). `shape`
-      // (vignette) is one of the two keys `sceneSteer.ts` declines, so the
-      // vignette stays a human-only control. `speed` and `tilt` are
-      // deliberately undeclared — a static insert has neither.
-      contract: {
-        version: 1,
-        params: {
-          fill: 0.5,
-          shape: 0.5,
-          complexity: 0.5,
-          density: 0.5,
-          contrast: 0.5,
-        },
-        paramLabels: {
-          // The grade's own words — the canonical keys do not say this alone.
-          // `contrast` is left unlabeled so the HUD shows the canonical name.
-          '*': {
-            fill: 'letterbox',
-            shape: 'vignette',
-            complexity: 'desaturation',
-            density: 'grain',
-          },
-        },
-      },
+      // moods the scene claims". No `contract` either — nothing left to
+      // steer once the grade was pulled; see DjCamScene.tsx's own header.
       // Inert — a flat fullscreen quad has no meshes to frame — but
       // `CameraDirector.test.ts` fails a `roles: ['primary']` scene with no
       // `cameraAnchor`, so it carries the standard boilerplate exactly as
