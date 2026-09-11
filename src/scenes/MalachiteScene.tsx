@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
+import { slew } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
 
 /**
@@ -54,8 +55,8 @@ import { drastic } from '../engine/sceneParams'
  *
  * So the kick routing is **removed outright**, not softened. Nothing in this
  * scene is traceable to an individual hit any more. In its place is a single
- * `slew()` on programme energy with a multi-second time constant (~3 s in,
- * ~6 s out — asymmetric, so it recedes more slowly than it swells), which
+ * `slew()` on programme energy with a multi-second time constant (~7.5 s in,
+ * ~15 s out — asymmetric, so it recedes more slowly than it swells), which
  * moves on the timescale of a phrase rather than a beat. One envelope governs
  * everything the music does here.
  *
@@ -82,7 +83,7 @@ import { drastic } from '../engine/sceneParams'
  *
  * ## Band routing
  *
- *   energy → one slow swell (`slew`, ~3 s attack / ~6 s release), driving
+ *   energy → one slow swell (`slew`, ~7.5 s attack / ~15 s release), driving
  *             colour-ramp position, vein width, and the drift rate
  *
  * Nothing else. No `onKick`, no `mids`, no `highs` — all three were the
@@ -164,16 +165,20 @@ export const FRAG = /* glsl */ `
     // across a phrase, NOT a glow term. Purely additive from zero so silence
     // reproduces the authored ramp exactly; clamped because s.energy runs to
     // ~1.1 and an over-1 mix factor would extrapolate past the palette.
-    float lit = clamp(litness + uSwell * 0.09, 0.0, 1.0);
+    float lit = clamp(litness + uSwell * 0.035, 0.0, 1.0);
     // Base hardness from toxicity. Veins BROADEN slightly as the phrase
     // swells (the old term tightened them on hats, per-transient); against the
     // lifting ramp above this reads as the stone gaining definition rather
     // than gaining brightness.
-    float veinW = max(0.02, mix(0.20, 0.06, uTox) + uSwell * 0.05);
+    float veinW = max(0.02, mix(0.20, 0.06, uTox) + uSwell * 0.02);
     float vein = smoothstep(veinW, 0.0, abs(band));
     // Deliberately off the swell: crest is the specular sheen, the surface a
     // punch would have travelled through. It stays where the source authored
-    // it so no audio envelope reaches brightness in this scene.
+    // it so no audio envelope reaches brightness in this scene — flat 0.25,
+    // no uEnergy/uShock term. (Those two were never declared as uniforms in
+    // this file — referencing them here was a leftover from the pre-rewrite
+    // shader and a hard GLSL compile error: undeclared identifiers, not a
+    // silent black frame this time, an outright link failure.)
     float crest = pow(litness, 2.5);
 
     // Walk shadow -> mid -> a tox-blended lean toward glow, so higher
@@ -183,7 +188,7 @@ export const FRAG = /* glsl */ `
 
     vec3 col = mix(uShadow, midCol, litness);
     col = mix(col, lightCol, crest);
-    col += uGlow * pow(crest, 2.0) * (0.25 + uEnergy * 0.35 + uShock * 0.4);
+    col += uGlow * pow(crest, 2.0) * 0.25;
     col *= 1.0 - (0.5 + 0.4 * uTox) * vein;
 
     col *= 1.0 - 0.3 * dot(uv, uv);
@@ -199,8 +204,12 @@ export const FRAG = /* glsl */ `
 interface MalachiteState {
   /** Field drift, accumulated so a changing rate stays continuous. */
   phase: number
-  /** Kick churn burst, decaying. */
-  shock: number
+  /**
+   * The one slow phrase swell — asymmetric `slew()` on `s.energy`, ~7.5s to
+   * rise, ~15s to fall. Replaces the old per-kick `shock` accumulator
+   * outright; see the header's "this one breathes, it does not punch".
+   */
+  swell: number
 }
 
 export const MalachiteScene = createShaderScene<MalachiteState>({
@@ -211,33 +220,104 @@ export const MalachiteScene = createShaderScene<MalachiteState>({
   // rather than blend is right for the offscreen buffer: the scene paints
   // every pixel including its own ground.
   blending: THREE.NoBlending,
-  // Measured 0.42ms at this budget on an M1 (see index.ts's metadata comment
-  // for the full numbers) — genuinely cheap despite five fbm calls, because
-  // this shader's hash-based value noise is far lighter per-sample than
-  // `ink`'s simplex noise was. As ground composited under a subject, a soft
-  // upscale is invisible regardless, so the budget still costs nothing to keep.
-  pixelBudget: 1.3,
+  // ## Which `pixelBudget` this is
+  //
+  // `createShaderScene`'s spec field. It sizes THIS SCENE'S OWN offscreen
+  // buffer and NOTHING else, solved by that module's private `solveScale`
+  // (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // Not `SceneMetadata.pixelBudget` from scenes/index.ts, and nothing to do
+  // with engine/renderScale.ts: no `combinePixelBudgets` reciprocal sum, no
+  // `quality.knobs.pixelBudgetScale` tier multiplier on this path.
+  //
+  // ## Re-anchored 1.3 -> 7.2 MP
+  //
+  // The 1.3 was chosen while the roster was developed against 1080p and laptop
+  // displays, where it still bought something. On anything at or above ~1440p
+  // it does not: on a 3840x2160 panel 1.3 MP falls straight through
+  // `solveScale`'s own 0.4 clamp, so the buffer was pinned at 0.40 — a 2.5x
+  // upscale across a large display — at ALL FIVE tiers. Not "low at the bottom
+  // of the ladder": the declared number had stopped meaning anything at all,
+  // and the result was the same whatever the display or the hardware. That is
+  // the 4K-vs-MacBook report: the Mac only wins because a 2.2x upscale on a 13"
+  // panel hides where 2.5x across a 4K display does not.
+  //
+  // 7.2 is 1.3 x 5.5556 — the ratio taken from `maze`'s chosen re-anchor
+  // (0.9 -> 5.0) and applied uniformly across all eleven affected scenes. One
+  // explainable rule: it preserves the roster's RELATIVE ordering, which
+  // encodes real measured cost differences.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.40 / 0.40 / 0.40 / 0.40 / 0.40
+  //     NEW  0.93 / 0.93 / 0.93 / 0.93 / 0.93     buffer @ tier 0: 3577x2012
+  //
+  // Flat across the tiers, and that is not an artefact: the budget is a plain
+  // number with no threshold to flip, and `solveScale` has no tier multiplier,
+  // so this scene's resolution does not vary by tier at all — before or after.
+  // The re-anchor moved where the flat line sits; it did not add rungs to it.
+  //
+  // ## KNOWN RISK: this raises the FLOOR, and the governor cannot lower it
+  //
+  // Because `solveScale` has no tier multiplier, the quality governor CANNOT
+  // claw resolution back on this scene under load. Raising the budget raises
+  // the floor of what a weak machine must render, not just the ceiling: on a
+  // 2560x1664 MacBook Air this goes from 0.55 to 1.00 (native) at every tier —
+  // ~3.3x the pixels, with no resolution move available to the governor at any
+  // tier. The ladder can still cut per-pixel cost here (`uOctaves` drops the
+  // fbm octave count off `noiseOctaves`), but it cannot cut pixel COUNT.
+  // Stated as a known, accepted-for-now consequence pending a fresh `/bench` —
+  // not as a solved problem.
+  //
+  // ## Why a BACKGROUND's budget still matters
+  //
+  // Not because it drags anything else down — it does not. Each
+  // `createShaderScene` budget sizes only its own offscreen buffer, so this
+  // layer's resolution has no effect whatsoever on the subject composited over
+  // it. The honest reason this one was re-anchored is simply that its OWN
+  // buffer was clamped too: "as ground under a subject, a soft upscale is
+  // invisible" is a fair argument about this layer's own pixels, but it was
+  // being used to justify a number that had quietly stopped selecting any
+  // resolution at all.
+  //
+  // ## The 0.42 ms is a measurement of the OLD budget
+  //
+  // 0.42 ms on an M1 (see index.ts's metadata comment for the full numbers) was
+  // measured at 1.3 MP and says nothing about 7.2. Cost here is per-pixel, and
+  // this raises internal resolution substantially at 4K, so the real figure is
+  // correspondingly higher — how much is unmeasured, and no new number is
+  // invented here. This wants a fresh `/bench` sweep. What survives the change
+  // is the reason it was cheap per sample: hash-based value noise is far
+  // lighter than `ink`'s simplex was, which is how five fbm calls stayed
+  // affordable in the first place.
+  pixelBudget: 7.2,
   uniforms: () => ({
     uPhase: { value: 0 },
-    uShock: { value: 0 },
     uScale: { value: 2.4 },
     uWarp: { value: 3.5 },
     uBands: { value: 9.0 },
     uTox: { value: 0.5 },
-    uEnergy: { value: 0 },
-    uHighs: { value: 0 },
+    uSwell: { value: 0 },
     uOctaves: { value: MAX_OCTAVES },
   }),
-  state: () => ({ phase: 0, shock: 0 }),
+  state: () => ({ phase: 0, swell: 0 }),
   update({ u, s, P, st, dt }) {
-    // Source was a fixed TIME*0.08 with no speed control at all.
-    st.phase += dt * 0.08 * (1 + s.mids * 0.5) * drastic(P.speed)
+    // The one audio input this scene has: a slow phrase swell off programme
+    // energy. Asymmetric — ~7.5s to rise (rate 0.4, ~95% there in 7.5s), ~15s
+    // to fall (rate 0.2, ~95% decayed in 15s) — so it recedes more slowly than
+    // it swells, per the header. No onKick, no mids, no highs anywhere below;
+    // all three were the template's own terms.
+    st.swell = slew(st.swell, s.energy, dt, 0.4, 0.2)
+    u.uSwell.value = st.swell
 
-    if (s.onKick > 0) st.shock = Math.min(1.2, st.shock + 0.7 * s.onKick)
-    st.shock *= Math.exp(-dt * 3.0)
-
+    // Source was a fixed TIME*0.08 with no speed control at all. The swell
+    // now drives the drift rate too — this was `s.mids` before the rewrite;
+    // this scene has exactly one audio input, so the phrase breath widens
+    // the drift instead of a band level that no longer reaches this scene.
+    st.phase += dt * 0.08 * (1 + st.swell * 0.15) * drastic(P.speed)
     u.uPhase.value = st.phase
-    u.uShock.value = st.shock
 
     // Piecewise so each param's neutral 0.5 lands exactly on the source's
     // authored default (scale 2.4, warp 3.5, bands 9.0) rather than an
@@ -246,8 +326,6 @@ export const MalachiteScene = createShaderScene<MalachiteState>({
     u.uWarp.value = P.complexity < 0.5 ? 1.0 + P.complexity * 5.0 : 3.5 + (P.complexity - 0.5) * 5.0
     u.uBands.value = P.density < 0.5 ? 3.0 + P.density * 12.0 : 9.0 + (P.density - 0.5) * 22.0
     u.uTox.value = P.contrast
-    u.uEnergy.value = s.energy
-    u.uHighs.value = s.highs
 
     // Dropping an octave removes the finest turbulence detail — the
     // least-missed thing in a soft field, same reasoning `ink` used.

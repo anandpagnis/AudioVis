@@ -6,6 +6,7 @@ import { analytics } from './analyticsMetrics'
 import { exposure } from './exposure'
 import { frameLoad } from './frameLoad'
 import { keyPaletteTracker } from './keyPalette'
+import { MIRROR_MIX_DEFAULT } from './opticalRack'
 import { perf, frameTimeWindow } from './PerfMonitor'
 import { performanceState } from './performanceState'
 import { quality } from './quality'
@@ -111,6 +112,30 @@ export const LOOK_FIELDS = [
   'cueFollow',
   'cues',
   'debugPostFx',
+  // Per-field manual-control flags for `debugPostFx` above (added alongside
+  // it this session). Without this, a field overridden from the control
+  // window sets `debugPostFx` correctly (it IS mirrored) but the output
+  // window's own `debugPostFxOverrides` stays empty, so `PerformanceStateBridge`
+  // — which reads ITS OWN window's copy of the store, not the console's —
+  // never applies the override at all. Same class of bug `pendingSceneId`'s
+  // own comment above already explains for scene requests: a field missing
+  // from this list changes nothing in the window that actually renders, with
+  // nothing anywhere reporting why.
+  'debugPostFxOverrides',
+  // The photo `limitless` warps, as a data URL. The one look field that is a
+  // payload rather than a setting, and it has to travel this way: the console
+  // owns the file picker (that is where the click is) and the output window
+  // owns the GL texture, and neither a `File` nor a canvas survives the
+  // structured clone this channel does. The direct-reference path above
+  // (`handSource`) is not an alternative — it is consumed once on arrival,
+  // whereas an output window opened LATE has to be able to ask for the current
+  // look and be handed the photo with it, which is exactly what `hello` +
+  // `snapshotLook` does for every other field here.
+  //
+  // Sized for this wire at the picker: long edge <=1600px, JPEG q0.85, so tens
+  // of KB. Not persisted (see the store's own note) — a `postMessage` this size
+  // every time it changes is fine; a localStorage write of it is not.
+  'limitlessPhoto',
 ] as const
 
 export type LookField = (typeof LOOK_FIELDS)[number]
@@ -226,6 +251,35 @@ export interface Telemetry {
    * Ordered oldest firing first, stably — see the note at the publish site.
    */
   activeEffects: string[]
+
+  /**
+   * The rest of the post-fx chain — `performanceState`'s own bloom/vignette/
+   * fog/trails/glitch/mirror/lens fields, reported for the same reason
+   * `filterId`/`filterMix` above are: the control window cannot compute these
+   * itself (they are director output, decided in THIS window), so a live
+   * readout on that surface has to be told, not inferred. Added alongside
+   * `PostFxLive` (`Console.tsx`) — see that component for how these render.
+   */
+  bloom: number
+  bloomThreshold: number
+  glitch: number
+  vignette: number
+  fog: number
+  trails: number
+  /** Mirror rack snapshot — enough to run `isMirrorActive` (opticalRack.ts)
+   *  and render a summary line, without shipping the whole `MirrorRackState`
+   *  shape twice. `mirrorMix` is always resolved to a real number here (never
+   *  `undefined`, unlike the live field) since `postMessage` is not a place
+   *  to be carrying an optional the reader would have to default AGAIN. */
+  mirrorSegments: number
+  mirrorTiles: number
+  mirrorTwist: number
+  mirrorSlice: number
+  mirrorSpin: number
+  mirrorMix: number
+  /** Lens rack snapshot — enough to run `isLensActive` and name the material. */
+  lensAmount: number
+  lensStyle: number
 }
 
 const CHANNEL = 'audiovis-link'
@@ -732,6 +786,20 @@ export function publishTelemetry(nowMs = performance.now()): void {
       // nothing. In practice it is at most one element anyway: `MAX_ACTIVE`
       // is 1, "only ever one effect on screen at a time".
       activeEffects: performanceState.layers.effects.map((e) => e.id),
+      bloom: performanceState.bloom,
+      bloomThreshold: performanceState.bloomThreshold,
+      glitch: performanceState.glitch,
+      vignette: performanceState.vignette,
+      fog: performanceState.fog,
+      trails: performanceState.trails,
+      mirrorSegments: performanceState.mirror.segments,
+      mirrorTiles: performanceState.mirror.tiles,
+      mirrorTwist: performanceState.mirror.twist,
+      mirrorSlice: performanceState.mirror.slice,
+      mirrorSpin: performanceState.mirror.spin,
+      mirrorMix: performanceState.mirror.mix ?? MIRROR_MIX_DEFAULT,
+      lensAmount: performanceState.lens.amount,
+      lensStyle: performanceState.lens.style,
     },
   } satisfies Msg)
 }

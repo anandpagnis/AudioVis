@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { quality } from '../engine/quality'
+import { slew } from '../engine/response'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -227,6 +228,9 @@ export function NetworkConstellationScene() {
   const size = useThree((s) => s.size)
   const dpr = useThree((s) => s.viewport.dpr)
   const slowClock = useRef(0)
+  /** Slewed `b.energy`/`b.mid` — see the slow-clock update below. */
+  const energyEnv = useRef(0)
+  const midEnv = useRef(0)
 
   const material = useMemo(
     () =>
@@ -266,7 +270,14 @@ export function NetworkConstellationScene() {
   useSceneFrame(({ f, dt, b, col, vis, params }) => {
     const u = material.uniforms
 
-    slowClock.current += dt * (0.1 + b.energy * 0.06 + b.mid * 0.04) * params.speed
+    // Both bands slewed before they multiply in — found in a systematic
+    // audit (2026-09-11) for the "raw band drives an accumulating rate"
+    // pattern reported live and fixed twice elsewhere this session
+    // (GyroidFluxScene, JavaZoneLatticeScene); the combined swing here (0.06
+    // + 0.04 against a 0.1 base) is a full 100% of it.
+    energyEnv.current = slew(energyEnv.current, b.energy, dt, 3, 3)
+    midEnv.current = slew(midEnv.current, b.mid, dt, 3, 3)
+    slowClock.current += dt * (0.1 + energyEnv.current * 0.06 + midEnv.current * 0.04) * params.speed
 
     u.uTime.value = f.time
     u.uSlowTime.value = slowClock.current

@@ -178,7 +178,33 @@ const TRANSITION_DISCOUNT_TIERS = 2
  *   - climb only when the mean is essentially at the interval and the tail has
  *     not started to stretch.
  */
-const STEP_DOWN_MEAN_RATIO = 1.1 // ~18.3 ms at 60 Hz — consistently late
+/**
+ * `STEP_DOWN_MEAN_RATIO` raised 1.1 -> 1.5 on direct request (2026-09-07):
+ * gyroid/javazone/lattesfold were reading as demoted while looking, and by
+ * this session's own /bench estimate costing, light. Matches
+ * `STEP_DOWN_P95_RATIO` exactly rather than landing somewhere between the
+ * old and new value — the request named one number ("25 ms of p95 is
+ * fine") and asked for it to govern the demote decision outright, and
+ * `STEP_DOWN_P95_RATIO` was already exactly that (1.5x = ~25.0 ms at 60 Hz);
+ * this closes the gap on the OTHER axis so neither can demote below it.
+ *
+ * Read the paragraph above honestly before assuming this is free: it undoes
+ * the specific fix this comment block documents. The old 1.1x existed
+ * because a real recording showed the governor sitting INERT at `mean
+ * 18.7ms` while frame rate was measurably falling — 1.5x tolerates a
+ * frame that is consistently 50% over the display interval, sustained,
+ * forever, as "fine". `STEP_DOWN_P95_RATIO`'s own tail-hitch catch is what
+ * is now doing ALL of the demote work the mean axis used to share; a
+ * scene that costs exactly 24 ms every single frame, with no tail
+ * variance at all, will hold that tier indefinitely. That may be exactly
+ * what is wanted for a specific known-light scene misjudged by an
+ * unmeasured cost row — it is not obviously wanted as this governor's
+ * DEFAULT behaviour for every scene in the roster, which is what a global
+ * constant means. If a future session revisits this: the alternative that
+ * keeps the mean axis meaningful is a per-scene cost override, not a
+ * global ratio.
+ */
+const STEP_DOWN_MEAN_RATIO = 1.5 // ~25.0 ms at 60 Hz — consistently late
 const STEP_DOWN_P95_RATIO = 1.5 // ~25.0 ms at 60 Hz — the tail hits 2 frames
 const STEP_UP_MEAN_RATIO = 1.05 // ~17.5 ms at 60 Hz — riding the interval
 const STEP_UP_P95_RATIO = 1.25 // ~20.8 ms at 60 Hz — tail still tight
@@ -332,19 +358,29 @@ const MAX_RUNG_BACKOFF_SEC = 240
  * a small run of consecutive bad RAW frames is evidence a smoothed estimator
  * cannot afford to wait out.
  *
- * `CONSECUTIVE_OVERBUDGET_RATIO` reuses {@link STEP_DOWN_MEAN_RATIO} rather
- * than inventing a second threshold with its own justification — "one frame
- * this late" means the same thing here as it does to the smoothed gate, only
- * counted instead of averaged. `CONSECUTIVE_OVERBUDGET_FRAMES` is chosen, not
- * measured (this codebase has no session log with raw per-frame data captured
- * this way yet — see F162's own `sceneCost.ts` caveats on the difference
- * between the two): long enough that one compile hitch or GC pause cannot
- * trigger it, short enough (5 frames is ~83 ms at 60 Hz) to react roughly an
- * order of magnitude faster than the EMA path above. Revisit against a real
- * corpus once one exists that captures raw frame times alongside tier events
- * at this resolution.
+ * `CONSECUTIVE_OVERBUDGET_RATIO` used to reuse {@link STEP_DOWN_MEAN_RATIO}
+ * outright — "one frame this late" meant the same thing here as it did to the
+ * smoothed gate, only counted instead of averaged, so a second threshold with
+ * its own justification seemed like unwarranted duplication. Split into its
+ * own constant (2026-09-07) when `STEP_DOWN_MEAN_RATIO` was raised 1.1 -> 1.5
+ * on direct request, for reasons specific to the SMOOTHED gate's sustained-cost
+ * question (see that constant's own doc) that do not apply here at all: a
+ * scene that suddenly costs 40 ms/frame for five frames in a row is exactly
+ * the sudden-spike case this whole mechanism exists to catch fast, regardless
+ * of what a DIFFERENT gate now tolerates when sustained and averaged. Keeping
+ * this at the original 1.1 is the fix, not an oversight to reconcile — letting
+ * it drift up to 1.5 with the alias would have quietly disabled a frame's
+ * worth of hitch protection nobody asked to relax.
+ *
+ * `CONSECUTIVE_OVERBUDGET_FRAMES` is chosen, not measured (this codebase has
+ * no session log with raw per-frame data captured this way yet — see F162's
+ * own `sceneCost.ts` caveats on the difference between the two): long enough
+ * that one compile hitch or GC pause cannot trigger it, short enough (5
+ * frames is ~83 ms at 60 Hz) to react roughly an order of magnitude faster
+ * than the EMA path above. Revisit against a real corpus once one exists that
+ * captures raw frame times alongside tier events at this resolution.
  */
-const CONSECUTIVE_OVERBUDGET_RATIO = STEP_DOWN_MEAN_RATIO
+const CONSECUTIVE_OVERBUDGET_RATIO = 1.1 // ~18.3 ms at 60 Hz — independent of STEP_DOWN_MEAN_RATIO, see above
 const CONSECUTIVE_OVERBUDGET_FRAMES = 5
 
 /**

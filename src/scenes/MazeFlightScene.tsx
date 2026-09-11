@@ -27,9 +27,20 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *
  *   as-published, full res, 150 steps ....... 70.4 ms   (14 fps)
  *   optimised, full res ..................... 48.7 ms
- *   optimised + pixelBudget, tier 0 .......... 5.4 ms   <- shipped default
- *   optimised + pixelBudget, tier 4 .......... 2.7 ms
+ *   optimised + pixelBudget, tier 0 .......... 5.4 ms   <- STALE, see below
+ *   optimised + pixelBudget, tier 4 .......... 2.7 ms   <- STALE, see below
  *   user maxes `detail` to 3 levels ......... ~9.5 ms
+ *
+ * **The two `pixelBudget` rows are stale and are NOT re-estimated here.** They
+ * were taken at the old pre-F107 budget (0.9 MP / 0.55 MP below tier ~2), which
+ * on any panel above ~1440p pinned this scene to the offscreen solver's 0.4
+ * clamp — a 1536x864 buffer on a 4K display. The budget is now 5.0 / 3.0 (see
+ * the declaration below for the full argument), which at 4K tier 0 buys a
+ * 2981x1677 buffer: **about 3.8x the pixels**. Cost is linear in pixel count,
+ * so the real tier-0 figure is correspondingly higher than 5.4 ms. No new
+ * number is invented here — this wants a fresh `/bench` to re-measure, and
+ * until that lands the two rows above should be read as history rather than as
+ * the shipped cost.
  *
  * An ablation at fixed resolution says the cost is concentrated in two places,
  * and the intuitive candidates are nearly worthless:
@@ -50,16 +61,22 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *
  * What that produced:
  *
- * 1. **`pixelBudget` scales with tier, not fixed at 0.9 (F128).** Cost is
- *    linear in pixel count and this scene has to leave room for the post
- *    chain, so it already rendered at roughly half linear scale and
- *    upscaled — Neon-and-fog tolerates that; this is the opposite of
- *    `matrix`, whose hard glyph edges ruled the offscreen path out entirely.
- *    Below tier ~2 the budget drops further still (0.9 -> 0.55), trading
+ * 1. **`pixelBudget` scales with tier, not fixed at 5.0 (F128).** Cost is
+ *    linear in pixel count, so this scene renders offscreen and upscales —
+ *    Neon-and-fog tolerates that; this is the opposite of `matrix`, whose
+ *    hard glyph edges ruled the offscreen path out entirely. It renders at
+ *    ~0.78 linear on a 4K panel at tier 0 and at native 1.00 on 1080p; the
+ *    old budget rendered at roughly half linear scale on 1080p and was
+ *    clamped flat at 0.4 on anything larger.
+ *    Below tier ~2 the budget drops further still (5.0 -> 3.0), trading
  *    resolution for nesting depth rather than the other way round: the third
- *    (CELL/9) level was already documented as mostly sub-pixel at 0.47
- *    render scale, so losing more of it to a lower buffer costs less than
- *    losing an entire nesting level costs structurally (see point 2).
+ *    (CELL/9) level was documented as mostly sub-pixel at the ~0.47 render
+ *    scale the OLD budget produced, so losing more of it to a lower buffer
+ *    cost less than losing an entire nesting level costs structurally (see
+ *    point 2). That sub-pixel argument is weaker at the re-anchored budget —
+ *    the buffer is larger now, so the third level resolves more of the time
+ *    than it did — but the conclusion is unchanged, because the structural
+ *    loss it is weighed against has not moved at all.
  * 2. **~~One nesting level survives down to tier ~3, not zero (F128).~~
  *    Superseded 2026-08-29 (F139 hard fix): nesting depth is no longer
  *    tier-gated at all — see point 3.** The third (CELL/9) level costs a
@@ -88,9 +105,12 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * 6. **Governed march steps / AO taps / far plane** — small, kept for the cases
  *    above.
  *
- * At ~5.4 ms this sits alongside the roster's existing heavyweights (`network`
- * measured 6.3 ms) rather than off the scale, but it is still `high` and still
- * worth re-checking with `/bench` in situ.
+ * At ~5.4 ms this sat alongside the roster's existing heavyweights (`network`
+ * measured 6.3 ms) rather than off the scale — but that comparison was made at
+ * the old budget and no longer holds as written: the re-anchored budget draws
+ * ~3.8x the pixels at 4K tier 0, and cost is linear in pixel count. Where this
+ * now lands against `network` is genuinely unknown until someone runs `/bench`
+ * in situ, which is the only honest thing this paragraph can say.
  *
  * ## Colour
  *
@@ -103,44 +123,75 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *
  * ## Band routing
  *
- *   onKick  → SPRING lurch: shoves the ray origin down the corridor, which then
- *             rings back through its rest position (see below). The same signed
- *             spring value walks the palette ramp and thins/thickens the fog.
+ *   onKick  → two things at once, off the same signal (see "Response
+ *             identity" below): a SPRING lurch (small camera roll/bank that
+ *             rings back through level) and a SKIP (a brief, always-forward
+ *             burst of extra cruise speed). The spring also walks the
+ *             palette ramp and thins/thickens the fog. Neither one can ever
+ *             slow, stop or reverse the flight — see "Response identity" for
+ *             why that is provable, not just tuned.
  *   mids    → flight-speed drift
  *   energy  → headlight and emissive intensity
  *   highs   → circuit and window shimmer
  *
- * ## Response identity: the spring settle — the roster's only overshoot
+ * ## Response identity: the skip-and-roll — motion first, rotation small
  *
  * The audit behind `engine/response.ts` measured the reaction vocabulary and
  * found **zero** springs across 22 scenes: every scene charged a value on a
  * kick and let `exp(-dt*k)` slide it monotonically back, so every hit in every
  * scene read as the same soft thud with a different texture painted over it.
- * This scene is the answer to that, and it is deliberately the only one.
+ * This scene answers with a spring, but the spring is deliberately the MINOR
+ * half of the reaction now, not the whole of it (see below for why).
  *
- * A kick displaces `st.lurch` — a real mass on a real spring, deliberately
- * UNDER-damped — and `springStep` then does what an exponential decay
- * structurally cannot: the corridor surges forward, carries PAST where it
- * should have stopped, rocks back through rest, and settles. That readable
- * overshoot is the whole point. It is the difference between a light that got
- * brighter and a thing that got hit, and it costs two multiplies a frame.
+ * **The skip — restoring the scene's original identity, safely.** Before any
+ * of this response work, a kick simply lurched the camera forward: it added
+ * straight to position, and it read as the corridor briefly skipping ahead
+ * on the beat. That is the gesture this scene is supposed to make, and it is
+ * back — `st.skip` is a plain, always-non-negative decay envelope
+ * (`exp(-dt*k)`, exactly the shape 21 of the other 22 scenes already use for
+ * their own kick response) charged by `s.onKick`, and it multiplies the
+ * cruise RATE rather than adding to position directly:
  *
- * Notice what the kick no longer does: it does not brighten anything. The old
- * `uShock * 0.8` term in `light` was the 22nd of 22 scenes driving glow from a
- * kick envelope, so it is gone outright. The spring reaches the image three
+ *     st.z += dt * cruiseRate * (1 + st.skip * SKIP_BOOST)
+ *
+ * Because `st.skip >= 0` always (a decay envelope charged upward from zero
+ * can never go negative, unlike a spring's rebound) and `SKIP_BOOST > 0`,
+ * the multiplier `(1 + st.skip * SKIP_BOOST)` is always `>= 1`. `d(st.z)/dt`
+ * can therefore only ever meet or exceed the base cruise rate — it is
+ * mathematically incapable of slowing, stopping or reversing forward motion,
+ * for any kick pattern whatsoever. This is the exact bug the spring-on-
+ * position version had (see below) closed by construction rather than by
+ * tuning.
+ *
+ * **Why the roll is small, and why a spring at all.** An earlier version of
+ * THIS pass tried putting the spring's own signed, overshoot-and-rebound
+ * value straight onto `uPhase`, on the theory that the rebound would just
+ * read as a deceleration — measured, the rebound velocity actually went
+ * negative for a stretch, so the camera flew BACKWARD every beat, reading as
+ * the flight pausing rather than settling (this is why the skip above is a
+ * one-directional decay, not the spring's signed value, sharing the position
+ * term). A later version tried enlarging the SAME spring's OUTPUT (now aimed
+ * at rotation, never position) to a near-180° bank so a kick would flip the
+ * camera ("ceiling becomes floor") — that read as wrong on an actual
+ * corridor flythrough and is reverted. The spring keeps its original, subtle
+ * job: `st.lurch.value` (as `uLurch`) feeds a `kickRoll` term summed into
+ * camera bank in `main()`, alongside the existing cornering `lean`, so a kick
+ * rocks the view a little on the SAME beat the skip moves it forward,
+ * carries PAST level, and rings back — the readable overshoot the spring
+ * exists for, at an amplitude that reads as a kick accompanying the motion
+ * rather than as the whole event.
+ *
+ * Notice what the kick still does not do: it does not brighten anything. The
+ * old `uShock * 0.8` term in `light` was the 22nd of 22 scenes driving glow
+ * from a kick envelope, so it stays gone. The kick reaches the image four
  * ways, none of them a gain term:
  *
- *   1. `uPhase` — the ray origin's position on the path. The lurch itself.
- *   2. `uHue`   — palette-ramp POSITION, so the neon swings colour and rocks
+ *   1. `st.skip` (as cruise-rate multiplier) — the motion itself, forward-only.
+ *   2. `uLurch` (as camera roll) — the small rock, via `lean`/`bank`.
+ *   3. `uHue`   — palette-ramp POSITION, so the neon swings colour and rocks
  *                 back with the geometry rather than merely flashing.
- *   3. `uLurch` — fog density, signed: surging forward opens the corridor
- *                 ahead of you, the rock-back closes it in again.
- *
- * The kick therefore no longer permanently advances the flight the way the old
- * `st.z += 0.8 * s.onKick` did — displacement now returns to zero, because a
- * corridor with mass that keeps the ground it gained on every hit is not a
- * corridor with mass, it is a speed knob. Cruise distance is `speed`/`mids`
- * alone; the kick only rocks the camera about it.
+ *   4. `uLurch` (as fog density), signed: the surge thins the fog ahead of
+ *                 you, the rock-back thickens it again.
  */
 
 /**
@@ -163,9 +214,10 @@ const LURCH_STIFFNESS = 60
 const LURCH_DAMPING = criticalDamping(LURCH_STIFFNESS) * 0.38
 
 /**
- * Forward displacement per unit of kick onset — the source's authored lurch
- * size, unchanged from when it was added straight onto `st.z`. What changed is
- * where it goes (into the spring's position) and what happens next.
+ * Spring-position impulse per unit of kick onset — the source's authored
+ * lurch size, unchanged from when it was added straight onto `st.z`. What
+ * changed is where the spring's output goes (camera roll, not position — see
+ * `LURCH_ROLL` in the shader) and what happens next.
  */
 const LURCH_IMPULSE = 0.8
 
@@ -177,6 +229,25 @@ const LURCH_MAX = 1.4
 
 /** Palette-ramp travel per unit of spring displacement. Colour, not gain. */
 const LURCH_HUE = 0.06
+
+/**
+ * The skip envelope (see header, "Response identity"). Charged upward from
+ * zero exactly like every other scene's `onKick` shock, then decayed via
+ * plain `exp(-dt*k)` — one-directional by construction, which is the whole
+ * safety argument: it can never go negative, so it can never subtract from
+ * forward speed.
+ */
+const SKIP_IMPULSE = 1.0
+/** Decay rate, 1/s. ~63% gone in ~0.17s, essentially settled inside a beat
+ *  at any tempo this roster is tuned for -- a skip, not a sustained sprint. */
+const SKIP_DECAY = 6.0
+/** Ceiling so a dense kick train skips harder, not without limit. */
+const SKIP_MAX = 1.2
+/** Cruise-rate multiplier per unit of skip charge -- a solid single kick
+ *  (skip ~= SKIP_IMPULSE = 1.0) briefly runs the corridor at 1.8x cruise;
+ *  a kick train charging toward SKIP_MAX (1.2) peaks just under 2x. Tuned to
+ *  read as a distinct forward lurch without the corridor blurring past. */
+const SKIP_BOOST = 0.8
 
 /**
  * Loop ceilings. GLSL ES 1.00 needs constant bounds; uniforms early-break.
@@ -208,9 +279,12 @@ export const FRAG = /* glsl */ `
   uniform float uPhase;
   /**
    * Signed lurch-spring displacement, roughly -0.4..1.4. NOT an envelope: it
-   * crosses zero and changes sign as the corridor rocks back, so anything
+   * crosses zero and changes sign as the camera rocks back, so anything
    * reading it must behave sensibly for negative values. Drives fog depth
-   * only -- the lurch proper arrives as uPhase, the colour swing as uHue.
+   * AND the kick-roll bank angle in main() -- the colour swing rides on
+   * uHue instead. Deliberately never reaches forward position: uPhase is
+   * driven by cruise distance alone, so the flight never slows, stops or
+   * reverses (see header, "Response identity").
    */
   uniform float uLurch;
   uniform float uTurns;
@@ -240,6 +314,18 @@ export const FRAG = /* glsl */ `
   const float ZHUE = 1.28;
   const float SAT = 1.54;
   const float FOG = 1.0;
+
+  // Radians of camera bank per unit of lurch-spring displacement -- the
+  // kick's rotation amplitude (see header, "Response identity"). Reverted to
+  // the original wave-2 amplitude: a full half-rotate ("ceiling becomes
+  // floor") was tried at LURCH_ROLL = 3.6 and reported as looking wrong on a
+  // real corridor flythrough, so this is back to a subtle bank -- a max-
+  // charged kick (uLurch ~= 1.4) banks the camera ~0.45 rad (~26 deg), summed
+  // with the existing cornering lean term and clamped in main() so the two
+  // together never exceed a first-person-safe ~34 deg even when both peak at
+  // once. The rotation is now deliberately the SMALL half of the kick
+  // reaction -- see SKIP_BOOST below for the half that reads as motion.
+  const float LURCH_ROLL = 0.32;
 
   float hash21(vec2 p) {
     p = fract(p * vec2(234.34, 435.345));
@@ -437,8 +523,16 @@ export const FRAG = /* glsl */ `
     vec3 ta = pathPos(zt + 2.4);
     vec3 fw = normalize(ta - ro);
 
+    // Cornering lean: bank into upcoming turns so they read as turns.
     float lean = clamp(-0.22 * (pathPos(zt + 2.8).x - ro.x) / CELL, -0.35, 0.35);
-    vec3 wup = vec3(sin(lean), cos(lean), 0.0);
+    // Kick roll: the lurch spring's entire output lands here, never on
+    // position. A kick banks the camera, the under-damped spring carries it
+    // PAST level, rocks back through it, and settles -- the readable
+    // overshoot the spring exists for, aimed at an axis where overshooting
+    // is just a rock, not a reversal of travel.
+    float kickRoll = uLurch * LURCH_ROLL;
+    float bank = clamp(lean + kickRoll, -0.6, 0.6);
+    vec3 wup = vec3(sin(bank), cos(bank), 0.0);
     vec3 rt = normalize(cross(fw, wup));
     vec3 up = cross(rt, fw);
     float focal = 1.15 / max(uFov, 0.25);
@@ -460,10 +554,10 @@ export const FRAG = /* glsl */ `
     vec3 col;
     if (hit) {
       col = shade(ro, rd, t, zt, hue0);
-      // Fog breathes with the spring, signed both ways: the forward surge
-      // thins it and the corridor opens ahead of you, the rock-back thickens
-      // it and closes in. Depth and contrast rather than a glow pulse. At
-      // uLurch = 0 this is exactly FOG, so silence is the authored image.
+      // Fog breathes with the spring, signed both ways: a kick thins it and
+      // the corridor opens up, the rock-back thickens it and closes in.
+      // Depth and contrast rather than a glow pulse. At uLurch = 0 this is
+      // exactly FOG, so silence is the authored image.
       float fogAmt = FOG * clamp(1.0 - uLurch * 0.35, 0.4, 1.6);
       col = mix(col, fogc, 1.0 - exp(-t * t * 0.0014 * fogAmt));
     } else {
@@ -494,11 +588,19 @@ interface MazeState {
   /** Palette-ramp drift. */
   hue: number
   /**
-   * Forward-lurch spring: a kick displaces its position, and it rings back
+   * Kick-roll spring: a kick displaces its position, and it rings back
    * through rest rather than sliding there. Signed — it goes negative on the
    * rebound, which is the entire reason it is a spring and not a `shock`.
+   * Feeds camera roll (and fog/hue) only; never forward position (uPhase).
    */
   lurch: SpringState
+  /**
+   * The skip envelope: always >= 0 (a plain decay, never a spring's signed
+   * rebound), multiplying cruise RATE rather than adding to position. See
+   * header, "Response identity" for why that makes it provably incapable of
+   * slowing, stopping or reversing the flight.
+   */
+  skip: number
 }
 
 export const MazeFlightScene = createShaderScene<MazeState>({
@@ -509,15 +611,42 @@ export const MazeFlightScene = createShaderScene<MazeState>({
   // on-screen material for the primary slot. Replace is right for the buffer:
   // this scene paints every pixel including its own fog ground.
   blending: THREE.NoBlending,
-  // Measured: 48.7 ms at full res vs 5.4 ms here. Cost is linear in pixel
-  // count and this scene must leave room for the post chain, so it renders at
-  // roughly half linear scale. Neon-plus-fog upscales gracefully.
+  // Cost is linear in pixel count, so resolution is this scene's main lever,
+  // and neon-plus-fog upscales gracefully — which is what makes an offscreen
+  // buffer acceptable here at all (the opposite of `matrix`, whose hard glyph
+  // edges ruled the offscreen path out entirely).
   //
-  // Read every frame (F128): below tier ~2 the budget drops further, paying
-  // for the nesting level `detailCap` keeps alive down to tier ~3 instead of
-  // flattening the maze outright. `quality.knobs.raymarchSteps` is the same
+  // Re-anchored 0.9 -> 5.0 / 0.55 -> 3.0. The old pair was a pre-F107 number
+  // that was never revisited when the engine's budget table moved to
+  // (12.5/16/20) MP plus a 24 MP post chain. Note this declaration does NOT go
+  // through that table: a `createShaderScene` spec budget is solved by this
+  // module's own `solveScale`, which divides the declared megapixels straight
+  // into the display's full megapixels and clamps at MIN_RENDER_SCALE (0.4),
+  // with no post-chain reciprocal sum and no `pixelBudgetScale` tier factor.
+  // 0.9 MP against a 3840x2160 panel solves to sqrt(0.9/8.29) = 0.33 — BELOW
+  // that clamp — so the buffer pinned to 1536x864 and upscaled 2.5x linear.
+  //
+  // Worse, in the unclamped regime this path's buffer is dpr-INVARIANT (see
+  // the `activeSize` note in createShaderScene: `w` reduces to
+  // `floor(sqrt(budget * 1e6 * W/H))`), so a 0.9 MP budget handed a 4K desktop
+  // and a 1080p laptop buffers of near-identical pixel count. That is exactly
+  // why the same build read as soft on the 4K machine and sharp on the smaller
+  // one: same buffer, very different upscale factor.
+  //
+  // 5.0 MP clears the clamp on 4K (0.78 linear -> 2981x1677) and reaches
+  // native 1.00 on 1080p at every tier. Computed against `solveScale`, not
+  // estimated. (Both values also sit inside renderScale.ts's MIN/MAX_PIXEL_
+  // BUDGET, 0.25 .. 64 — though note `validateSceneDef` enforces that range on
+  // the METADATA `pixelBudget` field, which this scene does not declare, so
+  // nothing actually validates the number below.)
+  //
+  // Read every frame (F128): below tier ~2 the budget drops further. It no
+  // longer buys back a nesting level — F139 removed the `detailCap` ladder
+  // outright, and nesting is never tier-gated now (see header points 2 and 3) —
+  // so the step is simply resolution relief at the tiers where the governor has
+  // no other lever on this scene. `quality.knobs.raymarchSteps` is the same
   // tier proxy `update()` already reads below.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 0.9 : 0.55),
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 5.0 : 3.0),
   uniforms: () => ({
     uPhase: { value: 0 },
     uLurch: { value: 0 },
@@ -535,33 +664,51 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     uTMax: { value: 48 },
     uEdgeOn: { value: 1 },
   }),
-  state: () => ({ z: 0.4, hue: 0, lurch: spring(0) }),
+  state: () => ({ z: 0.4, hue: 0, lurch: spring(0), skip: 0 }),
   update({ u, s, P, st, dt }) {
-    // Source's authored cruise: 3.2 units/s at speed 1.
-    st.z += dt * 3.2 * (1 + s.mids * 0.5) * drastic(P.speed)
+    // A kick charges the skip envelope BEFORE cruise is applied, so the same
+    // frame's forward step already carries the boost -- no attack lag.
+    if (s.onKick > 0) {
+      st.skip = Math.min(SKIP_MAX, st.skip + SKIP_IMPULSE * s.onKick)
+    }
 
-    // A kick is a lurch forward down the corridor, not a flash — and now it is
-    // a lurch with mass. The onset SHOVES the spring's position (an impulse to
-    // displacement, so the surge is instant at exactly the authored 0.8 per
-    // unit of onset, as it was when this went straight onto `st.z`)...
+    // Source's authored cruise: 3.2 units/s at speed 1, boosted by the skip
+    // envelope. `(1 + st.skip * SKIP_BOOST)` is always >= 1 since st.skip
+    // never goes negative (see header, "Response identity", and SKIP_IMPULSE
+    // above) -- this line can only ever match or exceed the base cruise
+    // rate, for any kick pattern, which is the whole safety argument spelled
+    // out as code rather than as a comment.
+    st.z += dt * 3.2 * (1 + s.mids * 0.5) * drastic(P.speed) * (1 + st.skip * SKIP_BOOST)
+    st.skip *= Math.exp(-dt * SKIP_DECAY)
+
+    // A kick is also a small rock, off the same onset. The onset SHOVES the
+    // spring's position (an impulse to displacement, so the surge is instant
+    // at exactly the authored 0.8 per unit of onset)...
     if (s.onKick > 0) {
       st.lurch.value = Math.min(LURCH_MAX, st.lurch.value + LURCH_IMPULSE * s.onKick)
     }
     // ...and the spring, pulling back toward a rest of zero and deliberately
-    // under-damped, then carries the corridor past rest and rocks it back.
-    // This line is the whole identity: `exp(-dt * k)` here would only ever
-    // slide home, and the scene would be indistinguishable in MANNER from the
-    // other 21. See LURCH_STIFFNESS for the tuning argument.
+    // under-damped, then carries PAST rest and rocks back. This line is the
+    // whole identity: `exp(-dt * k)` here would only ever slide home, and the
+    // scene would be indistinguishable in MANNER from the other 21. See
+    // LURCH_STIFFNESS for the tuning argument.
     springStep(st.lurch, 0, dt, LURCH_STIFFNESS, LURCH_DAMPING)
 
     // Slow drift through the palette ramp, so depth and time both read as
     // colour without spinning a full rainbow.
     st.hue += dt * 0.015
 
-    // The spring reaches the shader three ways, none of them a gain term: as
-    // the ray origin's position, as a swing in palette-ramp POSITION that
-    // rocks back with the geometry, and (signed) as fog depth.
-    u.uPhase.value = st.z + st.lurch.value
+    // uPhase is cruise position, st.z — monotonically increasing under any
+    // kick pattern, though no longer untouched by audio: the skip boost above
+    // is folded into st.z's own rate, not added here. The SPRING still never
+    // touches it (see header, "Response identity": that was tried, and the
+    // under-damped rebound briefly drove forward velocity negative, which
+    // read as the flight pausing on every beat). The spring instead reaches
+    // the shader three ways, none of them forward position: camera roll (via
+    // uLurch -> kickRoll in main()), a swing in palette-ramp POSITION that
+    // rocks back with the geometry (uHue), and signed fog depth (uLurch
+    // again).
+    u.uPhase.value = st.z
     u.uLurch.value = st.lurch.value
     u.uHue.value = st.hue + st.lurch.value * LURCH_HUE
     u.uEnergy.value = s.energy

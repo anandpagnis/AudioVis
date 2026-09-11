@@ -38,3 +38,6 @@ public/tfjs/
 .idea/
 .DS_Store
 *.local
+
+# Agent worktree checkouts — full copies of the repo, never redistributed.
+.claude/worktrees/

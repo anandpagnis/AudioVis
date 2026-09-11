@@ -60,8 +60,8 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *     nudges 3%. That is it. Alongside the always-on `uBeatPulse` breathing,
  *     the picture is doing something on every beat whether or not the gate
  *     fires.
- *   - **Large, on roughly one beat in seven** (`uSurge` + `uJumpPhase`, gated):
- *     a 22% zoom lunge, the wing fold's seam pulling open, the orbit radius
+ *   - **Large, on roughly one beat in ten** (`uSurge` + `uJumpPhase`, gated):
+ *     a 12% zoom lunge, the wing fold's seam pulling open, the orbit radius
  *     widening — and, the part that persists, a **structural jump**: `c` leaps
  *     to a new point on its orbit and *stays there*, on a spring that
  *     overshoots and settles. The Julia set does not brighten, it becomes a
@@ -100,16 +100,27 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * {@link GATE_P_MAX} at its end, off `f.phraseProgress` — another signal with
  * zero readers across the roster before this. Big moves therefore cluster
  * toward phrase ends, which is where a listener is already braced for one.
- * Measured over 4000 beats: 105 / 134 / 169 / 191 fires across the phrase's
- * four bars, a clean monotone build. The ramp is still deterministic — it is a
- * function of the analysed audio, not of chance.
+ * The ramp is still deterministic — it is a function of the analysed audio,
+ * not of chance.
  *
- * **Measured rate.** 15.0% of beats fire, mean gap 6.7 beats, median 5. At
- * 120 BPM that is one big move every ~3.3 s, i.e. roughly every 1.7 bars —
- * comfortably inside "occasionally" without ever being so sparse that a
- * 20-second scene slot might not contain one. With `phraseProgress` pinned at
- * 0 (no phrase read yet) it degrades to 8%, one big move every ~6 s, which is
- * still alive.
+ * **Measured rate, then and now.** The original tuning (`p` ramping 0.08 to
+ * 0.24) was measured over 4000 beats: 105 / 134 / 169 / 191 fires across the
+ * phrase's four bars, a clean monotone build — 15.0% of beats fire overall,
+ * mean gap 6.7 beats, median 5, i.e. one big move every ~3.3 s at 120 BPM,
+ * roughly every 1.7 bars. `p` now ramps a smaller range, {@link GATE_P_MIN}
+ * 0.05 to {@link GATE_P_MAX} 0.15, to make the big move both visually smaller
+ * (see the FRAG-side amplitude cuts alongside this change) and rarer. That
+ * has not been re-measured over 4000 beats the way the number above was.
+ * `gate()`'s probability check is linear in its input, so scaling the old
+ * 15.0% by the new range's mean against the old one (0.10 vs. 0.16, a 0.625x
+ * factor) puts the estimated fire rate at roughly 9-10% of beats — call it a
+ * big move every ~5 s at 120 BPM instead of ~3.3 s. Treat that 9-10% as a
+ * back-of-envelope linear-scaling estimate, not a re-measurement with the
+ * rigor of the 4000-beat count above. With `phraseProgress` pinned at 0 (no
+ * phrase read yet) `p` sits exactly at {@link GATE_P_MIN}, so the
+ * degraded-signal rate is now exactly 5% (down from 8%), which by the same
+ * scaling logic is one big move roughly every ~10 s instead of ~6 s — still
+ * alive, just sparser.
  *
  * ### Why it does not read as frozen between big moves
  *
@@ -124,8 +135,9 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * ## Band routing
  *
  *   gate(beatIndex, p) → the big move: c-orbit structural jump (HELD, sprung),
- *                        22% zoom lunge, fold-seam widen, orbit-radius widen.
- *                        p ramps 0.08 -> 0.24 across the phrase; ~15% of beats.
+ *                        12% zoom lunge, fold-seam widen, orbit-radius widen.
+ *                        p ramps 0.05 -> 0.15 across the phrase; an estimated
+ *                        ~9-10% of beats (linear-scaling estimate, see above).
  *                        Deterministic — see above, this is load-bearing.
  *   onKick             → the small move: escape-colour band spacing + 3% zoom.
  *                        Reaches NO brightness term at all.
@@ -160,10 +172,10 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
 const MAX_ITER_CAP = 160
 
 /** Probability the big move fires, at the START of a phrase. */
-const GATE_P_MIN = 0.08
+const GATE_P_MIN = 0.05
 
 /** Probability the big move fires, at the END of a phrase. */
-const GATE_P_MAX = 0.24
+const GATE_P_MAX = 0.15
 
 /**
  * How far `c` leaps along its orbit on a big move, in radians.
@@ -225,10 +237,10 @@ export const FRAG = /* glsl */ `
     vec2 uv = (2.0 * gl_FragCoord.xy - uRes.xy) / uRes.y;
 
     // Zoom, three tiers: continuous subdivision breathing, a small nudge on
-    // every kick, and the gated lunge. The 3:22 ratio between the last two is
+    // every kick, and the gated lunge. The 3:12 ratio between the last two is
     // the whole design -- the big one only reads as big because the small one
     // is what a beat normally gets.
-    float zoomPulse = 1.0 + 0.12 * uBeatPulse + 0.030 * uTick + 0.22 * uSurge;
+    float zoomPulse = 1.0 + 0.12 * uBeatPulse + 0.030 * uTick + 0.12 * uSurge;
     float zoom = uZoom * zoomPulse;
     float ang = uPhase * 0.25;
     float ca = cos(ang), sa = sin(ang);
@@ -236,7 +248,7 @@ export const FRAG = /* glsl */ `
 
     // The wing fold: mirror both axes before iterating. A big move pulls the
     // seam open, which separates the four wings for as long as the surge lasts.
-    vec2 z = abs(uv) - vec2(0.052, 0.038) * uSurge;
+    vec2 z = abs(uv) - vec2(0.028, 0.021) * uSurge;
 
     // c orbits just outside the cardioid. uJumpPhase is the HELD half of the
     // big move: it steps by a golden angle and stays, so the set does not
@@ -244,7 +256,7 @@ export const FRAG = /* glsl */ `
     // so the frame rotation and the ramp drift, which also read uPhase, are
     // left alone.
     float cPhase = uPhase + uJumpPhase;
-    float orbitR = uOrbitR + uSurge * 0.055 + uTick * 0.010 + uEnergy * 0.03;
+    float orbitR = uOrbitR + uSurge * 0.03 + uTick * 0.010 + uEnergy * 0.03;
     vec2 c = orbitR * vec2(cos(cPhase), sin(cPhase * 1.3 + 1.7));
 
     int n = 0;

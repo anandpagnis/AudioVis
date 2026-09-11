@@ -622,36 +622,52 @@ export function PerformanceStateBridge() {
       : approach(p.mirror.mix ?? 0, mirrorVisible ? 1 : 0, MIRROR_MIX_RATE, f.delta)
 
     // --- Debug override ---------------------------------------------------
-    // TEMPORARY: lets a human drag a value in the debug panel and see it,
-    // ahead of any director having an opinion about when to move it. This is
-    // exactly the shape the file header describes as the eventual end state
-    // for THIS WHOLE FUNCTION — "the store becomes just the human-override
-    // surface feeding into performanceState" — just arriving early, and scoped
-    // to post-fx, for one feature at a time. Runs last, in the same decide-band
-    // component, so it always wins over whatever this frame just computed
-    // above rather than racing it.
-    if (s.debugPostFx.enabled) {
-      const dbg = s.debugPostFx
-      p.bloom = dbg.bloom
-      p.bloomThreshold = dbg.bloomThreshold
-      p.glitch = dbg.glitch
-      p.vignette = dbg.vignette
-      p.fog = dbg.fog
-      p.trails = dbg.trails
-      p.mirror.segments = dbg.mirrorSegments
-      p.mirror.tiles = dbg.mirrorTiles
-      p.mirror.twist = dbg.mirrorTwist
-      p.mirror.slice = dbg.mirrorSlice
-      p.mirror.spin = dbg.mirrorSpin
-      // A human dragging a slider should see it immediately — not wait out
-      // whatever the autonomous fade above happened to leave `mix` at.
+    // TEMPORARY: lets a human take manual control of ONE post-fx field at a
+    // time in the debug panel and see it immediately, ahead of any director
+    // having an opinion about when to move it. This is exactly the shape the
+    // file header describes as the eventual end state for THIS WHOLE
+    // FUNCTION — "the store becomes just the human-override surface feeding
+    // into performanceState" — just arriving early, and scoped to post-fx,
+    // for one feature at a time. Runs last, in the same decide-band
+    // component, so an overridden field always wins over whatever this frame
+    // just computed above rather than racing it.
+    //
+    // PER-FIELD, not one master flag: a single `debugPostFx.enabled` used to
+    // gate all fourteen fields at once, which was wrong in both directions —
+    // dragging one slider froze the other thirteen where the director's own
+    // values could otherwise still reach the screen, and a stale
+    // `enabled: true` reviving from an older install's `localStorage` (see
+    // `debugPostFxOverrides`'s own doc on `AppState`, and ISSUES.md's F108)
+    // froze the WHOLE panel with no visible switch in the current UI to turn
+    // back off — which is exactly what a "not live" report looks like from
+    // outside. `debugPostFxOverrides` is never persisted, so it starts empty
+    // — everything auto — on every load, and each field below checks only
+    // its own flag.
+    const ov = s.debugPostFxOverrides
+    const dbg = s.debugPostFx
+    if (ov.bloom) p.bloom = dbg.bloom
+    if (ov.bloomThreshold) p.bloomThreshold = dbg.bloomThreshold
+    if (ov.glitch) p.glitch = dbg.glitch
+    if (ov.vignette) p.vignette = dbg.vignette
+    if (ov.fog) p.fog = dbg.fog
+    if (ov.trails) p.trails = dbg.trails
+    if (ov.mirrorSegments) p.mirror.segments = dbg.mirrorSegments
+    if (ov.mirrorTiles) p.mirror.tiles = dbg.mirrorTiles
+    if (ov.mirrorTwist) p.mirror.twist = dbg.mirrorTwist
+    if (ov.mirrorSlice) p.mirror.slice = dbg.mirrorSlice
+    if (ov.mirrorSpin) p.mirror.spin = dbg.mirrorSpin
+    // A human dragging ANY mirror slider should see it immediately — not
+    // wait out whatever the autonomous fade above happened to leave `mix`
+    // at. Checked across all five mirror fields rather than one flag, so
+    // taking manual control of just `mirrorSpin`, say, still surfaces it.
+    if (ov.mirrorSegments || ov.mirrorTiles || ov.mirrorTwist || ov.mirrorSlice || ov.mirrorSpin) {
       p.mirror.mix = 1
-      p.lens.amount = dbg.lensAmount
-      p.lens.style = dbg.lensStyle
-      // The style for the NEXT change. SceneManager captures it at commit, so
-      // moving this mid-fade cannot alter a transition already in flight.
-      p.transitionStyle = dbg.transitionStyle
     }
+    if (ov.lensAmount) p.lens.amount = dbg.lensAmount
+    if (ov.lensStyle) p.lens.style = dbg.lensStyle
+    // The style for the NEXT change. SceneManager captures it at commit, so
+    // moving this mid-fade cannot alter a transition already in flight.
+    if (ov.transitionStyle) p.transitionStyle = dbg.transitionStyle
 
     // --- Retired mirror modes (F108) --------------------------------------
     // Tiling and slicing are off, and this is where they are switched off

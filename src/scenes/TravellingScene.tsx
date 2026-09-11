@@ -27,7 +27,7 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  * each). That is ~100 fbm + ~24 eye SDFs per pixel. Op-count against `kifs`
  * (2.97 ms at tier 0, ~160 heavy ops/px) puts the true tier-0 cost around
  * **20-30 ms**, ~10-15 ms even at the bottom tier — far past
- * `slotBudget.test.ts`'s `< sceneBudget(0)/2 = 4 ms` layer-funding bar.
+ * `slotBudget.test.ts`'s `< sceneBudget(0)/2 = 5.05 ms` layer-funding bar.
  *
  * The `SCENE_COST_MS` row in sceneCost.ts is therefore a FABRICATED ceiling
  * (3.9), not an estimate. Consequence: the auto-director's budget model will
@@ -41,8 +41,14 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  *   1. Replace `normal()`'s 4 `warp()` taps with a 2-tap or an analytic-ish
  *      gradient — that alone is ~40% of the cost.
  *   2. Drop `furthest` 4 -> 2 planes.
- *   3. Let the quality governor pull `uOctaves` to 2 (already wired) and add a
- *      real `pixelBudget` step per tier.
+ *   3. Let the quality governor pull `uOctaves` to 2 (already wired). The
+ *      `pixelBudget` step this item used to ask for now exists — it steps at
+ *      `raymarchSteps >= 72`, so it fires one tier EARLIER than the roster's
+ *      usual `>= 50` cutoff, deliberately, because this scene is the dearest
+ *      in the roster and wants relief sooner. What is still open is the
+ *      re-pricing in item 4: the budget was re-anchored 1.0 -> 5.6 / 0.6 ->
+ *      3.3 (see the declaration), which draws substantially more pixels than
+ *      any cost figure quoted in this header was taken at.
  *   4. `/bench` and re-price, or move to DISABLED_SCENES.
  *
  * ## Port notes (Shadertoy -> AudioVis prelude)
@@ -571,10 +577,31 @@ export const TravellingScene = createShaderScene<TravellingState>({
   // Paints its own sky — replace, not blend, for the offscreen buffer.
   blending: THREE.NoBlending,
   // AGGRESSIVE — this is the dearest shader in the roster (see the header).
-  // Even so it will not clear the tier-0 budget bar; the low internal res is
-  // damage control, not a fix. Replace with a real /bench sweep + an
+  // Even so it will not clear the tier-0 budget bar; the reduced internal res
+  // is damage control, not a fix. Replace with a real /bench sweep + an
   // optimisation pass before this is anything but a manual pick.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 72 ? 1.0 : 0.6),
+  //
+  // The `>= 72` threshold is deliberate and must NOT be normalised to the
+  // roster's usual `>= 50`: 72 is tier 1's step count, so this scene drops to
+  // its lower budget at tier 2 while the others wait until tier 3. The dearest
+  // shader in the roster gets its relief one rung earlier, on purpose.
+  //
+  // Re-anchored 1.0 -> 5.6 / 0.6 -> 3.3. The old pair was a pre-F107 value that
+  // was never revisited when the engine's budget table moved to (12.5/16/20) MP
+  // plus a 24 MP post chain. A `createShaderScene` spec budget does not go
+  // through that table — it is solved by that module's own `solveScale`, which
+  // divides the declared megapixels straight into the display's full
+  // megapixels and clamps at MIN_RENDER_SCALE (0.4), with no post-chain
+  // reciprocal sum and no tier `pixelBudgetScale` factor. 1.0 MP against a
+  // 3840x2160 panel solves to sqrt(1.0/8.29) = 0.35 — below that clamp — so the
+  // buffer pinned to 1536x864 and upscaled 2.5x linear on any panel above
+  // ~1440p, and because the unclamped size is dpr-invariant on this path a 4K
+  // desktop and a 1080p laptop were handed near-identical buffers.
+  //
+  // 5.6 MP clears the clamp on 4K (0.82 linear -> 3155x1774) and reaches native
+  // 1.00 on 1080p at every tier. Being the dearest scene in the roster, this is
+  // also where the extra pixels hurt most — see the header's ACTION list.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 72 ? 5.6 : 3.3),
   uniforms: () => ({
     uClock: { value: 0 },
     // 1e4 = sinceImpulse()'s "never fired" sentinel, so the first frame shows

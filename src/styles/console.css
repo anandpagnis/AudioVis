@@ -311,6 +311,24 @@
   min-height: 0;
 }
 
+/* Post FX is always the last section, and the grid above is a fixed 4
+   columns — with `Params` now unconditionally mounted alongside the
+   already-conditional `Photo` panel, the section count varies between 5
+   (no Photo) and 6 (Limitless + Photo), and either way overflows one row.
+   Left at its default single column, the wrapped section landed alone with
+   up to 3 empty column-widths of dead space beside it — worse the more the
+   grid happened to under-fill.
+   Spanning 3 columns instead of fighting that: at 5 sections it still wraps
+   alone but the gap shrinks to one column; at 6, it lands beside `Look` in
+   the auto-placement cursor's next free 3-column run and the row fills
+   exactly, no gap at all. `Post FX` benefits from the width regardless —
+   it is the single densest column (bloom/glitch/vignette/fog/trails, then
+   the mirror and lens racks), so the extra room reads as this section
+   finally getting room to breathe, not as a filler trick. */
+.console-section:last-of-type {
+  grid-column: span 3;
+}
+
 .console-section {
   display: flex;
   flex-direction: column;
@@ -716,6 +734,76 @@
   color: #fff;
 }
 
+/* ---------- limitless photo ---------- */
+
+.photo-drop-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.photo-drop {
+  position: relative;
+  min-height: 120px;
+  border-radius: 9px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.photo-drop.drag {
+  border-color: rgba(120, 240, 190, 0.7);
+  background: rgba(60, 220, 150, 0.08);
+}
+
+.photo-drop.has-photo {
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.photo-drop-hint {
+  padding: 0 16px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.photo-drop-preview {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  display: block;
+}
+
+.photo-drop-input {
+  /* Not display:none — a display:none input cannot be given focus, and
+     `.photo-drop`'s own onKeyDown opens THIS input on Enter/Space, so it has
+     to stay a real, focusable, tabbable element. Not sized over the drop
+     zone either, unlike a typical "invisible file input" trick: doing that
+     would let the input's own native click/drop handling race the div's
+     (which is what actually resizes/encodes the file, drop included) for the
+     same click or drop event. Clipped to 1px instead — present, focusable,
+     invisible, and out of the way of every pointer interaction. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.photo-drop-error {
+  color: rgba(255, 130, 130, 0.85);
+  font-size: 11px;
+}
+
 /* ---------- sliders ---------- */
 
 .big-slider {
@@ -777,6 +865,17 @@
   align-items: center;
   gap: 10px;
   margin-top: auto;
+}
+
+/* `SceneParamsPanel`'s own Mode row — see the component's own comment on why
+   this needs to wrap where every other `.quality-row` user (a handful of
+   fixed items) does not. `margin-top: auto` above is dropped rather than
+   inherited: that rule exists to push a `.quality-row` to the bottom of a
+   taller sibling stack (the quality-tier row in the Look column), which is
+   not this row's context and would misplace a wrapped multi-line block. */
+.mode-row {
+  flex-wrap: wrap;
+  margin-top: 0;
 }
 
 .segmented {
@@ -887,6 +986,53 @@
   border-radius: 50%;
   background: #eaf4ff;
   border: 2px solid #4ba8ff;
+}
+
+/* PostFxLive — read-only, so it borrows `.fx-slider`'s column widths (see
+   FxLiveBar's own comment) without any of its interactive styling. */
+.fx-live {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 10px;
+}
+
+.fx-live-row {
+  display: grid;
+  grid-template-columns: 66px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.fx-live-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+/* No transition, same reasoning as `.filter-now-fill`: the value arriving is
+   already an eased envelope sampled at the telemetry rate, so a CSS
+   transition on top would make the bar lag the picture it describes. */
+.fx-live-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  background: #4ba8ff;
+  transform-origin: left center;
+}
+
+/* Mirror/lens/fx rows have no bar (segments/style/scene-id are pictures, not
+   an intensity) so their summary spans both the bar and value columns. */
+.fx-live-summary {
+  grid-column: 2 / span 2;
+  font-size: 11px;
+  color: rgba(234, 244, 255, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fx-select {

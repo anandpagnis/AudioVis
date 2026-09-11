@@ -380,7 +380,7 @@ describe('snapToRefreshInterval', () => {
  */
 describe('quality governor — failed-rung memory', () => {
   const STEADY = { ms: 16.6, p95: 16.7 }
-  const BAD = { ms: 21, p95: 24 }
+  const BAD = { ms: 26, p95: 24 }
 
   it('does not immediately re-enter a rung that failed its probe', () => {
     const g = governorAt(1)
@@ -496,7 +496,7 @@ describe('quality governor — failed-rung memory', () => {
 
 describe('quality governor — per-scene rung memory (F164)', () => {
   const STEADY = { ms: 16.6, p95: 16.7 }
-  const BAD = { ms: 21, p95: 24 }
+  const BAD = { ms: 26, p95: 24 }
 
   it('enters an unmeasured scene one rung down from wherever the ladder sits', () => {
     const g = governorAt(1)

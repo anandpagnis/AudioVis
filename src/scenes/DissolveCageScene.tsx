@@ -5,6 +5,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
 import { CURL_NOISE_GLSL } from '../engine/shaderLib'
+import { slew } from '../engine/response'
 import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
@@ -26,6 +27,38 @@ import { useDispose } from '../engine/useDispose'
  *
  * Musically it runs an autonomous cycle so there is always something happening,
  * but drops and section changes yank it apart on the transient.
+ *
+ * ## Band routing
+ *
+ *   mid + bass  -> curl-field strength (the swirl widens through dense
+ *                  harmonic passages, not only on the kick)
+ *   presence    -> cage stroke weight
+ *   pulse       -> point size, cage colour drive
+ *   high        -> sparse per-particle sparkle, cage colour drive
+ *   transient   -> per-particle jitter (see "Response identity" below)
+ *   energy + presence -> per-particle brightness
+ *
+ * ## Response identity: per-particle stagger, refined rather than replaced
+ *
+ * Of 22 live scenes exactly one had any per-element delay at all before wave 1
+ * — this scene's `aRand.y` stagger, and per `TRAVELLING_PULSE_GLSL`'s own doc
+ * "even that is not audio-keyed" (it is a fixed per-particle offset, not tied
+ * to which band or beat fires). That stagger IS the identity and is untouched
+ * here. Two refinements sit on top of it instead of replacing it:
+ *
+ *   - The drop-forced arrival at full scatter now runs through
+ *     `engine/response.ts`'s `slew()` instead of a hand-rolled
+ *     `Math.min(1, dt * rate)` step — see the comment at the dissolve blend
+ *     below for why an underdamped SPRING (overshoot) was considered for this
+ *     spot and declined: the per-particle clamp already saturates most of the
+ *     cloud before an overshoot could render anything.
+ *   - The transient jitter now fires on a deterministic ~35% of particles per
+ *     beat (a GLSL-side hash of particle × beat index — the same contract as
+ *     `response.ts`'s `gate()`, reimplemented in-shader because a vertex
+ *     shader cannot call into TS) instead of nudging all 24k every hit. A hit
+ *     now reads as a subset of debris catching the impulse, which deepens the
+ *     per-particle differentiation the stagger already started rather than
+ *     competing with it.
  */
 const COUNT = 24000
 const CYCLE_BEATS = 24
@@ -47,6 +80,7 @@ export const VERT = /* glsl */ `
   uniform float uPulse;
   uniform float uTransient;
   uniform float uSize;
+  uniform float uJitterSeed;
   varying float vT;
   varying vec4 vRand;
 
@@ -69,8 +103,18 @@ export const VERT = /* glsl */ `
     // 0.2: Dissolve's authored epsilon — a wider sample than Plasma's, giving
     // a softer swirl. Preserved exactly rather than reconciled.
     p += curlNoise(p * 0.45 + uTime * 0.06 + aRand.x, 0.2) * env * (0.26 + uBass * 0.34 + uMid * 0.3);
-    // Transient jitter: a per-particle scatter on sharp hits, strongest mid-flight.
-    p += normalize(p + 0.001) * uTransient * env * 0.22 * (aRand.z - 0.5);
+    // Transient jitter: a per-particle scatter on sharp hits, strongest
+    // mid-flight. Gated to a deterministic MINORITY of particles per beat
+    // rather than nudging all 24k -- a hash of (particle, beat index) decides
+    // participation, the same contract engine/response.ts's gate() documents
+    // (same beat of the same track always picks the same subset), just
+    // reimplemented here because a vertex shader cannot call into TS. Reads
+    // as a spray of debris catching the impulse instead of the whole cloud
+    // twitching in lockstep; the boost after the gate keeps the particles
+    // that DO fire clearly visible rather than diluted by the smaller count.
+    float jHash = fract(sin(dot(vec2(aRand.z, uJitterSeed), vec2(127.1, 311.7))) * 43758.5453);
+    float jGate = step(jHash, 0.35);
+    p += normalize(p + 0.001) * uTransient * env * 0.22 * (aRand.z - 0.5) * jGate * 1.6;
     p *= 1.0 + uPulse * 0.03;
 
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
@@ -157,6 +201,8 @@ function extractSurface(): { position: Float32Array; normal: Float32Array } {
 export function DissolveCageScene() {
   const gl = useThree((s) => s.gl)
   const dissolve = useRef(0)
+  /** Slewed `b.mid` — see the cage-spin update below. */
+  const midEnv = useRef(0)
   const cycleStart = useRef(-1)
   const cageRef = useRef<THREE.Group>(null)
 
@@ -223,6 +269,7 @@ export function DissolveCageScene() {
           uHigh: { value: 0 },
           uPulse: { value: 0 },
           uTransient: { value: 0 },
+          uJitterSeed: { value: 0 },
           uEnergy: { value: 0 },
           uSize: { value: 1.9 },
           uFade: { value: 0 },
@@ -261,8 +308,29 @@ export function DissolveCageScene() {
       // autonomous cycle was already doing. Taking the max rather than adding
       // keeps the cycle's dwell at both extremes intact.
       target = Math.max(target, anim.dissolve)
-      // Drops rip it apart fast; the autonomous cycle breathes slowly.
-      dissolve.current += (target - dissolve.current) * Math.min(1, dt * (f.drop ? 9 : 2.2))
+      // Drops rip it apart fast (rate 9); the autonomous cycle breathes
+      // slowly (rate 2.2) -- same two rates as before, but run through
+      // slew() instead of the old `Math.min(1, dt * rate)` linear step. That
+      // form is a literal teleport once dt * rate >= 1 (a stall past ~111ms
+      // mid-drop, ~454ms mid-cycle) -- exactly the frame-rate-dependent snap
+      // engine/response.ts's header warns first-order forms are prone to.
+      // slew()'s `1 - exp(-dt * rate)` is asymptotic at any dt and cannot
+      // produce that jump; riseRate === fallRate here so it is exactly the
+      // old exponential's intent, just correct under a stalled frame.
+      //
+      // Considered and declined for this spot: an underdamped SPRING for a
+      // hit-then-overshoot instead of an eased arrival. uDissolve only acts
+      // through the per-particle clamp in the vertex shader above, so by the
+      // time a drop lands most of the 24k particles are already pinned at
+      // t = 1 with no room to render an overshoot -- only the last sliver of
+      // the stagger window (aRand.y near 1) could show it, as a one-frame
+      // flicker invisible against the rest of the cloud. What this already
+      // has -- a fast attack, then a HOLD at full scatter for the whole
+      // ~0.6s `f.drop` window because target stays pinned at 1 throughout,
+      // then a slow release once it lifts -- already reads as a struck
+      // impact rather than an instant jump; the linear-step numerics were
+      // the only real bug, and that is what this change fixes.
+      dissolve.current = slew(dissolve.current, target, dt, f.drop ? 9 : 2.2, f.drop ? 9 : 2.2)
 
       cageMat.resolution.set(gl.domElement.width, gl.domElement.height)
       // Overdriven colour rather than low opacity — LineMaterial's alpha caps at
@@ -275,7 +343,13 @@ export function DissolveCageScene() {
       cageMat.linewidth = 1.6 + b.presence * 1.6 + b.pulse * 0.6
 
       if (cageRef.current) {
-        cageRef.current.rotation.y += dt * (0.06 + b.mid * 0.14) * params.speed
+        // Slewed rather than raw `b.mid` — found in a systematic audit
+        // (2026-09-11) for the same "raw band drives an accumulating rate"
+        // pattern reported live and fixed twice elsewhere this session
+        // (GyroidFluxScene, JavaZoneLatticeScene). This file already uses
+        // `slew()` for `dissolve` above; same primitive, same file.
+        midEnv.current = slew(midEnv.current, b.mid, dt, 3, 3)
+        cageRef.current.rotation.y += dt * (0.06 + midEnv.current * 0.14) * params.speed
         // Tempo-locked sway rather than a wall-clock sine: the cage now tilts in
         // time with the track instead of drifting against it.
         cageRef.current.rotation.x = anim.oscillate * 0.12
@@ -289,6 +363,11 @@ export function DissolveCageScene() {
       u.uHigh.value = b.high
       u.uPulse.value = b.pulse
       u.uTransient.value = b.transient
+      // Integer per-beat seed for the jitter gate's GLSL hash -- constant
+      // across a whole beat, distinct the next one, per gate()'s own
+      // recommendation to key a probability off beat/bar index for a stable,
+      // reproducible pattern rather than a per-frame reroll.
+      u.uJitterSeed.value = f.beatIndex
       u.uEnergy.value = b.energy
       u.uFade.value = vis
       u.uColForm.value.copy(col.a)

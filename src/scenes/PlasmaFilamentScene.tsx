@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { applyToUniforms } from '../engine/AnimationDirector'
+import { slew } from '../engine/response'
 import { CURL_NOISE_GLSL } from '../engine/shaderLib'
 import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useSceneFrame } from '../engine/sceneFrame'
@@ -26,6 +27,39 @@ import { useDispose } from '../engine/useDispose'
  * the periphery accumulates to a fraction of 1.0 and the frame reads as dead
  * black with one hot subject — never an additive haze that would flatten any
  * future grade pass.
+ *
+ * ## Band routing
+ *
+ *   bass -> curl-field advection step (the filaments whip harder on heavy low end)
+ *   mid  -> fragment-shader stretch (sustained chords draw the field into strands)
+ *   onKick/pulse/drop -> a single BURST-AND-SETTLE scalar (`uBurst`), not a
+ *             symmetric pulse. `slew()` (engine/response.ts) gives it a fast
+ *             attack and a slow, gravity-like release, so a hit reads as one
+ *             explosion with mass behind it rather than the roster's
+ *             ubiquitous `exp(-dt*k)` thud that could be timed identically on
+ *             the way up and down. It drives the radial expansion and, in
+ *             place of the old flat pulse term, point SIZE.
+ *   onKick (gated) -> a deterministic ~15% of the 70k particles (hashed off
+ *             `aRand`, stable every frame since the field itself is fixed-
+ *             seed) ride the same burst harder AND read further out on the
+ *             radial colour ramp while it is live. `gate()`'s CPU-side
+ *             probability check has no per-particle GPU equivalent to call
+ *             into — running it 70k times a frame on the CPU is exactly the
+ *             per-particle cost this scene cannot afford — so this re-derives
+ *             the identical "hashed value < probability" test directly in the
+ *             shader, off the per-particle seed the field already carries.
+ *             The result is grain: the burst visibly has texture within the
+ *             particle field instead of reading as one uniform blob
+ *             expanding, and — unlike the roster's existing per-element
+ *             examples, which are spatial/positional (a stagger across a
+ *             mesh) — this differentiates a random SUBSET of one
+ *             undifferentiated field.
+ *   presence -> shard flare (unchanged)
+ *   highs   -> ionisation flicker (unchanged)
+ *
+ * None of the above touches the brightness term directly — burst and its
+ * gated grain are expansion, size, and colour-ramp position; brightness stays
+ * driven by energy/coreBoost/presence/highs as before.
  */
 const COUNT = 70000
 const SPREAD = 9.0
@@ -35,13 +69,13 @@ export const VERT = /* glsl */ `
   uniform float uFlow;
   uniform float uBass;
   uniform float uEnergy;
-  uniform float uPulse;
-  uniform float uTransient;
+  uniform float uBurst;
   uniform float uAnimExplode;
   uniform float uSize;
   varying float vRadius;
   varying vec2 vStreak;
   varying vec4 vRand;
+  varying float vBurstGate;
 
   ${CURL_NOISE_GLSL}
 
@@ -59,12 +93,23 @@ export const VERT = /* glsl */ `
       fp += dir * step;
     }
 
-    // Transient rides on top of the beat pulse: it reacts faster than any band
-    // envelope, so sharp hits kick the whole field outward before bass responds.
-    // Explode is the slow counterpart: it carries the director's visualTension,
-    // so the field visibly strains apart through a build — while the music
-    // there may still be quiet and no band envelope is moving at all.
-    fp *= 1.0 + uPulse * 0.07 + uTransient * 0.06 + uAnimExplode * 0.18;
+    // Burst-and-settle: uBurst is a single JS-side scalar (asymmetric slew —
+    // see the file-level Band routing doc) that snaps up fast on a hit and
+    // settles slowly back down like something falling under gravity, so the
+    // explosion reads as ONE event with mass rather than a symmetric pulse.
+    // Explode is the separate slow counterpart: it carries the director's
+    // visualTension, so the field visibly strains apart through a build —
+    // while the music there may still be quiet and no band envelope moving.
+    //
+    // A deterministic ~15% subset of particles rides the burst harder — the
+    // grain that keeps 70k particles moving together from reading as one
+    // uniform blob. Hashed off aRand (stable every frame, the field is
+    // fixed-seed) rather than an index, so no extra attribute is needed.
+    float burstGateSeed = fract(aRand.x * 13.1 + aRand.z * 7.3);
+    float burstGate = burstGateSeed < 0.15 ? 1.0 : 0.0;
+    vBurstGate = burstGate;
+
+    fp *= 1.0 + uBurst * 0.13 + uAnimExplode * 0.18 + burstGate * uBurst * 0.35;
     vRadius = length(fp);
 
     vec4 mv = modelViewMatrix * vec4(fp, 1.0);
@@ -81,7 +126,9 @@ export const VERT = /* glsl */ `
     vStreak = dot(delta, delta) > 1e-9 ? normalize(delta) : vec2(1.0, 0.0);
 
     gl_Position = clip;
-    gl_PointSize = uSize * (0.45 + aRand.w) * (1.0 + uPulse * 0.5 + uEnergy * 0.35)
+    // Size answers the burst now, not a flat beat pulse; the gated grain
+    // swells further still, same as the radial expansion above.
+    gl_PointSize = uSize * (0.45 + aRand.w) * (1.0 + uBurst * 0.5 + uEnergy * 0.35 + burstGate * uBurst * 0.4)
       * (34.0 / max(1.0, -mv.z));
   }
 `
@@ -97,9 +144,11 @@ export const FRAG = /* glsl */ `
   uniform float uHigh;
   uniform float uFade;
   uniform float uSpread;
+  uniform float uBurst;
   varying float vRadius;
   varying vec2 vStreak;
   varying vec4 vRand;
+  varying float vBurstGate;
 
   void main() {
     vec2 d = gl_PointCoord - 0.5;
@@ -120,10 +169,15 @@ export const FRAG = /* glsl */ `
     float m = mix(soft, shardMask, isShard);
     if (m < 0.01) discard;
 
-    // Radial ramp: hot accent at the core, cool primary at the periphery.
+    // Radial ramp: hot accent at the core, cool primary at the periphery. The
+    // gated ~15% grain reads a step further out on the ramp while a burst is
+    // live -- a colour nudge, not a brightness one, so the burst's texture
+    // shows up as flecks of the edge hue seeded through the core instead of
+    // an uneven glow.
     float r = clamp(vRadius / uSpread, 0.0, 1.0);
-    vec3 col = mix(uColCore, uColMid, smoothstep(0.0, 0.42, r));
-    col = mix(col, uColEdge, smoothstep(0.4, 1.0, r));
+    float rampR = clamp(r + vBurstGate * uBurst * 0.22, 0.0, 1.0);
+    vec3 col = mix(uColCore, uColMid, smoothstep(0.0, 0.42, rampR));
+    col = mix(col, uColEdge, smoothstep(0.4, 1.0, rampR));
 
     // A sparse subset flickers with the highs — reads as ionisation.
     float tw = step(0.93, fract(vRand.z * 23.0 + vRadius * 0.7));
@@ -171,6 +225,11 @@ function buildEmptyGeometry(): THREE.BufferGeometry {
 
 export function PlasmaFilamentScene() {
   const flow = useRef(0)
+  /** Slewed `f.energy` — see the flow-clock update below. */
+  const energyEnv = useRef(0)
+  /** Burst-and-settle scalar (asymmetric slew, see the file-level Band
+   *  routing doc) — a single JS-side float, not per-particle work. */
+  const burst = useRef(0)
   const geometry = useMemo(() => buildEmptyGeometry(), [])
   /** False until the worker's field has been swapped in; gates the draw range
    *  so the un-generated (all-at-origin) placeholder never renders as one
@@ -209,8 +268,7 @@ export function PlasmaFilamentScene() {
           uPresence: { value: 0 },
           uHigh: { value: 0 },
           uEnergy: { value: 0 },
-          uPulse: { value: 0 },
-          uTransient: { value: 0 },
+          uBurst: { value: 0 },
           uAnimExplode: { value: 0 },
           uSize: { value: 2.1 },
           uFade: { value: 0 },
@@ -252,7 +310,15 @@ export function PlasmaFilamentScene() {
         filled.current ? Math.floor(COUNT * state.particleDensity * roleDensity) : 0,
       )
 
-      flow.current += dt * (0.22 + f.energy * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
+      // `f.energy` slewed before it multiplies in — found in a systematic
+      // audit (2026-09-11) for the "raw band drives an accumulating rate"
+      // pattern reported live and fixed twice elsewhere this session
+      // (GyroidFluxScene, JavaZoneLatticeScene); the reactive swing here
+      // (0.9 against a 0.22 base — over 400%) is the largest of any
+      // continuous term in this file. `f.drop` stays a raw boolean step
+      // deliberately — a drop is meant to read as instantaneous, not eased.
+      energyEnv.current = slew(energyEnv.current, f.energy, dt, 3, 3)
+      flow.current += dt * (0.22 + energyEnv.current * 0.9 + (f.drop ? 1.3 : 0)) * params.speed
 
       u.uFlow.value = flow.current
       u.uBass.value = b.bass
@@ -260,8 +326,18 @@ export function PlasmaFilamentScene() {
       u.uPresence.value = b.presence
       u.uHigh.value = b.high
       u.uEnergy.value = b.energy
-      u.uPulse.value = b.pulse
-      u.uTransient.value = b.transient
+
+      // Burst-and-settle: fast attack (rise) so a hit is felt immediately,
+      // slow release (fall) so it settles like something under gravity
+      // instead of an instant snap-back — see slew()'s own doc for why this
+      // asymmetry is what makes a hit read as a physical event. Target is the
+      // sharpest available "something just happened" signal; drop pins it to
+      // 1 outright since a drop is exactly the moment this scene should read
+      // as detonating.
+      const burstTarget = Math.max(b.pulse, b.transient, f.drop ? 1 : 0)
+      burst.current = slew(burst.current, burstTarget, dt, 46, 3.2)
+      u.uBurst.value = burst.current
+
       applyToUniforms(u)
       u.uFade.value = vis
       // Accent burns at the core, primary through the body, secondary at the rim.

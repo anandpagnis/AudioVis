@@ -184,8 +184,35 @@ either another lies ahead or <32 beats have passed), both automatic directors st
 Manual input suppresses the directors for 45 s but not authored cues.
 
 ### Add a palette / preset
-`registerPalette({...})`, or ship presets as JSON (the import pipeline validates and
-merges; see `sanitizePreset`).
+```ts
+import { registerPalette } from './engine/palettes'
+
+registerPalette({
+  id: 'mypalette',
+  name: 'My Palette',
+  family: 'bold',
+  slots: {
+    bg: '#050507',
+    shadow: '#1c1420',
+    mid: '#7a3ff2',
+    accent: '#22d3c7',
+    glow: '#ffe89a',
+  },
+})
+```
+Five semantic slots, darkest to brightest — `bg` (near-black ground), `shadow`
+(where geometry falls away), `mid` (the body colour), `accent` (the second
+voice) and `glow` (the hot highlight a kick lights up) — every palette declares
+all five (`PaletteSlots` in `src/engine/palettes.ts`). `family` is purely
+organisational (`'signature' | 'classic' | 'bold' | 'earth' | 'rainbow'`) and
+nothing dispatches on it directly, but it is what lets a picker of thirty-plus
+palettes stay legible and records the intent behind a set's colour
+relationships. `Palette.colors`/`Palette.bg` (three unnamed colours plus a
+background a scene could not reach) is the pre-slots shape; any code still
+written against it breaks at compile time.
+
+Or ship presets as JSON (the import pipeline validates and merges; see
+`sanitizePreset`).
 
 ### OBS / wallpaper mode
 URL parameters configure a chromeless instance (see `src/urlParams.ts`):

@@ -223,7 +223,7 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // internal resolution. The tier-0/1 vs tier-2+ step is the `pixelBudget`
   // drop, not an iteration change (iterations are the user's dial, never
   // tier-gated). NOT run through {@link SCENE_COST_MODEL}. If a real /bench
-  // puts tier 0 at or above `sceneBudget(0)/2` (~4 ms) this scene has to move
+  // puts tier 0 at or above `sceneBudget(0)/2` (5.05 ms) this scene has to move
   // to DISABLED_SCENES or take further cuts — it is live on an estimate.
   harkonnen: [3.5, 3.2, 2.4, 2.0, 1.6],
 
@@ -237,14 +237,21 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // that stated range (15.2), with the rest of the row scaled by the same 4x
   // factor rather than re-guessed, so the taper still tracks the two levers
   // that actually move it: `uMaxSteps` off `quality.knobs.raymarchSteps`
-  // (96/72/54/40/28), and the `pixelBudget` step (1.2 MP tiers 0-1, 0.7 MP
-  // below). Still NOT run through {@link SCENE_COST_MODEL} — that requires a
-  // real multi-resolution measurement, and this is still a guess, just an
-  // honest one. ACTION: run `/bench` and replace this with a measurement; at
-  // 15.2 ms tier 0 it already fails `slotBudget.test.ts`'s
-  // `< sceneBudget(0)/2` (~4 ms) admission bar (see that test's failure for
-  // the real consequence) — cut the step count hard, drop `pixelBudget`
-  // further, or move `beats` back to DISABLED_SCENES.
+  // (96/72/54/40/28), and the `pixelBudget` step, AT THE TIME THIS ROW WAS
+  // PRICED (1.2 MP tiers 0-1, 0.7 MP below — since re-anchored to 6.7/3.9,
+  // see the scene's own header, "That last option got further away, not
+  // closer": every figure in this row was taken at roughly a third of the
+  // pixels the scene now draws at 4K tier 0, and no replacement is invented
+  // here either, for the same reason the header gives — cost is linear in
+  // pixel count with no early-out, and only `/bench` can price it now).
+  // Still NOT run through {@link SCENE_COST_MODEL} — that requires a real
+  // multi-resolution measurement, and this is still a guess, just an honest
+  // one. ACTION: run `/bench` and replace this with a measurement; at 15.2 ms
+  // tier 0 (understated, per the above) it already fails `slotBudget.test.ts`
+  // — allowlisted there (F199/F200) as FORCED LIVE, `compatibleWith: []`,
+  // alongside `travelling`/`lattesfold` — rather than move `beats` back to
+  // DISABLED_SCENES, which stays this scene's own call to make, not this
+  // correction's.
   beats: [15.2, 12.0, 7.6, 5.6, 4.0],
 
   // `web` (mrange's "Oversaturated web", Shadertoy CC0, deriv. of BigWing's
@@ -260,7 +267,7 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // SDF, lighter overall than a full march, minus the resolution cut. The
   // tier-0/1 vs tier-2+ step is the `pixelBudget` drop (strands/planes are
   // user dials, never tier-gated). NOT run through {@link SCENE_COST_MODEL}.
-  // Run `/bench`; if tier 0 is at/over `sceneBudget(0)/2` (~4 ms), drop the
+  // Run `/bench`; if tier 0 is at/over `sceneBudget(0)/2` (5.05 ms), drop the
   // `density`/`complexity` defaults, set `#define USE_BEZIER 0`, or move `web`
   // to DISABLED_SCENES.
   web: [3.4, 3.1, 2.1, 1.6, 1.2],
@@ -268,8 +275,10 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // `travelling` (mrange's "Moving without travelling", Shadertoy CC0) — NOT
   // /bench-measured. This row now reflects the worst-case estimate the
   // scene's own prior comment already stated, not a fabricated pass-the-test
-  // ceiling. It is the heaviest shader in the roster: per pixel it steps 4
-  // planes, and each plane runs one `warp()` plus a 4-tap finite-difference
+  // ceiling. Was the heaviest shader in the roster until `lattesfold` (below)
+  // landed at an estimated 45 ms; still the heaviest with a real per-pixel
+  // fbm-based cost model behind the number. Per pixel it steps 4 planes, and
+  // each plane runs one `warp()` plus a 4-tap finite-difference
   // `normal()` (= 5 warps), where every `warp()` is an eye SDF + a
   // kaleidoscope fold + 5 `fbm()` (4 octaves) — ~100 fbm + ~24 eye SDFs per
   // pixel. Against `kifs` (2.97 ms at tier 0, ~160 heavy ops/px) the prior
@@ -282,13 +291,197 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // the damage to one bad transition — the budget model will still over-pick
   // this at a tier that no longer admits it (see `slotBudget.test.ts`'s
   // failure for the real consequence) and the governor claws back after.
-  // Taper tracks the `pixelBudget` step (1.0 MP tiers 0-1, 0.6 MP below) and
-  // `uOctaves` (governor 4->2). Still NOT run through {@link
-  // SCENE_COST_MODEL} — that requires a real multi-resolution measurement,
-  // and this is still a guess, just an honest one. ACTION: cut `normal()` to
-  // a 2-tap, drop `furthest` 4->2, then /bench — or move `travelling` to
-  // DISABLED_SCENES.
-  travelling: [30.0, 27.0, 22.0, 18.0, 15.0],
+  //
+  // F199/F200 correction: this row used to say it "tracks the pixelBudget
+  // step (1.0 MP tiers 0-1, 0.6 MP below)" — F195 re-anchored that budget to
+  // 5.6/3.3 (see the scene's own declaration) without re-deriving this row,
+  // exactly the "not re-measured" gap F195's own ledger entry flagged. Scaled
+  // here by `solveScale(budget, 3840, 2160, 1)^2` against the ORIGINAL
+  // native-resolution op-count estimate directly above (30/27/22/18/15,
+  // unclamped: tiers 0-1 at 5.6 MP solve to 0.822 scale = 0.675 of native
+  // pixels; tiers 2-4 at 3.3 MP solve to 0.631 = 0.398): still nowhere near
+  // `slotBudget.test.ts`'s bar even at the new, larger budget — see that
+  // file's own allowlist comment for why this stays live anyway
+  // ("FORCED LIVE by explicit request" above; `compatibleWith: []` bounds
+  // the blast radius to one scheduling mistake, not a layer).
+  travelling: [20.25, 18.23, 8.75, 7.16, 5.97],
+
+  // `gyroid` (Shadertoy source, requester-supplied CC0) — NOT /bench-measured.
+  // FORCED LIVE by explicit request; see GyroidFluxScene.tsx's header for the
+  // full op-count reasoning. A 150-step march with no hit-based early-out,
+  // priced at the pessimistic (kifs-scaled) end of a 7-22 ms two-method
+  // estimate rather than split down the middle — same call `beats` makes for
+  // its own two-sided estimate. Taper shape matched to `beats`' own
+  // proportional decay (same "no early-out" march family).
+  //
+  // F199/F200: the row above (18.0 at tier 0) was the NATIVE-resolution
+  // estimate, priced before this scene had a `pixelBudget` at all — it was
+  // never re-derived once one was added, so `slotBudget.test.ts` was
+  // comparing an unthrottled number against the throttled reality. Scaled by
+  // `solveScale(budget, 3840, 2160, 1)^2`: both the 1.2 MP (tiers 0-2) and
+  // 0.7 MP (tiers 3-4) budgets solve BELOW the 0.4 floor at 4K and clamp to
+  // the identical 0.16 pixel ratio — the two-branch budget is a no-op at this
+  // reference size specifically (it still matters at smaller displays, where
+  // neither budget clamps). Clears the tier-0 bar with real margin now.
+  // ACTION: still run `/bench` and replace with a measurement.
+  gyroid: [2.88, 2.27, 1.44, 1.06, 0.75],
+
+  // `fridaylines` (mrange's "Crazy friday lines", Shadertoy CC0) — NOT
+  // /bench-measured. FORCED LIVE by explicit request; see
+  // FridayLinesScene.tsx's header. 77-step accumulation with a SOFT distance
+  // exit (z < 49.0), double 4D inversion + lattice fold per step — heavier
+  // than `gyroid`'s single gyroid tap, lighter than `beats`' 7-deep min-tree,
+  // and the soft exit spares some rays `beats`' pure accumulate-forever loop
+  // never does. Priced around 70% of `beats`' tier-0 estimate on that basis.
+  //
+  // F199/F200: same correction as `gyroid` directly above — this was the
+  // native-resolution estimate, re-derived against the 1.1/0.65 MP budget
+  // (both clamp to the 0.4 floor at 4K, 0.16 pixel ratio). ACTION: still run
+  // `/bench` and replace with a measurement.
+  fridaylines: [1.76, 1.39, 0.88, 0.64, 0.46],
+
+  // `javazone` (mrange's "JavaZone 2026 Shader", Shadertoy CC0) — NOT
+  // /bench-measured. FORCED LIVE by explicit request; see
+  // JavaZoneLatticeScene.tsx's header. 77-step accumulation with NO early-out
+  // at all — the closest true analogue is `beats` (same author, same
+  // iteration count, same tanh(o/2e4) shape), minus `beats`' inversion divide
+  // and 7-deep min-tree, plus one extra noise term. Priced a shade under
+  // `beats`' own tier-0 estimate on that basis.
+  //
+  // F199/F200: same correction as `gyroid`/`fridaylines` above — native-
+  // resolution estimate, re-derived against the 1.2/0.7 MP budget (both
+  // clamp to the 0.4 floor at 4K, 0.16 pixel ratio). ACTION: still run
+  // `/bench` and replace with a measurement.
+  javazone: [2.08, 1.65, 1.04, 0.77, 0.54],
+
+  // `lattesfold` (Shadertoy source, untitled, requester-supplied CC0 — no
+  // in-source licence header, unlike its three siblings above; see
+  // LattesFoldScene.tsx's header for the full provenance disclosure) — NOT
+  // /bench-measured. FORCED LIVE by explicit request, and by a wide margin
+  // the heaviest scene in the roster. Up to 90 outer accumulation steps, EACH
+  // running an inner fold up to 12 times — up to 1080 fold iterations per
+  // pixel, against `harkonnen`'s entire ~52-iteration fractal budget. This
+  // estimate is POST a hoist fix that pulled three redundant per-iteration
+  // trig calls (recomputed up to 1080x/pixel in the naive port, depending
+  // only on the clock) out to once per pixel — the pre-hoist op count priced
+  // roughly 3x higher. Even so, priced well above `travelling` (previously
+  // the roster's heaviest estimate at 30 ms) on raw iteration count alone.
+  // `pixelBudget` is already markedly more aggressive than every other scene
+  // in the roster for the same reason.
+  //
+  // F199/F200: re-derived against the current 0.5/0.3 MP `pixelBudget` the
+  // same way as its three siblings above (`solveScale()^2`, clamped to the
+  // 0.4 floor at 4K -> 0.16 pixel ratio of the native-resolution estimate
+  // directly above) — and UNLIKE its three siblings, still does not clear
+  // the tier-0 bar even at the resolution floor (7.20 vs a 5.05 ms bar): 45 ms
+  // of native-res cost is too much for a 16% pixel-count cut alone to close.
+  // This is not a case where a lower `pixelBudget` would help — the floor is
+  // already the floor. See `slotBudget.test.ts`'s own allowlist comment for
+  // why this stays live rather than moving to DISABLED_SCENES: it is FORCED
+  // LIVE by the same explicit request as its siblings, `compatibleWith: []`
+  // bounds the damage to one scheduling mistake rather than a layer, and
+  // disabling a scene someone explicitly asked to keep live is not this
+  // correction's call to make. ACTION: run `/bench` and replace with a
+  // measurement; this one plausibly needs real optimisation beyond the hoist
+  // fix — cutting the outer/inner iteration caps, most likely — not just a
+  // lower `pixelBudget`, before it can pass this bar for real.
+  lattesfold: [7.2, 5.28, 2.88, 1.76, 1.12],
+
+  // `neonjungle` (glslop "NEON // JUNGLE v7", ISF, CC0-1.0, credited to
+  // "Craig") — NOT /bench-measured. In `DISABLED_SCENES`, not live (F203:
+  // this comment previously said "FORCED LIVE by explicit request" — wrong,
+  // and the kind of wrong that matters, since a reader would conclude the
+  // LIVE roster carries a scene dearer than every other by a wide margin;
+  // `slotBudget.test.ts`'s roster sweep never sees this row at all). The row
+  // itself is otherwise unchanged pending a real `/bench`. A full
+  // two-world volumetric raymarcher: STEPS 190 primary march + RSTEPS 60
+  // reflection march on water/puddle pixels, each surface hit paying
+  // calcNormal (4 taps) + calcAO (5 taps) + softShadow (up to 20 taps), all
+  // re-running the scene's map() (a multi-primitive SDF combine with a
+  // 4-octave value-noise FBM). Unlike the raw Shadertoy ports above, this
+  // scene already carries its own quality-tier gating (`uQuality`, scaling
+  // `steps`/`rsteps` off `quality.knobs.raymarchSteps`, floored at 0.35x,
+  // plus a `pixelBudget`) — that wiring predates this promotion. The taper
+  // below is shallower than `lattesfold`'s on purpose: `uQuality` scales the
+  // MARCH step count but not the fixed calcNormal/calcAO/softShadow cost per
+  // hit, so a chunk of the total is tier-invariant. Priced above `travelling`
+  // (30 ms, single accumulation pass) for the double march + heavy per-hit
+  // shading, just under `lattesfold`. ACTION: run `/bench` and replace with a
+  // measurement.
+  neonjungle: [38.0, 32.0, 27.0, 23.0, 20.0],
+
+  // `truchet` (Shadertoy "Truchet + Kaleidoscope FTW"; CC0 header, MIT/CC0
+  // helpers — reads as mrange's, same basis as `beats`/`travelling`/`web`) —
+  // NOT /bench-measured. FORCED LIVE by explicit request. `color()`
+  // accumulates up to 6 kaleidoscope + Truchet planes per pixel (no march
+  // loop) through a dual-ray AA pass, which roughly doubles whatever the
+  // base 6-plane cost is. Already carries its own quality-tier gating
+  // (`uPlanes`, 3..6 off `quality.knobs.raymarchSteps`, plus a
+  // `pixelBudget`) — that wiring predates this promotion. Priced against
+  // `web` (3.4 ms tier 0, a similarly-shaped multi-plane bezier accumulator)
+  // scaled up for the AA doubling.
+  //
+  // F196/F199/F200: the row above (6.8) failed the tier-0 bar outright — "just
+  // under" was wrong, not marginal — and separately, F195 had raised this
+  // scene's budget to 8.9/5.6, which F196 found solves to 1.00 (native) at a
+  // 4K panel, paying the offscreen-blit overhead for nothing. Both are fixed
+  // by the same move: reverted to 1.6/1.0, close to its pre-F195 budget,
+  // re-deriving this row against the ORIGINAL (pre-F195) native-resolution
+  // 6.8 ms estimate the same way as `gyroid`/`fridaylines`/`javazone` above
+  // (`solveScale()^2`; the 1.6 MP high branch solves to 0.439 unclamped at
+  // 4K, 0.193 pixel ratio; the 1.0 MP low branch clamps to the 0.4 floor,
+  // 0.16). Clears the tier-0 bar with real margin now, and no longer wastes a
+  // blit on an already-native buffer. ACTION: still run `/bench` and replace
+  // with a measurement.
+  truchet: [1.31, 1.12, 0.81, 0.51, 0.38],
+
+  // `butterfly` (requester-supplied Shadertoy multipass paste, no header) — NOT
+  // /bench-measured. One fullscreen pass, no volumetric march, but the
+  // field-line streamline walk re-evaluates the analytic butterfly field
+  // (`bField`: one `atan` + a 7-term Fourier sum AND its 7-term derivative,
+  // ~14 trig) EVERY step, up to 44, plus a `sparkGrid` hash per step. That
+  // per-step trig load is heavier than `kifs`'s per-iteration KIFS fold
+  // (2.97 ms tier 0, ~20 iters, rotation-matrix multiply + 3 distance terms
+  // WITH an escape that spares most pixels): ~2x the iteration count, no
+  // early-out, offset by the offscreen `pixelBudget`. Priced a bit above
+  // `kifs` on that basis. The taper tracks its two real levers: `uMaxSteps`
+  // off `quality.knobs.raymarchSteps` (44→12) and the `pixelBudget` step
+  // (1.6 MP tiers 0-1, 1.0 MP below). Deliberately NOT run through {@link
+  // SCENE_COST_MODEL} — that needs a real multi-resolution measurement.
+  // ACTION: run `/bench`; if tier 0 lands at/over `sceneBudget(0)/2` (5.05 ms),
+  // drop `uMaxSteps`, evaluate the field every OTHER step, or lower
+  // `pixelBudget`.
+  butterfly: [3.8, 3.3, 2.7, 2.2, 1.8],
+
+  // `limitless` — NOT /bench-measured. See LimitlessScene.tsx's own
+  // `pixelBudget` comment for the full op-count reasoning; restated here
+  // arithmetically. Dominant mode is `smear`: 8 true `snoise(vec3)` calls per
+  // pixel (two `fbm()`, 4 octaves each). `SIMPLEX3D_GLSL`'s own doc prices
+  // that call at "roughly an order of magnitude more expensive per sample"
+  // than the cheap hash-noise `malachite` uses (measured 0.76 ms at a 1.3 MP
+  // budget for up to 25 samples). 8 snoise samples ~ 80 hash-noise-equivalent
+  // samples, ~3.2x malachite's per-pixel cost; this scene's own 1.8 MP budget
+  // is 1.385x malachite's 1.3 MP. Combined: ~4.4x malachite's row, ~3.4 ms —
+  // rounded up for the estimate's own uncertainty, landing at 3.8, comfortably
+  // inside the tier-0 `< sceneBudget(0)/2` (5.05 ms) admission bar with real
+  // margin, matching the `pixelBudget` comment's own "holds the worst mode
+  // well inside the bar" framing.
+  //
+  // FLAT across all five tiers, deliberately, not tapered: unlike
+  // `beats`/`travelling`/`gyroid` and their `quality.knobs.raymarchSteps`
+  // gating, nothing in this scene's `update()` reads `quality.knobs` at all —
+  // every one of the 15 modes runs the same per-pixel work regardless of
+  // tier, so a taper would invent a mechanism that is not actually there (the
+  // same honesty `dustfield`'s F197 finding already established for a
+  // no-governor-response scene). The one real tier lever is the ENGINE's own
+  // `solveScale`, which this row does not need to account for separately —
+  // see `SCENE_COST_MODEL`'s own doc on the difference between a flat-tier
+  // guess and a resolution-parametric one; this scene has neither a
+  // multi-resolution measurement nor a per-tier complexity cut to model.
+  // ACTION: run `/bench` and replace with a measurement, ideally per-mode
+  // (F214 already flags that `none`/`solar`/`halftone` are one texture fetch
+  // and could run a much larger budget than `smear` needs).
+  limitless: [3.8, 3.8, 3.8, 3.8, 3.8],
 
   // --- DJ Cam (dj-cam), NOT /bench-MEASURED — engineering estimate ---------
   // `djcam` is not a shader scene: it blits the shared DJ-camera

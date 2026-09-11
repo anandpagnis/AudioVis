@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
-import { slew } from '../engine/response'
+import { criticalDamping, slew, spring, springStep, type SpringState } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
 
 /**
@@ -78,6 +78,21 @@ import { drastic } from '../engine/sceneParams'
  * No `quality.knobs`: a flat 2D SDF with a 6-iteration constant loop has no
  * expensive knob to gate — same as `matrix` / `wireframe` (F111). Its
  * `SCENE_COST_MS` row is therefore flat across tiers.
+ *
+ * ## Response identity addendum: the hub bounce is a SEPARATE reaction
+ *
+ * The flinch above is kick-onset-driven — it answers a detected drum hit and
+ * shrinks the arms. The hub bounce is a different signal entirely: it fires
+ * on `f.beat`, the tracked beat GRID itself, not on a transient. That
+ * distinction matters because they can disagree. A track with a weak or
+ * buried kick transient still walks a tracked beat grid, so the hub keeps
+ * popping in time even on material that barely flinches the arms at all;
+ * conversely a busy hi-hat or snare fill can spike `onKick`-adjacent energy
+ * without ever being a beat crossing, and the hub stays quiet through it.
+ * The two reactions are independent springs/followers driving disjoint
+ * geometry (arms vs. the centre point) for exactly this reason — conflating
+ * them into one signal would have made the scene only as reactive as
+ * whichever detector is weaker on a given track.
  */
 
 /**
@@ -116,6 +131,20 @@ const FLINCH_FALL = 30
  */
 const FLINCH_RISE = 2.2
 
+/**
+ * Hub-bounce spring (see "Response identity" for the reasoning): a beat-
+ * synced pop at the crystal's centre, independent of the flinch above.
+ * Stiffness 100 rings faster than Malachite's phrase swell or Wingfold's
+ * structural jump — a beat bounce should read as quick and percussive, not
+ * as a slow breathe. Damping at 0.35 of critical keeps it visibly springy.
+ */
+const HUB_STIFFNESS = 100
+const HUB_DAMPING = criticalDamping(HUB_STIFFNESS) * 0.35
+/** Displacement added to the hub spring per beat. */
+const HUB_IMPULSE = 1.0
+/** Ceiling so a very fast tempo can't stack the bounce without limit. */
+const HUB_MAX = 1.5
+
 export const FRAG = /* glsl */ `
   uniform float uAngle;    // accumulated turn (rate + static tilt offset), JS-side
   uniform float uZoom;     // fill dial
@@ -132,6 +161,8 @@ export const FRAG = /* glsl */ `
    * exactly and silence is the authored image.
    */
   uniform float uOpen;
+  /** Beat-synced spring displacement driving the hub's percussive pop. */
+  uniform float uHubBounce;
 
   #define PI 3.14159265
 
@@ -173,7 +204,16 @@ export const FRAG = /* glsl */ `
       float bx = 0.10 * float(k);
       if (bx > armLen) break;
       float bl = uBranch * 0.22 * (1.0 - bx / armLen);
-      d = min(d, seg(p, vec2(bx, 0.0), vec2(bx, 0.0) + bdir * bl));
+      vec2 btip = vec2(bx, 0.0) + bdir * bl;
+      d = min(d, seg(p, vec2(bx, 0.0), btip));
+
+      // Sub-branches: two smaller offshoots partway along this branch, at wider
+      // and narrower angles than the parent -- the branches-have-branches motif
+      // real dendritic ice crystals show, instead of a plain even comb.
+      float subLen = bl * 0.42;
+      vec2 subBase = mix(vec2(bx, 0.0), btip, 0.55);
+      d = min(d, seg(p, subBase, subBase + vec2(cos(bAng * 1.7), sin(bAng * 1.7)) * subLen));
+      d = min(d, seg(p, subBase, subBase + vec2(cos(bAng * 0.5), sin(bAng * 0.5)) * subLen));
     }
     // hexagonal plates along the arm, riding inward with armScale, and the
     // central hub -- the one feature with no dial of its own, so the sub-bass
@@ -182,7 +222,11 @@ export const FRAG = /* glsl */ `
     // opposition is what makes this read as a flinch rather than a zoom.
     d = min(d, abs(length(p - vec2(0.34 * armScale, 0.0)) - 0.05));
     d = min(d, abs(length(p - vec2(0.6 * armScale, 0.0)) - 0.035));
-    d = min(d, abs(r - (0.09 + uBass * 0.05)));
+    // Base radius nudged down (0.09 -> 0.07) and bass's weight cut (0.05 ->
+    // 0.03) now that the beat-synced bounce is the dominant, percussive term;
+    // bass keeps only a smaller "the heart still breathes with the bass"
+    // contribution alongside it.
+    d = min(d, abs(r - (0.07 + uBass * 0.03 + uHubBounce * 0.05)));
 
     // A kick THINS the strokes rather than blooming them -- the flake gets
     // finer and colder on the hit, not fatter. Carries the glow radius below
@@ -221,6 +265,13 @@ interface SnowflakeState {
    * and rises slowly afterwards — the asymmetry is the reaction.
    */
   open: number
+  /**
+   * Hub-bounce spring: fires on the tracked beat grid (not on kick onset), a
+   * separate reaction from `open` above — see "Response identity addendum".
+   */
+  hubBounce: SpringState
+  /** `beatIndex` the hub bounce last fired on, so a beat fires it exactly once. */
+  lastHubBeat: number
 }
 
 export const SnowflakeScene = createShaderScene<SnowflakeState>({
@@ -239,9 +290,11 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
     uHighs: { value: 0 },
     uBass: { value: 0 },
     uOpen: { value: 1 },
+    uHubBounce: { value: 0 },
   }),
-  state: () => ({ angle: 0, open: 1 }),
-  update({ u, s, P, st, dt }) {
+  state: () => ({ angle: 0, open: 1, hubBounce: spring(0), lastHubBeat: -1 }),
+  update({ u, s, P, st, dt, ctx }) {
+    const f = ctx.f
     // Source's authored turn was a fixed TIME*0.08. Accumulate so a changing
     // rate stays continuous; mids speed the turn, `speed` is the dial.
     st.angle += dt * 0.08 * (1 + s.mids * 0.8) * drastic(P.speed)
@@ -260,6 +313,17 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
     // one rate for both directions, and one rate is what makes every scene's
     // kick the same gesture. See FLINCH_RISE for the ratio's reasoning.
     st.open = slew(st.open, 1 - hit * FLINCH_DEPTH, dt, FLINCH_RISE, FLINCH_FALL)
+
+    // Hub bounce: a SEPARATE reaction from the flinch above, tempo-locked to
+    // the tracked beat grid rather than to kick onset — see "Response
+    // identity addendum". Guarded to fire exactly once per beat crossing,
+    // same idiom as WingfoldJuliaScene's gated jump.
+    if (f.beat && f.beatIndex !== st.lastHubBeat) {
+      st.lastHubBeat = f.beatIndex
+      st.hubBounce.value = Math.min(HUB_MAX, st.hubBounce.value + HUB_IMPULSE)
+    }
+    springStep(st.hubBounce, 0, dt, HUB_STIFFNESS, HUB_DAMPING)
+    u.uHubBounce.value = st.hubBounce.value
 
     // `tilt` is a static rotation offset folded onto the running angle so the
     // slider centre (0.5) is the source's zero offset.

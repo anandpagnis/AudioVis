@@ -462,7 +462,90 @@ export const LumenMaskScene = createShaderScene<LumenMaskState>({
   blending: THREE.AdditiveBlending,
   // Heavy: fbm x several, 4-tap floor reflection re-running wallColor, ~40 SDF
   // ops per pixel across wall + reflection. Render offscreen and upscale.
-  pixelBudget: 1.5,
+  //
+  // ## Which `pixelBudget` this is
+  //
+  // `createShaderScene`'s spec field, sizing THIS SCENE'S OWN offscreen buffer
+  // and nothing else, solved by that module's private `solveScale`
+  // (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // Not `SceneMetadata.pixelBudget` from scenes/index.ts, and nothing to do
+  // with engine/renderScale.ts: no `combinePixelBudgets` reciprocal sum, no
+  // `quality.knobs.pixelBudgetScale` tier multiplier on this path.
+  //
+  // ## Re-anchored 1.5 -> 8.3
+  //
+  // The 1.5 was chosen against the 1080p/laptop displays the roster was
+  // developed on. The op count above is the honest half of the justification
+  // and is unchanged; what it never justified was the ABSOLUTE. On a 3840x2160
+  // panel 1.5 MP solves to 0.43 linear — barely off `solveScale`'s own 0.4
+  // clamp, and through it entirely at 1440p and above once DPR is involved —
+  // so "render offscreen and upscale" meant a fixed ~2.3x upscale that no tier
+  // and no GPU could move, and the declared number had stopped meaning
+  // anything. 8.3 is the roster-wide 5.5556x re-anchor (from `maze`'s
+  // 0.9 -> 5.0), preserving this scene's cost ordering against its neighbours.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.43 / 0.43 / 0.43 / 0.43 / 0.43
+  //     NEW  1.00 / 1.00 / 1.00 / 1.00 / 1.00     buffer @ tier 0: 3840x2160
+  //
+  // Flat at every tier, and that is not a rounding artefact: the budget is a
+  // plain number with no threshold to flip, and `solveScale` has no tier
+  // multiplier, so this scene's resolution does not vary by tier AT ALL. The
+  // earlier claim that the ladder moved it through `pixelBudgetScale` was
+  // simply wrong — that factor lives on the renderScale path, which this scene
+  // is not on.
+  //
+  // ## KNOWN RISK: this scene has no tier response of any kind
+  //
+  // Worth stating plainly, because it is the sharpest case in the roster: this
+  // shader reads NO `quality.knobs` value anywhere, and its budget is
+  // tier-invariant. So the quality governor cannot cut this scene's pixel
+  // count and has nothing to cut its per-pixel cost with either. Raising the
+  // budget therefore raises the FLOOR of what a weak machine must render, with
+  // no lever left to give any of it back. On a 2560x1664 MacBook Air this scene
+  // goes from 0.59 to 1.00 (native): ~2.8x the pixels, permanently.
+  //
+  // ## Re-anchored again 8.3 -> 2.0 (F196/F200)
+  //
+  // F195's 5.5556x was derived from `maze`, whose 4K solve was 0.40 — pinned
+  // ON the clamp, which is the defect that re-anchor existed to fix. F195's
+  // own table records THIS scene's pre-anchor 4K solve as **0.43**, above the
+  // clamp: `lumen` never had that defect and was multiplied anyway. 8.3 MP
+  // exceeds a 4K panel, so every display up to and including 4K solved to 1.00
+  // and paid `createShaderScene`'s extra fullscreen blit for a buffer that was
+  // already native — the overhead the spec doc (`:157-159`) says to omit
+  // `pixelBudget` to avoid. That is F196.
+  //
+  // 2.0 is the same value and the same derivation as `nebula`'s (see that
+  // scene's note for the worked window). `solveScale` binds only when
+  // `0.16 * fullMP < B < fullMP`; intersected across 1080p/1440p/4K that is
+  // **B in (1.33, 2.07)**, and 2.0 sits at the top of it:
+  //
+  //     panel   OLD 8.3        NEW 2.0
+  //     1080p   1.00 native    0.98  (2.0 MP)
+  //     1440p   1.00 native    0.74  (2.0 MP)
+  //     4K      1.00 native    0.49  (2.0 MP)
+  //     5K      0.75           0.40  floor (2.36 MP)
+  //
+  // ## This does NOT fix the no-tier-response gap (F197)
+  //
+  // Stated plainly because the two are easy to conflate: lowering a budget is
+  // a RESOLUTION defence, and this scene's problem is that it has no per-pixel
+  // defence at all — it reads no `quality.knobs` value anywhere, so the
+  // governor still cannot cut its octaves, steps or iterations under load. The
+  // re-anchor lowers the floor this scene imposes (2560x1664 MacBook Air: 1.00
+  // native -> 0.74) but adds no lever. F197 tracks the missing lever and is
+  // NOT closed by this edit.
+  //
+  // The op count remains an ESTIMATE; this scene has never been /bench'd, and
+  // it is in DISABLED_SCENES so it costs no live frame today. No cost number
+  // is invented here — the estimate wants a sweep, and that sweep is also what
+  // decides whether the F197 gap is worth closing before any promotion.
+  pixelBudget: 2.0,
   uniforms: () => ({
     uT: { value: 0 },
     uBass: { value: 0 },

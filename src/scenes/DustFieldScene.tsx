@@ -206,20 +206,84 @@ export const DustFieldScene = createShaderScene<DustFieldState>({
   blending: THREE.NoBlending,
   // NOT measured via /bench in this environment (no dev server here) —
   // estimated from the technique, which is deliberately simpler than
-  // `malachite`'s (measured 0.42ms at this same budget): three sequential
-  // `dustLayer()` calls, a FIXED count with no loop at all (so there is no
-  // loop-bound to even worry about, constant or otherwise), each doing a
-  // handful (5) of `hash()` evaluations and two `smoothstep()`s — no fbm, no
-  // domain warp, no iteration. That is roughly the per-call cost of a SINGLE
-  // octave of `malachite`'s `noise()` (one hash-based value-noise lookup),
-  // called 3 times total per pixel against `malachite`'s five `fbm()` calls
-  // at up to 5 octaves each (up to 25 `noise()` evaluations under the hood).
-  // Should land well under `malachite`'s 0.42ms; confirm with `/bench` once
-  // registered. Kept at the background slot's usual budget regardless — as
-  // ground composited at low gain under a subject, a soft upscale is
-  // invisible, so the budget costs nothing to keep (same reasoning
-  // `malachite`'s own comment gives).
-  pixelBudget: 1.3,
+  // `malachite`'s: three sequential `dustLayer()` calls, a FIXED count with no
+  // loop at all (so there is no loop-bound to even worry about, constant or
+  // otherwise), each doing a handful (5) of `hash()` evaluations and two
+  // `smoothstep()`s — no fbm, no domain warp, no iteration. That is roughly
+  // the per-call cost of a SINGLE octave of `malachite`'s `noise()` (one
+  // hash-based value-noise lookup), called 3 times total per pixel against
+  // `malachite`'s five `fbm()` calls at up to 5 octaves each (up to 25
+  // `noise()` evaluations under the hood). So this should land well under
+  // whatever `malachite` costs; confirm with `/bench` once registered.
+  //
+  // `malachite`'s 0.42 ms figure, which this comment used to lean on, was
+  // measured at its THEN-CURRENT 1.3 MP budget — a budget neither scene still
+  // carries (both are now 7.2, see below). The op-count COMPARISON above is
+  // unaffected, since it is a ratio of per-pixel work and both scenes moved by
+  // the same factor; the absolute millisecond figure is simply no longer a
+  // measurement of anything shipped, and none is invented to replace it.
+  //
+  // ## Which `pixelBudget` this is
+  //
+  // `createShaderScene`'s spec field. It sizes THIS SCENE'S OWN offscreen
+  // buffer and NOTHING else, solved by that module's private `solveScale`
+  // (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // Not `SceneMetadata.pixelBudget` from scenes/index.ts, and nothing to do
+  // with engine/renderScale.ts: no `combinePixelBudgets` reciprocal sum, no
+  // `quality.knobs.pixelBudgetScale` tier multiplier on this path.
+  //
+  // ## Re-anchored 1.3 -> 7.2 MP
+  //
+  // The 1.3 was inherited from `malachite` and, like it, was chosen while the
+  // roster was developed against 1080p and laptop displays. On a 3840x2160
+  // panel 1.3 MP falls straight through `solveScale`'s own 0.4 clamp, so the
+  // buffer was pinned at 0.40 — a 2.5x upscale — at ALL FIVE tiers, and the
+  // declared number had stopped meaning anything: same result whatever the
+  // display or the hardware.
+  //
+  // 7.2 is 1.3 x 5.5556, the ratio from `maze`'s chosen re-anchor
+  // (0.9 -> 5.0) applied uniformly across all eleven affected scenes, so
+  // relative ordering — which encodes real measured cost differences — is
+  // preserved.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.40 / 0.40 / 0.40 / 0.40 / 0.40
+  //     NEW  0.93 / 0.93 / 0.93 / 0.93 / 0.93     buffer @ tier 0: 3577x2012
+  //
+  // Flat across the tiers: the budget is a plain number with no threshold to
+  // flip and `solveScale` has no tier multiplier, so this scene's resolution
+  // never varied by tier and still does not. The re-anchor moved where the flat
+  // line sits; it did not add rungs to it.
+  //
+  // ## KNOWN RISK: this scene has no tier response of any kind
+  //
+  // As the "No `quality.knobs` response" section above says, this shader reads
+  // no governor knob — and `solveScale` has no tier multiplier, so its budget
+  // is tier-invariant too. The quality governor therefore cannot cut this
+  // scene's pixel count and has nothing to cut its per-pixel cost with either.
+  // Raising the budget raises the FLOOR of what a weak machine must render with
+  // no lever left to give any of it back: on a 2560x1664 MacBook Air this goes
+  // from 0.55 to 1.00 (native), ~3.3x the pixels, permanently. That is a known,
+  // accepted-for-now consequence pending a `/bench`, not a solved problem — and
+  // it is the trade to revisit first if this scene ever measures badly, since
+  // the cheapest fix available is the declared number itself.
+  //
+  // ## Why a BACKGROUND's budget still matters
+  //
+  // Not because it drags anything else down — it does not. Each
+  // `createShaderScene` budget sizes only its own offscreen buffer, so this
+  // layer's resolution has no bearing on the subject composited over it. The
+  // old justification — "as ground composited at low gain under a subject, a
+  // soft upscale is invisible, so the budget costs nothing to keep" — is a fair
+  // claim about THIS layer's own pixels, and is precisely why the number went
+  // stale: it kept justifying a figure that had quietly stopped selecting any
+  // resolution at all. A mostly-empty field is cheap to DRAW and was still
+  // being rendered into a buffer pinned at 40% linear.
+  pixelBudget: 7.2,
   uniforms: () => ({
     uDriftFar: { value: new THREE.Vector2() },
     uDriftMid: { value: new THREE.Vector2() },

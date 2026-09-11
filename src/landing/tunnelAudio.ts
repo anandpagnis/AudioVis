@@ -10,6 +10,8 @@
  * loop owns it, nothing subscribes through React state.
  */
 
+import { applyAnalyserRange } from '../audio/analyserRange'
+
 const PRESET_TRACK_SRC = '/landing/fractures.mp3'
 const PRESET_TRACK_NAME = 'Fractures'
 
@@ -55,6 +57,12 @@ class TunnelAudio {
     this.analyser = this.ctx.createAnalyser()
     this.analyser.fftSize = 2048
     this.analyser.smoothingTimeConstant = 0.72
+    // This is the ONE analyser in the codebase that reads byte data, so it is
+    // the only one where minDecibels/maxDecibels are load-bearing. On the
+    // defaults (-100..-30) every bin above -30 dBFS pins at 255 — and the
+    // compressor below holds this signal near -14 dBFS, so `rawBass` sat at
+    // 1.0 essentially always. See analyserRange.ts for the arithmetic.
+    applyAnalyserRange(this.analyser)
     this.freqData = new Uint8Array(this.analyser.frequencyBinCount)
 
     const comp = this.ctx.createDynamicsCompressor()

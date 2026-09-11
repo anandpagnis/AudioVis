@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import STORE_SRC from '../../store.ts?raw'
+import FILTER_DIRECTOR_SRC from '../FilterDirector.tsx?raw'
 import { ISF_FILTER_MS } from '../frameLoad'
 import {
   advanceFilter,
@@ -320,5 +321,31 @@ describe('store — the manual filter request channel', () => {
     expect(partialize).not.toContain('pendingFilterId')
     // The precedent being matched: `pendingSceneId` is transient too.
     expect(partialize).not.toContain('pendingSceneId')
+  })
+})
+
+describe('ISF filters scoped to Limitless', () => {
+  // Source check rather than rendering the component (it drives a real r3f
+  // `useFrame` and this suite has no Canvas to mount it in) — same posture
+  // `partialize`'s own test above already takes for exactly this reason.
+  // The gate itself (`p.activeScene === 'limitless'`) is a single equality
+  // check embedded directly in `FilterDirector()`'s `useFrame` body, not its
+  // own exported pure function like `advanceFilter`/`pickFilter` are —
+  // extracting one for a single comparison would be the premature
+  // abstraction this codebase's own conventions argue against, so this
+  // asserts the real source contains the gate in BOTH the places it has to:
+  // the autonomous path (folded into `suppressed`) and the manual path
+  // (`manualId` itself), matching F219's own doc on why both need it.
+  const body = FILTER_DIRECTOR_SRC.slice(
+    FILTER_DIRECTOR_SRC.indexOf('export function FilterDirector'),
+  )
+
+  it('gates the autonomous path on the active scene', () => {
+    expect(body).toMatch(/const onLimitless = p\.activeScene === 'limitless'/)
+    expect(body).toMatch(/const suppressed =\s*\n\s*!onLimitless/)
+  })
+
+  it('gates the manual pick the same way, not just autonomous firing', () => {
+    expect(body).toMatch(/manualId: onLimitless \? manualId : null/)
   })
 })

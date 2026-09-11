@@ -49,17 +49,17 @@ describe('beatsSpinRate', () => {
     expect(beatsSpinRate(-5, 0)).toBeCloseTo(beatsSpinRate(120, 0), 10)
   })
 
-  it('runs 20% under the old source-authored range, at mids 0..1', () => {
-    // Source: `t * (0.1 + uMids * 0.08)`, giving a 0.1..0.18 coefficient range
-    // — that WAS this scene's rate until a direct "slightly slow down 4D
-    // Beats" request lowered the base 0.1 -> 0.08, an intentional change, not
-    // the original port value. At 120 BPM (bpm/60 == 2) the per-second rate
-    // at mids 0 is now 2 * 0.08 = 0.16 rad/s, and at mids 1, 2 * 0.144 = 0.288
-    // rad/s — each exactly 80% of the pre-slowdown 0.2/0.36 this test used to
-    // pin, so the mids-widening RATIO (1x..1.8x) is unchanged, only the base
-    // speed is.
-    expect(beatsSpinRate(120, 0)).toBeCloseTo(0.16, 10)
-    expect(beatsSpinRate(120, 1)).toBeCloseTo(0.288, 10)
+  it('runs well under the old source-authored range, at mids 0..1', () => {
+    // Source: `t * (0.1 + uMids * 0.08)`, giving a 0.1..0.18 coefficient
+    // range. A first "slightly slow down" request lowered the base
+    // 0.1 -> 0.08 (range 0.08..0.144). A second, stronger complaint — "too
+    // fast and too aggressive" — lowered it again: base 0.08 -> 0.06 and the
+    // mids-widening factor 0.8 -> 0.5, landing at 0.06..0.09 (60% of the
+    // original base, and a narrower 1x..1.5x mids-widening ratio, down from
+    // the original 1x..1.8x). At 120 BPM (bpm/60 == 2) that's 2 * 0.06 = 0.12
+    // rad/s at mids 0 and 2 * 0.09 = 0.18 rad/s at mids 1.
+    expect(beatsSpinRate(120, 0)).toBeCloseTo(0.12, 10)
+    expect(beatsSpinRate(120, 1)).toBeCloseTo(0.18, 10)
   })
 
   it('mids widens the RATE monotonically, not a value multiplied against a growing counter', () => {

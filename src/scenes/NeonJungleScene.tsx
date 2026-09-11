@@ -18,10 +18,19 @@ import { drastic } from '../engine/sceneParams'
  * plus a SECOND `RSTEPS 60` reflection march on every water / puddle pixel,
  * per-step volumetric integration in both, `calcNormal` (4x) + `calcAO` (5x) +
  * `softShadow` (up to 20x) all re-running the entire scene SDF. As-is it will
- * not clear `slotBudget.test.ts`'s tier-0 `< sceneBudget(0)/2 ≈ 4 ms` bar, and
+ * not clear `slotBudget.test.ts`'s tier-0 `< sceneBudget(0)/2 = 5.05 ms` bar, and
  * there is no way to measure it from CI (`/bench` is manual, in-browser,
  * single-GPU). It stays here until an optimised pass benches under that bar;
  * promotion is then a one-object move into `SCENES` plus a `SCENE_COST_MS` row.
+ *
+ * The bar just got harder, and this section should say so. `pixelBudget` was
+ * re-anchored 1.2/0.7 -> 6.7/3.9 (see the declaration below for the reasoning),
+ * which takes tier 0 on a 4K panel from `createShaderScene`'s `MIN_RENDER_SCALE`
+ * clamp (0.40 linear) to 0.90 — roughly 5.0x the internal pixels, for a march
+ * whose cost is per-pixel top to bottom. No millisecond figure is claimed here
+ * because none was ever measured; the only claim is that a sweep run against
+ * the OLD budget would understate this scene by about that factor, so whenever
+ * `/bench` finally happens it has to happen at the new one.
  *
  * ## Port notes (ISF -> AudioVis prelude)
  *
@@ -1215,11 +1224,64 @@ export const NeonJungleScene = createShaderScene<NeonJungleState>({
   // offscreen buffer (BlendedLayer forces `add` on the on-screen primary).
   blending: THREE.NoBlending,
   // Deliberately aggressive: this is a two-world volumetric raymarcher with a
-  // second reflection march. Renders offscreen well below native and upscales
-  // (neon + haze + grain hide it). Tier-sensitive like MazeFlightScene.
+  // second reflection march. Renders offscreen below native and upscales (neon
+  // + haze + grain hide it). Tier-sensitive like MazeFlightScene.
   // These numbers are a STARTING POINT — replace with a real /bench sweep
   // before this scene is considered for promotion into SCENES.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.2 : 0.7),
+  //
+  // ## Which `pixelBudget` this is
+  //
+  // `createShaderScene`'s spec field: it sizes THIS SCENE'S OWN offscreen
+  // buffer and nothing else, solved by that module's private `solveScale`
+  // (createShaderScene.tsx:191-196):
+  //
+  //     scale = clamp(sqrt(budget / fullMP), MIN_RENDER_SCALE /* 0.4 */, 1)
+  //
+  // That is the entire solver. It is NOT `SceneMetadata.pixelBudget` from
+  // scenes/index.ts and it never reaches engine/renderScale.ts — no
+  // `combinePixelBudgets` reciprocal sum against the post chain, and no
+  // `quality.knobs.pixelBudgetScale` tier multiplier on this path at all.
+  //
+  // ## Re-anchored 1.2/0.7 -> 6.7/3.9
+  //
+  // The old pair was chosen while the roster was developed against 1080p and
+  // laptop displays, and it is simply too small for a modern panel: at 4K both
+  // 1.2 and 0.7 MP fall through `solveScale`'s 0.4 clamp, so the declared
+  // number stopped meaning anything and the buffer was pinned at 40% linear —
+  // 16% of the panel's pixels, at the TOP tier — regardless of display or
+  // hardware. The line above used to read "well below native", which was doing
+  // a lot of quiet work; the "well" is dropped now that the number matches the
+  // phrase. 6.7/3.9 is the roster-wide 5.5556x re-anchor (from `maze`'s
+  // 0.9 -> 5.0), preserving this scene's position as the most aggressive of the
+  // four and its own tier step.
+  //
+  // 4K (3840x2160, fullMP 8.29) linear scale by tier, from `solveScale`:
+  //
+  //     OLD  0.40 / 0.40 / 0.40 / 0.40 / 0.40
+  //     NEW  0.90 / 0.90 / 0.90 / 0.69 / 0.69     buffer @ tier 0: 3451x1941
+  //
+  // The only tier sensitivity on this path is the `>= 50` threshold below
+  // flipping the declared budget between branches: tiers 0-2 take 6.7 (96/72/54
+  // march steps), tiers 3-4 take 3.9 (40/28). At 1440p and 1080p both branches
+  // now solve to 1.00.
+  //
+  // ## KNOWN RISK: this raises the FLOOR, and the governor cannot lower it
+  //
+  // `solveScale` has no tier multiplier, so the quality governor CANNOT claw
+  // resolution back on this scene under load. Raising the budget therefore
+  // raises the floor of what a weak machine must render, not just the ceiling.
+  // On a 2560x1664 MacBook Air this scene goes from 0.53 to 1.00 native at
+  // tiers 0-2 (~3.5x the pixels) and 0.96 at tiers 3-4, where the governor's
+  // only remaining resolution move is that 4% — effectively nothing.
+  //
+  // The ladder does still cut real per-pixel cost here, unlike some of its
+  // neighbours: `uQuality` breaks both the 190-step primary and 60-step
+  // reflection marches early, 96 -> 28 across the tiers. But per-pixel cost is
+  // all it can cut; it cannot cut pixel COUNT. For a scene already held out of
+  // SCENES for being too expensive that is the wrong direction, and it is
+  // stated here as a known, accepted-for-now consequence pending the `/bench`
+  // this scene needs before promotion — not as a solved problem.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 6.7 : 3.9),
   uniforms: () => ({
     uClock: { value: 0 },
     uQuality: { value: 1 },

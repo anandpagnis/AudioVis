@@ -23,7 +23,7 @@ import { drastic } from '../engine/sceneParams'
  * loop. Op-count comparison against the measured roster (`kifs` 2.97 ms at
  * tier 0, ~20 KIFS iterations *with* an escape) puts this several times dearer
  * per pixel, so it was not expected to clear `slotBudget.test.ts`'s tier-0
- * `< sceneBudget(0)/2 = 4 ms` layer-funding bar honestly priced — and `/bench`
+ * `< sceneBudget(0)/2 = 5.05 ms` layer-funding bar honestly priced — and `/bench`
  * (the only instrument that could settle it) cannot run from CI. It is
  * registered live in `index.ts`'s `SCENES` array anyway, by explicit request,
  * not because the cost is known to be safe. Its `SCENE_COST_MS` row in
@@ -37,6 +37,17 @@ import { drastic } from '../engine/sceneParams'
  * measurement, and either it clears the budget for real or the scene needs a
  * lower `pixelBudget` / a hard cut to step count / a move back to
  * `DISABLED_SCENES`.
+ *
+ * That last option got further away, not closer. `pixelBudget` has since been
+ * re-anchored UP (1.2 -> 6.7 MP, 0.7 -> 3.9 below tier ~2; see the declaration
+ * for the argument) because the old value was a pre-F107 number that pinned
+ * this scene to the offscreen solver's 0.4 clamp on any panel above ~1440p.
+ * Fixing that is correct — the scene was rendering a 1536x864 buffer on a 4K
+ * display — but it also means every cost figure quoted in this section was
+ * taken at roughly a third of the pixels the scene now draws at 4K tier 0, and
+ * cost here is linear in pixel count with no early-out to soften it. No
+ * replacement estimate is invented here; the `/bench` this section has been
+ * asking for is simply now the only way to price the scene at all.
  *
  * A later audit (see "Beat lock, spin, and kick placement" below) fixed three
  * audio-wiring bugs in this scene (beat lock, spin/mids scaling, kick
@@ -158,6 +169,16 @@ import { drastic } from '../engine/sceneParams'
  * (0.1 -> 0.08) to slow the lattice's rotation slightly. `beatsPosition`'s
  * phase-lock multiplier was deliberately left alone — see that function's
  * own comment for why the beat-lurch rate is not the safe knob to turn down.
+ *
+ * A second, larger reduction followed on a repeat complaint that the scene
+ * read "too fast and too aggressive" — stronger than the original "slightly
+ * slow down" ask. `beatsSpinRate`'s base coefficient came down again, 0.08
+ * -> 0.06, together with its mids-widening factor, 0.8 -> 0.5, so a loud,
+ * mid-heavy passage no longer swings the rate as hard either. The same pass
+ * also softened the beat-position ease and the kick burst/charge in
+ * FRAG/update() below, for the same complaint — see those call sites' own
+ * comments. `beatsPosition`'s phase-lock multiplier is, again, deliberately
+ * untouched, for the same reason as before.
  */
 
 export const FRAG = /* glsl */ `
@@ -200,10 +221,13 @@ export const FRAG = /* glsl */ `
     vec3 o = vec3(0.0);
     vec4 p = vec4(0.0), P = vec4(0.0);
 
-    // Musical timing. floor(T) snaps to the beat; sqrt(fract(T)) eases across
-    // it (fast attack, decaying). mrange's "floor(T)+sqrt(F)".
+    // Musical timing. floor(T) snaps to the beat; pow(fract(T), 0.65) eases
+    // across it (fast attack, decaying) — a gentler rise than mrange's
+    // original sqrt(fract(T)) (equivalently pow(F, 0.5)): same beat-locked
+    // timing, softer initial lurch off the downbeat. mrange's source reads
+    // "floor(T)+sqrt(F)"; only the exponent changed here.
     float F = fract(uBeats);
-    float t = floor(uBeats) + sqrt(F);
+    float t = floor(uBeats) + pow(F, 0.65);
 
     // mrange's not-quite-rotation: a mat2 built from cos() of a vec4 of phase
     // offsets (11., 33. — from 11.*U.wxzw with U=vec4(1,2,3,0)). uSpin is the
@@ -225,7 +249,7 @@ export const FRAG = /* glsl */ `
     // pixel instead of 77, and it now reads as a one-shot burst (matching
     // MazeFlightScene/NeonJungleScene/KifsRoseScene's own kick/flash terms)
     // instead of looking like it compounds per step.
-    float kickGlow = exp(uKick * 1.4);
+    float kickGlow = exp(uKick * 0.8);
     vec3 glow = vec3(0.0);
 
     for(int iter = 0; iter < 77; iter++){
@@ -335,13 +359,22 @@ export function beatsPosition(beatIndex: number, beatProgress: number, mult: num
  * the lurch from the track's actual tempo, reopening the exact bug that fix
  * exists to close. `uSpin` carries none of that invariant — it is a purely
  * cosmetic JS-accumulated rotation with no "correct" rate to preserve — so
- * it is the one speed knob in this scene safe to turn down on its own. 20%
- * off the base keeps the same mids-widening ratio, `0.08 .. 0.144` at
- * `mids` 0..1 (was `0.1 .. 0.18`).
+ * it is the one speed knob in this scene safe to turn down on its own.
+ *
+ * Lowered a second time, further and by more, on a second, stronger report
+ * that the scene read "too fast and too aggressive" (the first request had
+ * only asked to "slightly slow down"): base `0.08 -> 0.06`, and the
+ * mids-widening factor `0.8 -> 0.5` so a loud, mid-heavy passage no longer
+ * widens the rate as aggressively either. Coefficient range at `mids` 0..1
+ * is now `0.06 .. 0.09` (was `0.08 .. 0.144`, and `0.1 .. 0.18` before the
+ * first reduction) — the mids-widening RATIO also narrowed, `1x .. 1.5x`
+ * rather than the original `1x .. 1.8x`, since "aggressive" was reported as
+ * much about how hard louder passages swing the rate as about the base
+ * speed itself.
  */
 export function beatsSpinRate(bpm: number, mids: number): number {
   const effectiveBpm = bpm > 0 ? bpm : 120
-  return (effectiveBpm / 60) * 0.08 * (1 + mids * 0.8)
+  return (effectiveBpm / 60) * 0.06 * (1 + mids * 0.5)
 }
 
 interface BeatsState {
@@ -360,9 +393,26 @@ export const BeatsScene = createShaderScene<BeatsState>({
   // buffer (BlendedLayer forces `add` on the on-screen primary anyway).
   blending: THREE.NoBlending,
   // STARTING POINT, not a measurement — a 77-step 4D march with no early-out.
-  // Renders offscreen well below native and upscales (the glow + tanh clip hide
-  // it). Replace with a real /bench sweep before promotion into SCENES.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.2 : 0.7),
+  // Renders offscreen and upscales (the glow + tanh clip hide it). Replace with
+  // a real /bench sweep before promotion into SCENES.
+  //
+  // Re-anchored 1.2 -> 6.7 / 0.7 -> 3.9. The old pair was a pre-F107 value that
+  // was never revisited when the engine's budget table moved to (12.5/16/20) MP
+  // plus a 24 MP post chain. A `createShaderScene` spec budget does not go
+  // through that table — it is solved by that module's own `solveScale`, which
+  // divides the declared megapixels straight into the display's full
+  // megapixels and clamps at MIN_RENDER_SCALE (0.4), with no post-chain
+  // reciprocal sum and no tier `pixelBudgetScale` factor. 1.2 MP against a
+  // 3840x2160 panel solves to sqrt(1.2/8.29) = 0.38, below that clamp, so the
+  // buffer pinned to 1536x864 and upscaled 2.5x linear on any panel above
+  // ~1440p. Because the unclamped size is dpr-invariant on this path, a 4K
+  // desktop and a 1080p laptop were being handed near-identical buffers.
+  //
+  // 6.7 MP clears the clamp on 4K (0.90 linear -> 3451x1941) and reaches native
+  // 1.00 on 1080p at every tier. This makes the scene MORE expensive, not less,
+  // which sharpens rather than settles the cost question in the header's
+  // "FORCED LIVE" section above — one more reason the /bench there is overdue.
+  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 6.7 : 3.9),
   uniforms: () => ({
     uBeats: { value: 0 },
     uSpin: { value: 0 },
@@ -384,14 +434,14 @@ export const BeatsScene = createShaderScene<BeatsState>({
     // default ... so idle motion is musical rather than frozen"), so a track
     // with no beat grid still turns — the roster's "frozen reads as broken"
     // rule (cf. KaleidoPulseScene) — with no separate fallback needed here.
-    st.beats = beatsPosition(ctx.f.beatIndex, ctx.f.beatProgress, (1 + s.energy * 0.4) * drastic(P.speed))
+    st.beats = beatsPosition(ctx.f.beatIndex, ctx.f.beatProgress, (1 + s.energy * 0.2) * drastic(P.speed))
 
     // Rotation phase (Finding 2): JS-accumulated from `dt` at a tempo-scaled
     // rate, mids widening the RATE rather than being multiplied against
     // `st.beats` in the shader — see `beatsSpinRate`.
     st.spin += dt * beatsSpinRate(ctx.f.bpm, s.mids) * drastic(P.speed)
 
-    if (s.onKick > 0) st.kick = Math.min(1.5, st.kick + s.onKick)
+    if (s.onKick > 0) st.kick = Math.min(1.0, st.kick + s.onKick)
     st.kick *= Math.exp(-dt * 3.5)
 
     u.uBeats.value = st.beats

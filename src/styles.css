@@ -765,6 +765,85 @@ body,
   color: rgba(255, 255, 255, 0.4);
 }
 
+/* Live post-fx readout (bloom/CA/vignette/fog/trails/mirror/lens/active
+   flourishes) — see PostFxMeter.tsx. Deliberately NOT `.filter-indicator`'s
+   corner: that one owns bottom-left, `.fps-meter` owns top-right, so this
+   takes the remaining open corner. Toggled on/off entirely (unlike the
+   always-mounted filter indicator), so no top-level `[hidden]` override is
+   needed here — only its individual rows hide themselves. */
+.postfx-meter {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+  z-index: 24;
+}
+
+.postfx-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Same load-bearing reason as `.filter-indicator[hidden]`: the row's own
+   `display: flex` above outranks the UA `[hidden] { display: none }` sheet,
+   so each row that hides itself needs this restated. */
+.postfx-row[hidden] {
+  display: none;
+}
+
+.postfx-label {
+  min-width: 44px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.postfx-bar {
+  width: 56px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+/* Same no-transition reasoning as `.filter-indicator-fill`: the value
+   arriving is already an eased envelope sampled at 15 Hz, so a CSS
+   transition on top would make the bar lag the picture it describes. */
+.postfx-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(170, 214, 255, 0.85);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+.postfx-value {
+  min-width: 30px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.postfx-summary {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.postfx-summary-name {
+  min-width: 64px;
+  text-transform: capitalize;
+}
+
 /* ---------- debug ---------- */
 
 /* fps / frame-time / tier readout (J). Sits above the debug panel so both can

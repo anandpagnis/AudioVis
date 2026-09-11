@@ -24,12 +24,19 @@ interface MicDevice {
 
 /** Global visual parameters every scene respects (the parameter system). */
 /**
- * Manual override values for the post-fx fields normally decided by
+ * Manual override VALUES for the post-fx fields normally decided by
  * `PerformanceStateBridge`. See the `debugPostFx` field on `AppState` for why
  * this exists and why it is temporary.
+ *
+ * This is just the numbers a slider/chip last held — it says nothing about
+ * whether any of them is actually in effect. Whether a given field is
+ * currently overriding the director is a SEPARATE question, answered by
+ * {@link AppState.debugPostFxOverrides}. Splitting "the value" from "is it
+ * live" this way is what lets each field be taken over independently instead
+ * of one boolean freezing (or releasing) all fourteen at once — see that
+ * field's own doc for the history of why a single `enabled` flag was wrong.
  */
 export interface DebugPostFx {
-  enabled: boolean
   /** 0..2 — bloom strength multiplier. Director default: mood-based, ~0.3-0.95. */
   bloom: number
   /** 0..1 — bloom luminance threshold. Lower = more of the frame blooms. */
@@ -60,6 +67,33 @@ export interface DebugPostFx {
   /** Transition style for the next scene change. See engine/transitions.ts. */
   transitionStyle: TransitionStyle
 }
+
+/** Every field a Post FX row can independently be put under manual control of. */
+export type DebugPostFxKey = keyof DebugPostFx
+
+/**
+ * `DebugPostFxKey`, enumerated — the one place that has to be kept in sync
+ * with {@link DebugPostFx}'s fields. Used to build/inspect the "every field"
+ * bulk actions ({@link AppState.setAllDebugPostFxOverrides} and its "are they
+ * all on" reverse question in the HUD/Console "manual (all)" chip) without
+ * either surface re-deriving its own copy of the field list.
+ */
+export const DEBUG_POSTFX_KEYS: DebugPostFxKey[] = [
+  'bloom',
+  'bloomThreshold',
+  'glitch',
+  'vignette',
+  'fog',
+  'trails',
+  'mirrorSegments',
+  'mirrorTiles',
+  'mirrorTwist',
+  'mirrorSlice',
+  'mirrorSpin',
+  'lensAmount',
+  'lensStyle',
+  'transitionStyle',
+]
 
 export interface VisualParams {
   /** Overall brightness multiplier. */
@@ -385,6 +419,11 @@ interface AppState {
    *  because that panel is a per-frame canvas heavy enough to distort the
    *  very measurement you open it to read. */
   fpsMeter: boolean
+  /** Live readout of the post-fx chain (bloom/CA/vignette/fog/trails/mirror/
+   *  lens/active flourishes) — see `src/ui/PostFxMeter.tsx`. Separate from
+   *  the ISF filter's own always-on `FilterIndicator`, which this does not
+   *  duplicate. */
+  postFxMeter: boolean
   analyticsOpen: boolean
   /** The third-party credits/attribution panel — see `src/ui/Credits.tsx`. */
   creditsOpen: boolean
@@ -392,17 +431,89 @@ interface AppState {
   quality: Quality
 
   /**
-   * TEMPORARY: manual override for the post-fx fields `PerformanceStateBridge`
-   * otherwise decides every frame (bloom, vignette, glitch, fog, trails). Exists
-   * to let a human drag a value and see it, ahead of any director having an
-   * opinion about when to move it — see the debug panel's "Post FX" section.
+   * TEMPORARY: manual override VALUES for the post-fx fields
+   * `PerformanceStateBridge` otherwise decides every frame (bloom, vignette,
+   * glitch, fog, trails, the mirror/lens racks, the next transition style).
+   * Exists to let a human drag a value and see it, ahead of any director
+   * having an opinion about when to move it — see the debug panel's "Post FX"
+   * section.
    *
    * Deliberately excluded from `partialize` below: this is scratch state for
-   * eyeballing a look, not a setting anyone should reload into. When `enabled`
-   * is false every field here is inert and the director's own values reach the
-   * screen unchanged.
+   * eyeballing a look, not a setting anyone should reload into.
+   *
+   * Holding a value here no longer means it is IN EFFECT — that used to be
+   * true (a single `enabled: boolean` gated every field at once), and it was
+   * wrong in two directions at the same time: dragging one slider silently
+   * froze the other thirteen, and a stale `enabled: true` surviving from an
+   * earlier session (see `debugPostFxOverrides` below) froze the whole panel
+   * with no visible master switch anywhere in the current UI to notice, let
+   * alone flip back off — read by a user as "the readout is not live". Which
+   * field is actually live is now {@link AppState.debugPostFxOverrides}'s
+   * question alone; this object is just the numbers.
    */
   debugPostFx: DebugPostFx
+  /**
+   * Which fields of {@link debugPostFx} are CURRENTLY under manual control,
+   * i.e. which ones `PerformanceStateBridge` should read from `debugPostFx`
+   * instead of computing itself this frame. A plain key→boolean map rather
+   * than a `Set` — this is UI state read straight off a keyed list of chips,
+   * and a plain object is exactly the shape that list already visits.
+   *
+   * Setting a value (`setDebugPostFx`) and taking control of it
+   * (`setDebugPostFxOverride`) are two different actions on purpose: dragging
+   * a slider does both at once (see every call site in HUD.tsx/Console.tsx),
+   * but only THIS map decides whether `PerformanceStateBridge` looks at the
+   * value at all. That split is what lets one field be overridden without
+   * touching the other thirteen, and what lets a field be released back to
+   * "auto" without losing the number it was sitting at.
+   *
+   * Deliberately EXCLUDED from `partialize` below, same as `debugPostFx`
+   * itself, and for a sharper reason than "scratch state": `partialize` is an
+   * ALLOWLIST (a field persists only if it is named there), so leaving this
+   * new field off it is enough to stop it being WRITTEN to storage — but it
+   * does nothing to protect against a value already sitting in an older
+   * install's `localStorage` from before this field, or before `debugPostFx`
+   * itself was excluded. zustand's default `merge` spreads whatever
+   * `migrate()` hands back straight over the freshly-constructed state
+   * (`{...currentState, ...persistedState}` — see `persist`'s own default in
+   * `zustand/middleware`), and every `migrate` branch below does a blanket
+   * `{...old, ...}` that carries an unrecognised legacy key through
+   * untouched. So a literal `debugPostFx.enabled: true` sitting in a pre-this
+   * -change blob (exactly the scenario ISSUES.md's F108 already documents:
+   * "anyone who had ever dragged the tiles slider held a non-zero value in
+   * localStorage") would still resurrect into a live session's state on
+   * rehydrate even with today's exclusion in place — it would just no longer
+   * do anything, because nothing reads a `.enabled` flag any more and this
+   * map (freshly `{}` every load, never itself persisted) is what actually
+   * gates every field. Retiring the boolean is therefore not cosmetic: it is
+   * what keeps a resurrected legacy value inert instead of merely rare.
+   */
+  debugPostFxOverrides: Partial<Record<DebugPostFxKey, boolean>>
+
+  /**
+   * The photo the `limitless` scene warps, as a re-encoded data URL, or `null`
+   * for its own generated placeholder.
+   *
+   * A data URL rather than a `File` or a canvas because of the two-window
+   * split: the console owns the file picker, the output window owns the WebGL
+   * texture, and `outputLink.ts` mirrors the look between them over a
+   * `BroadcastChannel`. A live `File` handle or an `ImageBitmap` does not
+   * survive a structured clone (see that file's "Two channels, deliberately
+   * different" note) — the direct-reference path exists but is reserved for
+   * `MediaStream`s and audio files it consumes once, whereas this is durable
+   * look state that a late-opening output window has to be able to ask for and
+   * receive. A string is the only shape that fits that. `Console.tsx` caps the
+   * long edge at 1600px and re-encodes as JPEG before storing, so this is tens
+   * of KB, not megabytes.
+   *
+   * In `LOOK_FIELDS`, so it reaches the window that actually renders.
+   *
+   * Deliberately excluded from `partialize` below, for the same reason
+   * `debugPostFx` is: a multi-hundred-KB data URL has no business in
+   * localStorage, where it would compete with the presets and cues for a 5 MB
+   * quota and could fail the whole persist write.
+   */
+  limitlessPhoto: string | null
 
   /** Mood-driven automation. */
   autoPilot: boolean
@@ -520,6 +631,7 @@ interface AppState {
   toggleUi: () => void
   toggleDebug: () => void
   toggleFpsMeter: () => void
+  togglePostFxMeter: () => void
   toggleAnalytics: () => void
   toggleCredits: () => void
   setParam: (key: keyof VisualParams, value: number) => void
@@ -538,7 +650,25 @@ interface AppState {
   /** Return one scene's dials (and mode) to its authored defaults. */
   resetSceneParams: (sceneId: string) => void
   setQuality: (q: Quality) => void
+  /** Patch one or more `debugPostFx` VALUES. Does not by itself put anything
+   *  under manual control — see {@link setDebugPostFxOverride}, which every
+   *  slider/chip's `onChange` also calls, and {@link DebugPostFx}'s own doc
+   *  for why the two are split. */
   setDebugPostFx: (patch: Partial<DebugPostFx>) => void
+  /** Take (`on: true`) or release (`on: false`) manual control of ONE
+   *  `debugPostFx` field. Releasing does not touch the value that field was
+   *  last set to — it just hands the field back to `PerformanceStateBridge`,
+   *  which starts computing it again from next frame. */
+  setDebugPostFxOverride: (key: DebugPostFxKey, on: boolean) => void
+  /** Bulk convenience backing the "manual (all)" / "auto (all)" chip:
+   *  `true` puts every `debugPostFx` field under manual control at once
+   *  (each keeps whatever value its slider last held — this only flips the
+   *  override flags, it snapshots nothing), `false` releases all of them
+   *  back to auto in one action. */
+  setAllDebugPostFxOverrides: (on: boolean) => void
+  /** Set (or clear, with `null`) the photo `limitless` warps. Already-encoded
+   *  data URL — the resize/encode happens at the picker. */
+  setLimitlessPhoto: (dataUrl: string | null) => void
 
   applyPreset: (p: Preset) => void
   saveCurrentPreset: (name: string) => void
@@ -571,6 +701,31 @@ let handoffToken = 0
 const OUTPUT_REQUIRED =
   'No output window. Open the output window first — it is where the show runs.'
 
+/**
+ * How long the control window waits, after successfully handing a stream to
+ * the output window, for telemetry to confirm the output side actually
+ * picked it up and started (`adoptOutputStatus` moving `status` off
+ * `'starting'`).
+ *
+ * Before this existed, a hand-off that silently never reached the output
+ * side — the popup reused a stale/wedged window, `useHandedSource`'s poll
+ * never ran, the output window's own start threw somewhere not surfaced —
+ * left the console showing "Starting… cancel" forever: no error, nothing to
+ * act on, and "cancel" itself only resets the OUTPUT window's copy of
+ * `status` (it runs `cancelStartAudio` there via `sendCommand`), which the
+ * console has no way to learn about while `handoffInFlight()` is still
+ * suppressing telemetry adoption — so the button did not even unstick the
+ * screen that showed it.
+ *
+ * Sized well under `HANDOFF_GRACE_MS` (70 s, which times the OPERATOR'S OWN
+ * picker dialog): a real hand-off that DID land completes in about a
+ * second (`startWithStream` -> `connectStream` is synchronous once the
+ * context resumes, capped at 3 s by `resumeSafely`, plus one
+ * `TELEMETRY_INTERVAL_MS` tick to report it) — so 15 s is generous slack for
+ * a slow context resume, not a window to keep the operator waiting on.
+ */
+const HANDOFF_CONFIRM_TIMEOUT_MS = 15_000
+
 /** One place to turn a start failure into something a human can act on. */
 function describeStartError(err: unknown): string {
   if (err instanceof DOMException && err.name === 'NotAllowedError') {
@@ -602,12 +757,12 @@ export const useStore = create<AppState>()(
       uiHidden: false,
       debugOpen: false,
       fpsMeter: false,
+      postFxMeter: false,
       analyticsOpen: false,
       creditsOpen: false,
       params: { intensity: 1, speed: 1, reactivity: 1 },
       quality: 'auto',
       debugPostFx: {
-        enabled: false,
         bloom: 1,
         bloomThreshold: 0.18,
         glitch: 0,
@@ -623,6 +778,10 @@ export const useStore = create<AppState>()(
         lensStyle: 0,
         transitionStyle: 'dissolve',
       },
+      // Fresh on every load, deliberately — see this field's own doc on
+      // `AppState` for why it must never be persisted.
+      debugPostFxOverrides: {},
+      limitlessPhoto: null,
 
       autoPilot: true,
       moodDrive: true,
@@ -695,6 +854,19 @@ export const useStore = create<AppState>()(
             // on telemetry a moment later — see adoptOutputStatus.
             set({ status: 'starting', sourceType: kind })
             if (kind === 'mic') void get().refreshDevices()
+            // See HANDOFF_CONFIRM_TIMEOUT_MS's own doc: a hand-off that never
+            // reaches (or never starts in) the output window used to leave
+            // this card on "Starting…" forever, no error, nothing to act on.
+            window.setTimeout(() => {
+              if (token !== handoffToken) return
+              if (get().status !== 'starting') return
+              set({
+                status: 'error',
+                error:
+                  'The output window never confirmed receiving the source. It may be stuck on an old page — close it and click a source button again to open a fresh one.',
+                sourceType: null,
+              })
+            }, HANDOFF_CONFIRM_TIMEOUT_MS)
           } catch (err) {
             endHandoff()
             if (token !== handoffToken) return
@@ -740,7 +912,7 @@ export const useStore = create<AppState>()(
         // A File clones fine, but it travels the same way as a stream so there
         // is one hand-off path rather than two.
         if (!isOutput()) {
-          handoffToken++
+          const token = ++handoffToken
           beginHandoff()
           if (!handSource({ kind: 'file', file })) {
             endHandoff()
@@ -749,6 +921,17 @@ export const useStore = create<AppState>()(
           }
           // See the note in startAudio: the output window confirms.
           set({ status: 'starting', sourceType: 'file' })
+          // See HANDOFF_CONFIRM_TIMEOUT_MS's own doc — same gap, same fix.
+          window.setTimeout(() => {
+            if (token !== handoffToken) return
+            if (get().status !== 'starting') return
+            set({
+              status: 'error',
+              error:
+                'The output window never confirmed receiving the file. It may be stuck on an old page — close it and click a source button again to open a fresh one.',
+              sourceType: null,
+            })
+          }, HANDOFF_CONFIRM_TIMEOUT_MS)
           return
         }
         try {
@@ -1039,6 +1222,7 @@ export const useStore = create<AppState>()(
       toggleDebug: () => set((s) => ({ debugOpen: !s.debugOpen })),
 
       toggleFpsMeter: () => set((s) => ({ fpsMeter: !s.fpsMeter })),
+      togglePostFxMeter: () => set((s) => ({ postFxMeter: !s.postFxMeter })),
       toggleAnalytics: () => set((s) => ({ analyticsOpen: !s.analyticsOpen })),
       toggleCredits: () => set((s) => ({ creditsOpen: !s.creditsOpen })),
       setParam: (key, value) => set((s) => ({ params: { ...s.params, [key]: value } })),
@@ -1073,7 +1257,33 @@ export const useStore = create<AppState>()(
         // Dropped, not remapped: a mode change can make a parameter inert, and
         // a stored inert value would silently reappear on the way back. The
         // scene's defaults for the new mode are the honest starting point.
-        set({ sceneModes: { ...s.sceneModes, [sceneId]: next } })
+        //
+        // BOTH fields, not just `sceneModes` (F219): this store's own
+        // `SceneParams` (from `scenes/contract.ts`) is a DIFFERENT type from
+        // `engine/sceneParams.ts`'s same-named one — a genuine split between
+        // two systems built independently (see that module's own header on
+        // the same split affecting `resolveSceneParams`). `createShaderScene`
+        // -based scenes (every scene with a `uMode` shader branch, Limitless
+        // included) get `P.mode`/`P.modeIndex` from `useSceneParams`, which
+        // reads `sceneParams[id].mode` — NOT `sceneModes`. Before this fix,
+        // this action updated only the field nothing in that path ever reads:
+        // confirmed live, `setSceneMode` succeeding and `sceneModes[id]`
+        // changing while the actually-rendering scene's own `P.mode` stayed
+        // on whatever it booted with, forever — which silently broke every
+        // manual or `AutoPilot`-driven mode switch for every scene built this
+        // way, not just this session's own melt/mosh addition. The type
+        // assertion is real, not a workaround: the object gains a `mode`
+        // property `scenes/contract.ts`'s own functions (`sanitizeSceneParams`
+        // et al.) never look at — they iterate `SCENE_PARAM_KEYS` explicitly,
+        // so an extra key already sitting on the object structurally cannot
+        // reach them.
+        set({
+          sceneModes: { ...s.sceneModes, [sceneId]: next },
+          sceneParams: {
+            ...s.sceneParams,
+            [sceneId]: { ...s.sceneParams[sceneId], mode: next } as SceneParams,
+          },
+        })
       },
 
       resetSceneParams: (sceneId) =>
@@ -1087,6 +1297,16 @@ export const useStore = create<AppState>()(
 
       setQuality: (q) => set({ quality: q }),
       setDebugPostFx: (patch) => set((s) => ({ debugPostFx: { ...s.debugPostFx, ...patch } })),
+      setDebugPostFxOverride: (key, on) =>
+        set((s) => ({ debugPostFxOverrides: { ...s.debugPostFxOverrides, [key]: on } })),
+      setAllDebugPostFxOverrides: (on) =>
+        set(() => {
+          if (!on) return { debugPostFxOverrides: {} }
+          const all: Partial<Record<DebugPostFxKey, boolean>> = {}
+          for (const key of DEBUG_POSTFX_KEYS) all[key] = true
+          return { debugPostFxOverrides: all }
+        }),
+      setLimitlessPhoto: (dataUrl) => set({ limitlessPhoto: dataUrl }),
 
       applyPreset: (p) => {
         const contract = getSceneContract(p.sceneId)
@@ -1259,6 +1479,22 @@ export const useStore = create<AppState>()(
           userPresets: (old.userPresets ?? []).map(migrateLegacyLayers),
         }
       },
+      // An ALLOWLIST, not a blocklist: every field of `AppState` not named
+      // here — `debugPostFx`, `debugPostFxOverrides`, `status`, `pendingSceneId`,
+      // `micDevices`, and every other clearly-transient or live-handle-shaped
+      // field — is EXCLUDED from `localStorage` by omission, with no edit
+      // needed here to add a new one to that exclusion. `debugPostFxOverrides`
+      // (added alongside per-field Post FX overrides) relies on exactly this:
+      // it needed no entry here to become un-persisted, only the discipline of
+      // not adding one. A broader audit of this list was considered and
+      // declined — it is already a tight, deliberate allowlist (every one of
+      // the ~15 fields below is a genuine user setting; nothing that looks
+      // transient has snuck in), so the minimal move for this task is to add
+      // nothing, not to restructure what was already correct. See
+      // `debugPostFxOverrides`'s own doc for the sharper reason a NEW field
+      // being excluded here is not by itself a persistence guarantee — this
+      // allowlist governs what gets WRITTEN, not what an older install's
+      // stored blob still contains on rehydrate.
       partialize: (s) => ({
         sceneId: s.sceneId,
         layerSceneIds: s.layerSceneIds,

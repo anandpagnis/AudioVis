@@ -81,10 +81,61 @@ describe('slotCostMs', () => {
     // implicit in fixtures. Every licensed scene now fits inside a tier-0
     // composition budget with room to spare for a second one — which is why
     // OVER_BUDGET above has to reach outside the roster.
-    for (const scene of SCENES) {
-      const solo = slotCostMs(scene.id, 0, 'primary')
-      expect(solo, scene.id).toBeLessThan(sceneBudget(0) / 2)
-    }
+    //
+    // ## Collect-then-assert, deliberately (F199)
+    //
+    // This loop used to `expect()` INSIDE the body. A failing expectation
+    // throws, so the first over-budget scene aborted the loop and every scene
+    // after its index in `SCENES` went unchecked — silently, and with a green
+    // tick for the rest of the roster. `beats` (F181b, accepted and
+    // pre-existing) sits 13th, so everything from index 14 on had never
+    // actually been tested. The expanding-scenes merge appended six live
+    // scenes at the END of the array, all of them past that abort point; five
+    // of the six exceed this bar by their own declared rows and CI said
+    // nothing.
+    //
+    // Collecting every failure and asserting ONCE at the end means one
+    // accepted failure can never mask another again. The assertion message is
+    // the full list, sorted worst-first, so the output is a roster review
+    // rather than a single name.
+    //
+    // ## The allowlist below (F199/F200)
+    //
+    // Fixing the collect-then-assert bug above surfaced that `beats` was never
+    // the only scene exempted from this bar — `travelling` and `lattesfold`
+    // are ALSO genuinely, permanently over it, and unlike the batch's other
+    // four new scenes (`gyroid`/`javazone`/`fridaylines`/`truchet`, all fixed
+    // to clear the bar for real via `pixelBudget` — see `sceneCost.ts`'s own
+    // per-scene comments), no resolution cut closes the gap for these two:
+    // both solve to the engine's 0.4 render-scale FLOOR already and still
+    // land multiples over. Each one's own file header says so explicitly —
+    // "FORCED LIVE by explicit request" (`TravellingScene.tsx`,
+    // `LattesFoldScene.tsx`) — and each independently declares
+    // `compatibleWith: []`, verified directly against the current file: a
+    // scene that can never be a background LAYER cannot blow a layer's memory
+    // or GPU budget, no matter how expensive its own frame is. The one real
+    // consequence, already documented in both scenes' own headers, is a
+    // possible hitch on the single transition INTO them if the auto-director
+    // schedules one at a tier that can't afford it — not a compounding,
+    // layer-stacking failure this bar exists to catch.
+    //
+    // This is a real, load-bearing exemption, not a convenience — do not add
+    // to it without the same two properties holding: `compatibleWith: []`,
+    // AND a file header stating plainly why the scene is live anyway. `beats`
+    // (F181b) predates this list and is folded in for the same reason,
+    // formalising what used to be an accident of the old loop's abort order.
+    const FORCED_LIVE_OVER_BUDGET = new Set(['beats', 'travelling', 'lattesfold'])
+    const bar = sceneBudget(0) / 2
+    const failures = SCENES.filter((scene) => !FORCED_LIVE_OVER_BUDGET.has(scene.id))
+      .map((scene) => ({
+        id: scene.id,
+        solo: slotCostMs(scene.id, 0, 'primary'),
+      }))
+      .filter(({ solo }) => !(solo < bar))
+      .sort((a, b) => b.solo - a.solo)
+      .map(({ id, solo }) => `${id} ${solo.toFixed(2)}ms`)
+
+    expect(failures, `over the ${bar.toFixed(2)}ms tier-0 solo bar`).toEqual([])
   })
 
   it('charges full cost in a secondary slot unless the scene opted in', () => {

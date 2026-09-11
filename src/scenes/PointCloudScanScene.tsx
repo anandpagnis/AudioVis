@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { applyToUniforms } from '../engine/AnimationDirector'
+import { impulseClock, sinceImpulse, type ImpulseClock } from '../engine/response'
 import { useSceneFrame } from '../engine/sceneFrame'
+import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
 import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useDispose } from '../engine/useDispose'
 
@@ -11,31 +13,96 @@ const RADIUS = 4.5
  *  screenshots of this scene are reproducible. */
 const SEED = 0x5ca77e
 
+/**
+ * ## Band routing
+ *
+ *   bass + transient -> per-point displacement along the point's own normal
+ *                        (unchanged ambient "breathing" of the shell)
+ *   onKick -> a SHOCKWAVE, not a uniform explode. The old `uPulse`/`uEnergy`
+ *             expansion moved every one of the 60k points outward together,
+ *             on the same frame, regardless of where they sat -- indistinguishable
+ *             from a brightness pop wearing a size hat. `impulseClock()` /
+ *             `sinceImpulse()` (engine/response.ts) time the kick on the JS
+ *             side; `uSinceKick` carries it to the GPU and `travellingPulse()`
+ *             (the same function `web`/`travelling` use, engine/shaderLib.ts)
+ *             turns "seconds since the kick" plus each point's OWN static
+ *             radial distance from the scan origin into a 0..1 arrival gate.
+ *             The result is a literal wavefront expanding through the 3D
+ *             volume: points near the origin feel it first, the outer shell
+ *             feels it a fraction of a second later, and a point the front
+ *             hasn't reached yet just keeps breathing on bass/transient alone.
+ *             This is still "propagation" as a technique but the outcome is a
+ *             different kind of picture from `web` (a 2D hex lattice) or
+ *             `travelling` (stacked 2D planes) -- a point cloud rippling
+ *             outward in three dimensions, not a re-skin of either.
+ *             The wavefront drives three things, two of them off brightness:
+ *               - normal displacement (added to, not replacing, the ambient term)
+ *               - point SIZE (replaces the old flat `uPulse` size term)
+ *               - point-mask SHARPNESS in the fragment shader -- a struck
+ *                 point reads as a tighter, higher-confidence LIDAR return,
+ *                 which is what a real strong reflection actually looks like
+ *             The frag shader's brightness term keeps a small, transient
+ *             contribution from the wave for legibility, but it is the least
+ *             of the four channels the hit now drives.
+ *
+ *   b.energy -> also nudges the vertical scanline's OWN sweep rate (`uTime`,
+ *             the JS-side `timeRef` accumulator below). Flagged in review as
+ *             the one remaining sub-effect in this scene with no audio term
+ *             at all: everything above already answers bass/transient/kick/
+ *             high, but the scanline swept at a flat `params.speed`-scaled
+ *             rate regardless of what the track was doing. `1 + b.energy *
+ *             0.6` reduces to the old behaviour exactly at b.energy == 0, so
+ *             a quiet passage sweeps at the same rate it always did; a loud
+ *             one sweeps up to 1.6x faster.
+ */
+
 export const PCD_VERT = /* glsl */ `
   attribute vec4 aRand;
   uniform float uTime;
   uniform float uBass;
   uniform float uTransient;
-  uniform float uPulse;
   uniform float uEnergy;
   uniform float uSize;
+  uniform float uSinceKick;
+  uniform float uKickAmp;
   varying float vScanProgress;
   varying float vRadius;
+  varying float vWave;
   varying vec4 vRand;
+
+  ${TRAVELLING_PULSE_GLSL}
 
   void main() {
     vRand = aRand;
     vec3 fp = position;
 
-    // Normal vector from origin for radial displacement
-    vec3 dir = length(fp) > 1e-5 ? normalize(fp) : vec3(0.0, 1.0, 0.0);
-    
-    // Bass & transient displace points outward along their normals (volumetric "breathing")
-    float displacement = (uBass * 0.35 + uTransient * 0.45) * (0.6 + aRand.x * 0.8);
+    // Static radial distance from the scan origin, BEFORE any displacement --
+    // the wavefront times off where a point actually sits in the field, not
+    // off where a previous frame's shock already pushed it.
+    float r0 = length(fp);
+    vec3 dir = r0 > 1e-5 ? fp / r0 : vec3(0.0, 1.0, 0.0);
+
+    // Shockwave: travellingPulse() turns "seconds since the kick" and this
+    // point's own radius into a 0..1 arrival gate, so the wave genuinely
+    // crosses the shell outward from the scan origin rather than lighting up
+    // everywhere on the same frame. See the file-level Band routing doc.
+    const float waveSpeed = 3.4; // spans (of RADIUS) per second
+    const float waveDecay = 5.0; // trailing falloff behind the front
+    float wave = travellingPulse(uSinceKick, r0 / ${RADIUS.toFixed(1)}, waveSpeed, waveDecay) * uKickAmp;
+    vWave = wave;
+
+    // Bass & transient still breathe the field along its own normals; the
+    // wavefront ADDS to that per point rather than replacing it, so a point
+    // the front hasn't reached yet only carries the ambient breathing.
+    float displacement = (uBass * 0.35 + uTransient * 0.45) * (0.6 + aRand.x * 0.8)
+      + wave * (0.9 + aRand.x * 0.6);
     fp += dir * displacement;
 
-    // Explode outward with pulse
-    fp *= 1.0 + uPulse * 0.08 + uEnergy * 0.05;
+    // Ambient volumetric breathing only. The old flat "explode everything at
+    // once" multiply on uPulse/uEnergy is gone -- a kick's punch now lives in
+    // the shockwave above, which depends on WHERE a point is, not just WHEN
+    // the kick landed.
+    fp *= 1.0 + uEnergy * 0.05;
 
     vRadius = length(fp);
 
@@ -46,8 +113,10 @@ export const PCD_VERT = /* glsl */ `
     vec4 mv = modelViewMatrix * vec4(fp, 1.0);
     gl_Position = projectionMatrix * mv;
 
-    // PCD style: sharp, crisp points with depth attenuation
-    gl_PointSize = uSize * (0.6 + aRand.w * 0.8) * (1.0 + vScanProgress * 0.6 + uPulse * 0.4)
+    // PCD style: sharp, crisp points with depth attenuation. Size answers the
+    // shockwave now, not a flat beat pulse -- points the front has just
+    // crossed visibly swell.
+    gl_PointSize = uSize * (0.6 + aRand.w * 0.8) * (1.0 + vScanProgress * 0.6 + wave * 0.5)
       * (26.0 / max(1.0, -mv.z));
   }
 `
@@ -62,12 +131,17 @@ export const PCD_FRAG = /* glsl */ `
   uniform float uFade;
   varying float vScanProgress;
   varying float vRadius;
+  varying float vWave;
   varying vec4 vRand;
 
   void main() {
-    // Sharp circular point mask for authentic LIDAR/PCD point aesthetic
+    // Sharp circular point mask for authentic LIDAR/PCD point aesthetic. A
+    // point mid-shockwave reads as a tighter, higher-confidence return -- a
+    // real strong reflection sharpens exactly like this -- rather than simply
+    // glowing brighter.
     vec2 coord = gl_PointCoord - 0.5;
-    if (dot(coord, coord) > 0.25) discard;
+    float maskR = mix(0.25, 0.16, clamp(vWave, 0.0, 1.0));
+    if (dot(coord, coord) > maskR) discard;
 
     // Depth/Radius color ramp: core accent -> mid primary -> edge cool
     float r = clamp(vRadius / ${RADIUS.toFixed(1)}, 0.0, 1.0);
@@ -93,8 +167,14 @@ export const PCD_FRAG = /* glsl */ `
     // black instead of stacking onto the near side. It also happens to read as
     // real depth falloff, which is what a LIDAR return actually does.
     float depthFade = 1.0 - smoothstep(0.3, 1.0, r) * 0.92;
+    // vWave's contribution here is deliberately the smallest of its three
+    // effects (mask sharpness and point size above are the other two) and is
+    // transient + localized to whichever points the front currently sits
+    // on -- it does not shift the steady-state exposure profile measured
+    // above, since most of the 60k points are not on the wavefront on any
+    // given frame.
     float bright = depthFade * (0.04 + uEnergy * 0.14) * (0.5 + vRand.w * 0.5)
-      * (1.0 + vScanProgress * 1.2 + sparkle * uHigh * 1.4);
+      * (1.0 + vScanProgress * 1.2 + sparkle * uHigh * 1.4 + vWave * 0.5);
 
     gl_FragColor = vec4(col * bright * uFade, 1.0);
   }
@@ -118,6 +198,12 @@ function buildEmptyGeometry(): THREE.BufferGeometry {
 
 export function PointCloudScanScene() {
     const timeRef = useRef(0)
+    /** JS half of the shockwave: when the last kick fired, in engine seconds. */
+    const kickClock = useRef<ImpulseClock>(impulseClock())
+    /** Strength of that kick, latched at the moment it fires (see `update`
+     *  below) so the wave it launches doesn't fade with the kick's own
+     *  envelope while it is still crossing the shell. */
+    const hitAmp = useRef(0)
     const geometry = useMemo(() => buildEmptyGeometry(), [])
     /** False until the worker's field has been swapped in — gates the draw
      *  range so the placeholder (all points at the origin) never renders as one
@@ -153,9 +239,13 @@ export function PointCloudScanScene() {
                     uTime: { value: 0 },
                     uBass: { value: 0 },
                     uTransient: { value: 0 },
-                    uPulse: { value: 0 },
                     uEnergy: { value: 0 },
                     uHigh: { value: 0 },
+                    // 1e4 = sinceImpulse()'s "never fired" sentinel, so the
+                    // first frame shows an already-spent wave rather than one
+                    // mid-flight through the shell.
+                    uSinceKick: { value: 1e4 },
+                    uKickAmp: { value: 0 },
                     // 1.7, not 2.0: point size drives coverage quadratically,
                     // so it is the cheapest remaining lever on lit-area once
                     // brightness is already calibrated. See the exposure note
@@ -173,7 +263,7 @@ export function PointCloudScanScene() {
     useDispose(material, geometry)
 
     useSceneFrame(
-        ({ dt, b, col, vis, params, state }) => {
+        ({ f, dt, b, col, vis, params, state }) => {
             const u = material.uniforms
             // Density budget comes through the performance-state seam, not the
             // quality governor directly, so a director can thin the cloud for
@@ -185,9 +275,22 @@ export function PointCloudScanScene() {
             u.uTime.value = timeRef.current
             u.uBass.value = b.bass
             u.uTransient.value = b.transient
-            u.uPulse.value = b.pulse
             u.uEnergy.value = b.energy
             u.uHigh.value = b.high
+
+            // Latch the hit's strength at the moment it fires -- the wave it
+            // launches keeps that amplitude for its whole crossing rather than
+            // fading with the kick envelope's own (much faster) decay.
+            if (f.percussion.kick.trigger) {
+                hitAmp.current = Math.min(1.5, Math.max(0.5, f.percussion.kick.strength))
+            }
+            // f.time, not timeRef.current: the wave must be timed in engine
+            // seconds. The scene clock above is speed-scaled, so timing the
+            // wave on it would make the speed dial silently retune how long a
+            // kick takes to cross the shell.
+            u.uSinceKick.value = sinceImpulse(kickClock.current, f.time, f.percussion.kick.trigger)
+            u.uKickAmp.value = hitAmp.current
+
             applyToUniforms(u)
             u.uFade.value = vis
 
