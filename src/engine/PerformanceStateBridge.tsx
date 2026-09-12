@@ -38,6 +38,21 @@ import { useStore } from '../store'
 const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
 
 /**
+ * Scenes where the mirror rack alone must never engage — independent of
+ * {@link MIRROR_TRAILS_EXCLUDED_SCENES} above, which also drops trails.
+ *
+ * `djcam` is a hard cut to a live camera feed of the DJ: nothing composites
+ * over that feed already (see the `djCamUp` layer-tenancy block below, and
+ * `DjCamScene`'s own "opaque, nothing composites over a camera feed" header)
+ * — a kaleidoscopic fold across someone's face is the same rule, just
+ * violated by a post-fx pass instead of a scene layer. Trails are
+ * deliberately untouched on `djcam`: nothing asked for that, and a fading
+ * light-trail reads nothing like a mirror fold on a photographic subject, so
+ * this is its own set rather than adding `djcam` to the one above.
+ */
+const MIRROR_ONLY_EXCLUDED_SCENES = new Set(['djcam'])
+
+/**
  * Phrases (16-beat windows) a mirror look may hold before it is force-refreshed
  * even if nothing about the music moved. F134 — reported as the rack "ending
  * abruptly and too soon": the phrase-edge re-decision below re-rolled on every
@@ -493,6 +508,10 @@ export function PerformanceStateBridge() {
     // and a material is the look of the frame rather than an amount of it — so
     // they are re-taken only at a section boundary and then held.
     const rackSuppressed = MIRROR_TRAILS_EXCLUDED_SCENES.has(p.activeScene)
+    // Mirror alone sits out one MORE set than trails does — see
+    // MIRROR_ONLY_EXCLUDED_SCENES's own doc for why `djcam` belongs here and
+    // not in `MIRROR_TRAILS_EXCLUDED_SCENES` itself.
+    const mirrorSuppressed = rackSuppressed || MIRROR_ONLY_EXCLUDED_SCENES.has(p.activeScene)
     p.trails = approach(p.trails, rackSuppressed ? 0 : trailsTarget(m.state, f.flux, m.level), 0.7, f.delta)
     p.lens.amount = approach(
       p.lens.amount,
@@ -575,12 +594,13 @@ export function PerformanceStateBridge() {
     // `segments` and `tiles` snap at the boundary — those two are counts, and
     // 5.5 segments is not a look halfway between 4 and 8, it is neither.
     //
-    // All five re-read `rackSuppressed` every frame rather than only at the
-    // boundary, so the excluded scenes (F131) drop the rack the instant they
-    // come on screen — mid-section, if that is when the scene change lands —
-    // rather than waiting out whatever the previous scene's section chose.
+    // All five re-read `mirrorSuppressed` every frame rather than only at the
+    // boundary, so an excluded scene (F131's three, or `djcam`) drops the rack
+    // the instant it comes on screen — mid-section, if that is when the scene
+    // change lands — rather than waiting out whatever the previous scene's
+    // section chose.
     const mt = mirrorTarget.current
-    const mirrorVisible = !rackSuppressed && mt.mode !== 'off'
+    const mirrorVisible = !mirrorSuppressed && mt.mode !== 'off'
     // `segments`/`tiles` still snap rather than ease — that part of the old
     // comment was right, a fractional segment count means nothing. What was
     // wrong is snapping them to ZERO the instant a re-decision picks
@@ -591,19 +611,22 @@ export function PerformanceStateBridge() {
     // fold out — once `mix` reaches 0 the blend is the untouched frame
     // regardless of what `segments` is still sitting at underneath, so
     // nothing downstream needs to know it was never actually reset.
-    // `rackSuppressed` stays instant for both, unchanged from before: F131's
-    // whole point is that an excluded scene drops the rack immediately, not
-    // over a multi-second fade that would double up on the scene's own
-    // kaleidoscopic geometry for a couple of seconds.
-    if (rackSuppressed) {
+    // `mirrorSuppressed` stays instant for both, unchanged from before:
+    // F131's whole point is that an excluded scene drops the rack
+    // immediately, not over a multi-second fade that would double up on the
+    // scene's own kaleidoscopic geometry for a couple of seconds — and
+    // `djcam` wants the same instant drop for the opposite reason (a fold
+    // starting mid-fade-out over a hard-cut camera feed is worse, not
+    // better).
+    if (mirrorSuppressed) {
       p.mirror.segments = 0
       p.mirror.tiles = 0
     } else if (mt.mode !== 'off') {
       p.mirror.segments = mt.segments
       p.mirror.tiles = mt.tiles
     }
-    p.mirror.twist = approach(p.mirror.twist, rackSuppressed ? 0 : mt.twist, 0.9, f.delta)
-    p.mirror.slice = approach(p.mirror.slice, rackSuppressed ? 0 : mt.slice, 0.9, f.delta)
+    p.mirror.twist = approach(p.mirror.twist, mirrorSuppressed ? 0 : mt.twist, 0.9, f.delta)
+    p.mirror.slice = approach(p.mirror.slice, mirrorSuppressed ? 0 : mt.slice, 0.9, f.delta)
     // Spin scales with level on top of the section's base, so a kaleidoscope
     // breathes with the music rather than turning at a constant rate. Already
     // snaps to 0 the instant MIRROR_OFF is picked (spin: 0 there), which is
@@ -612,12 +635,12 @@ export function PerformanceStateBridge() {
     // dissolves, and even if it kept turning, `mix` approaching 0 hides
     // whatever it would contribute — see MirrorPass's `mix(original,
     // mirrored, uMix)`.
-    p.mirror.spin = rackSuppressed ? 0 : mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
+    p.mirror.spin = mirrorSuppressed ? 0 : mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
     // The fold's VISIBILITY, eased independently of the counts/magnitudes
     // above — see MIRROR_MIX_RATE's doc for the ~2.2s time constant this
-    // gives a rise and a fall. `rackSuppressed` is instant here too, for the
-    // same F131 reason as `segments`/`tiles`.
-    p.mirror.mix = rackSuppressed
+    // gives a rise and a fall. `mirrorSuppressed` is instant here too, for
+    // the same reason as `segments`/`tiles`.
+    p.mirror.mix = mirrorSuppressed
       ? 0
       : approach(p.mirror.mix ?? 0, mirrorVisible ? 1 : 0, MIRROR_MIX_RATE, f.delta)
 

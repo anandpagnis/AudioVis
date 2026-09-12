@@ -233,7 +233,7 @@ export function PostFXChain() {
       txLens.current.style = rack.lensAmount > 0 ? rack.lensStyle : p.lens.style
     }
     mirrorPass.advance(rack ? txMirror.current : p.mirror, delta, p.rackAudio.mids)
-    lensPass.advance(rack ? txLens.current : p.lens, delta, p.rackAudio)
+    lensPass.advance(rack ? txLens.current : p.lens, delta, p.rackAudio, p.djCam.active)
     feedbackPass.setTrails(Math.min(1, p.trails + (rack?.trails ?? 0)))
     // `mid` is the body colour, which is what a trail should be tinted toward
     // — glow would make every trail read as a highlight, and shadow would make

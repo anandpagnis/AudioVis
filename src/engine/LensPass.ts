@@ -239,6 +239,13 @@ const LENS_FRAG = /* glsl */ `
  * transition rack, or the debug panel would otherwise set — this is the one
  * choke point every source of `LensRackState` flows through before render.
  * Flip back to `false` to re-enable once the look is revisited.
+ *
+ * One deliberate exception: `advance()`'s `djCamActive` param bypasses this
+ * switch while a DJ Cam cutaway is on screen (`performanceState.djCam.active`,
+ * see docs/13_DJ_Cam.md). The F142 verdict was about the standing look on the
+ * regular scene roster; DJ Cam is a separate, later decision to let the same
+ * rack treat the live camera feed, and does not itself flip the general kill
+ * switch back on for anything else.
  */
 const LENS_HARD_DISABLED = true
 
@@ -304,8 +311,9 @@ export class LensPass extends Pass {
     l: LensRackState,
     dt: number,
     audio: { kick: number; highs: number; mids: number; onKick: number },
+    djCamActive: boolean,
   ): void {
-    const active = !LENS_HARD_DISABLED && isLensActive(l)
+    const active = (!LENS_HARD_DISABLED || djCamActive) && isLensActive(l)
     this.enabled = active
     if (!active) return
 

@@ -55,7 +55,7 @@ F105 in `docs/ISSUES.md`, not a missing table row.
 `performanceState` → *execute* band (Camera/Animation/Effects directors +
 scenes) reads it. The decide/execute boundary is the whole design; see §3.
 
-**Before handing off any change:** `npm run check` (typecheck + lint + 1615
+**Before handing off any change:** `npm run check` (typecheck + lint + 1618
 tests + build) and the checklist in §8.
 
 **Biggest open gap:** almost nothing here has been verified against *real
@@ -650,7 +650,7 @@ shipping default.)
 
 Before shipping a meaningful change:
 
-- `npm run check` — typecheck + lint + **test** (1615) + build in one pass (or run them individually
+- `npm run check` — typecheck + lint + **test** (1618) + build in one pass (or run them individually
   via `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build`)
 - `npm run format` — Prettier over `src/`
 - If you touched `BpmEstimator`/`PhraseDetector`/`MoodEstimator`/`spectralFeatures`, run

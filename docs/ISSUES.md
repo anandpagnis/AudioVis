@@ -8917,7 +8917,7 @@ things a curator will hit and should not have to rediscover.
 
 ## Verification status
 
-`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1615 tests**
+`npm run check` passes: typecheck, lint (0 errors, 0 warnings), **1618 tests**
 (1 skipped — see F108), build. F181b (`beats`' cost still genuinely over the
 tier-0 bar) no longer fails the suite — `slotBudget.test.ts`'s
 `FORCED_LIVE_OVER_BUDGET` allowlist now names it alongside `travelling` /
@@ -10252,3 +10252,108 @@ per-frame canvas heavy enough to distort the reading.
       where that check was done exhaustively rather than only against the
       specific line just edited — worth doing first next time a "still
       broken" report comes in on the same file, not third.
+
+- [x] **F227 · The lens rack never shows up on DJ Cam — because it never
+      shows up anywhere. `LENS_HARD_DISABLED` (F142) kills it globally; DJ
+      Cam gets a scoped exception, everything else stays off.** `src/
+      engine/LensPass.ts`, `src/engine/PostFXChain.tsx`.
+
+      Reported as "the lenses don't work on dj cam." Reading `LensPass.ts`
+      found the actual cause has nothing to do with `dj-cam`: F142 (2026-08-29,
+      "TURN OFF LENS FOR NOW, THEY LOOK SO HORRIBLE") added a module-level
+      `LENS_HARD_DISABLED = true` that forces `advance()`'s `enabled` off
+      regardless of what the director, the `melt` transition rack, or the
+      debug panel set — for every scene, not a djcam-specific gap. Checked
+      first with the user whether reverting that verdict globally was in
+      scope or whether this should stay scoped to DJ Cam alone; scoped won.
+
+      `advance()` gained a fourth param, `djCamActive: boolean` —
+      `PostFXChain.tsx` passes `performanceState.djCam.active` (already
+      computed every frame regardless of active scene, see
+      `PerformanceStateBridge.tsx`) — and the gate became `(!LENS_HARD_DISABLED
+      || djCamActive) && isLensActive(l)`. Every other scene is unaffected:
+      the kill switch still wins there. `p.lens.amount`/`.style` themselves
+      needed no change — they're already driven by the ordinary
+      mood/section logic irrespective of which scene is on screen, so
+      whatever material a section happened to engage now simply becomes
+      visible for the first time when a DJ Cam cutaway is up, same as it
+      would on any other scene were the switch not there.
+
+      Added `src/engine/__tests__/lensPass.test.ts` (3 cases: off on a normal
+      scene with an engaged rack, on during a cutaway with an engaged rack,
+      still off during a cutaway with nothing engaged) — no prior test
+      covered `LensPass` at all. `docs/13_DJ_Cam.md` updated with the
+      exception.
+
+      Verified: `npm run check` (typecheck + lint + **1618 tests**, up from
+      1615 + these 3 + build) all clean. Not verified live: the sandboxed
+      preview browser can't complete the two-window, camera-permission flow
+      DJ Cam needs end to end (the output surface only starts once the
+      control window hands it a real `getUserMedia` stream), so the actual
+      composited pixels — lens material genuinely visible over the live
+      feed — still want a real session with a camera to confirm, same
+      caveat as every other DJ Cam entry in this file.
+
+- [x] **F228 · The mirror rack must never engage on DJ Cam — a kaleidoscope
+      fold across the DJ's own face is broken, not a look. Explicitly
+      excluded, opposite direction from F227's lens exception, and scoped to
+      mirror alone so trails on `djcam` and mirror everywhere else stay
+      exactly as they were.** `src/engine/PerformanceStateBridge.tsx`.
+
+      Follow-up to F227 in the same session: with the lens rack now reaching
+      `djcam`, asked whether the mirror rack should too. Answer was no — a
+      kaleidoscopic fold over a photographic subject (a human face) reads as
+      broken in a way it does not on a shader scene, unlike the lens
+      materials (grain, chroma, glass-refraction-style treatments), which are
+      closer to a camera filter and read fine over video.
+
+      `PerformanceStateBridge.tsx` already had exactly this shape for a
+      different reason: `MIRROR_TRAILS_EXCLUDED_SCENES` (F131,
+      `kifs`/`maze`/`wingfold` — already-kaleidoscopic scenes where a
+      standing fold doubles up on the scene's own geometry) instantly zeroes
+      both the mirror sink and `trails` for those three. Reusing that set
+      for `djcam` would have also killed trails, which nobody asked for —
+      trails on `djcam` were never a problem and F131's own reasoning (a
+      standing effect doubling up on already-patterned geometry) doesn't
+      apply to a photographic feed at all. So this added a SEPARATE
+      `MIRROR_ONLY_EXCLUDED_SCENES = new Set(['djcam'])` and a
+      `mirrorSuppressed = rackSuppressed || MIRROR_ONLY_EXCLUDED_SCENES.has(p.activeScene)`
+      derived alongside the original `rackSuppressed`, then swapped
+      `rackSuppressed` for `mirrorSuppressed` at every mirror-sink site
+      (`segments`/`tiles`/`twist`/`slice`/`spin`/`mix`) while leaving the
+      `p.trails` line keyed on the original, untouched `rackSuppressed`. For
+      every scene other than `djcam`, `mirrorSuppressed` reduces to exactly
+      the same value `rackSuppressed` already was — F131's three scenes and
+      every ordinary scene are byte-for-byte unaffected.
+
+      The mirror PICKER (`mirrorForSection`/`shouldRepickMirror`,
+      `opticalDirector.ts`) was deliberately left alone — it keeps choosing a
+      target in the background regardless of `mirrorSuppressed`, exactly as
+      it already did for F131's three scenes; only the translation of that
+      pick into `performanceState.mirror` is gated. That is what makes the
+      resume-on-return "free": nothing needs to re-fire a pick when the show
+      leaves `djcam`, because a pick was sitting there uninterrupted the
+      whole time.
+
+      Not touched: the manual debug-panel mirror sliders
+      (`debugPostFxOverrides`), which write `p.mirror.*` unconditionally
+      after this block runs, same as they already do on `kifs`/`maze`/
+      `wingfold` — a developer forcing a slider by hand still sees it
+      immediately on any scene, `djcam` included, matching the existing
+      exclusion's own behaviour rather than inventing a stricter rule this
+      ticket was never asked for.
+
+      No dedicated test added: `PerformanceStateBridge.tsx` has no test file
+      today (it is a `useFrame` component wired directly to `audioEngine`/
+      the store/R3F, not an extracted pure function like the picker
+      functions it calls), and F131's original three-scene exclusion was
+      never covered either — this follows the same untested convention
+      rather than introducing new component-harness scaffolding for one
+      line. `docs/13_DJ_Cam.md` updated with the exclusion, symmetric with
+      F227's lens-exception writeup.
+
+      Verified: `npm run check` (typecheck + lint + 1618 tests, unchanged —
+      no tests added or removed + build) all clean. Not verified live, same
+      caveat as F227: confirming the fold genuinely never appears over a
+      real camera feed (as opposed to just reading the gate correctly) needs
+      a real two-window session with camera permission.

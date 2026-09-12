@@ -28,7 +28,7 @@ feed.
 | `store.ts`                          | `djCamEnabled` (persisted opt-in), `djCamDeviceId` / `djCamDevices` (device picker), `pendingDjCam` / `djCamRequestNonce` + `requestDjCam()` / `clearDjCamRequest()` (the manual punch, a one-shot channel copied from `pendingFilterId`).                                                                                |
 | `engine/outputLink.ts`              | `LOOK_FIELDS` gains the four store fields; `Telemetry.djCamActive` reports the live cutaway back up so the Console button reads real output state. `HandedSource` gains `{kind:'camera'}`.                                                                                                                                |
 | `engine/ExposureSampler.tsx`        | Stops sampling while `djCam.active` — a lit room would otherwise pull the whole show's exposure down for the length of the cutaway.                                                                                                                                                                                       |
-| `engine/PerformanceStateBridge.tsx` | Holds the layer-tenancy desires null while `djCam.active` — nothing composites over the DJ's face.                                                                                                                                                                                                                        |
+| `engine/PerformanceStateBridge.tsx` | Holds the layer-tenancy desires null while `djCam.active` — nothing composites over the DJ's face. `MIRROR_ONLY_EXCLUDED_SCENES` (`{'djcam'}`) also keeps the mirror rack's `segments`/`tiles`/`twist`/`slice`/`spin`/`mix` pinned to off/zero on this scene specifically — same instant-suppress shape `MIRROR_TRAILS_EXCLUDED_SCENES` (F131) already used for `kifs`/`maze`/`wingfold`, just scoped to mirror alone; `trails` is untouched and still runs on `djcam`.                                                                                                                                        |
 | `ui/Console.tsx`                    | The "DJ Cam" panel in the Post FX column: preview, punch button, connect-camera + device select, autofire toggle.                                                                                                                                                                                                         |
 | `scenes/index.ts`                   | `HIDDEN_PICKER_IDS = new Set(['djcam'])` — `djcam` is `roles:['primary']` (so `requestScene` accepts it) but filtered out of every by-hand picker; `getScenesForMood` and `validateSceneDef`'s mood check also honour the set.                                                                                            |
 
@@ -91,6 +91,30 @@ separate, later addition through the show's own filter system, not a dial on
 this scene. `?djcam=on` enables auto **and** punches one cutaway on load, so
 the raw feed / hand-off / choreography can be iterated on without waiting for a
 real drop.
+
+**The lens rack is the one exception.** `LensPass` carries a hard kill switch
+(`LENS_HARD_DISABLED`, F142 — the standing look was pulled from the whole
+roster on explicit request) that `advance()`'s `djCamActive` param bypasses
+specifically while `performanceState.djCam.active` is true. Everywhere else
+the kill switch still stands; only the DJ Cam cutaway gets the rack back.
+`p.lens.amount`/`.style` are computed the ordinary way regardless of scene
+(`PerformanceStateBridge` doesn't gate them on `activeScene`), so whatever
+material the current section happened to engage — if any — shows through on
+the camera feed exactly as it would on any other scene.
+
+**The mirror rack is the opposite case: explicitly excluded.** Unlike the lens
+rack, the mirror fold is never appropriate over a photographic subject —
+folding the DJ's own face reads as broken, not as a look. `djcam` sits in
+`MIRROR_ONLY_EXCLUDED_SCENES` (`PerformanceStateBridge.tsx`), so the mirror
+sink (`segments`/`tiles`/`twist`/`slice`/`spin`/`mix`) is pinned instantly to
+off/zero for the whole time `djcam` is the active scene, the same instant
+(not eased) suppression `MIRROR_TRAILS_EXCLUDED_SCENES` (F131) already gives
+`kifs`/`maze`/`wingfold`. `trails` is deliberately untouched — it isn't in
+that set, so it keeps running on `djcam` exactly as it would on any other
+scene. The mirror PICKER (`mirrorForSection`/`shouldRepickMirror`) still runs
+in the background regardless — only the sink that turns its pick into
+`performanceState.mirror` is gated — so a mirror engaged elsewhere resumes
+normally the moment the show leaves `djcam`.
 
 ---
 
