@@ -3,53 +3,18 @@ import { SCENES, canHoldRole, getEffectScenes, type SceneDef } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
 
 /**
- * The scenes a user may pick as the SUBJECT, from this surface.
- *
- * `SCENES` also holds `effect`-role scenes — punctuation `EffectDirector`
- * fires on a musical trigger, pinned as idle entries so a firing costs no
- * shader compile. `requestScene` already refuses them (F180), so a tile here
- * for one would press and do nothing, silently, forever. See `HUD.tsx`'s own
- * `PICKABLE_SCENES`, which this mirrors — the fix landed there first because
- * that surface was the one actually reported broken, and this one carries the
- * identical `SCENES.map` + `requestScene` pattern.
+ * The scenes a user may pick as the SUBJECT, background, accent, overlay, or
+ * see fired as an effect — same derivation the original console and the HUD
+ * both use, so a tile here is never one the store would refuse (F180).
  */
 const PICKABLE_SCENES = SCENES.filter((s) => canHoldRole(s.id, 'primary'))
-
-/**
- * The scenes eligible for each composition slot.
- *
- * Derived from the SAME predicate `store.setLayer` guards with, so the picker
- * and the store cannot drift: every tile this surface offers is one the store
- * will accept. That already mattered when these were `<select>`s — an option
- * the store declined sat selected in the dropdown still showing the last
- * ACCEPTED scene, which reads as the click having silently failed — and it
- * matters more as tiles, because a tile that simply never lights is quieter
- * about it still.
- *
- * Written out per role rather than folded over `LAYER_ROLES` so that
- * `Record<LayerRole, …>` makes a new role a compile error here, rather than an
- * empty group that ships.
- */
 const layerScenesFor = (role: LayerRole): SceneDef[] =>
   SCENES.filter((sc) => canHoldRole(sc.id, role))
-
 const LAYER_SCENES: Record<LayerRole, SceneDef[]> = {
   background: layerScenesFor('background'),
   accent: layerScenesFor('accent'),
   overlay: layerScenesFor('overlay'),
 }
-
-/**
- * The effect scenes — shown here, never offered here.
- *
- * `EffectDirector` fires these on a musical trigger. `requestScene` refuses
- * them outright (F180) and `canHoldRole` refuses them for all three layer
- * roles, so there is no slot on this surface a person could put one in, and
- * they are rendered as inert chips rather than buttons for exactly that reason.
- * They are listed at all because "what is on screen right now" is the question
- * this column now answers, and four scenes that can appear at any moment were
- * answering it nowhere.
- */
 const EFFECT_SCENES = getEffectScenes()
 import { PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { useStore } from '../store'
@@ -79,71 +44,113 @@ import { selectableStyles } from '../engine/transitions'
 import { DEBUG_POSTFX_KEYS, type DebugPostFx, type DebugPostFxKey } from '../store'
 import { SceneParamsPanel } from './SceneParamsPanel'
 
+type RailTab = 'scene' | 'colour' | 'postfx' | 'djcam'
+
 /**
  * The DJ-facing control surface.
  *
  * This window renders nothing of the show — it is a console plus a mirror of
- * the output window's canvas. The layout is a console rather than a menu on
- * purpose: during a set the operator is looking at the room, not at the screen,
- * so every control that matters is on one screen, at a size that can be hit
- * without aiming, with no scrolling and nothing behind a disclosure triangle.
+ * the output window's canvas. See engine/outputLink.ts for why the show
+ * renders in the other window.
  *
- * See engine/outputLink.ts for why the show renders in the other window.
+ * Layout: a preview column (what's on screen, and the scene/look controls an
+ * operator reaches for constantly) beside a tabbed rail (Scene params /
+ * Colour / Post FX — the controls tuned occasionally, not every few seconds).
+ * DJ Cam is a placeholder card here — the real feature (camera capture, the
+ * autofire director) lives on a separate branch not yet merged into this one.
  */
 export function Console() {
   const tele = useTelemetry()
   const status = useStore((s) => s.status)
   const error = useStore((s) => s.error)
+  const sourceType = useStore((s) => s.sourceType)
   const outputOpen = useOutputPresence()
+  const [tab, setTab] = useState<RailTab>('scene')
 
   return (
     <div className="console">
       <PassiveBanner />
-      <header className="console-top">
-        <Mirror />
-        <Readouts tele={tele} outputOpen={outputOpen} />
-        <Transport status={status} error={error} outputOpen={outputOpen} />
-      </header>
+      <TopBar tele={tele} outputOpen={outputOpen} sourceType={sourceType} />
 
-      <div className="console-body">
-        <Section title="Scene">
-          <SceneGrid tele={tele} />
-        </Section>
-        {/* The scene's own named modes and seven-key dial vocabulary
-            (`SceneParamKey` — speed/shape/complexity/density/fill/tilt/
-            contrast), NOT `LookControls`' three GLOBAL params below (those
-            are `intensity`/`speed`/`reactivity`, a different, scene-agnostic
-            concept entirely). `SceneParamsPanel` (`ui/SceneParamsPanel.tsx`)
-            was previously mounted only in `HUD.tsx`, which turned out (F219)
-            not to be reachable anywhere in the running app at all — this is
-            that panel restored to a window an operator can actually see,
-            unconditionally rather than gated on any one scene, since it is
-            generic over whichever scene (and layers) are actually active. */}
-        <Section title="Params">
-          <SceneParamsPanel />
-        </Section>
-        {/* Shown only while `limitless` is the actual primary — a photo does
-            nothing for any other scene, and a drop zone with nowhere to send
-            its result reads as broken rather than merely irrelevant. Gated on
-            `tele.scene` (the OUTPUT window's real current primary) rather than
-            a picker's own last click, so this panel tracks what the audience
-            is actually seeing through a crossfade, same as the `pill dim`
-            scene readout above. */}
-        {tele?.scene === 'limitless' && (
-          <Section title="Photo">
-            <PhotoDrop />
-          </Section>
-        )}
-        <Section title="Colour">
-          <PaletteGrid />
-        </Section>
-        <Section title="Look">
-          <LookControls />
-        </Section>
-        <Section title="Post FX">
-          <PostFx tele={tele} />
-        </Section>
+      <div className="body">
+        <div className="col-preview">
+          <PreviewHead tele={tele} />
+          <Mirror />
+          <StatRow tele={tele} />
+
+          <div className="bottom-row">
+            <div className="card">
+              <SceneBrowser tele={tele} />
+            </div>
+            <div className="card">
+              <h3>Quick controls</h3>
+              <LookControls />
+            </div>
+            <div className="card">
+              <h3>Performance</h3>
+              <PerformanceStats tele={tele} />
+            </div>
+          </div>
+        </div>
+
+        <div className="col-rail">
+          <div className="tabs">
+            <button className={`tab ${tab === 'scene' ? 'active' : ''}`} onClick={() => setTab('scene')}>
+              Scene
+            </button>
+            <button className={`tab ${tab === 'colour' ? 'active' : ''}`} onClick={() => setTab('colour')}>
+              Colour
+            </button>
+            <button className={`tab ${tab === 'postfx' ? 'active' : ''}`} onClick={() => setTab('postfx')}>
+              Post FX
+            </button>
+            <button className={`tab ${tab === 'djcam' ? 'active' : ''}`} onClick={() => setTab('djcam')}>
+              DJ Cam
+            </button>
+          </div>
+
+          <div className="rail-scroll">
+            {tab === 'scene' && (
+              <>
+                <div className="card">
+                  <h3>Params</h3>
+                  <SceneParamsPanel />
+                </div>
+                {/* Only while `limitless` is the actual primary — see PhotoDrop's
+                    own doc for why a drop zone with nowhere to send its result
+                    would read as broken rather than merely irrelevant. */}
+                {tele?.scene === 'limitless' && (
+                  <div className="card">
+                    <h3>Photo</h3>
+                    <PhotoDrop />
+                  </div>
+                )}
+              </>
+            )}
+
+            {tab === 'colour' && (
+              <div className="card">
+                <PaletteGrid />
+              </div>
+            )}
+
+            {tab === 'postfx' && (
+              <div className="card">
+                <h3>Post FX</h3>
+                <PostFx tele={tele} />
+              </div>
+            )}
+
+            {tab === 'djcam' && (
+              <div className="card">
+                <DjCamPlaceholder />
+              </div>
+            )}
+          </div>
+        </div>
       </div>
+
+      <Transport status={status} error={error} outputOpen={outputOpen} />
     </div>
   )
 }
@@ -151,13 +158,8 @@ export function Console() {
 /* ------------------------------------------------------------------ mirror */
 
 /**
- * The output window's own canvas, as a video.
- *
- * Not a second renderer, and that is the whole point of the two-window split:
- * the stream is `captureStream()` off the canvas that already drew the frame,
- * so watching it costs a frame copy rather than a frame. When the output window
- * is closed there is nothing to show, and saying so plainly beats a black
- * rectangle the operator has to interpret.
+ * The output window's own canvas, as a video — `captureStream()` off the
+ * canvas that already drew the frame, not a second renderer.
  */
 function Mirror() {
   const ref = useRef<HTMLVideoElement>(null)
@@ -183,251 +185,138 @@ function Mirror() {
   )
 }
 
-/* ---------------------------------------------------------------- readouts */
+function PreviewHead({ tele }: { tele: Telemetry | null }) {
+  const sceneName = tele?.scene ? (SCENES.find((s) => s.id === tele.scene)?.name ?? tele.scene) : 'No scene selected'
+  return (
+    <div className="preview-head">
+      <span className="name">{sceneName}</span>
+      <span className="badge-ar">16:9</span>
+    </div>
+  )
+}
 
-function Readouts({ tele, outputOpen }: { tele: Telemetry | null; outputOpen: boolean }) {
+function StatRow({ tele }: { tele: Telemetry | null }) {
+  const fps = tele && tele.frameMs > 0 ? 1000 / tele.frameMs : 0
+  return (
+    <div className="stat-row">
+      <span>
+        <span className="sdot" style={!tele ? { background: 'rgba(var(--cream-rgb), 0.3)' } : undefined} />
+        fps {fps > 0 ? fps.toFixed(0) : '--'}
+      </span>
+      {tele && <span>tier {tele.tier}</span>}
+      {tele && (
+        <span style={tele.frameMs > 20 ? { color: 'var(--cream)', textShadow: '0 0 8px rgba(var(--maroon-rgb), 0.9)' } : undefined}>
+          {tele.frameMs > 0 ? `${tele.frameMs.toFixed(1)} ms` : '--'}
+        </span>
+      )}
+      {tele && <span style={{ color: 'var(--text-dimmer)' }}>{tele.scene}</span>}
+    </div>
+  )
+}
+
+/* ---------------------------------------------------------------- top bar */
+
+function TopBar({
+  tele,
+  outputOpen,
+  sourceType,
+}: {
+  tele: Telemetry | null
+  outputOpen: boolean
+  sourceType: string | null
+}) {
+  const status = useStore((s) => s.status)
   const bpm = tele ? Math.round(tele.bpm) : 0
   const beat = tele ? tele.beatInBar : -1
-  return (
-    <div className="readouts">
-      <div className="readout-main">
-        <span className="big-number">{bpm || '--'}</span>
-        <span className="unit">BPM</span>
-        {/* The diagnostics sit here rather than floating over the columns: this
-            is the one piece of horizontal space in the header that nothing else
-            wants. */}
-        <Diagnostics />
-        <span className={`mood mood-${tele?.mood ?? 'silence'}`}>{tele?.mood ?? 'idle'}</span>
-      </div>
-
-      <div className="beat-dots" aria-label="beat in bar">
-        {[0, 1, 2, 3].map((i) => (
-          <span key={i} className={`dot ${i === beat ? 'on' : ''} ${i === 0 ? 'downbeat' : ''}`} />
-        ))}
-      </div>
-
-      <Meter label="energy" value={tele?.energy ?? 0} />
-      <Meter label="phrase" value={tele?.phraseProgress ?? 0} />
-
-      <div className="readout-row">
-        <span className={`pill ${outputOpen && tele ? 'good' : 'bad'}`}>
-          {outputOpen && tele ? 'output live' : 'output down'}
-        </span>
-        <AudioHealth tele={tele} />
-        {tele && (
-          <>
-            <span className="pill">tier {tele.tier}</span>
-            <span className={`pill ${tele.frameMs > 20 ? 'warn' : ''}`}>
-              {tele.frameMs > 0 ? `${tele.frameMs.toFixed(1)} ms` : '--'}
-            </span>
-            <span className="pill dim">{tele.scene}</span>
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function Meter({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="meter">
-      <span className="meter-label">{label}</span>
-      <div className="meter-track">
-        <div className="meter-fill" style={{ width: `${Math.min(1, Math.max(0, value)) * 100}%` }} />
-      </div>
-    </div>
-  )
-}
-
-/* --------------------------------------------------------------- transport */
-
-function Transport({
-  status,
-  error,
-  outputOpen,
-}: {
-  status: string
-  error: string | null
-  outputOpen: boolean
-}) {
-  const sourceType = useStore((s) => s.sourceType)
-  const isRecording = useStore((s) => s.isRecording)
-  const fileRef = useRef<HTMLInputElement>(null)
   const running = status === 'running'
 
-  /**
-   * One gesture opens the output window and acquires the source.
-   *
-   * They cannot be separated: a popup needs a user gesture, and so does a
-   * capture prompt. Opening first also means the window exists by the time the
-   * source is ready to hand over.
-   */
-  const start = useCallback((kind: 'system' | 'mic' | 'file') => {
-    openOutput()
-    if (kind === 'file') fileRef.current?.click()
-    else void useStore.getState().startAudio(kind)
-  }, [])
-
   return (
-    <div className="transport">
-      {!outputOpen && (
-        <button className="btn-huge accent" onClick={() => openOutput({ focus: true })}>
-          Open output window
-          <small>the show runs there</small>
-        </button>
-      )}
+    <header className="topbar">
+      <span className="word">AudioVis</span>
 
-      {!running ? (
-        <div className="source-buttons">
-          <button className="btn-huge" onClick={() => start('system')} disabled={status === 'starting'}>
-            System audio
-          </button>
-          <button className="btn-huge" onClick={() => start('file')} disabled={status === 'starting'}>
-            Audio file
-          </button>
-          <button className="btn-huge" onClick={() => start('mic')} disabled={status === 'starting'}>
-            Microphone
-          </button>
+      <div className="signal-chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+          <path d="M3 12h3l2-7 4 14 2-9 2 5h5" />
+        </svg>
+        <div>
+          <div className="label">{running ? sourceType : 'No source'}</div>
+          <div className="sub">{running ? 'running' : 'select an input below'}</div>
         </div>
-      ) : (
-        <div className="source-buttons">
-          {/* Commands, not local calls. The AudioContext, the MediaRecorder
-              and the canvas all live in the output window; this window's copies
-              are idle and empty, so calling them here stopped nothing and
-              recorded nothing while the button lit up as though it had. */}
-          <button className="btn-huge" onClick={() => sendCommand('stop')}>
-            Stop
-            <small>{sourceType}</small>
-          </button>
-          <button
-            className={`btn-huge ${isRecording ? 'recording' : ''}`}
-            onClick={() => sendCommand('toggle-record')}
-          >
-            {isRecording ? 'Stop rec' : 'Record'}
-          </button>
-          <button className="btn-huge" onClick={() => sendCommand('screenshot')}>
-            Frame
-            <small>save PNG</small>
-          </button>
-        </div>
-      )}
-
-      {status === 'starting' && (
-        <p className="transport-note">
-          Starting…{' '}
-          <button
-            className="link-btn"
-            onClick={() => {
-              // Two resets, not one. `sendCommand` tears down whatever the
-              // OUTPUT window actually started (its own real AudioContext /
-              // capture — this window has none). But this window's own
-              // "Starting…" card is driven by ITS OWN `status`, which that
-              // command never touches — it only runs `cancelStartAudio` over
-              // in the output window's copy of the store. Without the local
-              // call below, this button did nothing the operator could see:
-              // the card stayed on "Starting…" until either telemetry
-              // happened to confirm a real start/stop (which a truly stuck
-              // hand-off never produces) or `HANDOFF_CONFIRM_TIMEOUT_MS`
-              // eventually gave up on its own.
-              sendCommand('cancel-start')
-              useStore.getState().cancelStartAudio()
-            }}
-          >
-            cancel
-          </button>
-        </p>
-      )}
-      {error && <p className="transport-error">{error}</p>}
-
-      <input
-        ref={fileRef}
-        type="file"
-        accept="audio/*"
-        hidden
-        onChange={(e) => {
-          const f = e.target.files?.[0]
-          if (f) void useStore.getState().startAudioFile(f)
-          e.target.value = ''
-        }}
-      />
-    </div>
-  )
-}
-
-/* ---------------------------------------------------------------- sections */
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="console-section">
-      <h2>{title}</h2>
-      {children}
-    </section>
-  )
-}
-
-/**
- * Everything that can be on screen at once, in the order it composes.
- *
- * One flat grid of primary-capable scenes used to be the whole section. That
- * grid is right about what it offers — `PICKABLE_SCENES` is the F180 fix and
- * stays — but it is only a fifth of the picture: the roster's `background`-only
- * scenes were reachable solely through three `<select>`s parked in the Look
- * column, and its `effect` scenes were reachable nowhere at all. The show is a
- * stack, so the control for it is a stack too, and each group reports its own
- * slot.
- *
- * ## "Requested" and "live" are two different questions
- *
- * For the subject the store answers both (`sceneId` / `pendingSceneId`). For a
- * layer it answers only the first: `layerSceneIds[role]` is a DESIRE, and
- * between that desire and a lit pixel sit two gates — `resolveLayerIds` can
- * refuse a layer that no longer fits the frame budget, and an admitted layer
- * still mounts invisibly at `dir: 0` until its shader finishes compiling. The
- * doc on `performanceState.mountedLayers` records a session in which 12 of 22
- * layer desires were withdrawn within 20-90 ms having never drawn anything.
- *
- * So the two get two states, and they are the subject grid's existing `on` /
- * `pending` pair rather than a second vocabulary for the same distinction.
- * Collapsing them into one highlight would report a layer as being on screen
- * that the viewer never saw.
- */
-function SceneGrid({ tele }: { tele: Telemetry | null }) {
-  const sceneId = useStore((s) => s.sceneId)
-  const pendingSceneId = useStore((s) => s.pendingSceneId)
-  const autoPilot = useStore((s) => s.autoPilot)
-  return (
-    <>
-      <div className="scene-groups">
-        <div className="scene-group">
-          <h3 className="fx-head">subject</h3>
-          <div className="tile-grid">
-            {PICKABLE_SCENES.map((s) => (
-              <button
-                key={s.id}
-                // Two states, because a scene press is not instant: the switch is
-                // held for the next downbeat once the incoming scene has warmed.
-                // Showing only what is live would leave the operator's press with
-                // no feedback for up to a bar, which reads as a dropped input.
-                className={`tile ${sceneId === s.id ? 'on' : ''} ${
-                  pendingSceneId === s.id ? 'pending' : ''
-                }`}
-                onClick={() => useStore.getState().requestScene(s.id)}
-              >
-                {s.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {LAYER_ROLES.map((role: LayerRole) => (
-          <LayerGroup key={role} role={role} tele={tele} />
-        ))}
-
-        <EffectGroup tele={tele} />
       </div>
 
+      <div className="topbar-spacer" />
+
+      <span className={`pill2 ${outputOpen && tele ? 'good' : 'bad'}`}>
+        <span className="dot" />
+        {outputOpen && tele ? 'output live' : 'output down'}
+      </span>
+      <AudioHealth tele={tele} />
+      <span className={`mood-pill mood-${tele?.mood ?? 'silence'}`}>{tele?.mood ?? 'idle'}</span>
+
+      <div className="bpm-chip">
+        <b>{bpm || '--'}</b>
+        <span>BPM</span>
+      </div>
+      <div className="beat-row2" aria-label="beat in bar">
+        {[0, 1, 2, 3].map((i) => (
+          <i key={i} className={`${i === beat ? 'on' : ''} ${i === 0 ? 'down' : ''}`} />
+        ))}
+      </div>
+
+      <Diagnostics />
+    </header>
+  )
+}
+
+/* ---------------------------------------------------------------- scene */
+
+type SceneCategory = LayerRole | 'subject' | 'effects'
+
+/**
+ * The tile browser: subject / background / accent / overlay / effects, one
+ * category shown at a time behind filter chips. Everything it renders is the
+ * SAME `PICKABLE_SCENES`/`LAYER_SCENES`/`EFFECT_SCENES` derivation and the
+ * same `requestScene`/`setLayer` actions the original always-visible column
+ * used — only the "show one group at a time" browsing is new.
+ */
+function SceneBrowser({ tele }: { tele: Telemetry | null }) {
+  const autoPilot = useStore((s) => s.autoPilot)
+  const [category, setCategory] = useState<SceneCategory>('subject')
+
+  const categories = (
+    [
+      { id: 'subject' as const, label: 'Subject', count: PICKABLE_SCENES.length },
+      ...LAYER_ROLES.filter((r) => LAYER_SCENES[r].length > 0).map((r) => ({
+        id: r,
+        label: r[0].toUpperCase() + r.slice(1),
+        count: LAYER_SCENES[r].length,
+      })),
+      { id: 'effects' as const, label: 'Effects', count: EFFECT_SCENES.length },
+    ] satisfies { id: SceneCategory; label: string; count: number }[]
+  ).filter((c) => c.count > 0)
+
+  return (
+    <>
+      <h3>Scene</h3>
+      <div className="filters">
+        {categories.map((c) => (
+          <button
+            key={c.id}
+            className={`fchip ${category === c.id ? 'active' : ''}`}
+            onClick={() => setCategory(c.id)}
+          >
+            {c.label}
+            <span className="cnt">{c.count}</span>
+          </button>
+        ))}
+      </div>
+
+      {category === 'subject' && <SubjectTiles />}
+      {category !== 'subject' && category !== 'effects' && <LayerTiles role={category} tele={tele} />}
+      {category === 'effects' && <EffectTiles tele={tele} />}
+
       <button
-        className={`toggle-wide ${autoPilot ? 'on' : ''}`}
+        className={`wide-toggle ${autoPilot ? 'on' : ''}`}
         onClick={() => useStore.getState().toggleAutoPilot()}
       >
         Autopilot
@@ -438,42 +327,73 @@ function SceneGrid({ tele }: { tele: Telemetry | null }) {
 }
 
 /**
- * One composition slot, as tiles.
- *
- * Was a `<select>` in the Look column, on the reasoning that a layer is picked
- * rarely and read often so three more grids would crowd out the controls a set
- * actually touches. Both halves of that turned out to be wrong here: a
- * dropdown is the one control whose current value you cannot read without
- * opening it, and "what is drawing" is precisely what this column is for.
- *
- * Re-selecting the lit tile clears the slot. With the `<select>` gone so is its
- * "none" option, and a layer you cannot turn off is worse than one you cannot
- * turn on — hence the title on every tile saying so, since a second press
- * meaning "off" is not something a tile grid announces on its own.
+ * Page a list without scrolling it — the operator's own request: everything
+ * should be reachable behind a click, never behind a scrollbar (which, on
+ * this rig, effectively never fires inside a nested panel anyway).
  */
-function LayerGroup({ role, tele }: { role: LayerRole; tele: Telemetry | null }) {
+function usePager(total: number, pageSize: number) {
+  const [page, setPage] = useState(0)
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const clamped = Math.min(page, pageCount - 1)
+  return { page: clamped, pageCount, setPage, start: clamped * pageSize, end: clamped * pageSize + pageSize }
+}
+
+function Pager({ page, pageCount, onChange }: { page: number; pageCount: number; onChange: (p: number) => void }) {
+  if (pageCount <= 1) return null
+  return (
+    <div className="pager">
+      <button className="pager-btn" disabled={page === 0} onClick={() => onChange(page - 1)} aria-label="Previous page">
+        ‹
+      </button>
+      <span className="pager-label">
+        {page + 1} / {pageCount}
+      </span>
+      <button
+        className="pager-btn"
+        disabled={page === pageCount - 1}
+        onClick={() => onChange(page + 1)}
+        aria-label="Next page"
+      >
+        ›
+      </button>
+    </div>
+  )
+}
+
+function SubjectTiles() {
+  const sceneId = useStore((s) => s.sceneId)
+  const pendingSceneId = useStore((s) => s.pendingSceneId)
+  const { page, pageCount, setPage, start, end } = usePager(PICKABLE_SCENES.length, 12)
+  return (
+    <>
+      <div className="tile-grid">
+        {PICKABLE_SCENES.slice(start, end).map((s) => (
+          <button
+            key={s.id}
+            className={`tile ${sceneId === s.id ? 'on' : ''} ${pendingSceneId === s.id ? 'pending' : ''}`}
+            onClick={() => useStore.getState().requestScene(s.id)}
+          >
+            {s.name}
+          </button>
+        ))}
+      </div>
+      <Pager page={page} pageCount={pageCount} onChange={setPage} />
+    </>
+  )
+}
+
+/**
+ * One composition slot. "Requested" (the store's desire) and "live" (what
+ * telemetry says is actually mounted) are different questions — see the
+ * original SceneGrid's own doc on `performanceState.mountedLayers` for why a
+ * layer desire can be withdrawn without ever drawing anything.
+ */
+function LayerTiles({ role, tele }: { role: LayerRole; tele: Telemetry | null }) {
   const requested = useStore((s) => s.layerSceneIds[role])
   const scenes = LAYER_SCENES[role]
-
-  /**
-   * What is ACTUALLY drawing here — a fact only the output window has, so it is
-   * read off telemetry and not inferred locally. `null` when that window is
-   * down: nothing is known to be live then, and a highlight held over from the
-   * last packet would be a claim about a renderer that is no longer running.
-   *
-   * Optional at every step because telemetry is a message from another
-   * window's build, not a local object — an output window one deploy behind
-   * simply does not send this field.
-   */
   const mounted = tele?.mountedLayers?.[role] ?? null
+  const { page, pageCount, setPage, start, end } = usePager(scenes.length, 12)
 
-  // A role nothing is authored for gets no control, rather than an empty
-  // heading implying there is a choice to be made. Mirrors HUD's own rule.
-  if (scenes.length === 0) return null
-
-  // Note and highlight tell the same story: blue is on screen, amber is asked
-  // for but unconfirmed. With the output window down only the store's own half
-  // is knowable, so it says "requested" and claims nothing about the frame.
   let note = 'empty'
   let noteCls = ''
   if (mounted && requested && mounted !== requested) {
@@ -488,13 +408,10 @@ function LayerGroup({ role, tele }: { role: LayerRole; tele: Telemetry | null })
   }
 
   return (
-    <div className="scene-group">
-      <h3 className="fx-head">
-        {role}
-        <span className={`scene-group-note ${noteCls}`}>{note}</span>
-      </h3>
+    <>
+      <p className={`scene-note ${noteCls}`}>{note}</p>
       <div className="tile-grid">
-        {scenes.map((sc) => {
+        {scenes.slice(start, end).map((sc) => {
           const live = mounted === sc.id
           const wanted = requested === sc.id
           return (
@@ -517,37 +434,26 @@ function LayerGroup({ role, tele }: { role: LayerRole; tele: Telemetry | null })
           )
         })}
       </div>
-    </div>
+      <Pager page={page} pageCount={pageCount} onChange={setPage} />
+    </>
   )
 }
 
 /**
- * The effect scenes, as a status readout.
- *
- * Chips and not buttons, deliberately. Nothing on this surface can fire one —
- * `EffectDirector` picks them off musical triggers — so a tile here would look
- * pressable and do nothing, forever, which is the failure F180 was and the one
- * `.chip-disabled`'s `pointer-events` note in styles.css is still arguing
- * about. They are `<span>`s: there is no click to swallow, no disabled button
- * to explain, and the only thing they do is light up while they fire.
+ * Effect scenes: shown, never pressed. `EffectDirector` fires these on a
+ * musical trigger — a tile here would look pressable and do nothing (F180).
  */
-function EffectGroup({ tele }: { tele: Telemetry | null }) {
-  if (EFFECT_SCENES.length === 0) return null
-  // Same honesty as the layers: with no telemetry nothing is known to be
-  // firing, and an empty list is the truthful answer rather than a stale one.
+function EffectTiles({ tele }: { tele: Telemetry | null }) {
   const firing = tele?.activeEffects ?? []
-
+  const { page, pageCount, setPage, start, end } = usePager(EFFECT_SCENES.length, 12)
   return (
-    <div className="scene-group">
-      <h3 className="fx-head">
-        effects
-        <span className={`scene-group-note ${firing.length > 0 ? 'is-live' : ''}`}>
-          {tele ? (firing.length > 0 ? `${firing.length} firing` : 'idle') : 'output down'}
-        </span>
-      </h3>
-      <p className="scene-note">Fired by the director on a musical trigger — not hand-picked.</p>
+    <>
+      <p className="scene-note">
+        Fired by the director on a musical trigger — not hand-picked. ·{' '}
+        {tele ? (firing.length > 0 ? `${firing.length} firing` : 'idle') : 'output down'}
+      </p>
       <div className="tile-grid">
-        {EFFECT_SCENES.map((s) => (
+        {EFFECT_SCENES.slice(start, end).map((s) => (
           <span
             key={s.id}
             className={`tile tile-status ${firing.includes(s.id) ? 'on' : ''}`}
@@ -557,50 +463,67 @@ function EffectGroup({ tele }: { tele: Telemetry | null }) {
           </span>
         ))}
       </div>
-    </div>
+      <Pager page={page} pageCount={pageCount} onChange={setPage} />
+    </>
   )
 }
 
+/* ---------------------------------------------------------------- colour */
+
 /**
- * Palettes, grouped by family and shown as their actual five slots.
- *
- * A name is not a colour. The whole reason the palette system is five named
- * slots is that a look is a relationship between them, so the swatch shows all
- * five in their real proportions rather than one representative dot.
+ * Palette swatches, one FAMILY at a time behind filter chips — the real
+ * roster (30 palettes across 5 families; see engine/palettes.ts's own doc on
+ * why `PaletteFamily` exists: "lets a picker of thirty palettes stay
+ * legible"). Same swatch-shows-all-five-slots reasoning as before: a name is
+ * not a colour, so the strip shows the real proportions.
  */
 function PaletteGrid() {
   const paletteId = useStore((s) => s.paletteId)
   const moodDrive = useStore((s) => s.moodDrive)
+  const [family, setFamily] = useState(PALETTE_FAMILIES[0])
+  const familyPalettes = getPalettesByFamily(family)
+  const { page, pageCount, setPage, start, end } = usePager(familyPalettes.length, 6)
+
   return (
     <>
-      <div className="palette-families">
-        {PALETTE_FAMILIES.map((family) => (
-          <div key={family} className="palette-family">
-            <h3>{family}</h3>
-            <div className="swatch-row">
-              {getPalettesByFamily(family).map((p) => (
-                <button
-                  key={p.id}
-                  className={`swatch ${paletteId === p.id ? 'on' : ''}`}
-                  title={p.name}
-                  onClick={() => useStore.getState().setPalette(p.id)}
-                >
-                  <span className="swatch-strip">
-                    <i style={{ background: p.slots.bg }} />
-                    <i style={{ background: p.slots.shadow }} />
-                    <i style={{ background: p.slots.mid }} />
-                    <i style={{ background: p.slots.accent }} />
-                    <i style={{ background: p.slots.glow }} />
-                  </span>
-                  <span className="swatch-name">{p.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+      <h3>Colour</h3>
+      <div className="filters">
+        {PALETTE_FAMILIES.map((f) => (
+          <button
+            key={f}
+            className={`fchip ${family === f ? 'active' : ''}`}
+            onClick={() => {
+              setFamily(f)
+              setPage(0)
+            }}
+          >
+            {f[0].toUpperCase() + f.slice(1)}
+            <span className="cnt">{getPalettesByFamily(f).length}</span>
+          </button>
         ))}
       </div>
+      <div className="gel-row">
+        {familyPalettes.slice(start, end).map((p) => (
+          <button
+            key={p.id}
+            className={`gel ${paletteId === p.id ? 'on' : ''}`}
+            title={p.name}
+            onClick={() => useStore.getState().setPalette(p.id)}
+          >
+            <span className="gel-strip">
+              <i style={{ background: p.slots.bg, flex: 1.4 }} />
+              <i style={{ background: p.slots.shadow }} />
+              <i style={{ background: p.slots.mid }} />
+              <i style={{ background: p.slots.accent, flex: 1.3 }} />
+              <i style={{ background: p.slots.glow, flex: 1.3 }} />
+            </span>
+            <span className="gel-name">{p.name}</span>
+          </button>
+        ))}
+      </div>
+      <Pager page={page} pageCount={pageCount} onChange={setPage} />
       <button
-        className={`toggle-wide ${moodDrive ? 'on' : ''}`}
+        className={`wide-toggle ${moodDrive ? 'on' : ''}`}
         onClick={() => useStore.getState().toggleMoodDrive()}
       >
         Mood drive
@@ -613,18 +536,10 @@ function PaletteGrid() {
 /* --------------------------------------------------------------- limitless */
 
 /**
- * Drop, or pick, the photo the `limitless` scene warps.
- *
- * Only ever mounted while that scene is actually the output's current
- * primary (see `Console()`'s own gate above) — a drop zone with nowhere to
- * send its result would read as broken rather than merely irrelevant.
- *
- * `resizeAndEncodePhoto` does the real work (resize, JPEG, data URL); this
- * component is the drop/pick surface plus the preview and the two failure
- * modes a person can actually hit — a non-image file, and a corrupt one.
- * `busy`/`failed` are local `useState`, deliberately not store state: they
- * describe THIS panel's own in-flight encode, never anything the output
- * window needs to know about, and both self-clear on the next attempt.
+ * Drop, or pick, the photo the `limitless` scene warps. Only ever mounted
+ * while that scene is actually the output's current primary (gated in
+ * `Console()` above) — a drop zone with nowhere to send its result would
+ * read as broken rather than merely irrelevant.
  */
 function PhotoDrop() {
   const photo = useStore((s) => s.limitlessPhoto)
@@ -680,9 +595,7 @@ function PhotoDrop() {
         {photo ? (
           <img className="photo-drop-preview" src={photo} alt="" />
         ) : (
-          <span className="photo-drop-hint">
-            {busy ? 'encoding…' : 'drop a photo, or click to choose'}
-          </span>
+          <span className="photo-drop-hint">{busy ? 'encoding…' : 'drop a photo, or click to choose'}</span>
         )}
         <input
           ref={inputRef}
@@ -691,8 +604,6 @@ function PhotoDrop() {
           className="photo-drop-input"
           onChange={(e) => {
             acceptFile(e.target.files?.[0])
-            // Reset so choosing the SAME file twice in a row still fires
-            // onChange — the input's own value otherwise short-circuits it.
             e.target.value = ''
           }}
         />
@@ -700,7 +611,7 @@ function PhotoDrop() {
       {failed && <small className="photo-drop-error">that file could not be read as an image</small>}
       {photo && (
         <button
-          className="toggle-wide"
+          className="wide-toggle"
           onClick={() => {
             setFailed(false)
             useStore.getState().setLimitlessPhoto(null)
@@ -714,40 +625,21 @@ function PhotoDrop() {
   )
 }
 
+/* ------------------------------------------------------------------- look */
+
 function LookControls() {
   const params = useStore((s) => s.params)
   const quality = useStore((s) => s.quality)
   return (
     <>
-      <BigSlider
-        label="Intensity"
-        value={params.intensity}
-        onChange={(v) => useStore.getState().setParam('intensity', v)}
-      />
-      <BigSlider
-        label="Speed"
-        value={params.speed}
-        onChange={(v) => useStore.getState().setParam('speed', v)}
-      />
-      <BigSlider
-        label="Reactivity"
-        value={params.reactivity}
-        onChange={(v) => useStore.getState().setParam('reactivity', v)}
-      />
-      {/* The three layer `<select>`s used to sit here. They are tiles in the
-          Scene column now, next to the subject grid they compose with — see
-          `LayerGroup`. Two controls for one slot is one more than the number
-          that can be right. */}
-
+      <QcSlider label="Intensity" value={params.intensity} onChange={(v) => useStore.getState().setParam('intensity', v)} />
+      <QcSlider label="Speed" value={params.speed} onChange={(v) => useStore.getState().setParam('speed', v)} />
+      <QcSlider label="Reactivity" value={params.reactivity} onChange={(v) => useStore.getState().setParam('reactivity', v)} />
       <div className="quality-row">
         <span className="meter-label">quality</span>
         <div className="segmented">
           {(['auto', 'low', 'medium', 'high'] as const).map((q) => (
-            <button
-              key={q}
-              className={quality === q ? 'on' : ''}
-              onClick={() => useStore.getState().setQuality(q)}
-            >
+            <button key={q} className={quality === q ? 'on' : ''} onClick={() => useStore.getState().setQuality(q)}>
               {q}
             </button>
           ))}
@@ -757,28 +649,11 @@ function LookControls() {
   )
 }
 
-/**
- * A slider sized to be hit without looking at it.
- *
- * The value readout is deliberately large and always present: on stage the
- * question is "where is this set", and a handle position does not answer it
- * from a metre away.
- */
-function BigSlider({
-  label,
-  value,
-  onChange,
-}: {
-  label: string
-  value: number
-  onChange: (v: number) => void
-}) {
+/** Same range as the original BigSlider (0.2..2), same onWheel-blur guard. */
+function QcSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   return (
-    <label className="big-slider">
-      <span className="slider-head">
-        <span className="slider-label">{label}</span>
-        <span className="slider-value">{value.toFixed(2)}</span>
-      </span>
+    <label className="qc-row">
+      <span className="lbl">{label}</span>
       <input
         type="range"
         min={0.2}
@@ -786,22 +661,197 @@ function BigSlider({
         step={0.01}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        // Blurs rather than doing nothing — see FxSlider's onWheel comment.
         onWheel={(e) => e.currentTarget.blur()}
       />
+      <span className="val">{value.toFixed(2)}</span>
     </label>
+  )
+}
+
+/* ------------------------------------------------------------- performance */
+
+function PerformanceStats({ tele }: { tele: Telemetry | null }) {
+  if (!tele) return <p className="param-note">output down — no performance data</p>
+  const fps = tele.frameMs > 0 ? 1000 / tele.frameMs : 0
+  return (
+    <div className="perf-stats">
+      <div className="perf-stat">
+        <span>FPS</span>
+        <b>{fps > 0 ? fps.toFixed(0) : '--'}</b>
+      </div>
+      <div className="perf-stat">
+        <span>Tier</span>
+        <b>{tele.tier}</b>
+      </div>
+      <div className={`perf-stat ${tele.frameMs > 20 ? 'warn' : ''}`}>
+        <span>Frame time</span>
+        <b>{tele.frameMs > 0 ? `${tele.frameMs.toFixed(1)} ms` : '--'}</b>
+      </div>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------- dj cam --- */
+
+/**
+ * DJ Cam — visual placeholder only.
+ *
+ * The real feature (camera acquisition via getUserMedia, `djCamSource`, the
+ * store fields, `DjCamDirector`'s cutaway) lives on a separate branch that
+ * hasn't been merged into this one. This card matches that feature's eventual
+ * shape (preview, punch button, connect + device row, autofire toggle) so
+ * wiring it in later is a swap into this markup rather than a redesign —
+ * every control here is inert by construction (no onClick, `disabled`),
+ * not by a flag that could be flipped on by accident.
+ */
+function DjCamPlaceholder() {
+  return (
+    <>
+      <h3>DJ Cam</h3>
+      <div className="cam-preview">
+        <span className="cam-empty">not wired in yet</span>
+      </div>
+      <button className="punch-btn" disabled>
+        Cut to DJ Cam
+        <small>no camera connected</small>
+      </button>
+      <div className="setup-row">
+        <span className="btn3">Connect camera</span>
+        <span className="sel3">no device</span>
+      </div>
+      <p className="djcam-note">
+        Placeholder — camera capture and the autofire director aren't wired in on this branch yet.
+      </p>
+    </>
+  )
+}
+
+/* --------------------------------------------------------------- transport */
+
+function Transport({
+  status,
+  error,
+  outputOpen,
+}: {
+  status: string
+  error: string | null
+  outputOpen: boolean
+}) {
+  const sourceType = useStore((s) => s.sourceType)
+  const isRecording = useStore((s) => s.isRecording)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const running = status === 'running'
+
+  /** One gesture opens the output window and acquires the source — see the
+   *  original Transport's own doc: a popup needs a user gesture, and so does
+   *  a capture prompt, so they cannot be separated into two clicks. */
+  const start = useCallback((kind: 'system' | 'mic' | 'file') => {
+    openOutput()
+    if (kind === 'file') fileRef.current?.click()
+    else void useStore.getState().startAudio(kind)
+  }, [])
+
+  return (
+    <div className="transport-bar">
+      {!outputOpen && (
+        <button className="tbtn2 accent" onClick={() => openOutput({ focus: true })}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="13" rx="2" />
+            <path d="M8 21h8M12 17v4" />
+          </svg>
+          Open output window
+        </button>
+      )}
+      {!running ? (
+        <>
+          <button className="tbtn2" onClick={() => start('system')} disabled={status === 'starting'}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 3v12M6 9l6-6 6 6M5 21h14" />
+            </svg>
+            System audio
+          </button>
+          <button className="tbtn2" onClick={() => start('file')} disabled={status === 'starting'}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+              <path d="M14 2v6h6" />
+            </svg>
+            Audio file
+          </button>
+          <button className="tbtn2" onClick={() => start('mic')} disabled={status === 'starting'}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10a7 7 0 0014 0M12 19v3" />
+            </svg>
+            Microphone
+          </button>
+        </>
+      ) : (
+        <>
+          {/* Commands, not local calls — the AudioContext, MediaRecorder and
+              canvas all live in the OUTPUT window; see the original's own doc. */}
+          <button className="tbtn2" onClick={() => sendCommand('stop')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+            Stop
+            <small>{sourceType}</small>
+          </button>
+          <button className={`tbtn2 ${isRecording ? 'recording' : ''}`} onClick={() => sendCommand('toggle-record')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <circle cx="12" cy="12" r="7" />
+            </svg>
+            {isRecording ? 'Stop rec' : 'Record'}
+          </button>
+          <button className="tbtn2" onClick={() => sendCommand('screenshot')}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 7h3l2-3h6l2 3h3v12H4z" />
+              <circle cx="12" cy="13" r="3.5" />
+            </svg>
+            Frame
+            <small>save PNG</small>
+          </button>
+        </>
+      )}
+
+      {status === 'starting' && (
+        <p className="transport-note">
+          Starting…{' '}
+          <button
+            className="link-btn"
+            onClick={() => {
+              // Two resets, not one — see the original Transport's own doc:
+              // `sendCommand` tears down the OUTPUT window's real state, but
+              // this window's own "Starting…" card is driven by its own
+              // `status`, which that command never touches.
+              sendCommand('cancel-start')
+              useStore.getState().cancelStartAudio()
+            }}
+          >
+            cancel
+          </button>
+        </p>
+      )}
+      {error && <p className="transport-error">{error}</p>}
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="audio/*"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) void useStore.getState().startAudioFile(f)
+          e.target.value = ''
+        }}
+      />
+    </div>
   )
 }
 
 /* -------------------------------------------------------------- plumbing */
 
-/**
- * Poll the output window's telemetry.
- *
- * Polled rather than pushed into React state per packet: at 10 Hz a `setState`
- * per message is fine, but the readouts are the only consumer and re-rendering
- * the whole console for a BPM digit is not. One interval, one state write.
- */
+/** Poll the output window's telemetry — see the original's own doc on why
+ *  this is polled rather than pushed into React state per packet. */
 function useTelemetry(): Telemetry | null {
   const [tele, setTele] = useState<Telemetry | null>(null)
   useEffect(() => {
@@ -811,13 +861,7 @@ function useTelemetry(): Telemetry | null {
   return tele
 }
 
-/**
- * Whether the output window is open.
- *
- * There is no event for "the user closed that window", so this is polled. It
- * gates the most important thing on the surface — an operator whose output
- * window has gone needs to know before they wonder why the room went dark.
- */
+/** Whether the output window is open — polled; there is no close event. */
 function useOutputPresence(): boolean {
   const [open, setOpen] = useState(false)
   useEffect(() => {
@@ -830,34 +874,14 @@ function useOutputPresence(): boolean {
 /* ------------------------------------------------------------------ post fx */
 
 /**
- * The post chain, exposed directly.
- *
- * Every value here is normally owned by the directors. Used to sit behind one
- * master switch — `PerformanceStateBridge` copied this whole block over its
- * own output when `enabled` was set, and ignored it entirely otherwise — but
- * that meant dragging ANY one slider froze the other thirteen (nothing else
- * could be half-overridden without first flipping the master on), and a
- * stale `enabled: true` reviving from an older install's `localStorage` (see
- * `debugPostFxOverrides`'s own doc on `AppState`) froze the WHOLE column with
- * no switch anywhere in this UI to notice, let alone flip back off. Now each
- * field checks its OWN override flag, taken the moment its slider/select is
- * touched — see every `setValue` call below — and "Manual post FX (all)" is
- * only the bulk convenience for taking or releasing every field at once.
- *
- * It reaches the output window on the ordinary look wire, because
- * `debugPostFx` is plain store state — `debugPostFxOverrides` is NOT
- * currently mirrored the same way (it is deliberately absent from
- * `outputLink.ts`'s `LOOK_FIELDS`, which this file does not own), so a field
- * overridden from THIS window will not yet reach the output window's copy of
- * `PerformanceStateBridge`. See this session's report for the follow-up.
+ * The post chain, exposed directly. Every field checks its OWN override flag
+ * taken the moment its slider/select is touched — see the original's own doc
+ * on why a single master switch froze the whole column for anyone reviving a
+ * stale `enabled: true` from localStorage.
  */
 function PostFx({ tele }: { tele: Telemetry | null }) {
   const fx = useStore((s) => s.debugPostFx)
   const overrides = useStore((s) => s.debugPostFxOverrides)
-  // Sets the VALUE and takes manual control of that one field in the same
-  // gesture — touching a control IS the act of overriding it, no master
-  // switch to flip first. See `DebugPostFx`'s own doc for why those are two
-  // separate store calls rather than one.
   const setValue = <K extends DebugPostFxKey>(key: K, value: DebugPostFx[K]) => {
     useStore.getState().setDebugPostFx({ [key]: value } as Partial<DebugPostFx>)
     useStore.getState().setDebugPostFxOverride(key, true)
@@ -867,32 +891,13 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
 
   return (
     <>
-      {/* Filters lead this column, ahead of the override toggle and its
-          sliders, because they are the one control here used DURING a show:
-          everything below is a manual override you set up and then leave
-          alone, while a filter is fired on a moment. Putting them after
-          fourteen sliders in a scrolling column would bury the live control
-          under the static one. They also sit OUTSIDE the `fx-block` below,
-          because a filter fire is not a Post FX override at all — the
-          director fires these whether or not anyone is driving the chain by
-          hand, and a hand fire is one more flourish through the same queue.
-
-          ISF filters are scoped to Limitless (`FilterDirector.tsx`'s own
-          gate) — same reasoning `PhotoDrop`'s gate a few lines up already
-          gives for the same `tele?.scene` check: a control with nowhere to
-          land reads as broken rather than merely irrelevant, and here it
-          would be worse than inert — a click while the gate refuses it
-          silently does nothing, no different from a dead button. */}
+      {/* ISF filters scoped to Limitless (FilterDirector.tsx's own gate) —
+          same reasoning PhotoDrop's gate above gives. */}
       {tele?.scene === 'limitless' && <IsfFilters tele={tele} />}
-      {/* Live readout of everything below, reported rather than computed for
-          the same reason `IsfFilters` above is: this window cannot see
-          `performanceState` (it runs in a separate window with no engine at
-          all — see outputLink.ts's own header), so a value it did not just
-          set by hand can only ever be a fact the output window tells it. */}
       <PostFxLive tele={tele} />
 
       <button
-        className={`toggle-wide ${allOverridden ? 'on' : ''}`}
+        className={`wide-toggle ${allOverridden ? 'on' : ''}`}
         onClick={() => useStore.getState().setAllDebugPostFxOverrides(!allOverridden)}
       >
         Manual post FX (all)
@@ -900,115 +905,21 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
       </button>
 
       <div className="fx-block">
-        <FxSlider
-          label="bloom"
-          value={fx.bloom}
-          min={0}
-          max={2}
-          overridden={!!overrides.bloom}
-          onChange={(v) => setValue('bloom', v)}
-          onReset={() => resetField('bloom')}
-        />
-        <FxSlider
-          label="threshold"
-          value={fx.bloomThreshold}
-          min={0}
-          max={1}
-          overridden={!!overrides.bloomThreshold}
-          onChange={(v) => setValue('bloomThreshold', v)}
-          onReset={() => resetField('bloomThreshold')}
-        />
-        <FxSlider
-          label="glitch"
-          value={fx.glitch}
-          min={0}
-          max={1}
-          overridden={!!overrides.glitch}
-          onChange={(v) => setValue('glitch', v)}
-          onReset={() => resetField('glitch')}
-        />
-        <FxSlider
-          label="vignette"
-          value={fx.vignette}
-          min={0}
-          max={1}
-          overridden={!!overrides.vignette}
-          onChange={(v) => setValue('vignette', v)}
-          onReset={() => resetField('vignette')}
-        />
-        <FxSlider
-          label="fog"
-          value={fx.fog}
-          min={0}
-          max={1}
-          overridden={!!overrides.fog}
-          onChange={(v) => setValue('fog', v)}
-          onReset={() => resetField('fog')}
-        />
-        <FxSlider
-          label="trails"
-          value={fx.trails}
-          min={0}
-          max={1}
-          overridden={!!overrides.trails}
-          onChange={(v) => setValue('trails', v)}
-          onReset={() => resetField('trails')}
-        />
+        <FxSlider label="bloom" value={fx.bloom} min={0} max={2} overridden={!!overrides.bloom} onChange={(v) => setValue('bloom', v)} onReset={() => resetField('bloom')} />
+        <FxSlider label="threshold" value={fx.bloomThreshold} min={0} max={1} overridden={!!overrides.bloomThreshold} onChange={(v) => setValue('bloomThreshold', v)} onReset={() => resetField('bloomThreshold')} />
+        <FxSlider label="glitch" value={fx.glitch} min={0} max={1} overridden={!!overrides.glitch} onChange={(v) => setValue('glitch', v)} onReset={() => resetField('glitch')} />
+        <FxSlider label="vignette" value={fx.vignette} min={0} max={1} overridden={!!overrides.vignette} onChange={(v) => setValue('vignette', v)} onReset={() => resetField('vignette')} />
+        <FxSlider label="fog" value={fx.fog} min={0} max={1} overridden={!!overrides.fog} onChange={(v) => setValue('fog', v)} onReset={() => resetField('fog')} />
+        <FxSlider label="trails" value={fx.trails} min={0} max={1} overridden={!!overrides.trails} onChange={(v) => setValue('trails', v)} onReset={() => resetField('trails')} />
 
-        <h3 className="fx-head">mirror</h3>
-        {/* `segments` is an integer: 0 off / 1 mirror-x / 2 quad / >=3 n-fold.
-            A fractional value between two of those is not a half-way look, it
-            is the wrong one.
+        <h4 className="fx-head">mirror</h4>
+        <FxSlider label="segments" value={fx.mirrorSegments} min={0} max={12} step={1} overridden={!!overrides.mirrorSegments} onChange={(v) => setValue('mirrorSegments', v)} onReset={() => resetField('mirrorSegments')} />
+        <FxSlider label="twist" value={fx.mirrorTwist} min={-3.14} max={3.14} overridden={!!overrides.mirrorTwist} onChange={(v) => setValue('mirrorTwist', v)} onReset={() => resetField('mirrorTwist')} />
+        <FxSlider label="spin" value={fx.mirrorSpin} min={-2} max={2} overridden={!!overrides.mirrorSpin} onChange={(v) => setValue('mirrorSpin', v)} onReset={() => resetField('mirrorSpin')} />
 
-            No `tiles` or `slice` here — both retired (F108). The engine gates
-            them to zero in PerformanceStateBridge regardless of override, so
-            leaving the sliders would leave two controls that move and do
-            nothing, which is worse than a missing control: it reads as a
-            broken renderer rather than as a deliberate absence. */}
-        <FxSlider
-          label="segments"
-          value={fx.mirrorSegments}
-          min={0}
-          max={12}
-          step={1}
-          overridden={!!overrides.mirrorSegments}
-          onChange={(v) => setValue('mirrorSegments', v)}
-          onReset={() => resetField('mirrorSegments')}
-        />
-        <FxSlider
-          label="twist"
-          value={fx.mirrorTwist}
-          min={-3.14}
-          max={3.14}
-          overridden={!!overrides.mirrorTwist}
-          onChange={(v) => setValue('mirrorTwist', v)}
-          onReset={() => resetField('mirrorTwist')}
-        />
-        <FxSlider
-          label="spin"
-          value={fx.mirrorSpin}
-          min={-2}
-          max={2}
-          overridden={!!overrides.mirrorSpin}
-          onChange={(v) => setValue('mirrorSpin', v)}
-          onReset={() => resetField('mirrorSpin')}
-        />
-
-        <h3 className="fx-head">lens</h3>
-        <FxSlider
-          label="amount"
-          value={fx.lensAmount}
-          min={0}
-          max={1}
-          overridden={!!overrides.lensAmount}
-          onChange={(v) => setValue('lensAmount', v)}
-          onReset={() => resetField('lensAmount')}
-        />
-        <FxSelect
-          label="material"
-          overridden={!!overrides.lensStyle}
-          onReset={() => resetField('lensStyle')}
-        >
+        <h4 className="fx-head">lens</h4>
+        <FxSlider label="amount" value={fx.lensAmount} min={0} max={1} overridden={!!overrides.lensAmount} onChange={(v) => setValue('lensAmount', v)} onReset={() => resetField('lensAmount')} />
+        <FxSelect label="material" overridden={!!overrides.lensStyle} onReset={() => resetField('lensStyle')}>
           <select value={fx.lensStyle} onChange={(e) => setValue('lensStyle', Number(e.target.value))}>
             {LENS_STYLES.map((name, i) => (
               <option key={name} value={i}>
@@ -1018,15 +929,8 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
           </select>
         </FxSelect>
 
-        <h3 className="fx-head">transition</h3>
-        <FxSelect
-          label="next change"
-          overridden={!!overrides.transitionStyle}
-          onReset={() => resetField('transitionStyle')}
-        >
-          {/* `selectableStyles()` and not the whole list: `cut` is disabled, and
-              offering a style the engine will refuse is worse than not
-              offering it. */}
+        <h4 className="fx-head">transition</h4>
+        <FxSelect label="next change" overridden={!!overrides.transitionStyle} onReset={() => resetField('transitionStyle')}>
           <select
             value={fx.transitionStyle}
             onChange={(e) => setValue('transitionStyle', e.target.value as DebugPostFx['transitionStyle'])}
@@ -1043,47 +947,20 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
   )
 }
 
-/**
- * The ISF post-processing filters: fire one by hand, and see which one is
- * firing.
- *
- * Lives at the top of the Post FX column rather than in a column of its own.
- * A fifth `Section` looked like the obvious home, but `.console-body` is a
- * deliberately FOUR-column grid on widescreen ("Four columns is the widescreen
- * case", console.css) — a fifth wrapped onto a second row and left three
- * quarters of it empty. Same family of control, so it belongs in this column
- * anyway.
- *
- * ## Why the readout comes off telemetry
- *
- * This window renders none of the show and runs no `FilterDirector`, so its
- * `performanceState` is an idle copy that never fires anything (see the note
- * on the mirrored singletons below). What is on screen is a fact only the
- * output window has, so it reports it — the same reasoning `Telemetry.status`
- * already carries. At `TELEMETRY_INTERVAL_MS` (100 ms) a ~3.5 s flourish gets
- * ~35 updates, which is enough for the bar to read as moving rather than
- * stepping.
- */
+/** ISF post-processing filters: fire one by hand, and see which one is firing. */
 function IsfFilters({ tele }: { tele: Telemetry | null }) {
   const firing = tele?.filterId ?? null
   const mix = tele?.filterMix ?? 0
   return (
     <>
-      <h3 className="fx-head fx-head-first">
-        filters{ISF_AUTOFIRE_ENABLED ? '' : ' · autofire off'}
-      </h3>
-      <div className="tile-grid tile-grid-filters">
+      <h4 className="fx-head fx-head-first">filters{ISF_AUTOFIRE_ENABLED ? '' : ' · autofire off'}</h4>
+      <div className="pad-grid2">
         {ISF_FILTERS.map((f) => {
-          // Three states, not two, and the difference is the whole point:
-          // off-roster is a taste call a person may override by hand, so those
-          // stay clickable; unusable is broken on this platform, so those do
-          // not, and the title says which it is rather than leaving a dead
-          // control to be discovered by clicking it.
           const broken = filterUnusableReason(f.id)
           return (
             <button
               key={f.id}
-              className={`tile ${firing === f.id ? 'on' : ''} ${
+              className={`pad2 ${firing === f.id ? 'on' : ''} ${
                 broken ? 'tile-broken' : isFilterSelectable(f.id) ? '' : 'tile-off-roster'
               }`}
               disabled={broken !== undefined}
@@ -1103,39 +980,20 @@ function IsfFilters({ tele }: { tele: Telemetry | null }) {
           )
         })}
       </div>
-      <div className="filter-now">
-        <span className="filter-now-label">firing</span>
-        <span className={`filter-now-name ${firing ? '' : 'dim'}`}>{firing ?? 'nothing'}</span>
-        <span className="filter-now-bar">
-          <span
-            className="filter-now-fill"
-            style={{ transform: `scaleX(${Math.max(0, Math.min(1, mix))})` }}
-          />
+      <div className="firing-row">
+        <span className="firing-label">firing</span>
+        <span className={`fname ${firing ? '' : 'dim'}`}>{firing ?? 'nothing'}</span>
+        <span className="fbar">
+          <span className="ffill" style={{ transform: `scaleX(${Math.max(0, Math.min(1, mix))})` }} />
         </span>
-        <span className="filter-now-mix">{Math.round(Math.max(0, Math.min(1, mix)) * 100)}%</span>
+        <span className="fpct">{Math.round(Math.max(0, Math.min(1, mix)) * 100)}%</span>
       </div>
     </>
   )
 }
 
-/**
- * Live readout of the rest of the post-fx chain — bloom, chromatic
- * aberration, vignette, fog, feedback trails, the mirror/lens optical racks,
- * and which effect-scene flourish is currently firing.
- *
- * Sibling to `IsfFilters` above and built the same way (an ordinary function
- * component re-rendering on the 10Hz-ish `tele` poll `useTelemetry` already
- * drives — NOT the imperative `requestAnimationFrame`-plus-ref-diffing
- * pattern `FilterIndicator`/`FpsMeter` use in the OUTPUT window's own 60fps
- * render loop; that discipline exists to protect a hot path this component
- * is nowhere near). `isMirrorActive`/`isLensActive` (`engine/opticalRack.ts`)
- * are reused rather than re-derived, so "is it active" can never drift from
- * what the engine itself considers active.
- *
- * Returns `null` before the first telemetry packet arrives, same as
- * `IsfFilters`'s own `tele?.` optional-chaining does implicitly — there is
- * nothing honest to show about a chain this window has not yet heard from.
- */
+/** Live readout of the rest of the post-fx chain, reported off telemetry —
+ *  this window runs no FilterDirector/PerformanceStateBridge of its own. */
 function PostFxLive({ tele }: { tele: Telemetry | null }) {
   if (!tele) return null
 
@@ -1180,9 +1038,6 @@ function PostFxLive({ tele }: { tele: Telemetry | null }) {
   )
 }
 
-/** One bar row of {@link PostFxLive} — same `.fx-slider` grid columns (see
- *  console.css) so the live readout lines up with the override sliders right
- *  below it, just with a bar/percent in place of a draggable input. */
 function FxLiveBar({ label, value, max }: { label: string; value: number; max: number }) {
   const pct = Math.max(0, Math.min(1, value / max))
   return (
@@ -1197,23 +1052,10 @@ function FxLiveBar({ label, value, max }: { label: string; value: number; max: n
 }
 
 /**
- * A compact slider. Same idea as {@link BigSlider} — the number is always
- * visible — at a density that fits fourteen of them in a column.
- *
- * `onWheel` blurs rather than doing nothing: Safari changes a FOCUSED range
- * input's value on mouse-wheel/trackpad scroll instead of letting the scroll
- * reach the section underneath, and the console's densest columns (Colour,
- * Post FX) are exactly where a slider sits under the cursor while scrolling
- * that column. Blurring on the first wheel tick over it hands that and every
- * later tick back to the scrollable section.
- *
- * `overridden`/`onReset` fold the auto/manual indicator into the label
- * itself, rather than adding a fourth element: `.fx-slider` is a fixed
- * three-column grid (label / input / value, see console.css), so a new grid
- * item would either overflow the 42px value column or fall into a stray
- * implicit row. The label already IS the one column with room to spare, and
- * "click the label to let go of what you just took hold of" mirrors the
- * slider gesture that took hold of it in the first place.
+ * A compact override slider. `onWheel` blurs rather than doing nothing — see
+ * the original's own doc on Safari changing a focused range input's value on
+ * wheel/trackpad scroll. Clicking the label takes/releases manual control —
+ * unchanged interaction from the original FxSlider.
  */
 function FxSlider({
   label,
@@ -1249,7 +1091,9 @@ function FxSlider({
           font: 'inherit',
           textAlign: 'left',
           cursor: overridden ? 'pointer' : 'default',
-          color: overridden ? 'rgba(130, 205, 255, 0.9)' : undefined,
+          // Colour comes from `.fx-slider .fx-label:not(:disabled)` in
+          // console.css (crimson) — not set here, so it can't drift out of
+          // sync with the rest of the "on/manual" palette.
         }}
       >
         {label}
@@ -1268,17 +1112,7 @@ function FxSlider({
   )
 }
 
-/**
- * The `<select>` equivalent of {@link FxSlider}'s auto/manual label.
- *
- * `.fx-select` is a fixed TWO-column grid (label / control, see console.css,
- * and note `.fx-select > span` is a child-combinator rule scoped to a literal
- * `<span>` — turning the label itself into a button here would silently drop
- * that styling). So instead of touching the label, the control column wraps
- * the real `<select>` (passed as `children`, unmodified) together with a
- * small reset chip in a plain flex `<div>` — still exactly one grid item,
- * exactly like the bare `<select>` it replaces.
- */
+/** The `<select>` equivalent of {@link FxSlider}'s auto/manual label. */
 function FxSelect({
   label,
   overridden,
@@ -1311,14 +1145,7 @@ function FxSelect({
 
 /* -------------------------------------------------------------- arbitration */
 
-/**
- * Say so when this console is not the one driving.
- *
- * Two control windows both publishing means the output takes whichever message
- * landed last, and the show flickers between two people's idea of it. The
- * election is silent and automatic (lowest id wins), so the only thing left to
- * do is tell the person whose controls have quietly stopped mattering.
- */
+/** Say so when this console is not the one driving the output. */
 function PassiveBanner() {
   const [state, setState] = useState({ active: true, peers: 0 })
   useEffect(() => {
@@ -1339,26 +1166,18 @@ function PassiveBanner() {
 
 /* ------------------------------------------------------------- diagnostics */
 
-/**
- * The three operator tools, and the switch that pays for them.
- *
- * They belong on the console rather than the output window for the obvious
- * reason — the output window is what an audience is looking at — but every
- * singleton they read lives over there. So the output window ships those
- * singletons and this window mirrors them into its own idle copies, which is
- * why the panels below are the original components, unmodified.
- *
- * `requestDetail` is what makes that affordable. The packet carries a 512-bin
- * spectrum and two 1024-sample waveforms; for most of a set nobody is looking
- * at any of it, so the output window sends nothing until asked and stops again
- * the moment the last panel closes.
- */
 /** Seconds as m:ss, so a running recorder reads as a stopwatch. */
 function mmss(sec: number): string {
   const s = Math.max(0, Math.floor(sec))
   return `${(s / 60) | 0}:${String(s % 60).padStart(2, '0')}`
 }
 
+/**
+ * The three operator tools plus the session log, as an icon row. Docked
+ * panels drop from the row rather than floating over the console. See the
+ * original's own doc on `requestDetail` — the output window sends spectrum/
+ * waveform detail only while a panel here actually wants it.
+ */
 function Diagnostics() {
   const tele = useTelemetry()
   const logging = tele?.logging ?? false
@@ -1370,48 +1189,52 @@ function Diagnostics() {
 
   useEffect(() => {
     requestDetail(wanted)
-    // Asked for again on unmount as `false`: a console that closes without
-    // saying so would leave the output window publishing detail to nobody.
     return () => requestDetail(false)
   }, [wanted])
 
   return (
-    <div className="diag-dock">
-      <div className="tool-col">
-        <button
-          className={`tool-btn ${debugOpen ? 'on' : ''}`}
-          onClick={() => useStore.getState().toggleDebug()}
-        >
-          Debug
-          <small>spectrum · bands · beat grid</small>
-        </button>
-        <button
-          className={`tool-btn ${fpsMeter ? 'on' : ''}`}
-          onClick={() => useStore.getState().toggleFpsMeter()}
-        >
-          FPS
-          <small>frame time · tier · budget</small>
-        </button>
-        <button
-          className={`tool-btn ${analyticsOpen ? 'on' : ''}`}
-          onClick={() => useStore.getState().toggleAnalytics()}
-        >
-          Analytics
-          <small>transitions · accuracy</small>
-        </button>
-        {/* The flight recorder. Unlike the three above it changes nothing about
-            what is on screen — it writes down what happened so a diagnosis does
-            not depend on a person reading numbers off a panel mid-set. State
-            and elapsed time come off telemetry, from the window actually doing
-            the recording. */}
-        <button
-          className={`tool-btn ${logging ? 'on recording' : ''}`}
-          onClick={() => sendCommand('toggle-session-log')}
-        >
-          {logging ? `Recording ${mmss(logSec)}` : 'Session log'}
-          <small>{logging ? 'press to stop and save' : 'capture everything'}</small>
-        </button>
-      </div>
+    <div className="icon-row">
+      <button
+        className={`icon-btn ${debugOpen ? 'on' : ''}`}
+        title="Debug — spectrum · bands · beat grid"
+        onClick={() => useStore.getState().toggleDebug()}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+          <line x1="4" y1="18" x2="4" y2="10" />
+          <line x1="9" y1="18" x2="9" y2="6" />
+          <line x1="14" y1="18" x2="14" y2="12" />
+          <line x1="19" y1="18" x2="19" y2="8" />
+        </svg>
+      </button>
+      <button
+        className={`icon-btn ${fpsMeter ? 'on' : ''}`}
+        title="FPS — frame time · tier · budget"
+        onClick={() => useStore.getState().toggleFpsMeter()}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 16a8 8 0 1116 0" />
+          <line x1="12" y1="16" x2="15" y2="11" />
+        </svg>
+      </button>
+      <button
+        className={`icon-btn ${analyticsOpen ? 'on' : ''}`}
+        title="Analytics — transitions · accuracy"
+        onClick={() => useStore.getState().toggleAnalytics()}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="4,15 9,9 13,12 20,5" />
+        </svg>
+      </button>
+      <button
+        className={`icon-btn ${logging ? 'on recording' : ''}`}
+        title={logging ? `Recording ${mmss(logSec)} — press to stop and save` : 'Session log — capture everything'}
+        onClick={() => sendCommand('toggle-session-log')}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <circle cx="12" cy="12" r="7" />
+          <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
 
       {wanted && (
         <div className="diag-panels">
@@ -1427,28 +1250,43 @@ function Diagnostics() {
 /* ------------------------------------------------------------ audio health */
 
 /**
- * Why the output window is silent, when it is.
- *
- * There are two very different silences and they used to look identical from
- * here. **No graph** means the source never arrived — the hand-off failed, or
- * nothing was ever started. **A suspended context** means the source arrived
- * and the browser has not let it start: the output window is opened
- * programmatically, so it can easily have never received a user gesture, and a
- * suspended AudioContext reads as perfect silence with no error anywhere.
- *
- * They need different things from the operator (start a source vs. click the
- * output window once), so the console has to distinguish them rather than
- * showing a flat BPM of 120 and leaving them to guess.
+ * Why the output window is silent, when it is — a suspended AudioContext and
+ * "no source ever arrived" need different things from the operator, so this
+ * distinguishes them rather than leaving a flat BPM of 0 to interpret.
  */
 function AudioHealth({ tele }: { tele: Telemetry | null }) {
   if (!tele) return null
   if (tele.audioState === 'suspended') {
-    return <span className="pill bad">click the output window to start audio</span>
+    return (
+      <span className="pill2 bad">
+        <span className="dot" />
+        click the output window to start audio
+      </span>
+    )
   }
   if (!tele.hasSource && tele.status === 'running') {
-    return <span className="pill warn">output has no audio source</span>
+    return (
+      <span className="pill2 warn">
+        <span className="dot" />
+        output has no audio source
+      </span>
+    )
   }
-  if (tele.status === 'starting') return <span className="pill warn">output starting…</span>
-  if (tele.status === 'error') return <span className="pill bad">output error</span>
+  if (tele.status === 'starting') {
+    return (
+      <span className="pill2 warn">
+        <span className="dot" />
+        output starting…
+      </span>
+    )
+  }
+  if (tele.status === 'error') {
+    return (
+      <span className="pill2 bad">
+        <span className="dot" />
+        output error
+      </span>
+    )
+  }
   return null
 }
