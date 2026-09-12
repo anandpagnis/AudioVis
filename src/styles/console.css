@@ -3,16 +3,33 @@
 
    This window renders no show (see engine/outputLink.ts); it is a control
    surface plus a mirror of the output window's canvas. Everything here is
-   sized for a screen that gets glanced at rather than read: nothing scrolls at
-   the top level, nothing hides behind a disclosure, and every hit target
-   clears 44px so it can be found without aiming.
+   sized for a screen that gets glanced at rather than read: every hit target
+   clears 44px so it can be found without aiming, and the two columns
+   (preview+browser, tabbed rail) split what used to be one flat stack of
+   sections into "pick/see what's on" vs "tune what's selected".
+
+   ---------------------------------------------------------------------------
+   Colour system — five colours, nothing else.
+
+     #000000  black    the only background
+     #FDF0D5  cream     the only text/foreground colour (borders and dim
+                        text are cream at low alpha — never a bare gray)
+     #C1121F  crimson   "this is on / selected / live / good" — the one
+                        colour bright enough to read as text on black
+     #780000  maroon    "this is wrong / an error" — background fills only;
+                        at black-level luminance it cannot carry text itself
+     #510049  plum      the second half of the brand gradient and a cool,
+                        calm accent (ambient/mellow moods) — also fill-only
+
+   Every tint below is one of these four non-black hexes at an alpha, via
+   the *-rgb custom properties — never a new hue, never a literal gray.
    ========================================================================== */
 
 .app-control {
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background: #07090c;
+  background: #000;
 }
 
 .app-output {
@@ -22,1174 +39,295 @@
 }
 
 .console {
-  display: grid;
-  grid-template-rows: auto 1fr;
-  height: 100vh;
-  /* Never the scroll surface itself — see the file header. `.console-body`'s
-     `min-height: 0` (and each `.console-section`'s own) is what lets the `1fr`
-     row actually clip to the remaining viewport height instead of growing to
-     fit content; this `hidden` is the belt that keeps that clip real rather
-     than relying on nobody ever removing that `min-height: 0` somewhere down
-     the chain. Each section scrolls itself — see `.console-section`. */
-  overflow: hidden;
-  gap: 14px;
-  padding: 14px;
-  color: #e2e7ee;
-  font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-}
+  --black: #000000;
+  --cream: #fdf0d5;
+  --cream-rgb: 253, 240, 213;
+  --crimson: #c1121f;
+  --crimson-rgb: 193, 18, 31;
+  --maroon: #780000;
+  --maroon-rgb: 120, 0, 0;
+  --plum: #510049;
+  --plum-rgb: 81, 0, 73;
 
-.console-top {
-  display: grid;
-  grid-template-columns: minmax(240px, 22vw) minmax(0, 1fr) minmax(260px, 24vw);
-  gap: 14px;
-  /* `start`, not `stretch`. Opening a diagnostic panel makes this row 370px
-     tall, and a stretched mirror grew with it until it filled half the screen.
-     Each cell should be its own natural height. */
-  align-items: start;
-}
+  --bg: var(--black);
+  --card: rgba(var(--cream-rgb), 0.045);
+  --card-border: rgba(var(--cream-rgb), 0.12);
+  --text: var(--cream);
+  --text-dim: rgba(var(--cream-rgb), 0.58);
+  --text-dimmer: rgba(var(--cream-rgb), 0.36);
 
-/* `minmax(0, 1fr)` above plus this: a grid item defaults to `min-width: auto`,
-   which refuses to shrink below its content, so a wide dock pushed the whole
-   console past the right edge of the window and cut off the Post FX column. */
-.readouts {
-  min-width: 0;
-}
+  /* Brand gradient — crimson to plum, cream text on top of it only. */
+  --a1: var(--crimson);
+  --a2: var(--plum);
 
-/* ---------- mirror ---------- */
+  --mono: ui-monospace, 'Cascadia Mono', Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', ui-sans-serif, sans-serif;
+  --radius: 16px;
 
-.mirror {
-  position: relative;
-  aspect-ratio: 16 / 9;
-  width: 100%;
-  border-radius: 10px;
-  overflow: hidden;
-  background: #000;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  display: grid;
-  place-items: center;
-}
-
-.mirror.live {
-  border-color: rgba(120, 220, 255, 0.35);
-  box-shadow:
-    0 0 0 1px rgba(120, 220, 255, 0.12),
-    0 8px 30px rgba(0, 0, 0, 0.5);
-}
-
-.mirror video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.mirror-empty {
-  position: absolute;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.28);
-}
-
-/* ---------- readouts ---------- */
-
-.readouts {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-  padding: 0 6px;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 var(--sans);
 }
 
-.readout-main {
+/* ---------- top bar ---------- */
+
+.topbar {
+  height: 68px;
+  flex-shrink: 0;
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  gap: 14px;
+  padding: 0 22px;
+  border-bottom: 1px solid rgba(var(--cream-rgb), 0.1);
+}
+
+.word {
+  font: 700 15px/1 var(--sans);
+  letter-spacing: 0.01em;
+  color: var(--cream);
+  flex-shrink: 0;
+}
+
+.signal-chip {
+  display: flex;
+  align-items: center;
   gap: 10px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
   min-width: 0;
 }
 
-/* The dock is a tall block inside a baseline-aligned row, so it opts out —
-   baseline-aligning a 352px panel against a 64px numeral pushes the numeral
-   to the bottom of the header. */
-.readout-main > .diag-dock {
-  align-self: flex-start;
+.signal-chip .label {
+  font: 500 12.5px var(--sans);
+  color: var(--cream);
+  white-space: nowrap;
 }
 
-.big-number {
-  font: 600 clamp(38px, 5vw, 64px) / 0.9 ui-monospace, "Cascadia Mono", Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  color: #fff;
+.signal-chip .sub {
+  font: 400 11px var(--sans);
+  color: var(--text-dimmer);
+  white-space: nowrap;
 }
 
-.readout-main .unit {
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  color: rgba(255, 255, 255, 0.4);
+.topbar-spacer {
+  flex: 1;
+  min-width: 8px;
 }
 
-.mood {
-  margin-left: auto;
-  padding: 5px 12px;
+.pill2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
   border-radius: 999px;
-  font-size: 13px;
+  font: 500 12px var(--sans);
+  background: rgba(var(--cream-rgb), 0.07);
+  color: rgba(var(--cream-rgb), 0.68);
+  white-space: nowrap;
+}
+.pill2 .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(var(--cream-rgb), 0.35);
+  flex-shrink: 0;
+}
+/* "Good/live" — crimson, the one bright colour. */
+.pill2.good {
+  color: var(--cream);
+  background: rgba(var(--crimson-rgb), 0.22);
+}
+.pill2.good .dot {
+  background: var(--crimson);
+  box-shadow: 0 0 6px rgba(var(--crimson-rgb), 0.8);
+}
+/* "Bad/error" — maroon fill, cream text (maroon itself is too dark to read
+   as text at any alpha — see the colour-system note above). */
+.pill2.bad {
+  color: var(--cream);
+  background: rgba(var(--maroon-rgb), 0.4);
+}
+.pill2.bad .dot {
+  background: var(--maroon);
+}
+/* "Warn/pending" — plum fill, cream text, same reasoning as maroon above. */
+.pill2.warn {
+  color: var(--cream);
+  background: rgba(var(--plum-rgb), 0.4);
+}
+.pill2.warn .dot {
+  background: var(--plum);
+}
+
+.mood-pill {
+  padding: 6px 13px;
+  border-radius: 999px;
+  font: 700 11px var(--sans);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--cream-rgb), 0.08);
+  color: rgba(var(--cream-rgb), 0.48);
+  white-space: nowrap;
+}
+/* One intensity ramp, cool to hot, across the whole mood vocabulary — plum
+   for the calm end, crimson brightening through the energetic end. Four
+   moods, two hues: distinguished by strength, not by a new colour each. */
+.mood-pill.mood-mellow,
+.mood-pill.mood-ambient {
+  background: rgba(var(--plum-rgb), 0.4);
+  color: var(--cream);
+}
+.mood-pill.mood-groove {
+  background: rgba(var(--crimson-rgb), 0.22);
+  color: var(--cream);
+}
+.mood-pill.mood-building {
+  background: rgba(var(--crimson-rgb), 0.34);
+  color: var(--cream);
+}
+.mood-pill.mood-peak,
+.mood-pill.mood-aggressive {
+  background: rgba(var(--crimson-rgb), 0.5);
+  color: var(--cream);
 }
 
-.mood-peak,
-.mood-aggressive {
-  background: rgba(255, 90, 120, 0.22);
-  color: #ffb9c6;
-}
-.mood-building {
-  background: rgba(255, 190, 90, 0.2);
-  color: #ffdca8;
-}
-.mood-groove {
-  background: rgba(130, 255, 190, 0.18);
-  color: #a8ffd6;
-}
-.mood-mellow,
-.mood-ambient {
-  background: rgba(130, 190, 255, 0.18);
-  color: #bcd9ff;
-}
-
-.beat-dots {
+.bpm-chip {
   display: flex;
-  gap: 8px;
+  align-items: baseline;
+  gap: 5px;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.bpm-chip b {
+  font: 700 20px var(--mono);
+  color: var(--cream);
+  font-variant-numeric: tabular-nums;
+}
+.bpm-chip span {
+  font: 500 10.5px var(--sans);
+  color: var(--text-dimmer);
+  letter-spacing: 0.04em;
 }
 
-.beat-dots .dot {
+.beat-row2 {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.beat-row2 i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(var(--cream-rgb), 0.16);
+  display: block;
+  transition: background 60ms linear;
+}
+.beat-row2 i.on {
+  background: var(--crimson);
+  box-shadow: 0 0 6px rgba(var(--crimson-rgb), 0.8);
+}
+.beat-row2 i.down.on {
+  background: var(--cream);
+  box-shadow: 0 0 8px rgba(var(--cream-rgb), 0.8);
+}
+
+.icon-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: rgba(var(--cream-rgb), 0.62);
+  flex-shrink: 0;
+  cursor: pointer;
+  gap: 1px;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.icon-btn svg {
   width: 16px;
   height: 16px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  transition:
-    background 60ms linear,
-    transform 60ms linear;
 }
-
-.beat-dots .dot.on {
-  background: #7ce0ff;
-  transform: scale(1.25);
-}
-.beat-dots .dot.downbeat.on {
-  background: #fff;
-}
-
-.meter {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.meter-label {
-  width: 58px;
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.42);
-}
-
-.meter-track {
-  flex: 1;
-  height: 8px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.07);
-  overflow: hidden;
-}
-
-.meter-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #4ba8ff, #7ce0ff);
-  transition: width 90ms linear;
-}
-
-.readout-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.pill {
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  background: rgba(255, 255, 255, 0.07);
-  color: rgba(255, 255, 255, 0.72);
-}
-
-.pill.good {
-  background: rgba(60, 220, 150, 0.18);
-  color: #8ff0c4;
-}
-.pill.bad {
-  background: rgba(255, 80, 100, 0.2);
-  color: #ffb3bd;
-}
-.pill.warn {
-  background: rgba(255, 190, 90, 0.2);
-  color: #ffdca8;
-}
-.pill.dim {
-  color: rgba(255, 255, 255, 0.42);
-}
-
-/* ---------- transport ---------- */
-
-.transport {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  justify-content: center;
-}
-
-.source-buttons {
-  display: grid;
-  grid-auto-flow: column;
-  gap: 8px;
-}
-
-.btn-huge {
-  min-height: 62px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.05);
-  color: #eef2f7;
-  font: 600 15px/1.2 inherit;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  transition:
-    background 120ms ease,
-    border-color 120ms ease,
-    transform 60ms ease;
-}
-
-.btn-huge small {
-  font-weight: 400;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.45);
-}
-
-.btn-huge:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-}
-.btn-huge:active:not(:disabled) {
-  transform: translateY(1px);
-}
-.btn-huge:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.btn-huge.accent {
-  background: rgba(80, 170, 255, 0.2);
-  border-color: rgba(120, 200, 255, 0.5);
-}
-.btn-huge.recording {
-  background: rgba(255, 70, 90, 0.24);
-  border-color: rgba(255, 120, 140, 0.6);
-}
-
-.transport-note {
-  margin: 0;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
-}
-.transport-error {
-  margin: 0;
-  font-size: 12px;
-  color: #ffb3bd;
-}
-
-/* ---------- sections ---------- */
-
-.console-body {
-  display: grid;
-  grid-template-columns: 1.05fr 1.3fr 0.95fr 1.05fr;
-  gap: 14px;
-  min-height: 0;
-}
-
-/* Post FX is always the last section, and the grid above is a fixed 4
-   columns — with `Params` now unconditionally mounted alongside the
-   already-conditional `Photo` panel, the section count varies between 5
-   (no Photo) and 6 (Limitless + Photo), and either way overflows one row.
-   Left at its default single column, the wrapped section landed alone with
-   up to 3 empty column-widths of dead space beside it — worse the more the
-   grid happened to under-fill.
-   Spanning 3 columns instead of fighting that: at 5 sections it still wraps
-   alone but the gap shrinks to one column; at 6, it lands beside `Look` in
-   the auto-placement cursor's next free 3-column run and the row fills
-   exactly, no gap at all. `Post FX` benefits from the width regardless —
-   it is the single densest column (bloom/glitch/vignette/fog/trails, then
-   the mirror and lens racks), so the extra room reads as this section
-   finally getting room to breathe, not as a filler trick.
-
-   Desktop-only: authored against this 4-column grid specifically, so both
-   narrower breakpoints below reset it to `span 1` — demanding 3 columns from
-   a grid that only HAS 1 or 2 forces the browser to synthesize a phantom
-   implicit column just to satisfy the span, which is what was quietly
-   skewing the whole row's widths there (a 2-column `1fr 1fr` grid rendering
-   as three unequal tracks). */
-.console-section:last-of-type {
-  grid-column: span 3;
-}
-
-.console-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-  padding: 14px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.028);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  overflow: auto;
-}
-
-.console-section h2 {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.38);
-}
-
-.tile-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 8px;
-}
-
-.tile {
-  min-height: 52px;
-  padding: 8px;
-  border-radius: 9px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.045);
-  color: #dfe6ef;
-  font: 500 12px/1.25 inherit;
-  cursor: pointer;
-  transition:
-    background 120ms ease,
-    border-color 120ms ease;
-}
-
-.tile:hover {
-  background: rgba(255, 255, 255, 0.09);
-}
-.tile.on {
-  background: rgba(80, 170, 255, 0.24);
-  border-color: rgba(130, 205, 255, 0.65);
-  color: #fff;
-}
-
-/* Queued, not live. A scene press waits for the incoming scene to warm and for
-   the next downbeat, so this can stand for up to a bar — it has to read as
-   "heard you" rather than as the current state. */
-.tile.pending {
-  border-color: rgba(255, 200, 120, 0.85);
-  animation: tile-pending 0.9s ease-in-out infinite;
-}
-
-@keyframes tile-pending {
-  0%,
-  100% {
-    background: rgba(255, 190, 90, 0.1);
-  }
-  50% {
-    background: rgba(255, 190, 90, 0.26);
-  }
-}
-
-/* ---------- scene groups ---------- */
-
-/* The Scene column is five stacked groups now — subject, three layer roles and
-   the effects readout — where it used to be one grid. That is more than a
-   column of a four-column grid holds at most viewport heights, so it scrolls:
-   `.console-section` already carries `overflow: auto`, and the rules below make
-   sure the overflow actually reaches it instead of being absorbed by flex
-   children quietly compressing. Hit targets on this surface are aimed at
-   without looking, so squeezing tiles to fit is the one thing that must not
-   happen. */
-.scene-groups {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  flex: 0 0 auto;
-}
-
-.scene-group {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  /* No shrinking: overflow the section and let it scroll. */
-  flex: 0 0 auto;
-}
-
-/* `.fx-head` carries a 10px top margin for the Post FX column, where it has a
-   slider directly above it to be spaced away from. Here the group gap is that
-   spacing, and both together read as the heading belonging to the group above
-   it rather than the one it labels. */
-.scene-group .fx-head {
-  margin: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-}
-
-/* What the slot is doing right now, beside its name. Colour-matched to the
-   tile state it is summarising — blue for on screen, amber for asked-for but
-   unconfirmed — so the heading and the grid under it cannot tell two different
-   stories. Lower case: it is a state, not a label. */
-.scene-group-note {
-  margin-left: auto;
-  font-size: 10px;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  text-transform: none;
-  color: rgba(255, 255, 255, 0.3);
-}
-
-.scene-group-note.is-live {
-  color: rgba(130, 205, 255, 0.9);
-}
-.scene-group-note.is-pending {
-  color: rgba(255, 200, 120, 0.9);
-}
-
-.scene-note {
-  margin: -1px 0 0;
-  font-size: 10px;
-  line-height: 1.45;
-  color: rgba(255, 255, 255, 0.32);
-}
-
-/* An effect scene: shown, never pressed.
-
-   `EffectDirector` fires these on musical triggers and nothing on this surface
-   can request one, so they are rendered as <span> rather than <button> — there
-   is no click here to look available and then do nothing, which is the failure
-   `.chip-disabled`'s `pointer-events` note in styles.css records and the one
-   F180 was. Pointer events stay ON, unlike `.chip-disabled`: the only thing
-   these offer is the tooltip explaining why they are not pressable, and
-   disabling pointer events would take that away too. What is removed instead is
-   every affordance that says "press me" — the pointer cursor, the hover lift,
-   and the solid border a real control has. */
-.tile-status {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  cursor: default;
-  opacity: 0.6;
-  background: rgba(255, 255, 255, 0.02);
-  border-style: dashed;
-}
-
-.tile-status:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-/* Firing right now, off telemetry. Takes back the full opacity and the solid
-   border, because for the length of the firing this IS on screen — and gets a
-   glow the pickable tiles do not, since an effect can come and go inside a
-   second and a flat colour change is easy to miss at a glance. */
-.tile-status.on {
-  opacity: 1;
-  border-style: solid;
-  box-shadow: 0 0 12px rgba(130, 205, 255, 0.45);
-}
-
-/* The filters lead the Post FX column, so this heading has no slider above it
-   to be spaced away from — `.fx-head`'s 10px top margin would just push the
-   column's first row down for nothing. */
-.fx-head-first {
-  margin-top: 0;
-}
-
-/* Filter names are longer than scene names ("JPEG Block Corruption"), and this
-   grid sits in the console's narrowest column. Two per row at a lower minimum
-   keeps them from wrapping to three cramped lines each. */
-.tile-grid-filters {
-  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
-  gap: 6px;
-}
-.tile-grid-filters .tile {
-  min-height: 42px;
-  padding: 6px;
-  font-size: 11px;
-}
-
-/* An ISF filter the director will never pick on its own. Dimmed, but NOT
-   `pointer-events: none` and no line-through: it stays firable by hand, and
-   both of those would say it was unavailable rather than off the rotation. */
-.tile-off-roster {
-  opacity: 0.55;
-}
-.tile-off-roster:hover {
-  opacity: 0.8;
-}
-
-/* "firing": which filter is on screen right now, off telemetry from the output
-   window. Sits under the grid, quiet at rest — nothing is firing for most of a
-   show, and a readout that shouted about that would be noise. */
-.filter-now {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.035);
-  font: 500 11px/1 ui-monospace, monospace;
-  color: #cfd8e3;
-}
-
-.filter-now-label {
-  color: rgba(255, 255, 255, 0.45);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.filter-now-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.filter-now-name.dim {
-  color: rgba(255, 255, 255, 0.32);
-}
-
-.filter-now-bar {
-  width: 64px;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.1);
-  overflow: hidden;
-}
-
-/* scaleX, not width: this updates ten times a second and compositing a
-   transform costs nothing, where animating width reflows the bar's box. */
-.filter-now-fill {
-  display: block;
-  width: 100%;
-  height: 100%;
-  transform-origin: left center;
-  background: rgba(130, 205, 255, 0.8);
-}
-
-.filter-now-mix {
-  min-width: 34px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.55);
-}
-
-.toggle-wide {
-  margin-top: auto;
-  min-height: 52px;
-  border-radius: 9px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.045);
-  color: #e6ecf4;
-  font: 600 14px/1.2 inherit;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-}
-
-.toggle-wide small {
-  font-weight: 400;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.45);
-}
-.toggle-wide.on {
-  background: rgba(60, 220, 150, 0.2);
-  border-color: rgba(120, 240, 190, 0.6);
-}
-
-/* ---------- dj cam ---------- */
-
-/* The camera thumbnail reuses `.mirror` wholesale — the same black 16/9 box,
-   the "live" ring and the empty-state label — so this only namespaces it and
-   trims the gap to the punch button under it. */
-.djcam-preview {
-  margin: 2px 0;
-}
-
-/* Both DJ Cam buttons opt out of `.toggle-wide`'s `margin-top: auto`: that rule
-   pins a single trailing toggle to the bottom of a column, and these two sit
-   mid-column, in a fixed order under the preview. */
-.djcam-punch,
-.djcam-autofire {
-  margin-top: 6px;
-}
-
-/* Dead until a camera stream is connected — `.toggle-wide` has no disabled look
-   of its own because nothing else disables one. */
-.djcam-punch:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* Connect button + device picker on one row: the button stays a fixed hit
-   target, the picker takes the rest of the width. */
-.djcam-setup {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.djcam-setup .tile {
-  flex: 0 0 auto;
-  min-height: 40px;
-}
-
-.djcam-setup .fx-select {
-  flex: 1;
-  min-width: 0;
-  margin-top: 0;
-}
-
-/* Permission denied / no device / track ended — surfaced like the transport's
-   own start failures. */
-.djcam-error {
-  margin: 2px 0 0;
-  font-size: 11px;
-  line-height: 1.4;
-  color: #ffb3bd;
-}
-
-/* ---------- palettes ---------- */
-
-.palette-families {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.palette-family h3 {
-  margin: 0 0 6px;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.3);
-}
-
-.swatch-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
-  gap: 7px;
-}
-
-.swatch {
-  padding: 0;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: transparent;
-  cursor: pointer;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.swatch.on {
-  border-color: #fff;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.22);
-}
-
-.swatch-strip {
-  display: flex;
-  height: 34px;
-}
-
-.swatch-strip i {
-  flex: 1;
-}
-
-/* A name is not a colour, and a single dot is not a palette: the swatch shows
-   all five slots, because the look is the relationship between them. bg gets
-   the most room as the ground, accent and glow next as the identity. */
-.swatch-strip i:nth-child(1) {
-  flex: 1.4;
-}
-.swatch-strip i:nth-child(4) {
-  flex: 1.3;
-}
-.swatch-strip i:nth-child(5) {
-  flex: 1.3;
-}
-
-.swatch-name {
-  padding: 5px 4px;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.62);
-  background: rgba(0, 0, 0, 0.3);
-}
-
-.swatch.on .swatch-name {
-  color: #fff;
-}
-
-/* ---------- limitless photo ---------- */
-
-.photo-drop-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.photo-drop {
-  position: relative;
-  min-height: 120px;
-  border-radius: 9px;
-  border: 1px dashed rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.03);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.photo-drop.drag {
-  border-color: rgba(120, 240, 190, 0.7);
-  background: rgba(60, 220, 150, 0.08);
-}
-
-.photo-drop.has-photo {
-  border-style: solid;
-  border-color: rgba(255, 255, 255, 0.14);
-}
-
-.photo-drop-hint {
-  padding: 0 16px;
-  text-align: center;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
-}
-
-.photo-drop-preview {
-  width: 100%;
-  height: 120px;
-  object-fit: cover;
-  display: block;
-}
-
-.photo-drop-input {
-  /* Not display:none — a display:none input cannot be given focus, and
-     `.photo-drop`'s own onKeyDown opens THIS input on Enter/Space, so it has
-     to stay a real, focusable, tabbable element. Not sized over the drop
-     zone either, unlike a typical "invisible file input" trick: doing that
-     would let the input's own native click/drop handling race the div's
-     (which is what actually resizes/encodes the file, drop included) for the
-     same click or drop event. Clipped to 1px instead — present, focusable,
-     invisible, and out of the way of every pointer interaction. */
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-.photo-drop-error {
-  color: rgba(255, 130, 130, 0.85);
-  font-size: 11px;
-}
-
-/* ---------- sliders ---------- */
-
-.big-slider {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.slider-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.slider-label {
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
-}
-
-/* Large and always present: on stage the question is "where is this set", and
-   a handle position does not answer that from a metre away. */
-.slider-value {
-  font: 600 20px/1 ui-monospace, "Cascadia Mono", Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  color: #fff;
-}
-
-.big-slider input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 34px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.big-slider input[type="range"]::-webkit-slider-runnable-track {
-  height: 10px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.09);
-}
-
-.big-slider input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 28px;
-  height: 28px;
-  margin-top: -9px;
-  border-radius: 50%;
-  background: #eaf4ff;
-  border: 2px solid #4ba8ff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-}
-
-.quality-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: auto;
-}
-
-/* `SceneParamsPanel`'s own Mode row — see the component's own comment on why
-   this needs to wrap where every other `.quality-row` user (a handful of
-   fixed items) does not. `margin-top: auto` above is dropped rather than
-   inherited: that rule exists to push a `.quality-row` to the bottom of a
-   taller sibling stack (the quality-tier row in the Look column), which is
-   not this row's context and would misplace a wrapped multi-line block. */
-.mode-row {
-  flex-wrap: wrap;
-  margin-top: 0;
-}
-
-.segmented {
-  display: flex;
-  flex: 1;
-  gap: 4px;
-}
-
-.segmented button {
-  flex: 1;
-  min-height: 40px;
-  border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.045);
-  color: #dfe6ef;
-  font: 500 12px/1 inherit;
-  cursor: pointer;
-}
-
-.segmented button.on {
-  background: rgba(80, 170, 255, 0.24);
-  border-color: rgba(130, 205, 255, 0.6);
-  color: #fff;
-}
-
-/* ---------- post fx ---------- */
-
-/* Inert, not hidden. The values still read correctly while the directors are
-   driving, and seeing where they sit is half the reason to open this column —
-   but they are not what the frame is using, and the column has to say so. */
-.fx-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transition: opacity 140ms ease;
-}
-
-.fx-block.inert {
-  opacity: 0.38;
-}
-
-.fx-head {
-  margin: 10px 0 2px;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.3);
-}
-
-.fx-slider {
-  display: grid;
-  grid-template-columns: 66px 1fr 42px;
-  align-items: center;
-  gap: 8px;
-}
-
-.fx-label {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: rgba(255, 255, 255, 0.5);
-}
-
-.fx-value {
-  font: 500 12px/1 ui-monospace, "Cascadia Mono", Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.fx-slider input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 24px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.fx-slider input[type="range"]::-webkit-slider-runnable-track {
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.09);
-}
-
-.fx-slider input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  margin-top: -6px;
-  border-radius: 50%;
-  background: #eaf4ff;
-  border: 2px solid #4ba8ff;
-}
-
-/* PostFxLive — read-only, so it borrows `.fx-slider`'s column widths (see
-   FxLiveBar's own comment) without any of its interactive styling. */
-.fx-live {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 6px 0 10px;
-}
-
-.fx-live-row {
-  display: grid;
-  grid-template-columns: 66px 1fr 42px;
-  align-items: center;
-  gap: 8px;
-}
-
-.fx-live-bar {
-  width: 100%;
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.09);
-  overflow: hidden;
-}
-
-/* No transition, same reasoning as `.filter-now-fill`: the value arriving is
-   already an eased envelope sampled at the telemetry rate, so a CSS
-   transition on top would make the bar lag the picture it describes. */
-.fx-live-fill {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 3px;
-  background: #4ba8ff;
-  transform-origin: left center;
-}
-
-/* Mirror/lens/fx rows have no bar (segments/style/scene-id are pictures, not
-   an intensity) so their summary spans both the bar and value columns. */
-.fx-live-summary {
-  grid-column: 2 / span 2;
-  font-size: 11px;
-  color: rgba(234, 244, 255, 0.9);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fx-select {
-  display: grid;
-  grid-template-columns: 66px 1fr;
-  align-items: center;
-  gap: 8px;
-  margin-top: 2px;
-}
-
-.fx-select > span {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: rgba(255, 255, 255, 0.5);
-}
-
-.fx-select select {
-  min-height: 34px;
-  padding: 0 8px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.045);
-  color: #dfe6ef;
-  font: 500 12px/1 inherit;
-  cursor: pointer;
-}
-
-.fx-select select option {
-  background: #12161c;
-}
-
-/* ---------- arbitration ---------- */
-
-.passive-banner {
-  padding: 9px 14px;
-  border-radius: 8px;
-  background: rgba(255, 190, 90, 0.16);
-  border: 1px solid rgba(255, 200, 120, 0.4);
-  color: #ffdca8;
-  font-size: 12px;
-}
-
-.link-btn {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: #7ce0ff;
-  font: inherit;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-/* Four columns is the widescreen case; below that the console stops being a
-   console and becomes a list — fewer, wider columns, same fixed-height shell.
-   `.console` and `.app-control` are deliberately untouched here: see
-   `.console`'s own `overflow: hidden` comment for why letting either of them
-   become the scroll surface breaks per-section scrolling instead of fixing
-   it. This query used to do exactly that, and it is not an edge case: a
-   MacBook Air's own logical width (1280-1470px) falls inside it. */
-@media (max-width: 1500px) {
-  .console-body {
-    grid-template-columns: 1fr 1fr;
-  }
-  /* Only two real columns here — see `.console-section:last-of-type`'s own
-     comment for why this must not stay at `span 3`. */
-  .console-section:last-of-type {
-    grid-column: span 1;
-  }
-}
-
-/* Narrower still: one column, even more room per section. MUST come AFTER the
-   1500px query above — both match at once below 1100px, same specificity, so
-   whichever is declared LAST wins the cascade for `.console-body`. This used
-   to be declared first, so its single-column collapse never actually applied:
-   the 1500px query's `1fr 1fr` always won, and every section was squeezed
-   into a fraction of the room this breakpoint exists to give it. */
-@media (max-width: 1100px) {
-  .console-top {
-    grid-template-columns: 1fr;
-  }
-  .console-body {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ---------- diagnostics ---------- */
-
-/* In the header dock beside the panels they open, so the button and its panel
-   are one thing rather than two. Stacked, to keep the dock's width for the
-   panels themselves. */
-.tool-btn {
-  min-height: 34px;
-  padding: 5px 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(12, 16, 22, 0.92);
-  color: #dfe6ef;
-  font: 600 12px/1.2 inherit;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  backdrop-filter: blur(6px);
-}
-
-/* No sub-labels in the docked form: the panel it opens is right next to it. */
-.tool-btn small {
+.icon-btn small {
   display: none;
 }
-
-.tool-btn.on {
-  background: rgba(80, 170, 255, 0.26);
-  border-color: rgba(130, 205, 255, 0.65);
-  color: #fff;
+.icon-btn:hover {
+  background: rgba(var(--cream-rgb), 0.09);
+  color: var(--cream);
+}
+.icon-btn.on {
+  background: rgba(var(--crimson-rgb), 0.26);
+  color: var(--cream);
+  border-color: rgba(var(--crimson-rgb), 0.6);
+}
+.icon-btn.recording {
+  background: rgba(var(--maroon-rgb), 0.5);
+  border-color: rgba(var(--maroon-rgb), 0.9);
+  color: var(--cream);
 }
 
-/* Recording state wins over the generic .on blue — red is what "this is
-   writing a file right now" means everywhere else in the console
-   (.btn-huge.recording), and the session log should read the same way. */
-.tool-btn.recording {
-  background: rgba(255, 70, 90, 0.24);
-  border-color: rgba(255, 120, 140, 0.6);
-  color: #fff;
-}
-
-/* DOCKED, not floating. All three panels were authored for the full-screen HUD
-   and anchor to `top: 84px` on the same two corners, so on the console they
-   landed on top of each other and on top of the transport. Overlaying the
-   columns was not much better: a diagnostic that hides the control you are
-   about to reach for is its own problem.
-   They now sit inline in the header gap between the BPM readout and the mood
-   pill — the one piece of horizontal space nothing else wants — and the header
-   grows to fit rather than anything being covered. */
-.diag-dock {
+.icon-row {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-left: 18px;
-  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  flex-shrink: 0;
 }
 
-/* Stacked, not side by side. Laid out in a row the three panels want ~850px,
-   which is more than the header gap has, so the third was clipped horizontally
-   while still reserving its 352px of height — an empty band under the two that
-   fit. A narrow scrolling column shows whichever is wanted and reserves nothing
-   for the ones that are not. */
+.cta {
+  height: 44px;
+  padding: 0 20px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--crimson), var(--plum));
+  color: var(--cream);
+  font: 600 13px var(--sans);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(var(--crimson-rgb), 0.35);
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: filter 120ms ease, transform 60ms ease;
+}
+.cta:hover {
+  filter: brightness(1.15);
+}
+.cta:active {
+  transform: translateY(1px);
+}
+
+/* Docked diagnostic panels drop from the icon row rather than floating over
+   the console — same reasoning the original dock had (a diagnostic that
+   hides the control you're about to reach for is its own problem), just
+   anchored under the top bar instead of inside it. */
 .diag-panels {
+  position: absolute;
+  top: 48px;
+  right: 0;
+  z-index: 20;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 0;
+  width: 360px;
+  max-height: 70vh;
   overflow-y: auto;
-  overflow-x: hidden;
-  /* Capped so opening a panel cannot push the control columns off the bottom. */
-  max-height: 38vh;
-  padding-right: 4px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #000;
+  border: 1px solid var(--card-border);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
 }
-
 .app-control .analytics-panel,
 .app-control .debug-panel,
 .app-control .fps-meter {
@@ -1199,21 +337,1065 @@
   margin: 0;
 }
 
-.tool-col {
+/* ---------- body ---------- */
+
+.body {
+  flex: 1;
   display: flex;
-  flex-direction: column;
-  gap: 5px;
-  flex: 0 0 auto;
+  gap: 18px;
+  padding: 18px 22px;
+  min-height: 0;
 }
 
-/* Broken on this platform, not merely off the rotation — see UNUSABLE_FILTERS.
-   `:disabled` already blocks the click; this makes it look blocked, which
-   `.tile-off-roster` deliberately does not (those stay hand-firable). */
-.tile-broken {
+.col-preview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.preview-head .name {
+  font: 600 14.5px var(--sans);
+  color: var(--cream);
+}
+.badge-ar {
+  margin-left: auto;
+  font: 500 11px var(--mono);
+  color: var(--text-dim);
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+}
+
+/* ---------- mirror (reused from the original .mirror, restyled) ---------- */
+
+.mirror {
+  position: relative;
+  border-radius: var(--radius);
+  border: 1px solid var(--card-border);
+  background: #000;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  /* Capped, not left to the aspect-ratio alone: at the preview column's full
+     width a 16:9 box is ~40vw tall, which crowded the scene browser/quick-
+     controls/performance row below it clean off screen. Kept small on
+     purpose now, not just "not huge" — this is a control surface, and the
+     tile browser below is what actually needs the room. */
+  max-height: 160px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.mirror.live {
+  border-color: rgba(var(--crimson-rgb), 0.45);
+  box-shadow: 0 0 0 1px rgba(var(--crimson-rgb), 0.16);
+}
+.mirror video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.mirror-empty {
+  /* Absolute, not a flex sibling of `video` — the video keeps width/height
+     100% even with no stream, and as a flex sibling that pushes this label
+     off to one side instead of centering it. */
+  position: absolute;
+  font: 500 12px var(--sans);
+  color: var(--text-dimmer);
+  letter-spacing: 0.04em;
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 10px;
+  font: 500 11.5px var(--mono);
+  color: var(--text-dim);
+  flex-wrap: wrap;
+}
+.stat-row .sdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--crimson);
+  margin-right: 6px;
+  display: inline-block;
+}
+
+/* ---------- bottom-row cards: Scene browser / Quick controls / Performance --- */
+
+.bottom-row {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr;
+  gap: 16px;
+  margin-top: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.card h3 {
+  margin: 0 0 8px;
+  font: 600 12.5px var(--sans);
+  color: var(--cream);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filters {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.fchip {
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  font: 500 10.5px var(--sans);
+  color: rgba(var(--cream-rgb), 0.6);
+  background: rgba(var(--cream-rgb), 0.06);
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.fchip:hover {
+  background: rgba(var(--cream-rgb), 0.12);
+  color: var(--cream);
+}
+.fchip .cnt {
+  font: 500 10px var(--mono);
+  color: var(--text-dimmer);
+}
+.fchip.active {
+  background: var(--crimson);
+  border-color: var(--crimson);
+  color: var(--cream);
+}
+.fchip.active .cnt {
+  color: rgba(var(--cream-rgb), 0.75);
+}
+.fchip.active:hover {
+  background: var(--crimson);
+  filter: brightness(1.1);
+}
+
+/* ---------- tiles (subject/layer/effect picks, reused from the original
+   .tile grid — same states, same F180 reasoning, new look) ---------- */
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.pager-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.06);
+  color: var(--cream);
+  font: 600 13px var(--sans);
+  cursor: pointer;
+  line-height: 1;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.pager-btn:hover:not(:disabled) {
+  background: rgba(var(--crimson-rgb), 0.28);
+  border-color: rgba(var(--crimson-rgb), 0.6);
+}
+.pager-btn:disabled {
   opacity: 0.3;
+  cursor: default;
+}
+.pager-label {
+  font: 500 11px var(--mono);
+  color: var(--text-dimmer);
+  min-width: 40px;
+  text-align: center;
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 6px;
+}
+.tile {
+  min-height: 40px;
+  padding: 5px;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.05);
+  color: var(--cream);
+  font: 500 10.5px/1.2 var(--sans);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.tile:hover {
+  background: rgba(var(--cream-rgb), 0.11);
+  border-color: rgba(var(--cream-rgb), 0.28);
+}
+/* "On" — crimson, the standard active/selected treatment used everywhere
+   in this file (tiles, tabs, chips, toggles, swatches all share it). */
+.tile.on {
+  background: rgba(var(--crimson-rgb), 0.32);
+  border-color: var(--crimson);
+  color: var(--cream);
+  box-shadow: 0 0 0 1px rgba(var(--crimson-rgb), 0.4), 0 0 14px rgba(var(--crimson-rgb), 0.35);
+}
+/* "Pending/queued" — plum, distinct from the crimson "on" state; a switch
+   is held for the next downbeat, not live yet. */
+.tile.pending {
+  border-color: var(--plum);
+  animation: tile-pending 0.9s ease-in-out infinite;
+}
+@keyframes tile-pending {
+  0%,
+  100% {
+    background: rgba(var(--plum-rgb), 0.18);
+  }
+  50% {
+    background: rgba(var(--plum-rgb), 0.42);
+  }
+}
+.tile-status {
+  cursor: default;
+  opacity: 0.55;
+  background: rgba(var(--cream-rgb), 0.02);
+  border-style: dashed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.tile-status:hover {
+  background: rgba(var(--cream-rgb), 0.02);
+  border-color: var(--card-border);
+}
+.tile-status.on {
+  opacity: 1;
+  border-style: solid;
+  box-shadow: 0 0 12px rgba(var(--crimson-rgb), 0.5);
+}
+
+.scene-group-note {
+  margin-left: auto;
+  font: 400 10px var(--sans);
+  color: var(--text-dimmer);
+}
+.scene-group-note.is-live {
+  color: var(--crimson);
+}
+.scene-group-note.is-pending {
+  color: var(--cream);
+}
+.scene-note {
+  margin: 0 0 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-dimmer);
+}
+
+.wide-toggle {
+  margin-top: 10px;
+  min-height: 38px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.05);
+  color: var(--cream);
+  font: 600 12.5px var(--sans);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.wide-toggle:hover {
+  background: rgba(var(--cream-rgb), 0.1);
+}
+.wide-toggle small {
+  font-weight: 400;
+  font-size: 10.5px;
+  color: rgba(var(--cream-rgb), 0.5);
+}
+.wide-toggle.on {
+  background: rgba(var(--crimson-rgb), 0.28);
+  border-color: var(--crimson);
+}
+.wide-toggle.on:hover {
+  background: rgba(var(--crimson-rgb), 0.36);
+}
+
+/* ---------- quick controls (Look) ---------- */
+
+.qc-row {
+  display: grid;
+  grid-template-columns: 74px 1fr 40px;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.qc-row .lbl {
+  font: 500 12px var(--sans);
+  color: rgba(var(--cream-rgb), 0.68);
+}
+.qc-row .val {
+  font: 500 12px var(--mono);
+  color: var(--cream);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.qc-row input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.qc-row input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(var(--cream-rgb), 0.12);
+}
+.qc-row input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--cream);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--crimson);
+}
+
+.quality-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+.quality-row .meter-label {
+  font: 500 11px var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.segmented {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+}
+.segmented button {
+  flex: 1;
+  min-height: 34px;
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.05);
+  color: var(--cream);
+  font: 500 11px var(--sans);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.segmented button:hover {
+  background: rgba(var(--cream-rgb), 0.11);
+}
+.segmented button.on {
+  background: var(--crimson);
+  border-color: var(--crimson);
+  color: var(--cream);
+}
+.segmented button.on:hover {
+  filter: brightness(1.1);
+}
+
+/* ---------- performance card ---------- */
+
+.perf-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.perf-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font: 500 11.5px var(--sans);
+  color: var(--text-dim);
+}
+.perf-stat b {
+  color: var(--cream);
+  font: 600 15px var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.perf-stat.warn b {
+  color: var(--cream);
+  text-shadow: 0 0 8px rgba(var(--maroon-rgb), 0.9);
+}
+
+/* ---------- right rail: tabs + panels ---------- */
+
+.col-rail {
+  width: 360px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 4px;
+  flex-shrink: 0;
+}
+.tab {
+  flex: 1;
+  text-align: center;
+  padding: 8px 0;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  font: 500 11.5px var(--sans);
+  color: rgba(var(--cream-rgb), 0.55);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tab:hover {
+  color: var(--cream);
+}
+.tab.active {
+  background: var(--crimson);
+  color: var(--cream);
+}
+
+.rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* `.card`'s own `overflow-y: auto` is right for the bottom-row grid (each
+   card scrolls independently if its row is shorter than its content), but
+   here it fights the rail's own scroll: flex's default shrink let each card
+   compress below its content height and clip/scroll internally instead of
+   the whole tab scrolling as one. Fixed height, natural size, one scrollbar. */
+.rail-scroll > .card {
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+/* ---------- scene-tab: params card ---------- */
+
+.param-note {
+  font: 400 12px/1.5 var(--sans);
+  color: var(--text-dim);
+  margin: 0;
+}
+
+/* SceneParamsPanel + FxSelect/FxSelect siblings render `.param-row`,
+   `.quality-row.mode-row` and `.chip` from styles.css unmodified — those
+   stay untouched globally. This just gives them room inside a `.card`. */
+.param-row {
+  display: grid;
+  grid-template-columns: 74px 1fr 40px;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font: 500 12px var(--sans);
+  color: rgba(var(--cream-rgb), 0.78);
+}
+.param-row input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.param-row input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(var(--cream-rgb), 0.12);
+}
+.param-row input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--cream);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--crimson);
+}
+.param-row em {
+  font: 500 11px var(--mono);
+  font-style: normal;
+  color: rgba(var(--cream-rgb), 0.82);
+  text-align: right;
+}
+
+/* ---------- colour tab: palette swatches ---------- */
+
+.gel-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.gel {
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 100ms ease, box-shadow 120ms ease;
+}
+.gel:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.6);
+}
+/* The selected swatch — crimson ring + glow, the same "on" treatment as
+   every other selectable control in this file, so "which one is picked"
+   never depends on eyeballing a subtle change against a coloured strip. */
+.gel.on {
+  border-color: var(--crimson);
+  box-shadow: 0 0 0 3px rgba(var(--crimson-rgb), 0.4), 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.gel-strip {
+  display: flex;
+  height: 34px;
+}
+.gel-strip i {
+  display: block;
+  flex: 1;
+}
+.gel-name {
+  padding: 6px 8px;
+  font: 500 11px var(--sans);
+  color: rgba(var(--cream-rgb), 0.82);
+  background: #000;
+  text-align: left;
+}
+.gel.on .gel-name {
+  color: var(--cream);
+  background: rgba(var(--crimson-rgb), 0.3);
+}
+
+/* ---------- post fx tab ---------- */
+
+.pad-grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.pad2 {
+  min-height: 44px;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.04);
+  color: var(--cream);
+  font: 500 10.5px var(--sans);
+  padding: 6px;
+  cursor: pointer;
+  text-align: center;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.pad2:hover {
+  background: rgba(var(--cream-rgb), 0.1);
+}
+.pad2.on {
+  background: rgba(var(--crimson-rgb), 0.32);
+  border-color: var(--crimson);
+  color: var(--cream);
+  box-shadow: 0 0 14px rgba(var(--crimson-rgb), 0.35);
+}
+.pad2.tile-broken {
+  opacity: 0.32;
   cursor: not-allowed;
   text-decoration: line-through;
 }
-.tile-broken:hover {
-  background: rgba(255, 255, 255, 0.045);
+.pad2.tile-off-roster {
+  opacity: 0.55;
+}
+.pad2.tile-off-roster:hover {
+  opacity: 0.8;
+}
+
+.firing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(var(--cream-rgb), 0.05);
+  font: 500 10.5px var(--mono);
+}
+.firing-row .firing-label {
+  color: rgba(var(--cream-rgb), 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--sans);
+  font-size: 10px;
+}
+.firing-row .fname {
+  flex: 1;
+  color: var(--cream);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.firing-row .fname.dim {
+  color: var(--text-dimmer);
+}
+.firing-row .fbar {
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(var(--cream-rgb), 0.14);
+  overflow: hidden;
+}
+.firing-row .ffill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  background: var(--crimson);
+}
+.firing-row .fpct {
+  color: rgba(var(--cream-rgb), 0.6);
+  min-width: 28px;
+  text-align: right;
+}
+
+.fx-live {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+.fx-live-row {
+  display: grid;
+  grid-template-columns: 60px 1fr 40px;
+  align-items: center;
+  gap: 8px;
+}
+.fx-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.fx-live-bar {
+  width: 100%;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(var(--cream-rgb), 0.1);
+  overflow: hidden;
+}
+.fx-live-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--crimson);
+  transform-origin: left center;
+}
+.fx-live-summary {
+  grid-column: 2 / span 2;
+  font-size: 11px;
+  color: var(--cream);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fx-value {
+  font: 500 11px var(--mono);
+  text-align: right;
+  color: rgba(var(--cream-rgb), 0.85);
+}
+
+.fx-head {
+  margin: 8px 0 2px;
+  font: 600 9.5px var(--sans);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dimmer);
+}
+.fx-head-first {
+  margin-top: 0;
+}
+
+.fx-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fx-slider {
+  display: grid;
+  grid-template-columns: 62px 1fr 38px;
+  align-items: center;
+  gap: 8px;
+}
+.fx-slider .fx-label {
+  background: none;
+  border: none;
+  padding: 0;
+  font: 500 11px var(--sans);
+  text-align: left;
+  cursor: default;
+  color: var(--text-dim);
+}
+/* Manual override — crimson, same "taken by hand" meaning as everything
+   else that's "on" in this file. Plum (the fill-only colour) would be
+   unreadable as bare text here — see the colour-system note up top. */
+.fx-slider .fx-label:not(:disabled) {
+  cursor: pointer;
+  color: var(--crimson);
+}
+.fx-slider input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.fx-slider input[type='range']::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(var(--cream-rgb), 0.12);
+}
+.fx-slider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--cream);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--crimson);
+}
+
+.fx-select {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.fx-select > span {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.fx-select select {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.05);
+  color: var(--cream);
+  font: 500 11.5px var(--sans);
+  cursor: pointer;
+}
+.fx-select select option {
+  background: #000;
+  color: var(--cream);
+}
+
+/* ---------- dj cam ---------- */
+
+.cam-preview {
+  border-radius: 11px;
+  border: 1px dashed rgba(var(--cream-rgb), 0.22);
+  background: #000;
+  aspect-ratio: 16 / 9;
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* A real camera stream — same "solid border, crimson glow" treatment the
+   output `.mirror` uses once it's live, so "this feed is real" reads the
+   same way everywhere in the console. */
+.cam-preview.live {
+  border-style: solid;
+  border-color: rgba(var(--crimson-rgb), 0.45);
+  box-shadow: 0 0 0 1px rgba(var(--crimson-rgb), 0.16);
+}
+.cam-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.cam-preview .cam-empty {
+  position: absolute;
+  font: 500 11px var(--sans);
+  color: var(--text-dimmer);
+  letter-spacing: 0.04em;
+}
+.punch-btn {
+  min-height: 46px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.05);
+  color: var(--cream);
+  font: 600 12.5px var(--sans);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  margin-bottom: 10px;
+  width: 100%;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.punch-btn:hover:not(:disabled) {
+  background: rgba(var(--cream-rgb), 0.1);
+}
+.punch-btn:disabled {
+  color: rgba(var(--cream-rgb), 0.35);
+  cursor: not-allowed;
+}
+.punch-btn small {
+  font: 500 10px var(--sans);
+  color: rgba(var(--cream-rgb), 0.5);
+}
+.punch-btn:disabled small {
+  color: rgba(var(--cream-rgb), 0.3);
+}
+/* The cutaway is actually live on screen — crimson, the standard "on"
+   treatment shared with every other active/selected control here. */
+.punch-btn.on {
+  background: rgba(var(--crimson-rgb), 0.3);
+  border-color: var(--crimson);
+}
+.punch-btn.on:hover:not(:disabled) {
+  background: rgba(var(--crimson-rgb), 0.38);
+}
+.setup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.setup-row .btn3 {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.05);
+  color: var(--cream);
+  font: 500 11px var(--sans);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.setup-row .btn3:hover {
+  background: rgba(var(--cream-rgb), 0.1);
+}
+.setup-row .sel3 {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+  background: rgba(var(--cream-rgb), 0.04);
+  color: var(--cream);
+  font: 500 11px var(--sans);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+/* When it's a real <select> (devices present) rather than the placeholder
+   <span>, it still needs to not look disabled. */
+select.sel3 {
+  color: var(--cream);
+}
+select.sel3 option {
+  background: #000;
+  color: var(--cream);
+}
+.djcam-note {
+  margin: 8px 0 0;
+  font: 400 10.5px/1.5 var(--sans);
+  color: var(--text-dimmer);
+}
+/* A real acquisition failure (permission denied, no device, track ended) —
+   maroon, the standard error fill, cream text on top of it. */
+.djcam-note.error {
+  color: var(--cream);
+  background: rgba(var(--maroon-rgb), 0.4);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+/* ---------- transport bar (bottom) ---------- */
+
+.transport-bar {
+  height: 64px;
+  flex-shrink: 0;
+  border-top: 1px solid rgba(var(--cream-rgb), 0.1);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 22px;
+}
+.tbtn2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 18px;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--cream);
+  font: 500 12.5px var(--sans);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.tbtn2:hover:not(:disabled) {
+  background: rgba(var(--cream-rgb), 0.1);
+}
+.tbtn2 svg {
+  width: 15px;
+  height: 15px;
+  color: rgba(var(--cream-rgb), 0.6);
+}
+.tbtn2 small {
+  font-weight: 400;
+  color: var(--text-dimmer);
+  margin-left: 2px;
+}
+.tbtn2:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.tbtn2.accent {
+  background: linear-gradient(135deg, var(--crimson), var(--plum));
+  border: none;
+  color: var(--cream);
+}
+.tbtn2.accent:hover {
+  filter: brightness(1.15);
+}
+.tbtn2.recording {
+  background: rgba(var(--maroon-rgb), 0.55);
+  border-color: rgba(var(--maroon-rgb), 0.9);
+  color: var(--cream);
+}
+.transport-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.transport-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--cream);
+}
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--crimson);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------- arbitration ---------- */
+
+.passive-banner {
+  padding: 9px 22px;
+  background: rgba(var(--plum-rgb), 0.4);
+  border-bottom: 1px solid rgba(var(--plum-rgb), 0.8);
+  color: var(--cream);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* ---------- shared `.chip` (styles.css), scoped to this palette ----------
+   SceneParamsPanel's Target/Mode rows and FxSelect's auto/manual pill reuse
+   the app-wide `.chip` class from styles.css unmodified. That class is also
+   HUD.tsx's, so it stays untouched globally — this overrides it only inside
+   the console, on top of styles.css by load order (main.tsx imports
+   styles.css first). Same crimson "on/active" treatment as everywhere else
+   here, not the shared white-chip default. */
+
+.console .chip {
+  background: rgba(var(--cream-rgb), 0.06);
+  color: rgba(var(--cream-rgb), 0.62);
+  border-color: transparent;
+}
+.console .chip:hover {
+  background: rgba(var(--cream-rgb), 0.12);
+  color: var(--cream);
+}
+.console .chip.active {
+  background: var(--crimson);
+  color: var(--cream);
+}
+.console .chip-disabled {
+  color: rgba(var(--cream-rgb), 0.3);
+}
+
+/* ---------- responsive fallback ---------- */
+
+@media (max-width: 1200px) {
+  .body {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .col-rail {
+    width: 100%;
+  }
+  .bottom-row {
+    grid-template-columns: 1fr;
+  }
 }

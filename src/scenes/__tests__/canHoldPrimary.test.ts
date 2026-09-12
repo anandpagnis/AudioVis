@@ -134,7 +134,12 @@ describe('the HUD picker', () => {
  */
 describe('the Console picker', () => {
   it('offers PICKABLE_SCENES for the subject grid, not the raw registry', () => {
-    expect(CONSOLE_SRC).toContain('PICKABLE_SCENES.map(')
+    // The dashboard console (F227+) paginates the subject grid rather than
+    // rendering it flat — `PICKABLE_SCENES.slice(start, end).map(` — so the
+    // literal substring check widened to a pattern that accepts an optional
+    // `.slice(...)` between the roster and the `.map(`. The invariant this
+    // guards (tiles come from PICKABLE_SCENES, never raw SCENES) is unchanged.
+    expect(CONSOLE_SRC).toMatch(/PICKABLE_SCENES(\.slice\([^)]*\))?\.map\(/)
     expect(CONSOLE_SRC).not.toMatch(/\{SCENES\.map\(/)
   })
 
