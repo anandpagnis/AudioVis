@@ -41,7 +41,7 @@ import {
 } from '../scenes/contract'
 import { PALETTES, PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { BUILTIN_PRESETS, type Preset } from '../engine/presets'
-import { saveScreenshot } from '../engine/recorder'
+import { saveScreenshot, type ExportPreset } from '../engine/recorder'
 import { buildShareUrl } from '../urlParams'
 import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
@@ -113,6 +113,7 @@ export function HUD() {
   const cueFollow = useStore((s) => s.cueFollow)
   const midiSync = useStore((s) => s.midiSync)
   const isRecording = useStore((s) => s.isRecording)
+  const exportPreset = useStore((s) => s.exportPreset)
   const userPresets = useStore((s) => s.userPresets)
   const favoriteIds = useStore((s) => s.favoriteIds)
   const micDevices = useStore((s) => s.micDevices)
@@ -1171,11 +1172,26 @@ export function HUD() {
                   <button
                     className={`chip rec ${isRecording ? 'on' : ''}`}
                     disabled={status !== 'running' && !isRecording}
-                    title="Record canvas + audio to .webm (R)"
+                    title="Record canvas + audio (R)"
                     onClick={() => useStore.getState().toggleRecording()}
                   >
                     {isRecording ? '■ rec' : '● rec'}
                   </button>
+                  <select
+                    className="chip"
+                    value={exportPreset}
+                    disabled={isRecording}
+                    title="Export shape for the next recording"
+                    onChange={(e) =>
+                      useStore.getState().setExportPreset(e.target.value as ExportPreset)
+                    }
+                  >
+                    <option value="native">Native (current view)</option>
+                    <option value="9:16">9:16 — Reels / TikTok / Stories</option>
+                    <option value="1:1">1:1 — IG feed</option>
+                    <option value="16:9">16:9 — YouTube</option>
+                    <option value="4:5">4:5 — IG portrait feed</option>
+                  </select>
                   <button className="chip" title="Save a PNG (S)" onClick={() => saveScreenshot()}>
                     screenshot
                   </button>

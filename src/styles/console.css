@@ -1329,6 +1329,23 @@ select.sel3 option {
   border-color: rgba(var(--maroon-rgb), 0.9);
   color: var(--cream);
 }
+/* The export-preset picker sits directly in the transport bar next to the
+   record button (not inside `.setup-row`, so its `flex:1`/36px rule above
+   doesn't reach here) — sized and bordered to match `.tbtn2` instead. */
+.transport-bar select.sel3 {
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--cream);
+  font: 500 12px var(--sans);
+  cursor: pointer;
+}
+.transport-bar select.sel3:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .transport-note {
   margin: 0;
   font-size: 12px;

@@ -24,6 +24,7 @@ const LAYER_SCENES: Record<LayerRole, SceneDef[]> = {
 }
 const EFFECT_SCENES = getEffectScenes()
 import { PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
+import type { ExportPreset } from '../engine/recorder'
 import { useStore } from '../store'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { DebugPanel } from './DebugPanel'
@@ -862,6 +863,7 @@ function Transport({
 }) {
   const sourceType = useStore((s) => s.sourceType)
   const isRecording = useStore((s) => s.isRecording)
+  const exportPreset = useStore((s) => s.exportPreset)
   const fileRef = useRef<HTMLInputElement>(null)
   const running = status === 'running'
 
@@ -925,6 +927,21 @@ function Transport({
             </svg>
             {isRecording ? 'Stop rec' : 'Record'}
           </button>
+          <select
+            className="sel3"
+            value={exportPreset}
+            disabled={isRecording}
+            title="Export shape for the next recording"
+            onChange={(e) =>
+              useStore.getState().setExportPreset(e.target.value as ExportPreset)
+            }
+          >
+            <option value="native">Native (current view)</option>
+            <option value="9:16">9:16 — Reels / TikTok / Stories</option>
+            <option value="1:1">1:1 — IG feed</option>
+            <option value="16:9">16:9 — YouTube</option>
+            <option value="4:5">4:5 — IG portrait feed</option>
+          </select>
           <button className="tbtn2" onClick={() => sendCommand('screenshot')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 7h3l2-3h6l2 3h3v12H4z" />
