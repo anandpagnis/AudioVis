@@ -52,6 +52,16 @@ export const LENS_STYLES = [
   'pixels',
   /** Hex lattice of convex lenslets, each refracting its neighbourhood. */
   'fly eye',
+  /**
+   * Pseudo pixel-sort: bright runs smear along a column until the luminance
+   * drops back below a threshold, then stop dead — the real-time GPU
+   * approximation of the glitch-art pixel-sort technique (a true per-pixel
+   * sort has no parallel GPU formulation, so this bounds the search to a
+   * fixed number of taps per pixel instead). Hard-edged by construction —
+   * the streak has a sharp cutoff, not a fade — which is what makes it read
+   * as a sort rather than a blur. F230.
+   */
+  'pixel sort',
 ] as const
 
 export type LensStyle = (typeof LENS_STYLES)[number]
@@ -202,6 +212,11 @@ export type LensBeatMode = 'drift' | 'seed' | 'plume' | 'none'
 export function lensBeatMode(styleIndex: number): LensBeatMode {
   switch (resolveLensStyle(styleIndex)) {
     case 4:
+      return 'seed'
+    case 7:
+      // pixel sort: a kick re-rolls the sort threshold's phase, same
+      // "re-seat on the beat" mechanism `glitch` already uses for its tears —
+      // a held note should not freeze the streak pattern in place.
       return 'seed'
     case 3:
       return 'plume'

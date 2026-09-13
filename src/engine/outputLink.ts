@@ -272,6 +272,7 @@ export interface Telemetry {
   vignette: number
   fog: number
   trails: number
+  echo: number
   /** Mirror rack snapshot — enough to run `isMirrorActive` (opticalRack.ts)
    *  and render a summary line, without shipping the whole `MirrorRackState`
    *  shape twice. `mirrorMix` is always resolved to a real number here (never
@@ -847,6 +848,7 @@ export function publishTelemetry(nowMs = performance.now()): void {
       vignette: performanceState.vignette,
       fog: performanceState.fog,
       trails: performanceState.trails,
+      echo: performanceState.echo,
       mirrorSegments: performanceState.mirror.segments,
       mirrorTiles: performanceState.mirror.tiles,
       mirrorTwist: performanceState.mirror.twist,

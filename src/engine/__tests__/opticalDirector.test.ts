@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  echoTarget,
   lensAmountTarget,
   lensForSection,
   mirrorForSection,
@@ -84,6 +85,74 @@ describe('trails', () => {
   })
 })
 
+/**
+ * Echo is the opposite emphasis from trails: a rhythmic/percussive device
+ * that wants a transient to repeat, not sustained material to persist. See
+ * echoTarget's own doc for the fuller argument and for why this is a simple
+ * continuous target for v1 rather than the section-scoped choice mirror/lens
+ * use below.
+ */
+/**
+ * F232 rewrite: `echoTarget`'s second argument is now the current beat-pulse
+ * STRENGTH (`beatPulse()`'s own output, already 0..1 and already
+ * sharply-shaped), not a slow-moving tension reading — see the function's own
+ * doc in opticalDirector.ts for the full diagnosis of why v1's
+ * continuous/tension-driven shape read as "always on" rather than as a
+ * repeat. Every case below uses `pulse` in its name/comments accordingly.
+ */
+describe('echo', () => {
+  it('is exactly zero through silence, whatever the pulse', () => {
+    for (const pulse of [0, 0.3, 0.7, 1, NaN, -1, 4]) {
+      expect(echoTarget('silence', pulse)).toBe(0)
+    }
+  })
+
+  it('is exactly zero through ambient too, whatever the pulse', () => {
+    // Unlike v1's tension-scaled shape, ambient's gate is a hard 0 now — see
+    // ECHO_MOOD_GATE's own doc: a slapback with nothing urgent to repeat
+    // reads as a stutter, not an effect, at any pulse strength.
+    for (const pulse of [0, 0.3, 0.7, 1]) {
+      expect(echoTarget('ambient', pulse)).toBe(0)
+    }
+  })
+
+  it('is higher for peak/aggressive than for ambient at the same pulse', () => {
+    for (const pulse of [0.3, 0.7, 1]) {
+      const ambient = echoTarget('ambient', pulse)
+      expect(echoTarget('peak', pulse)).toBeGreaterThan(ambient)
+      expect(echoTarget('aggressive', pulse)).toBeGreaterThan(ambient)
+    }
+  })
+
+  it('rises with the pulse at a fixed mood', () => {
+    expect(echoTarget('groove', 1)).toBeGreaterThan(echoTarget('groove', 0.2))
+    expect(echoTarget('groove', 0.2)).toBeGreaterThan(echoTarget('groove', 0))
+  })
+
+  it('scales linearly with the pulse — a mood gate, not a curve', () => {
+    // The whole shape is `pulse * gate`; halving the pulse must exactly halve
+    // the output at any fixed mood, which is what makes the beat's own decay
+    // curve reach the screen unmodified rather than being reshaped twice.
+    const full = echoTarget('peak', 1)
+    const half = echoTarget('peak', 0.5)
+    expect(half).toBeCloseTo(full / 2, 10)
+  })
+
+  it('stays in [0, 1] for any mood/pulse, including nonsense pulse input', () => {
+    for (const mood of MOODS) {
+      for (const pulse of [-1, 0, 0.5, 1, 4, NaN, Infinity, -Infinity]) {
+        const v = echoTarget(mood, pulse)
+        expect(v, `${mood} ${pulse}`).toBeGreaterThanOrEqual(0)
+        expect(v, `${mood} ${pulse}`).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+
+  it('is a pure function of its input', () => {
+    expect(echoTarget('building', 0.42)).toBe(echoTarget('building', 0.42))
+  })
+})
+
 describe('the mirror rack', () => {
   const on = (t: ReturnType<typeof mirrorForSection>) => t.mode !== 'off'
 
@@ -97,12 +166,28 @@ describe('the mirror rack', () => {
     }
   })
 
-  it('now engages a groove readily, which is the point of the second pass', () => {
+  it('engages a groove at a real tension, which is the point of the second pass', () => {
     // It used to need tension above 0.25 on a groove and fire on one eligible
     // section in three, which across a whole set meant it essentially never
     // appeared. Silence and ambient are the only restraint kept.
-    expect(on(mirrorForSection('groove', 0.1, 0))).toBe(true)
+    //
+    // The bar (0.2, raised from 0.08 by F229) is deliberately above what
+    // `visualTensionFloor`'s resting-mood term can clear alone (ceiling
+    // 0.25) — see that test group below — so 0.1 no longer qualifies on its
+    // own. 0.25 is a real, if modest, contribution beyond just "the mood is
+    // warm".
+    expect(on(mirrorForSection('groove', 0.25, 0))).toBe(true)
     expect(on(mirrorForSection('groove', 0.6, 0))).toBe(true)
+  })
+
+  it('no longer engages on resting warmth alone (F229)', () => {
+    // Before: 0.08 was low enough that `visualTensionFloor(level)` alone
+    // (ceiling 0.25) cleared it whenever a groove/building passage was even
+    // moderately energised — nothing to do with an actual build. That made
+    // "warm" effectively always-eligible, which is the root of "mirrors
+    // trigger a bit too much". 0.1 is comfortably below the new 0.2 bar.
+    expect(on(mirrorForSection('groove', 0.1, 0))).toBe(false)
+    expect(on(mirrorForSection('building', 0.1, 0))).toBe(false)
   })
 
   it('still leaves a dead-calm groove alone', () => {
@@ -221,12 +306,55 @@ describe('the lens rack', () => {
   })
 
   it('draws harder materials for harder moods', () => {
-    const soft = Array.from({ length: 12 }, (_, i) => lensForSection('ambient', i)).filter((i) => i >= 0)
-    expect(soft.every((i) => i <= 1)).toBe(true)
-    // `aggressive` draws glitch (4) and melt (3); it used to include the LED
-    // wall (5), which is now excluded from every pool — see below.
-    const hard = Array.from({ length: 12 }, (_, i) => lensForSection('aggressive', i)).filter((i) => i >= 0)
-    expect(hard.every((i) => i === 3 || i === 4)).toBe(true)
+    // `ambient` gained `fly eye` (6) in F229 — see the pool-rebalance note
+    // above `lensForSection`'s pool table — so "soft" is no longer just the
+    // two glass materials.
+    const soft = Array.from({ length: 30 }, (_, i) => lensForSection('ambient', i)).filter((i) => i >= 0)
+    expect(soft.every((i) => i === 0 || i === 1 || i === 6)).toBe(true)
+    // `aggressive` draws glitch (4), melt (3) and, since F230, pixel sort
+    // (7); it used to include the LED wall (5), which is excluded from
+    // every pool — see below.
+    const hard = Array.from({ length: 30 }, (_, i) => lensForSection('aggressive', i)).filter((i) => i >= 0)
+    expect(hard.every((i) => i === 3 || i === 4 || i === 7)).toBe(true)
+  })
+
+  it('actually rotates within a pool instead of collapsing to one entry (F229)', () => {
+    // Regression guard for the correlation bug found while widening `ambient`
+    // to a 3-item pool: the omitted-habituation engage check (`seed % 3 ===
+    // 0`) shares its modulus with a 3-item pool's index, so indexing straight
+    // off `seed` always landed on `choices[0]` — every engaged `mellow`
+    // section, silently, forever. A real fix has to show variety, not just
+    // "returns a valid index" (the existing range test would pass either
+    // way).
+    const picks = Array.from({ length: 60 }, (_, i) => lensForSection('mellow', i)).filter((i) => i >= 0)
+    expect(new Set(picks).size).toBeGreaterThan(1)
+  })
+
+  it('excludes the currently-held material when an alternative exists (F229 anti-repeat)', () => {
+    // `ambient`'s pool is [0, 1, 6]. Excluding whichever one is already
+    // showing must never produce that same index again.
+    for (let seed = 0; seed < 60; seed++) {
+      for (const avoid of [0, 1, 6]) {
+        const picked = lensForSection('ambient', seed, undefined, avoid)
+        if (picked >= 0) expect(picked, `seed ${seed} avoid ${avoid}`).not.toBe(avoid)
+      }
+    }
+  })
+
+  it('falls back to the full pool when excluding the current pick would leave nothing', () => {
+    // `groove`'s pool is [2, 6]. If the held style is neither, exclusion
+    // removes nothing and the normal pick stands — this is really just
+    // confirming avoidStyle values outside the pool are inert, not a special
+    // case.
+    const withoutAvoid = Array.from({ length: 20 }, (_, i) => lensForSection('groove', i))
+    const withIrrelevantAvoid = Array.from({ length: 20 }, (_, i) => lensForSection('groove', i, undefined, 99))
+    expect(withIrrelevantAvoid).toEqual(withoutAvoid)
+  })
+
+  it('is unaffected by avoidStyle when omitted — every existing call site unchanged', () => {
+    for (let seed = 0; seed < 30; seed++) {
+      expect(lensForSection('groove', seed)).toBe(lensForSection('groove', seed, undefined, undefined))
+    }
   })
 
   it('is silent in silence, and absent when the section did not take one', () => {
@@ -295,11 +423,14 @@ describe('the mirror rack — habituation (audit c1)', () => {
     }
   })
 
-  it('reproduces the exact original engagement pattern when omitted', () => {
-    // The literal old rule: off exactly at seed % 6 === 5.
+  it('reproduces the current base rate when habituation is omitted', () => {
+    // The literal rule as of F229: off exactly at seed % 3 === 2 (2/3
+    // engaged). Was seed % 6 === 5 (5/6) before F229 lowered the base rate —
+    // the 5/6 figure combined with the wide-open eligibility gate above to
+    // make the rack read as constant rather than as a choice.
     for (let seed = 0; seed < 30; seed++) {
       const engaged = on(mirrorForSection('peak', 0.9, seed))
-      expect(engaged, `seed ${seed}`).toBe(seed % 6 !== 5)
+      expect(engaged, `seed ${seed}`).toBe(seed % 3 !== 2)
     }
   })
 
@@ -333,6 +464,22 @@ describe('the mirror rack — habituation (audit c1)', () => {
       expect(on(mirrorForSection('silence', 0, seed, FRESH))).toBe(false)
       expect(on(mirrorForSection('ambient', 0.1, seed, FRESH))).toBe(false)
     }
+  })
+
+  it('can actually go quiet at full habituation now (F229 — tighter dampening/floor)', () => {
+    // Before F229, the mirror's habituatedGate call used the general-purpose
+    // defaults (dampening 0.7, floor 0.1), which floor-clamped a 5/6 base
+    // rate at max(0.1, 5/6*0.3) = 0.25 — still "1 in 4" at FULL habituation,
+    // never a real rest. Tightened to 0.85/0.05 specifically for this call,
+    // on a base rate now itself lowered to 2/3: max(0.05, 2/3*0.15) ≈ 0.1.
+    // Measuring the empirical rate over many seeds, not asserting the exact
+    // constant, so this survives a future retune of the base rate itself.
+    const N = 4000
+    let saturatedOn = 0
+    for (let seed = 0; seed < N; seed++) {
+      if (on(mirrorForSection('peak', 0.9, seed, SATURATED))) saturatedOn++
+    }
+    expect(saturatedOn / N).toBeLessThan(0.2)
   })
 })
 
@@ -475,5 +622,67 @@ describe('shouldRepickMirror', () => {
 
   it('with nothing moved and not stale, holds', () => {
     expect(shouldRepickMirror({ ...base, phrasesHeld: 1 })).toBe(false)
+  })
+
+  describe('the off-cooldown rest period (F229)', () => {
+    it('is unaffected when omitted — nothingToInterrupt commits unconditionally, as before', () => {
+      expect(
+        shouldRepickMirror({ ...base, nothingToInterrupt: true, currentlyEngaged: false, phrasesHeld: 0 }),
+      ).toBe(true)
+    })
+
+    it('blocks nothingToInterrupt alone until the rest period clears', () => {
+      expect(
+        shouldRepickMirror({
+          ...base,
+          nothingToInterrupt: true,
+          currentlyEngaged: false,
+          phrasesHeld: 0,
+          offPhrasesHeld: 1,
+          minOffPhrases: 2,
+        }),
+      ).toBe(false)
+    })
+
+    it('allows nothingToInterrupt again once the rest period has cleared', () => {
+      expect(
+        shouldRepickMirror({
+          ...base,
+          nothingToInterrupt: true,
+          currentlyEngaged: false,
+          phrasesHeld: 0,
+          offPhrasesHeld: 2,
+          minOffPhrases: 2,
+        }),
+      ).toBe(true)
+    })
+
+    it('never holds back sectionChange or moodMoved, even mid-rest', () => {
+      // The rest period is specifically about the autopilot reflex
+      // (nothingToInterrupt); a genuine "the music changed" signal still
+      // bypasses it entirely, same as it always has.
+      expect(
+        shouldRepickMirror({
+          ...base,
+          sectionChange: true,
+          nothingToInterrupt: true,
+          currentlyEngaged: false,
+          phrasesHeld: 0,
+          offPhrasesHeld: 0,
+          minOffPhrases: 2,
+        }),
+      ).toBe(true)
+      expect(
+        shouldRepickMirror({
+          ...base,
+          moodMoved: true,
+          nothingToInterrupt: true,
+          currentlyEngaged: false,
+          phrasesHeld: 0,
+          offPhrasesHeld: 0,
+          minOffPhrases: 2,
+        }),
+      ).toBe(true)
+    })
   })
 })

@@ -61,16 +61,13 @@ describe('slotCostMs', () => {
 
   it('prices the label out of the decision entirely', () => {
     // The finding that motivated the whole change, restated against the
-    // 2026-08-27 sweep. The old evidence (`synthgrid` ~190x dearer than
+    // current sweep (F236). The old evidence (`synthgrid` ~190x dearer than
     // `pointcloud` while carrying a cheaper label) is gone with the phantom CPU
     // surcharge, but the inversion it was evidence FOR survives intact and is
-    // now inside the live roster:
-    //
-    //   wingfold  declared `low`   measures 2.54 ms
-    //   maze      declared `high`  measures 0.42 ms
-    //
-    // Same label, 6x apart, and the labels point the wrong way round. A budget
-    // cannot mean anything on top of that.
+    // now inside the live roster — `wingfold` (declared `low`) costs several
+    // times what `maze` (declared `high`) does, labels pointing the wrong way
+    // round. Asserted as a ratio, not pinned exact values, so a future
+    // re-sweep's numbers moving doesn't make this test itself the stale claim.
     expect(slotCostMs('wingfold', 0, 'primary')).toBeGreaterThan(
       slotCostMs('maze', 0, 'primary') * 5,
     )
@@ -99,32 +96,36 @@ describe('slotCostMs', () => {
     // the full list, sorted worst-first, so the output is a roster review
     // rather than a single name.
     //
-    // ## The allowlist below (F199/F200)
+    // ## The allowlist below (F199/F200) — EMPTIED by F236
     //
     // Fixing the collect-then-assert bug above surfaced that `beats` was never
     // the only scene exempted from this bar — `travelling` and `lattesfold`
-    // are ALSO genuinely, permanently over it, and unlike the batch's other
-    // four new scenes (`gyroid`/`javazone`/`fridaylines`/`truchet`, all fixed
-    // to clear the bar for real via `pixelBudget` — see `sceneCost.ts`'s own
-    // per-scene comments), no resolution cut closes the gap for these two:
-    // both solve to the engine's 0.4 render-scale FLOOR already and still
-    // land multiples over. Each one's own file header says so explicitly —
-    // "FORCED LIVE by explicit request" (`TravellingScene.tsx`,
-    // `LattesFoldScene.tsx`) — and each independently declares
-    // `compatibleWith: []`, verified directly against the current file: a
-    // scene that can never be a background LAYER cannot blow a layer's memory
-    // or GPU budget, no matter how expensive its own frame is. The one real
-    // consequence, already documented in both scenes' own headers, is a
-    // possible hitch on the single transition INTO them if the auto-director
-    // schedules one at a tier that can't afford it — not a compounding,
-    // layer-stacking failure this bar exists to catch.
+    // were ALSO believed genuinely, permanently over it, priced there by an
+    // op-count ESTIMATE (no `/bench` measurement existed for any of the
+    // three): a worst-case, no-early-out march iteration count that, on the
+    // strength of pure instruction counting, looked unaffordable at any
+    // resolution cut, including the engine's own 0.4 render-scale floor.
     //
-    // This is a real, load-bearing exemption, not a convenience — do not add
-    // to it without the same two properties holding: `compatibleWith: []`,
-    // AND a file header stating plainly why the scene is live anyway. `beats`
-    // (F181b) predates this list and is folded in for the same reason,
-    // formalising what used to be an accident of the old loop's abort order.
-    const FORCED_LIVE_OVER_BUDGET = new Set(['beats', 'travelling', 'lattesfold'])
+    // F236 (2026-09-13/14) actually measured all three on real hardware.
+    // None of them are over this bar — `beats` 0.21 ms, `travelling` 0.26 ms,
+    // `lattesfold` 1.10 ms at tier 0, against a bar of several milliseconds.
+    // The op-count method turned out to be wrong by 250-300x for the two
+    // worst of the three (see `sceneCost.ts`'s own F236 header for the full
+    // finding and why it happened): real GPU behaviour and/or the resolution
+    // these scenes actually resolve to at their declared `pixelBudget` made
+    // the true cost a small fraction of the theoretical worst case. The
+    // allowlist that existed to tolerate a wrong number is empty because the
+    // number is fixed, not because the bar moved.
+    //
+    // `compatibleWith: []` on `travelling`/`lattesfold` is UNCHANGED and
+    // deliberately not touched here — it is a separate, scene-authorial
+    // decision about layer composability, not a symptom of the cost estimate
+    // this correction fixed. Whether either scene should now be allowed as a
+    // layer, now that the cost concern behind "FORCED LIVE by explicit
+    // request" no longer holds, is a product call for whoever owns
+    // `TravellingScene.tsx`/`LattesFoldScene.tsx` to make, not an automatic
+    // consequence of a corrected number.
+    const FORCED_LIVE_OVER_BUDGET = new Set<string>([])
     const bar = sceneBudget(0) / 2
     const failures = SCENES.filter((scene) => !FORCED_LIVE_OVER_BUDGET.has(scene.id))
       .map((scene) => ({

@@ -1,4 +1,5 @@
 import { ProfileAccumulator, type SceneProfile } from './sceneProfile'
+import { FEEDBACK_MS, POST_CHAIN_MS } from '../engine/frameLoad'
 /**
  * Scene cost benchmark: the measurement state machine.
  *
@@ -478,7 +479,8 @@ export function formatPostChainDelta(d: PostChainDelta, referenceMP: number): st
     '',
     `median ${d.medianMsPerMP.toFixed(3)} ms/MP over ${d.cells.length} matched cell(s); ${spread}`,
     `=> ${d.atReferenceMs(referenceMP).toFixed(2)} ms at the ${referenceMP} MP reference` +
-      ` (frameLoad.FILL_REFERENCE_MP), against POST_CHAIN_MS + FEEDBACK_MS = 3 reserved today`,
+      ` (frameLoad.FILL_REFERENCE_MP), against POST_CHAIN_MS + FEEDBACK_MS = ` +
+      `${(POST_CHAIN_MS + FEEDBACK_MS).toFixed(2)} reserved today`,
   ]
   if (d.skipped.length > 0) {
     out.push('', 'skipped:')

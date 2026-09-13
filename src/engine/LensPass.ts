@@ -198,7 +198,7 @@ const LENS_FRAG = /* glsl */ `
       float gap = step(0.08, fp.x) * step(fp.x, 0.92) * step(0.08, fp.y) * step(fp.y, 0.92);
       shade = mix(1.0, gap, min(1.0, uAmt * 2.0)); // hard black grid
       shade *= 1.0 + 0.18 * uKick;                 // lamps brighten on the hit
-    } else {
+    } else if (uStyle < 6.5) {
       // fly eye: hex lattice of convex lenslets, each refracting its
       // neighbourhood like a glass bead — the radial cousin of the flute slope.
       // Amount sweeps bead count 26 -> 5; kicks click the lattice rotation.
@@ -216,6 +216,75 @@ const LENS_FRAG = /* glsl */ `
       off.x /= uAspect;
       shade = 1.0 - 0.45 * uAmt * smoothstep(0.72, 1.05, rr);
       sheen = pow(max(0.0, 1.0 - length(g - vec2(0.16, 0.2)) * 3.2), 3.0) * uAmt * (0.10 + 0.22 * uKick);
+    } else {
+      // pixel sort: a bounded real-time approximation of glitch-art pixel
+      // sorting. A true sort walks an unbounded run and reorders by
+      // luminance, which has no parallel GPU formulation — every pixel's
+      // shader invocation is independent, so it cannot see the sorted state
+      // of its neighbours. This instead looks a fixed number of taps up one
+      // column, finds the brightest tap that clears a threshold, and pulls
+      // that sample down into the current pixel. The hard per-tap cutoff
+      // (nothing blends between "found" and "not found") is what makes it
+      // read as sorted bands rather than a directional blur.
+      //
+      // uAmt lowers the threshold (louder -> more of the frame qualifies)
+      // and widens the search window; a kick re-rolls uSeed (see
+      // lensBeatMode's seed case), shifting the per-tap jitter so a held
+      // frame does not freeze into one static streak pattern.
+      //
+      // Direction: re-rolled with the rest of the seed on every kick (see
+      // lensBeatMode's 'seed' case) so consecutive hits don't always drag the
+      // same way. Two families, chosen per-seed: most of the time a fixed global
+      // angle (still one direction for the whole frame, just not always "down"),
+      // and about a third of the time RADIAL — streaks running outward from
+      // frame centre instead of a screen-axis direction. Radial earns its own
+      // branch rather than being folded into the same trig as the fixed-angle
+      // case: every other lens material in this rack, and the whole roster's own
+      // documented aesthetic (docs/09_Rendering_Engine.md: a small bright subject
+      // on dead black), treats the FRAME CENTRE as the one point that matters, so
+      // a material that can point its distortion AT that point rather than
+      // blindly across the screen is worth having as a real option, not an
+      // approximation of one.
+      float seedFloor = floor(uSeed);
+      float modeRoll = hash2(vec2(seedFloor, 3.7)).y;
+      vec2 dir;
+      if (modeRoll < 0.35) {
+        vec2 fromCenter = vec2((vUv.x - 0.5) * uAspect, vUv.y - 0.5);
+        float r = length(fromCenter);
+        dir = r > 1e-4 ? (fromCenter / r) / vec2(uAspect, 1.0) : vec2(0.0, 1.0);
+        dir = normalize(dir);
+      } else {
+        float ang = hash2(vec2(seedFloor, 11.3)).x * 6.2831853;
+        dir = vec2(cos(ang), sin(ang));
+      }
+
+      const int SORT_TAPS = 14;
+      // A kick clears the bar further, on top of whatever uAmt already
+      // dropped it to, so a hit reads as the sort visibly grabbing MORE of
+      // the frame for a moment rather than just holding at wherever uAmt
+      // left it. Clamped well clear of 0.0: an unclamped hit at high uAmt
+      // could otherwise drive the threshold low enough that nearly every tap
+      // qualifies, which would collapse the hard per-tap cutoff into a soft
+      // average and read as a blur rather than a sort.
+      float threshold = clamp(1.0 - uAmt * 0.55 - uKick * 0.25, 0.05, 1.0);
+      float step0 = 0.0025 * (2.0 + 10.0 * uAmt);
+      float bestLum = -1.0;
+      float bestOff = 0.0;
+      for (int i = 1; i <= SORT_TAPS; i++) {
+        float d = float(i) * step0;
+        vec3 s = texture2D(tDiffuse, clamp(vUv + dir * d, 0.0, 1.0)).rgb;
+        float lum = dot(s, vec3(0.299, 0.587, 0.114));
+        // A run's real length varies pixel to pixel; a perfectly regular
+        // window reads as a repeating grid instead of a sort, so the
+        // threshold each tap is checked against is jittered per pixel.
+        float jitter = 0.8 + 0.4 * hash2(vec2(float(i), uSeed)).x;
+        if (lum * jitter > threshold && lum > bestLum) {
+          bestLum = lum;
+          bestOff = d;
+        }
+      }
+      off = dir * bestOff;
+      shade = 1.0;
     }
 
     // The shared traits, applied to every material: prismatic dispersion (each
@@ -233,21 +302,33 @@ const LENS_FRAG = /* glsl */ `
 `
 
 /**
- * Hard kill switch (F142, explicit user request, 2026-08-29): "TURN OFF LENS
- * FOR NOW, THEY LOOK SO HORRIBLE." Forces the pass off regardless of what the
+ * Kill switch (F142, explicit user request, 2026-08-29): "TURN OFF LENS FOR
+ * NOW, THEY LOOK SO HORRIBLE." Forces the pass off regardless of what the
  * director ({@link lensForSection}/{@link lensAmountTarget}), the `melt`
  * transition rack, or the debug panel would otherwise set — this is the one
  * choke point every source of `LensRackState` flows through before render.
- * Flip back to `false` to re-enable once the look is revisited.
  *
- * One deliberate exception: `advance()`'s `djCamActive` param bypasses this
- * switch while a DJ Cam cutaway is on screen (`performanceState.djCam.active`,
- * see docs/13_DJ_Cam.md). The F142 verdict was about the standing look on the
- * regular scene roster; DJ Cam is a separate, later decision to let the same
- * rack treat the live camera feed, and does not itself flip the general kill
- * switch back on for anything else.
+ * **Re-enabled (F229, 2026-09-12).** The complaint behind F142 was never "the
+ * materials themselves are bad" — it was that `ambient`/`mellow` (the moods
+ * that dominate most of a set) drew from a two-item, one-family pool (glass
+ * ribs/fan) with no anti-repeat, so the rack read as "always the same two
+ * looks" rather than as a rotation. `lensForSection` (opticalDirector.ts) now
+ * widens that pool and excludes the currently-held material before picking
+ * again. Left as a named, flippable constant rather than deleted — same
+ * one-line-revert posture as `ISF_AUTOFIRE_ENABLED` — because a future look
+ * complaint about a SPECIFIC material is a `DISABLED_FILTERS`-style per-item
+ * call, not a reason to reach for this switch again; this one is for "the
+ * whole rack needs to come off the table," which is what actually happened
+ * in 2026-08-29 and might again.
+ *
+ * One deliberate exception, now inert while this flag is `false`: `advance()`'s
+ * `djCamActive` param bypassed this switch while a DJ Cam cutaway was on
+ * screen (`performanceState.djCam.active`, see docs/13_DJ_Cam.md), so the
+ * rack could treat the live camera feed even while disabled everywhere else.
+ * Kept rather than removed — if this flag is ever flipped back to `true`, the
+ * DJ Cam carve-out becomes meaningful again with no further edit.
  */
-const LENS_HARD_DISABLED = true
+const LENS_HARD_DISABLED = false
 
 export class LensPass extends Pass {
   private readonly material: THREE.ShaderMaterial

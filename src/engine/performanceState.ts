@@ -190,6 +190,43 @@ export interface PerformanceState {
   trails: number
 
   /**
+   * 0..1 — discrete multi-tap echo: three fixed-delay snapshots of the frame,
+   * composited as separate ghost copies at falling opacity. See
+   * engine/EchoPass.ts and engine/echoParams.ts for what this one number
+   * expands into (per-tap decay; spacing is `echoTapSpacingSec` below).
+   *
+   * F231, reshaped by F232. Distinguished from `trails` above on purpose
+   * rather than folded into it: `trails` is ONE continuously-decaying history
+   * buffer (the MilkDrop/Butterchurn lineage), this is THREE discrete
+   * snapshots from fixed moments in the recent past (the Resolume "RGB
+   * Delay"/echo lineage) — different enough in both mechanism and read (soft
+   * continuous smear versus sharp discrete repeats) that one dial covering
+   * both would mean neither could be tuned independently of the other.
+   *
+   * Unlike every other field in this section, this one is deliberately NOT
+   * eased with `approach()` by its writer (`PerformanceStateBridge.tsx`) — it
+   * IS `beatPulse()`'s own already-shaped curve (sharply peaked at the beat,
+   * decaying toward the next one), and smoothing on top of a curve that
+   * already snaps to zero and back every beat would blur the one thing that
+   * makes it read as a repeat rather than a wash. See
+   * `opticalDirector.ts#echoTarget`'s F232 doc for the full diagnosis of why
+   * v1's continuous, mood-scaled shape (the same shape `trails` correctly
+   * uses) was wrong for an effect that is supposed to be a MOMENT.
+   */
+  echo: number
+
+  /**
+   * Seconds between each of `echo`'s three taps — beat-locked (see
+   * `echoParams.ts#resolveEchoTapSpacingSec`), NOT scaled by `echo`'s own
+   * value. Read directly by `PostFXChain.tsx` and handed to
+   * `EchoPass.setEcho()`; `EchoPass` itself reads no audio, so this is the
+   * one number that carries tempo across that boundary. Defaults to an
+   * eighth-note at 120 bpm, matching `resolveEchoTapSpacingSec`'s own
+   * fallback for an unstarted/stalled tempo estimate.
+   */
+  echoTapSpacingSec: number
+
+  /**
    * The MIRROR rack: kaleidoscopic symmetry, mirror-repeat tiling, radial
    * twist, shear slicing, and the spin that turns the fold. See
    * engine/opticalRack.ts and engine/MirrorPass.ts.
@@ -356,6 +393,8 @@ export const performanceState: PerformanceState = {
   vignette: 0.85,
   fog: 0,
   trails: 0,
+  echo: 0,
+  echoTapSpacingSec: 0.25, // an eighth-note at the 120 bpm fallback
   mirror: { segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0, mix: 0 },
   lens: { amount: 0, style: 0 },
   filter: { id: null, mix: 0 },

@@ -1051,6 +1051,7 @@ function PostFx({ tele }: { tele: Telemetry | null }) {
         <FxSlider label="vignette" value={fx.vignette} min={0} max={1} overridden={!!overrides.vignette} onChange={(v) => setValue('vignette', v)} onReset={() => resetField('vignette')} />
         <FxSlider label="fog" value={fx.fog} min={0} max={1} overridden={!!overrides.fog} onChange={(v) => setValue('fog', v)} onReset={() => resetField('fog')} />
         <FxSlider label="trails" value={fx.trails} min={0} max={1} overridden={!!overrides.trails} onChange={(v) => setValue('trails', v)} onReset={() => resetField('trails')} />
+        <FxSlider label="echo" value={fx.echo} min={0} max={1} overridden={!!overrides.echo} onChange={(v) => setValue('echo', v)} onReset={() => resetField('echo')} />
 
         <h4 className="fx-head">mirror</h4>
         <FxSlider label="segments" value={fx.mirrorSegments} min={0} max={12} step={1} overridden={!!overrides.mirrorSegments} onChange={(v) => setValue('mirrorSegments', v)} onReset={() => resetField('mirrorSegments')} />
@@ -1154,6 +1155,7 @@ function PostFxLive({ tele }: { tele: Telemetry | null }) {
       {tele.glitch > 0.01 && <FxLiveBar label="CA" value={tele.glitch} max={1} />}
       {tele.fog > 0.01 && <FxLiveBar label="fog" value={tele.fog} max={1} />}
       {tele.trails > 0.01 && <FxLiveBar label="trails" value={tele.trails} max={1} />}
+      {tele.echo > 0.01 && <FxLiveBar label="echo" value={tele.echo} max={1} />}
       {mirrorOn && (
         <div className="fx-live-row">
           <span className="fx-label">mirror</span>

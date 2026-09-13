@@ -127,6 +127,121 @@ describe('danceability -> groove bonus (F168, MusiCNN-absent fallback)', () => {
   })
 })
 
+/** Drive the estimator to a loud, top-of-range state — where `aggressive`'s
+ *  own `loud` gate (shared with `aggressiveBonus`) is open. */
+function runLoudLike(mutate: (f: AudioFeatures) => void, seconds = 12): AudioFeatures {
+  const est = new MoodEstimator()
+  const f = createEmptyFeatures()
+  f.delta = 1 / 60
+  for (let t = 0; t < seconds * 60; t++) {
+    f.time = t / 60
+    f.silence = false
+    f.energy = 0.85
+    f.bass = 0.5
+    f.centroid = 0.6
+    f.confidence = 0.7
+    f.spectralFlatness = 0.4
+    f.crestFactor = 1.5
+    mutate(f)
+    est.update(f)
+  }
+  return f
+}
+
+/** Drive the estimator to a quiet, sparse state — where `ambient`'s own
+ *  `calm` gate (shared with `relaxedBonus`) is open. No frame ever spikes
+ *  `f.flux`, so onset density (and therefore `busy`) stays at its default 0. */
+function runQuietLike(mutate: (f: AudioFeatures) => void, seconds = 12): AudioFeatures {
+  const est = new MoodEstimator()
+  const f = createEmptyFeatures()
+  f.delta = 1 / 60
+  for (let t = 0; t < seconds * 60; t++) {
+    f.time = t / 60
+    f.silence = false
+    f.energy = 0.1
+    f.bass = 0.05
+    f.centroid = 0.3
+    f.confidence = 0.3
+    f.spectralFlatness = 0.3
+    f.crestFactor = 3
+    mutate(f)
+    est.update(f)
+  }
+  return f
+}
+
+describe('mood_aggressive -> aggressive bonus (F235)', () => {
+  it('raises the aggressive score when the classifier reports aggressive material', () => {
+    const without = runLoudLike((f) => {
+      f.moodsValid = true
+      f.moods.aggressive = 0
+    })
+    const with_ = runLoudLike((f) => {
+      f.moodsValid = true
+      f.moods.aggressive = 0.95
+    })
+    expect(with_.mood.scores.aggressive).toBeGreaterThan(without.mood.scores.aggressive)
+  })
+
+  it('is neutral — not suppressive — when the classifier never ran', () => {
+    // Same failure `mood_party`'s identical test guards: a multiplicative
+    // bonus would collapse aggressive to near zero with no models fetched.
+    const noModels = runLoudLike((f) => {
+      f.moodsValid = false
+      f.moods.aggressive = 0
+    })
+    const modelsSayZero = runLoudLike((f) => {
+      f.moodsValid = true
+      f.moods.aggressive = 0
+    })
+    expect(noModels.mood.scores.aggressive).toBeGreaterThan(0)
+    expect(noModels.mood.scores.aggressive).toBeCloseTo(modelsSayZero.mood.scores.aggressive, 5)
+  })
+
+  it('cannot by itself turn a quiet passage into aggressive', () => {
+    const quiet = runQuietLike((f) => {
+      f.moodsValid = true
+      f.moods.aggressive = 1
+    })
+    expect(quiet.mood.state).not.toBe('aggressive')
+  })
+})
+
+describe('mood_relaxed -> ambient bonus (F235)', () => {
+  it('raises the ambient score when the classifier reports relaxed material', () => {
+    const without = runQuietLike((f) => {
+      f.moodsValid = true
+      f.moods.relaxed = 0
+    })
+    const with_ = runQuietLike((f) => {
+      f.moodsValid = true
+      f.moods.relaxed = 0.95
+    })
+    expect(with_.mood.scores.ambient).toBeGreaterThan(without.mood.scores.ambient)
+  })
+
+  it('is neutral — not suppressive — when the classifier never ran', () => {
+    const noModels = runQuietLike((f) => {
+      f.moodsValid = false
+      f.moods.relaxed = 0
+    })
+    const modelsSayZero = runQuietLike((f) => {
+      f.moodsValid = true
+      f.moods.relaxed = 0
+    })
+    expect(noModels.mood.scores.ambient).toBeGreaterThan(0)
+    expect(noModels.mood.scores.ambient).toBeCloseTo(modelsSayZero.mood.scores.ambient, 5)
+  })
+
+  it('cannot by itself turn a loud passage into ambient', () => {
+    const loud = runLoudLike((f) => {
+      f.moodsValid = true
+      f.moods.relaxed = 1
+    })
+    expect(loud.mood.state).not.toBe('ambient')
+  })
+})
+
 describe('voiceFocus -> camera framing', () => {
   const modes = ['orbit', 'locked', 'push', 'cinematic', 'hover'] as const
 

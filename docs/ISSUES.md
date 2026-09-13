@@ -10357,3 +10357,883 @@ per-frame canvas heavy enough to distort the reading.
       caveat as F227: confirming the fold genuinely never appears over a
       real camera feed (as opposed to just reading the gate correctly) needs
       a real two-window session with camera permission.
+
+- [x] **F229 · Mirror and lens over-trigger — wiring fix at the picker level,
+      not a taste call** — *fixed 2026-09-12* `src/engine/opticalDirector.ts`,
+      `src/engine/PerformanceStateBridge.tsx`, `src/engine/LensPass.ts`
+
+      User report: "mirrors also trigger a bit too much," and specifically
+      "the glass rib and glass fan trigger too much... it's almost as if the
+      lenses are always active" — which is why F142's kill switch existed in
+      the first place. Traced to two DIFFERENT root causes, one per rack; the
+      lens complaint was never a frequency problem.
+
+      **Mirror — the eligibility gate and the base rate were each too loose
+      on their own, and multiplicative together.** `mirrorForSection`'s
+      `warm` (groove/building) bar was `tension > 0.08`
+      (`opticalDirector.ts`), and `visualTensionFloor(mood.level)` — a
+      RESTING-mood term, nothing to do with an actual build — alone reaches
+      0.08 once `level` crosses about 0.32. Groove/building are the resting
+      moods of most of a set, so the gate was open almost for free rather
+      than gating on "something is actually happening." Once open, the base
+      engagement rate was 5/6 (F131), and `habituatedGate`'s general-purpose
+      dampening/floor (0.7 / 0.1) only ever suppressed that down to a floor
+      of `max(0.1, 5/6*0.3) = 0.25` — a "fully sick of it" rack still fired 1
+      section in 4. On top of that, `shouldRepickMirror`'s `nothingToInterrupt`
+      (off -> on) was a fully unconditional trigger, so the one phrase in six
+      it *did* turn off, the very next phrase it was already eligible to
+      re-engage at the full rate. Three loosenesses stacked into "reads as
+      always on."
+
+      Fixed all three:
+        - `warm`'s bar raised 0.08 -> 0.2, which `visualTensionFloor`'s own
+          ceiling (0.25 at `level` == 1) can only clear at the very top of the
+          range — so a groove/building passage now needs a real contribution
+          from an actual build, prediction or drop, the same way `mellow`'s
+          0.3 bar already did.
+        - Base rate lowered 5/6 -> 2/3 (`seed % 6 !== 5` -> `seed % 3 !== 2`
+          in the omitted-habituation fallback), and this specific call now
+          passes tightened `dampening`/`floor` (0.85 / 0.05, up from the
+          shared defaults) so full habituation actually reaches a real rest
+          (`max(0.05, 2/3*0.15) ≈ 0.1`) instead of floor-clamping at 25%.
+          Passed explicitly at the call site rather than by changing
+          `habituatedGate`'s shared defaults, so `lensForSection` (whose own
+          base rate was never the problem) is not silently retuned as a side
+          effect.
+        - `shouldRepickMirror` gained an optional rest-period guard:
+          `offPhrasesHeld`/`minOffPhrases`. `nothingToInterrupt` now commits
+          immediately only once the rack has sat at OFF for
+          `MIRROR_MIN_OFF_PHRASES` (2, ~15-30s at typical tempos) consecutive
+          phrase-edges; `sectionChange`/`moodMoved` still bypass it
+          unconditionally, since those are genuine "the music changed"
+          signals, not the autopilot reflex this guard exists to slow down.
+          Both new fields are optional and default to the original
+          unconditional behaviour when omitted, so every pre-existing call
+          site and test is unaffected. Wired via a new `mirrorOffPhrases` ref
+          in `PerformanceStateBridge.tsx`, incremented alongside the existing
+          `mirrorPhrasesHeld` and reset the instant a repick re-engages.
+
+      **Lens — not a frequency problem, a pool-composition problem.**
+      `lensForSection`'s engagement rate (1/3 per SECTION, not phrase) was
+      never what the user was describing. The actual defect: `ambient`'s pool
+      was `[glass ribs, glass fan]` and nothing else, and `mellow`'s was
+      two-thirds the same pair. Ambient/mellow dominate a set's non-peak
+      runtime, so on the rare section the lens DID engage during them, it was
+      ribs or fan close to guaranteed — and with no anti-repeat, two
+      consecutive engaged sections could land on the identical material
+      again. Habituation cannot fix this: it gates WHETHER a lens fires,
+      never WHICH one, so a perfectly-tuned frequency still reads as "always
+      the same two materials" if the pool is this thin.
+
+      Fixed:
+        - `ambient`'s pool widened to `[0, 1, 6]` (+ hex fly-eye), matching
+          `mellow`'s existing shape — `fly eye` was already vetted as calm
+          enough for `mellow`, so this is not a new judgement call, just
+          extending an existing one.
+        - `lensForSection` gained an optional 4th parameter, `avoidStyle`:
+          the currently-held material (`performanceState.lens.style`) is
+          excluded from the pool before indexing, falling back to the full
+          pool only if exclusion would leave nothing — the identical shape
+          `AutoPilot.tsx`'s `pickPalette` already uses for the same problem.
+          Wired from `PerformanceStateBridge.tsx` by passing `p.lens.style`
+          (which keeps its last value even while disengaged — "the last
+          material SHOWN," not just "the last one picked").
+
+      **A third, previously-latent bug found and fixed while widening
+      `ambient` to 3 entries.** The omitted-habituation engage check is
+      `seed % 3 === 0`; indexing straight off `seed` (`options[seed %
+      options.length]`) shares that exact modulus for any mood whose pool
+      also has exactly 3 entries. `mellow` already had 3 (`[0, 1, 6]`), and
+      the `ambient` rebalance above just gave it a second victim. Every
+      engaged seed under this path is a multiple of 3, so `seed % 3` is
+      trivially 0 every time — the pick collapsed to `choices[0]` (always
+      glass ribs) and could never be anything else. Same failure class this
+      codebase already found once for the mirror's vortex sign (two
+      selectors correlated through a shared bit), just with a length-3 pool
+      instead of a factor of 2. Fixed by indexing off `Math.floor(seed / 3)`
+      instead of `seed` directly — decorrelates the pick from the engage
+      check while staying exactly as deterministic. A regression test
+      (`'actually rotates within a pool instead of collapsing to one entry'`)
+      asserts real variety over 60 seeds, not just "returns a valid index,"
+      which would have passed either way.
+
+      **`LENS_HARD_DISABLED` (F142) flipped back to `false`.** The complaint
+      that led to the kill switch ("they look so horrible") was, on this
+      diagnosis, actually the pool/anti-repeat defect above wearing the
+      materials' own reputation — not the materials themselves. Left as a
+      named, flippable constant rather than deleted (same posture as
+      `ISF_AUTOFIRE_ENABLED`): a future complaint about one SPECIFIC material
+      is a `DISABLED_FILTERS`-style per-item call, this switch is for "the
+      whole rack again," which is what actually happened once already.
+
+      `npm run check` clean: typecheck, lint, **1628 tests** (10 new — pool
+      rebalance, anti-repeat, the correlation-bug regression, the off-cooldown
+      guard, the tightened-habituation floor, updated fixtures for the three
+      tests whose pinned numbers this entry deliberately changed), build.
+      Not verified live: both racks' actual on-screen frequency over a real
+      set is unmeasured, same caveat every prior optical-rack entry in this
+      file carries — the fix is numerically confirmed against the picker
+      functions' own contract, not eyeballed against real music.
+
+- [ ] **F230 · Lens rack gains an eighth material: pixel sort** —
+      *2026-09-12* `src/engine/LensPass.ts`, `src/engine/opticalRack.ts`,
+      `src/engine/opticalDirector.ts`
+
+      Requested alongside a second new effect (an echo/delay post-fx rack,
+      tracked separately — see the engine's `EchoPass`/`echoParams` addition
+      landing in the same session) after a review of what current VJ tooling
+      (Resolume's stock effect list, the TouchDesigner glitch-art community)
+      offers that this engine's mirror/lens/feedback trio does not: discrete
+      time-offset echoes, and hard-edged content-driven displacement. Pixel
+      sort is the second of those — closer in spirit to `glitch`'s tears and
+      `melt`'s liquefy than to the soft glass materials, so it earns its own
+      slot in the two hottest moods rather than displacing either.
+
+      Appended as `LENS_STYLES[7]` (`'pixel sort'`) — append-only, so no
+      existing preset's stored style index repoints at a different material
+      (`opticalRack.test.ts`'s "has not been reordered" tripwire updated to
+      match, not weakened). `lensBeatMode(7)` returns `'seed'`: a kick
+      re-rolls the sort threshold's phase, the same re-seat mechanism
+      `glitch` already uses, so a held note does not freeze the streak
+      pattern in place. Added to `peak`/`aggressive`'s pools alongside
+      `melt`/`glitch` (a third, distinct flavour of "signal breaking up");
+      deliberately NOT added to `building`, `groove` or the ambient/mellow
+      family — it is the most extreme material in the rack and does not want
+      a wider audience than that on day one.
+
+      **The technique**: true pixel-sort has no parallel GPU formulation (a
+      per-pixel sort needs to see its whole run; a fragment shader invocation
+      sees only its own pixel), so this is the standard real-time
+      approximation — a fixed number of taps (14) walked up one column, the
+      brightest tap that clears a threshold is pulled down into the current
+      pixel, and a pixel whose column has nothing above threshold is left
+      untouched. The hard per-tap cutoff (nothing blends between "found" and
+      "not found") is what reads as sorted bands rather than a directional
+      blur. `uAmt` lowers the threshold and widens the search window (louder
+      -> more of the frame qualifies); each tap is jittered per-pixel off
+      `uSeed` so the window doesn't read as a repeating grid. Reuses the
+      shared per-material epilogue (prismatic dispersion, shade, sheen, glow)
+      every other material already goes through — no special-cased output
+      path.
+
+      `npm run check` clean: typecheck, lint, tests (`lensBeatMode(7)`
+      regression case added), build. **Not verified on a real GPU driver** —
+      this repo has no committed headless-WebGL harness (§8 of
+      `docs/HANDOFF.md` names this exact gap for prior shader work: "no
+      committed tool for this... worth adding"), so the GLSL is confirmed
+      syntactically consistent with the rest of `LENS_FRAG` (constant loop
+      bounds, no dynamic indexing, reuses the file's own `hash2` helper) but
+      not compiled-and-linked the way F15/F131's own shader work was. Compile
+      and link it in a real WebGL context, and read back exposure numbers
+      against the roster's targets (§0 of `docs/HANDOFF.md`), before calling
+      this genuinely done.
+
+- [ ] **F231 · A third post-fx rack: discrete multi-tap echo/delay** —
+      *2026-09-12* `src/engine/EchoPass.ts` (new), `src/engine/echoParams.ts`
+      (new), `src/engine/PostFXChain.tsx`, `src/engine/performanceState.ts`,
+      `src/engine/opticalDirector.ts`, `src/engine/PerformanceStateBridge.tsx`,
+      `src/store.ts`, `src/ui/Console.tsx`, `src/engine/outputLink.ts`
+
+      The echo/delay half of the same "what current VJ tooling offers that
+      this engine doesn't" review that produced F230's pixel-sort material —
+      discrete time-offset echoes, this time, rather than hard-edged
+      content-driven displacement. Sits alongside the mirror rack
+      (`MirrorPass`/`opticalRack.ts`) and the lens rack (`LensPass`) as a
+      third permanently-mounted `Pass`, and alongside `FeedbackPass` as a
+      second "history" effect — but a genuinely different one, not a
+      reskin. `FeedbackPass` is the MilkDrop/Butterchurn lineage: ONE
+      continuously-decaying buffer, re-warped through zoom/rotate/swirl every
+      frame, that never has a "moment," only "now, faded." This is the
+      Resolume "RGB Delay"/strobe-multiply lineage instead: THREE fixed
+      snapshots taken at specific instants in the recent past, held rigid and
+      composited as separate, sharp ghost copies at falling opacity. The two
+      read as different effects on screen (soft continuous smear versus
+      distinct discrete repeats) precisely because they work differently
+      under the hood, which is why `echo` is its own `performanceState`
+      field rather than a second mode on `trails`.
+
+      **Mounting and compositing follow `FeedbackPass`'s own template
+      exactly**, per the house rule that the post-fx effect list is
+      structurally fixed (`PostFXChain.tsx`'s header): a raw `Pass`,
+      constructed once via `useMemo`, mounted permanently, gated only by its
+      own `enabled` flag so `echo` at rest costs nothing beyond one branch —
+      no fullscreen draw, no copy draw. `isEchoActive`/`resolveEchoKnobs`
+      (`echoParams.ts`) are pure, WebGL-context-free functions mirroring
+      `feedbackParams.ts`'s "one dial expands to several knobs" shape, tested
+      with no GPU in the loop. The blend composites with `max()`, never
+      addition, against the same exposure discipline every prior effect in
+      this file cites (`docs/09_Rendering_Engine.md`: <=15% of frame lit,
+      mean luma <20, 0% blown to white) — three ghost copies summed on top of
+      the live frame every frame is exactly the washout an additive history
+      loop produces, and `max` cannot exceed what the single brightest
+      contributor already was. Sits directly after `FeedbackPass` in the
+      chain and before `Bloom`, so bloom blooms the accumulated result of
+      both history effects, not just the live frame — the same reasoning
+      `FeedbackPass`'s own header gives for its position, now shared by two
+      passes instead of one.
+
+      **One real design choice that isn't just "copy FeedbackPass": what a
+      tap stores.** `FeedbackPass`'s copy step reads back its OWN blend
+      result (`outputBuffer`) into `history`, which is correct there because
+      a continuous trail is SUPPOSED to compound — each frame's history
+      already carries a faded trace of everything before it. Doing the same
+      for echo would mean each of the three taps progressively accumulates
+      every earlier tap inside it, and three intended-to-be-crisp discrete
+      snapshots would decohere into the same kind of soft accumulating wash
+      `FeedbackPass` already provides — a second trails effect wearing an
+      echo's name, not a genuinely different look. `EchoPass` instead copies
+      `inputBuffer` — the DRY frame arriving into the pass, before its own
+      blend — into whichever tap slot is due, which is what an actual
+      multi-tap delay line does: three independent reads of the same source
+      signal at three different delays, no feedback path between them. The
+      three fixed render targets rotate by swapping JS array references
+      (`taps.unshift(taps.pop())`) rather than moving GPU objects around —
+      costs nothing, no GL call — so whichever reference was "the oldest tap"
+      a moment ago is simply the next one written to.
+
+      **Two things deliberately NOT built, both flagged as follow-up rather
+      than silently scoped out:**
+        - **Wall-clock tap spacing, not beat-locked.** A real echo wants its
+          taps on a beat subdivision — a 1/8-note slapback reads as
+          intentional in a way a fixed 60-300ms range never quite does — but
+          that needs bpm plumbed down to `echoParams.ts`, and `PostFXChain`
+          is a pure executor that reads no audio (its own header). Wiring
+          bpm through `performanceState` for exactly one consumer is real
+          work, not attempted here; `echoParams.ts`'s header documents the
+          gap in the same place a future implementer would look.
+        - **A continuous, mood-scaled target (`echoTarget` in
+          `opticalDirector.ts`), not a section-scoped choice-with-habituation
+          the way `mirrorForSection`/`lensForSection` work.** Those two
+          model their effects as a discrete CHOICE, re-taken at a musical
+          boundary and held, because a kaleidoscope fold or a glass material
+          IS the look of the frame and swapping it continuously reads as the
+          picture never settling. `echoTarget` instead behaves like
+          `trailsTarget`: near-zero through `silence`/`ambient` (echo wants a
+          transient to repeat — three copies of a held pad just reads as a
+          blurrier pad, not as an echo), rising through `groove`/`building`,
+          peaking in `peak`/`aggressive`, nudged a little by `visualTension`.
+          Eased at rate 0.9 in `PerformanceStateBridge` (faster than
+          `trails`' 0.7 — echo is meant to read as punctuation on a build,
+          and a rhythmic device that arrives sluggishly reads as late to the
+          beat it's supposed to be repeating). The richer shape — an echo
+          that specifically ARRIVES on a drop and holds for a phrase, the
+          same "chosen at a boundary, held for a duration" discipline
+          `mirrorForSection`'s own header argues a strong effect needs — is a
+          legitimate future upgrade, not a considered rejection; `echoTarget`
+          documents this in place rather than pretending v1's simplicity was
+          the final word.
+
+      Wired through every layer the mirror/lens/trails dials already go
+      through: `performanceState.echo` (defaults to 0, same posture as
+      `trails`/`mirror`/`lens` — the seam exists, nothing autonomous drove it
+      until this entry), `DebugPostFx.echo`/`DEBUG_POSTFX_KEYS` for manual
+      override in the Console panel (`PostFx`'s `fx-block` gets an `echo`
+      slider next to `trails`, `PostFxLive` gets a matching live bar gated on
+      `tele.echo > 0.01` the same way `trails`/`fog` are), and
+      `outputLink.ts`'s `Telemetry`/`publishTelemetry` so the output window
+      actually reports a real number for that bar to read instead of
+      `undefined`.
+
+      **Tests**: `echoParams.test.ts` (off-threshold behaviour, monotonic tap
+      spacing, decay fixed and in the 0.55-0.7 band, clamping and NaN/
+      Infinity degradation, purity — mirrors `feedbackParams.test.ts`
+      case-for-case), a new `describe('echo', ...)` block in
+      `opticalDirector.test.ts` (zero through silence regardless of tension,
+      near-zero for ambient, strictly higher for peak/aggressive than ambient
+      at matched tension, rises with tension, stays in `[0, 1]` for garbage
+      input including `NaN`/`Infinity`/negative tension, purity), and
+      `echoPass.test.ts` — no GL context in this suite (vitest runs in
+      `node`), so, same posture as `lensPass.test.ts`, what's checkable is
+      `Pass.enabled` reacting correctly to `setEcho()` across enable/disable/
+      re-enable, not that the shader draws anything or that a tap actually
+      holds the right frame.
+
+      `npm run check` clean: typecheck, lint, **1646 tests passed, 1 skipped**
+      (18 new: 9 in `echoParams.test.ts`, 6 in `opticalDirector.test.ts`, 3 in
+      `echoPass.test.ts`), build. **Not verified on a real GPU driver** — same
+      gap F230 immediately above names for its own shader work, and the same
+      root cause: this repo has no committed headless-WebGL harness (§8 of
+      `docs/HANDOFF.md`). `BLEND_FRAG` is confirmed syntactically consistent
+      with `FeedbackPass.ts`'s own `BLEND_FRAG` (same uniform/varying
+      shape, same `FULLSCREEN_VERT` import, no dynamic indexing, no unbounded
+      loops) but never compiled or linked against an actual WebGL context, so
+      whether the three taps visually read as "sharp discrete ghosts" rather
+      than something subtly wrong (a texture unit collision, a filtering
+      artefact at the tap targets' half-float format) is unconfirmed. Also
+      unmeasured, same caveat every prior optical-rack entry in this file
+      carries: the mood/tension shape of `echoTarget` against real music —
+      the picker functions' contract is proven, "does it feel like an echo
+      arriving at the right moment in an actual track" is not.
+
+- [ ] **F232 · Pixel sort gets direction variety (incl. radial) and a
+      kick-scaled threshold** — *2026-09-13* `src/engine/LensPass.ts`
+
+      Follow-up to F230, same session's user, this time from actually
+      running the material live rather than from a tooling survey: they
+      tried it, said they liked it, and asked for it to be pushed further.
+      What F230 shipped always streaked straight down (`off = vec2(0.0,
+      bestOff)`), and the only thing a kick did to it was re-roll `uSeed`'s
+      per-tap jitter phase — the threshold itself sat wherever `uAmt` left
+      it regardless of what the beat was doing. Two changes, both confined
+      to the pixel-sort branch of `LENS_FRAG`; nothing outside that branch,
+      nothing in any `.ts` file, moved.
+
+      **Direction.** The tap loop's sample offset and the final `off` both
+      now go through a `dir` unit vector derived from `floor(uSeed)` instead
+      of a hardcoded `vec2(0.0, 1.0)`. Since a kick already increments the
+      integer part of `uSeed` (`lensBeatMode`'s `'seed'` case), direction
+      re-rolls on exactly the same event the threshold-jitter phase already
+      re-rolls on, for free — no new re-seat mechanism, no new per-frame
+      state on the `.ts` side. Two families, picked by one more `hash2` roll
+      keyed off that same `seedFloor`: ~65% of the time a fixed global angle
+      (uniform over the circle — still one direction for the whole frame,
+      just not always "down"), ~35% of the time RADIAL — `dir` points from
+      frame centre through the current pixel, so streaks run outward (or
+      inward, same axis) from the middle instead of along a screen axis.
+      That split is deliberately uneven rather than 50/50: radial is the
+      more distinctive of the two and reads as a genuinely different
+      material, so a held frame that lands on it should feel like a find,
+      not like the coin flip it structurally is. Radial gets its own `if`
+      branch rather than being unified into one trig formula with the
+      fixed-angle case (e.g. parameterising an "angle source" that's either
+      constant or `atan(fromCenter)`) because the two are doing conceptually
+      different things, not the same thing with a different input: the
+      fixed-angle case picks ONE direction and every pixel in the frame uses
+      it, while radial computes a DIFFERENT direction per pixel from that
+      pixel's own position. Forcing that into shared trig would mean either
+      running the `atan`/`length` work unconditionally (paid even on the 65%
+      of frames that never use it) or hiding an `if` inside the "unified"
+      formula anyway, at which point the unification bought nothing but
+      indirection. Radial also earns its keep on aesthetic grounds specific
+      to this rack: every other lens material that has a centre-relative
+      component (`glass fan`'s flutes, `fly eye`'s lenslet lattice) already
+      treats frame centre as the one point the geometry is built around, and
+      `docs/09_Rendering_Engine.md`'s own target look is built the same way
+      — a small bright subject against dead black, not a uniform field — so
+      a pixel-sort mode whose streaks visibly converge on or radiate from
+      that centre point is on-aesthetic in a way an nth fixed screen angle
+      never quite is.
+
+      **Threshold.** `threshold = 1.0 - uAmt * 0.55` became `clamp(1.0 -
+      uAmt * 0.55 - uKick * 0.25, 0.05, 1.0)`, mirroring how `melt`'s plume
+      term already reads `uKick` as a momentary intensifier layered on top
+      of `uAmt`'s standing level rather than replacing it. `0.25` against
+      `uAmt`'s own `0.55` was picked so a kick at full strength visibly
+      widens what qualifies for a beat without a hit alone being able to
+      approach the floor — at `uAmt = 1`, resting threshold is already
+      `0.45`; a simultaneous full-strength kick pushes it to `0.20`, clamped
+      no lower than `0.05`. That floor exists because the per-tap jitter
+      (`0.8` to `1.2`× the checked luminance) means a threshold near zero
+      would let almost every tap in the window clear the bar regardless of
+      its actual luminance, which collapses the hard cutoff this material's
+      whole read depends on (comment two lines up in the same branch: "the
+      hard per-tap cutoff... is what makes it read as sorted bands rather
+      than a directional blur") into something closer to a directional
+      blur after all. `0.05` was chosen as "clearly above zero, comfortably
+      below anything `uAmt` alone reaches" rather than derived from a
+      measurement — there is no way to eyeball this against a real frame in
+      this sandbox (see the verification gap below), so treat the exact
+      constant as a reasonable first guess, not a tuned value.
+
+      **Considered and explicitly skipped: sorting each colour channel
+      independently.** The obvious "more correct" version of this material
+      runs the whole tap loop three times, once per channel, so R/G/B each
+      pick their own best-tap offset instead of sharing one `off` and
+      differing only through the shared epilogue's fixed 0.92/1.0/1.08
+      dispersion scale. Rejected purely on cost, not on looks: that's 3×
+      the texture reads of the current loop, up to 42 per pixel at
+      `SORT_TAPS = 14`, on a fullscreen material with no way to gate it
+      behind quality tier the way geometry-heavy scenes gate triangle count
+      — every pixel on screen pays it every frame this material is active.
+      `docs/HANDOFF.md`'s top section is explicit that frame cost gets
+      measured before a heavy change is called done, and there is no
+      headless-WebGL harness in this repo to do that measurement in (same
+      gap F230 and F231 both cite) — tripling a fullscreen pass's cost with
+      no way to confirm what it actually did to frame time is not a trade
+      worth making for an incremental chromatic-fringe improvement that the
+      shared epilogue already gives this material for a wider margin than
+      most of the rack, for free: that epilogue's dispersion is proportional
+      to the magnitude of `off`, and pixel-sort's `off` (a multi-tap-step
+      offset, `bestOff` up to `SORT_TAPS * step0`) already runs larger than
+      most of the other six materials' offsets, so the single-`off` version
+      already shows a visibly stronger channel fringe than most of the rack
+      purely as a side effect of how far this material's samples travel.
+      Left here as a recorded decision rather than a gap someone finds later
+      and wonders whether it was missed.
+
+      `npm run check`: lint clean; `lensPass.test.ts` and
+      `opticalRack.test.ts` (the two suites this change could plausibly
+      touch) both green at 24/24, unchanged — confirmed by re-reading
+      `lensPass.test.ts` before touching anything that this is still a
+      GL-less `Pass.enabled` suite with no uniform-level assertions to
+      extend, so nothing was added there rather than bolting on a
+      contrived case. Full run: **1640 passed, 3 failed, 1 skipped, 1644
+      total**; `typecheck` and `build` both fail. All three test failures
+      and both non-test failures are in `EchoPass.ts`/`echoParams.ts`/
+      `echoParams.test.ts`/`opticalDirector.test.ts`'s `echo` block — the
+      parallel in-flight echo/delay rack from F231, mid-edit in this same
+      working tree, not anything this entry touched. Verified by stashing
+      just this entry's `LensPass.ts` change and re-running `typecheck`:
+      byte-identical error list, same line numbers, before and after —
+      `EchoKnobs` is missing a `tapSpacingSec` field its own test file and
+      `EchoPass.ts` both already call, and `EchoPass.ts`'s `BLEND_FRAG`
+      template literal has a stray pair of backticks inside a comment
+      (`` `echo` ``, `` `enabled` ``) closing the string early, the exact
+      failure mode this file's own house knowledge warns about for this
+      kind of template-literal shader source. Left alone rather than fixed
+      in passing: those three files belong to the parallel echo work per
+      that work's own scope, touching them here risks colliding with
+      changes already in flight on top of them. **Not verified on a real
+      GPU driver** — same gap F230's own entry above already carries and
+      for the same root cause (no committed headless-WebGL harness), so
+      this entry inherits F230's unverified status rather than resolving
+      it: the GLSL is confirmed syntactically consistent with the rest of
+      `LENS_FRAG` (the new `dir` branch reuses the file's own `hash2`
+      helper, no dynamic indexing, no new uniforms, loop bound still
+      constant) but not compiled-and-linked against an actual WebGL
+      context, so whether the radial branch and the widened threshold read
+      the way they're intended to — rather than, say, the radial case's
+      degenerate at-centre fallback (`vec2(0.0, 1.0)`) being visible as a
+      seam — is unconfirmed.
+
+- [ ] **F233 · Echo rewritten from a continuous mood/tension wash to a
+      beat-pulse response** — *2026-09-13* `src/engine/opticalDirector.ts`,
+      `src/engine/echoParams.ts`, `src/engine/EchoPass.ts`,
+      `src/engine/PerformanceStateBridge.tsx`, `src/engine/PostFXChain.tsx`,
+      `src/engine/performanceState.ts`
+
+      User report after trying F231's v1 live, same session as F232's pixel
+      sort feedback: "don't like echo." Diagnosed as a shape problem, not a
+      tuning problem — v1 modelled echo exactly like `trailsTarget`: a
+      mood-scaled number eased with `approach()`, present continuously
+      through most of a groove/building/peak/aggressive passage, on
+      wall-clock (not beat-locked) tap spacing. That is precisely wrong for
+      an echo. `trails` is a persistence effect and correctly wants to be
+      continuously present; an echo is a repeat of a MOMENT, and a moment
+      held continuously stops being a moment — it reads as a permanent blur
+      sitting under the whole passage, off-beat with the music, since
+      nothing about a wall-clock-eased mood target is locked to the beat
+      grid at all.
+
+      **Two changes, addressing both halves of "doesn't feel connected to
+      the music":**
+
+      1. `opticalDirector.ts#echoTarget` no longer takes `(mood, tension)` —
+         it now takes `(mood, pulse)`, where `pulse` is `beatPulse()`'s own
+         output (`audio/AudioEngine.ts`), the same sharply-peaked,
+         decaying-toward-the-next-beat curve already used unsmoothed for
+         `p.bloom`'s reactive term and `p.glitch`'s pulse term. `beatPulse`
+         IS the envelope, so `echoTarget` is now a straight `pulse * gate`
+         (`ECHO_MOOD_GATE`, one ceiling per mood — 0 in silence/ambient,
+         rising through groove/building, topping out peak/aggressive) with
+         no smoothing of its own, and `PerformanceStateBridge.tsx` no
+         longer wraps it in `approach()` either: easing on top of a curve
+         that already snaps to zero and back every beat would blur the one
+         thing that makes it read as a repeat.
+      2. Tap spacing moved from a wall-clock ramp keyed on `echo`'s own
+         value to `echoParams.ts#resolveEchoTapSpacingSec(bpm, subdivision)`
+         — a real subdivision of the current tempo (an eighth-note by
+         default, `60/bpm/2`, clamped to 0.05-0.5s and falling back to 120
+         bpm for a zero/stalled/non-finite estimate, the same guard
+         `DjCamDirector.ts`'s `bpmEff` already uses). `EchoPass` still reads
+         no audio itself — `performanceState.echoTapSpacingSec` is the one
+         number that carries tempo across that boundary, resolved fresh
+         every frame in the bridge and read directly by `PostFXChain.tsx`.
+
+      **A real bug found and fixed while wiring the beat-pulse strength
+      through to `EchoPass`.** `echo` now spikes and decays every single
+      beat by design. If `EchoPass.setEcho()` gated `this.enabled` straight
+      off that raw value the way v1 did, the pass would flip off between
+      every pair of beats and back on at the next one — and `tapsStale`
+      (which exists to blank taps after a genuinely long-idle stretch)
+      would fire on that same cadence, clearing all three taps every beat
+      so no tap could ever survive long enough to become an "older" ghost.
+      The echo would never accumulate past whatever the current beat alone
+      produced — silently defeating the entire point of holding three
+      discrete snapshots. Fixed with `recentEcho`, a small internal
+      envelope inside `EchoPass` (not in the pure `opticalDirector.ts`
+      layer, since it is pass-internal bookkeeping, not a creative
+      decision): rises fast (`RECENT_ECHO_RISE_PER_SEC = 10` — one strong
+      beat is enough to prove the rack is in play) and decays slow
+      (`RECENT_ECHO_FALL_PER_SEC = 0.7`, roughly a 1.5s time constant), so a
+      brief gap between beats no longer reads as "the rack turned off."
+      `enabled`/`tapsStale` gate off this slow envelope; the raw per-frame
+      `echo` still drives the blend weight directly (a new `uEcho` uniform
+      in `BLEND_FRAG`, multiplied into all three tap weights), which is
+      what gives each individual beat its own sharp rise and fall in the
+      composited image. `setEcho()` gained a required `dt` parameter for
+      this specifically — the hysteresis must update even on a frame this
+      pass is about to newly enable (or has already disabled), and
+      `render()` cannot be that place: `EffectComposer` skips a disabled
+      pass's `render()` entirely, so it can never be where a pass decides
+      to turn itself back on. `PostFXChain.tsx`'s existing per-frame
+      `delta` is threaded through for this.
+
+      Hit the same stray-backtick-inside-a-GLSL-template-literal mistake
+      this exact file class hit before (F230's own pixel-sort work,
+      independently, in the same session) while writing `EchoPass.ts`'s new
+      class-header prose — a backtick used for inline-code emphasis inside
+      a `/* glsl */`-tagged JS template literal closes the STRING, not a
+      GLSL comment, and breaks `tsc` with a confusing parse error nowhere
+      near the actual mistake. Caught by `npm run typecheck`; fixed by
+      removing the backticks rather than escaping them, matching how F230's
+      write-up describes handling the identical failure mode.
+
+      `resolveEchoKnobs()` also lost its `echo` parameter (now genuinely
+      unused — `decay` never varied with it) and its `tapSpacingSec` field
+      (moved to the new beat-locked function above) — a smaller, purely
+      mechanical cleanup alongside the real fix, not kept "for later" per
+      this codebase's own `performanceState.ts` rule that an unread field
+      gets deleted.
+
+      **Still a continuous-per-mood-gate shape, not a section-scoped choice
+      — deliberately, not as a shortcut.** `mirrorForSection`/
+      `lensForSection` model their effects as a discrete CHOICE, re-taken at
+      a musical boundary and held, because a kaleidoscope fold or a glass
+      material is the LOOK of the frame. An echo driven straight off the
+      beat pulse already gets its own "arrives and departs" shape for free,
+      once per beat, without needing a section-level habituation gate on
+      top — the fix that was actually missing was giving it a real
+      envelope, not deciding whether whole sections get to have one. Left
+      open (not ticked) rather than closed, matching this file's own
+      convention for "shipped, reasoned through, but not confirmed against
+      real music yet."
+
+      `npm run check` clean: typecheck, lint, **1652 tests** (up from 1646
+      — `echoParams.test.ts` and `echoPass.test.ts` rewritten for the new
+      signatures rather than patched, `opticalDirector.test.ts`'s `echo`
+      block rewritten for the `(mood, pulse)` contract), build. Landed in
+      the same working-tree session as F232 (pixel sort's expansion, a
+      different engineer/agent working `LensPass.ts` in parallel with zero
+      file overlap) — confirmed no collision by running the full suite
+      after both landed, not just each change's own files.
+
+      **Not verified live**, same standing caveat every optical-rack entry
+      in this file carries: whether the beat-locked spacing and the
+      per-beat flash actually read as "an echo" against real music, rather
+      than merely being numerically well-shaped, needs a real set. The
+      shader change (`uEcho` in `BLEND_FRAG`) is also, as always, not
+      compiled on a real GPU driver — no headless-WebGL harness exists in
+      this repo.
+
+- [ ] **F234 · Echo: more taps, held longer** — *2026-09-13, explicit
+      request after trying F233 live* `src/engine/echoParams.ts`,
+      `src/engine/EchoPass.ts`
+
+      Verbatim ask: "the number of ghost images from echo to be a bit more
+      and also last a bit longer." Both wants come from one pair of
+      constants in `echoParams.ts`, moved together on purpose:
+
+      - `ECHO_TAP_COUNT` (new, exported): 3 -> 5. Directly the "more ghost
+        images" half. Also most of the "last longer" half on its own,
+        independent of decay — the total span the echo covers is
+        `ECHO_TAP_COUNT * tapSpacingSec` (spacing is beat-locked, F233), so
+        five taps at the same spacing already covers 5/3 of the time three
+        did, with no separate duration knob needed.
+      - `DECAY`: 0.6 -> 0.72. Had to move WITH the tap count, not
+        independently: at 0.6, a 5th tap survives at 0.6^5 ≈ 0.078 of the
+        newest — invisible, all cost and no ghost, which would have
+        delivered "more taps drawn" without actually delivering "more
+        ghost images anyone can see." At 0.72 the 5th tap survives at
+        0.72^5 ≈ 0.19 — still clearly the dimmest, but a real, separately
+        legible ghost. The shallower staircase (0.72/0.52/0.37/0.27/0.19 vs
+        0.6's 0.6/0.36/0.22/0.13/0.08) is also most of what actually reads
+        as "lasts longer": the train stays legible across its full span
+        instead of visually vanishing by the third tap regardless of how
+        many more are technically still being composited.
+
+      `ECHO_TAP_COUNT` is a compile-time constant, not a runtime dial —
+      this codebase has no dynamic sampler-array indexing anywhere (GLSL ES
+      1.00's support for it is unreliable enough across drivers that every
+      other per-slot uniform set here, e.g. `LensPass.ts`'s `RIP_SLOTS`
+      plume ring, sticks to a fixed-size array of plain values instead), so
+      raising it meant manually unrolling `EchoPass.ts`'s `BLEND_FRAG` from
+      three `tTapN`/`wN` uniform pairs to five, and its three explicit
+      `render()` uniform assignments to five — hand-written, not generated,
+      matching the explicit-shader convention every other pass in this
+      engine already uses. `render()`'s tap-readiness guard and
+      `setSize()`'s target-array construction both read `ECHO_TAP_COUNT`
+      directly rather than a hardcoded `3`/`5`, so those two at least do not
+      need a second edit if the count changes again — only the shader's own
+      uniform list and the two hand-unrolled call sites would.
+
+      `npm run check` clean: typecheck, lint, **1653 tests** (up from
+      1652 — one new `ECHO_TAP_COUNT` assertion, one existing decay-range
+      test widened and re-justified for the new value rather than silently
+      loosened), build.
+
+      **Not verified live**, same caveat as every entry in this echo
+      thread (F231/F232/F233): whether five taps at 0.72 decay actually
+      reads as "a bit more, a bit longer" rather than overshooting into
+      "too much," needs ears and eyes on a real track, not just the numbers
+      lining up. If it overshoots, the next knob to reach for is `DECAY`
+      alone (pull it back toward 0.65-0.68) before reaching for
+      `ECHO_TAP_COUNT` again — cheaper to retune per this entry's own
+      analysis of which constant does which job.
+
+- [ ] **F235 · Two MusiCNN mood heads (`aggressive`, `relaxed`) wired into
+      the DSP mood scorer for the first time** — *2026-09-13, user report:
+      "mood is 99% of the time just groove, rarely switching to ambient and
+      peak"* `src/audio/MoodEstimator.ts`,
+      `src/audio/__tests__/moodSignals.test.ts`
+
+      Diagnosis, not a guess: `groove`'s DSP band (`E_GROOVE_LO`..`E_GROOVE_HI`
+      = 0.38..0.8) is unusually wide relative to its neighbours (`ambient`
+      needs `e < 0.36` AND low onset density; `peak` needs `e > 0.68`, above
+      the calibration corpus's own measured p90 of 0.66), and its floor
+      multipliers are generous (`CONF_FLOOR = 0.65` for beat-lock,
+      0.35 minimum for bass, 0.55 minimum for steadiness) — so once a track
+      has any locked tempo and any bass, which is most electronic music,
+      `groove` saturates toward its ceiling for nearly the whole runtime and
+      only the two tails of the energy distribution can outscore it. The
+      committed 8-track calibration corpus (`corpus/eval-report.md`) already
+      shows a milder version of this — its two "electronic" tracks spend
+      ~70% of their runtime in `groove` — so this is plausibly a corpus/
+      deployment mismatch (quiet, varied MTG-Jamendo samples vs. a hot,
+      compressed, continuously-energetic set) rather than a code defect
+      exclusive to one listener's material.
+
+      Separately from that band/floor question (still open, not touched
+      here — see the "next" note below), traced exactly which of the
+      MusiCNN mood heads (`voice.worker.ts`, `VoiceBridge.ts`) reach the DSP
+      scorer at all. Only `party` did, via the existing `partyBonus` (feeds
+      `groove`). `aggressive` reached only `PerformanceStateBridge`'s
+      sustained-glitch floor; `relaxed` reached only its fog term; `happy`
+      reached only `valenceArousal.ts`'s continuous valence. Three real,
+      trained-on-labelled-data classifiers — the one kind of signal in this
+      whole scorer that isn't a reasoned-through DSP heuristic — were
+      computed every ~12s and then thrown away by the one system (the mood
+      category decision) that most needed an independent second opinion to
+      stop losing to `groove`'s wide net.
+
+      Wired `aggressive` and `relaxed` in, in the exact shape `partyBonus`
+      already established: `f.moods.<head> * 0.18 * <gate>`, additive,
+      zeroed whenever `f.moodsValid` is false (gitignored weights, first
+      ~18s, worker failure) so an absent classifier costs nothing rather
+      than silently suppressing the mood, and capped at the same weight
+      `partyBonus` uses — "biases the race, does not decide it." Each gates
+      on the SAME term its neighbouring additive bonuses already use rather
+      than inventing a new one: `aggressiveBonus` gates on `loud` (shared
+      with `aggressive`'s own `spectralRolloff`/`sparkleCue`/`pushed`
+      terms), `relaxedBonus` on `calm` (shared with `ambient`'s own
+      `f.air`/`sparkleCue` terms). `happy` deliberately left unwired here —
+      it already has a real consumer (valence) and neither mood this entry
+      targets (`ambient`, `aggressive`) is a clean semantic match for it;
+      wiring it somewhere would be a fresh judgement call, not a mechanical
+      extension of an existing pattern the way these two are.
+
+      Three new test groups in `moodSignals.test.ts`, mirroring
+      `mood_party -> groove bonus`'s existing structure exactly (raises the
+      target score when the classifier fires; is neutral, not suppressive,
+      when `moodsValid` is false; cannot by itself flip a passage that
+      belongs to a different mood entirely). Needed two new fixture drivers
+      (`runLoudLike`, `runQuietLike`) alongside the existing `runGrooveLike`,
+      since `aggressive`/`ambient` need a materially different baseline
+      energy/bass/onset profile than groove-appropriate material to open
+      their respective `loud`/`calm` gates at all.
+
+      **Important scope limit, stated plainly**: this only helps a session
+      that actually has the MusiCNN weights fetched locally
+      (`scripts/convert-essentia-models.md` — gitignored, CC BY-NC-SA,
+      absent by design in the shipping/commercial configuration per
+      `docs/HANDOFF.md`). With `f.moodsValid` false — the default, and the
+      product's own documented normal operating mode — both new bonuses
+      evaluate to exactly 0 and this entry changes nothing. The band/floor
+      question above is the fix that helps EVERY session, ML on or off, and
+      is the next thing to do if groove is still dominant with the weights
+      absent. This entry is the cheaper, lower-risk half of the two-part fix
+      discussed with the user, not a replacement for the harder half.
+
+      `npm run check` clean: typecheck, lint, **1659 tests** (6 new), build.
+      **Not verified live** — same standing caveat as the rest of this
+      session's mood-adjacent work: whether this measurably reduces
+      real-world groove-dominance, as opposed to just being correct in
+      isolation against synthetic fixtures, needs an actual set played
+      through it with the ML weights present.
+
+- [x] **F236 · The scene cost table's op-count estimates were wrong by up to
+      304x, in both directions — replaced with a real sweep on real user
+      hardware** — *2026-09-13/14, user-run `/bench` + `/bench?postchain`
+      (RTX 4060-class GPU, Ryzen 7), following a report that the frame
+      budget "will almost always overload"* `src/engine/sceneCost.ts`,
+      `src/bench/benchHarness.ts`, `src/engine/__tests__/slotBudget.test.ts`,
+      `src/engine/__tests__/sceneCost.test.ts`
+
+      **The user's specific suspicion was correct, but not the mechanism
+      they guessed.** Traced first: the tier/resolution governor
+      (`quality.tick()`) is driven entirely by REAL measured frame time
+      (`PerfMonitor`'s GPU timer, wall clock) and never touches the cost
+      table at all — confirmed by reading its actual call site. What DOES
+      run on the estimated ledger (`committedMs()`/`remainingMs()`) is
+      admission control: whether a new layer/effect/filter is allowed to
+      turn on. That half is exactly as vulnerable to a bad estimate as
+      suspected.
+
+      **First checked the obvious suspect and it was innocent.** The report
+      handed over a line reading "against POST_CHAIN_MS + FEEDBACK_MS = 3
+      reserved today" — but that `3` is a stale hardcoded string in
+      `benchHarness.ts`'s own `formatPostChainDelta()` (never updated when
+      those constants were last recalibrated). The LIVE values are
+      `POST_CHAIN_MS = 0.6` / `FEEDBACK_MS = 0.3`, summing to 0.9 — and the
+      user's own measurement came back at 1.01 ms. Those are within 12% of
+      each other; the post-chain reservation was already well-calibrated
+      from a prior pass. Fixed the stale string to read the live constants
+      instead of repeating the mistake for the next person who runs this.
+
+      **The real finding was in `sceneCost.ts`, and it is not subtle.**
+      Several scenes shipped after the 2026-08-27 `/bench` sweep were priced
+      by op-counting — reasoning about shader instruction counts by analogy
+      to other scenes — specifically because no real GPU-timer measurement
+      existed for them. The user's fresh sweep measured every one of them
+      for the first time, on their own machine:
+
+      | scene | op-count estimate (tier 0) | measured (tier 0) | off by |
+      |---|---|---|---|
+      | `beats` | 15.2 ms | 0.21 ms (monotonised) | **~72x**, worse before monotonising (304x vs the raw 0.05 ms GPU mean) |
+      | `travelling` | 20.25 ms | 0.26 ms | **~78x** (253x vs raw) |
+      | `web` | 3.4 ms | 0.25 ms | **~14x** (34x vs raw) |
+      | `gyroid` | 2.88 ms | 0.70 ms | **~4x** (14x vs raw) |
+      | `javazone` | 2.08 ms | 1.43 ms | ~1.5x |
+      | `fridaylines` | 1.76 ms | 0.98 ms | ~1.8x |
+      | `lattesfold` | 7.2 ms | 1.10 ms | **~6.5x** |
+
+      `TIER_BUDGET_MS[0]` is 11 ms. `beats`'s OLD estimate (15.2 ms) alone
+      exceeded the entire tier-0 budget before the post chain or anything
+      else was even considered — any composition with `beats` as primary
+      refused every layer, effect, and filter outright, on a number with no
+      relationship to what the GPU actually did (real cost: 0.05 ms raw GPU
+      mean). This was not a new mystery: `slotBudget.test.ts` had already
+      special-cased `beats`/`travelling`/`lattesfold` into a
+      `FORCED_LIVE_OVER_BUDGET` allowlist specifically because they failed
+      the normal per-scene budget check even at the engine's resolution
+      floor — the codebase already knew these numbers looked wrong and had
+      shipped an escape hatch instead of a fix, for lack of a real one.
+
+      **The error runs the other way for a handful of trivially cheap,
+      closed-form scenes**, smaller in absolute terms but the same root
+      cause: `hold`/`strobe`/`shock`/`flare`/`spark` were priced near
+      `orbs`' measured floor (0.06-0.10 ms, "fewer ops than our cheapest
+      measured scene") and measured 3-6x higher (0.31-0.35 ms monotonised) —
+      a fixed per-draw-call overhead pure instruction-counting has no way to
+      see. `snowflake` is the largest single miss in this direction:
+      estimated 0.45 ms, measured **3.70 ms**, ~8x under.
+
+      **The lesson stated plainly in the new header comment**: op-counting
+      is not a conservative substitute for real measurement, it is an
+      UNCORRELATED one. It overpriced every no-early-out "worst case"
+      raymarcher and underpriced every trivial closed-form shader, and which
+      direction it would fail in for a given scene could not have been
+      guessed from the shader source — only a real GPU timer query settled
+      it, in both directions, for every scene it touched.
+
+      Replaced `SCENE_COST_MS`'s fragmented sections (the original 11-scene
+      2026-08-27 measured rows, the c6 effect-scene estimates, the "second
+      wave" estimates, and the individually-estimated raymarch family) with
+      one unified, fully-measured "Live roster, swept 2026-09-13/14" section
+      covering all 30 currently-live scenes — every row `gpu.meanMs +
+      js.meanMs`, monotonised (running maximum from tier 4 upward), the same
+      method the file already used. Quarantined scenes (F105, different
+      incompatible CPU-surcharge methodology), `harkonnen` (real inner
+      loops, genuinely not part of this sweep), and `neonjungle`
+      (`DISABLED_SCENES`, not live) are untouched and explicitly flagged as
+      carrying the SAME unverified op-count risk this entry just found real
+      instances of — not fixed here, called out so nobody assumes silence
+      means confidence.
+
+      **`SCENE_COST_MODEL` (the resolution-parametric fit used whenever a
+      live `internalMP` is passed) is now KNOWINGLY STALE** for the eleven
+      scenes it covers — it was fitted from the 2026-08-27 numbers this
+      entry just replaced, and `chrome`/`kifs`/`plasma`/`pointcloud`/
+      `wireframe` moved by roughly 2x. Deliberately NOT re-fitted: a correct
+      least-squares refit needs real per-cell `internalMP`, which this
+      sweep's report did not capture for the no-chain pass, and hand-
+      deriving new coefficients without it would manufacture exactly the
+      false precision this whole entry is about. `sceneCostMs()` still
+      prefers the model over the flat table whenever a live resolution is
+      passed, so until regenerated, those eleven scenes may still be priced
+      from the OLD numbers on that path even though the flat per-tier
+      lookup is now correct. `sceneCost.test.ts`'s cross-check between the
+      two (`'agrees with SCENE_COST_MS at every tier...'`) now correctly
+      fails and is `it.skip`'d with a comment explaining exactly why, rather
+      than weakened or deleted — it is the test that regenerating the model
+      needs to pass again, not a check to route around.
+
+      `slotBudget.test.ts`'s `FORCED_LIVE_OVER_BUDGET` allowlist emptied:
+      none of the three scenes it excused are actually over the bar anymore
+      (`beats` 0.21 ms, `travelling` 0.26 ms, `lattesfold` 1.10 ms at tier 0,
+      against a ~5.05 ms bar). `compatibleWith: []` on `travelling`/
+      `lattesfold` is UNCHANGED and deliberately not touched — that is each
+      scene's own authorial decision about layer composability, not a
+      symptom of the cost estimate this entry fixed, and whether it should
+      change now is a call for whoever owns those scene files, not an
+      automatic consequence of a corrected number.
+
+      `npm run check` clean: typecheck, lint, **1658 tests, 2 skipped** (one
+      newly skipped — the known-stale-model cross-check above; net test
+      count essentially unchanged, this was a data correction not new
+      coverage), build.
+
+      **Verified as far as this sweep goes, not further.** This is real
+      GPU-timer + wall-clock data from the user's own hardware, not a guess
+      — the correction itself is trustworthy. What remains open: whether the
+      admission-control behaviour actually improves in a real show now that
+      seven scenes' costs dropped by an order of magnitude or more (the
+      mechanism this whole investigation predicted it would fix, not yet
+      observed happening), `SCENE_COST_MODEL`'s regeneration, and the
+      standing, separate question of calibrating the ladder's floor end on
+      genuinely weak hardware — this sweep only speaks to one strong
+      machine's ceiling.
+
+- [ ] **F237 · Lens rack had no periodic backstop — could hold one material
+      indefinitely if the music never tripped a section change** — *2026-09-14,
+      user report: "fisheye for like more than a min continuously"*
+      `src/engine/PerformanceStateBridge.tsx`
+
+      Traced `lensForSection`'s only call site: gated purely on
+      `f.sectionChange`, with no other trigger at all. `f.sectionChange`
+      (`PhraseDetector.ts`) is a spectral-NOVELTY detector with its own
+      8-beat cooldown — it fires when the audio's profile crosses a real
+      change threshold, not on a fixed cadence. A musically consistent
+      passage (a steady groove, a sustained pad — anything without a strong
+      novelty spike) can leave it silent far longer than a section actually
+      lasts, and with nothing else to reach for, the lens had zero way to
+      notice. This is a real asymmetry with the mirror rack, not a shared
+      design: `mirrorForSection` ALSO re-checks on every phrase edge (16
+      beats) regardless of section boundaries, backstopped by
+      `MIRROR_MAX_PHRASES` (F134) specifically so it cannot get stuck past a
+      few phrases even if nothing else moves. Lens had the section trigger
+      and nothing resembling that backstop — "held for a section" had no
+      ceiling on how long a section is allowed to appear to last.
+
+      Fixed with the same shape mirror already uses, at a deliberately much
+      longer leash: `LENS_MAX_PHRASES = 8` (~64s at 120 BPM). A new
+      `lensPhrasesHeld` counter increments every phrase edge and resets on
+      any real decision opportunity (section change or the staleness
+      trigger firing); the lens re-decision now runs on
+      `f.sectionChange || (phraseEdge && lensPhrasesHeld >= LENS_MAX_PHRASES)`
+      instead of `f.sectionChange` alone. 8 phrases, not mirror's 3: mirror
+      is a punctuating transform meant to arrive and stop, the lens is
+      meant to hold for a whole section, and a ceiling tuned to mirror's
+      cadence would trade "stuck for a minute" for "changes every 24
+      seconds regardless," which is the opposite defect. The stale-triggered
+      re-roll reuses `lensForSection`'s existing F229 anti-repeat
+      (`avoidStyle`) unchanged — a re-engagement on this path is guaranteed
+      a different material than whatever was stuck, and a non-engagement
+      fades the lens out instead of continuing to hold the same look, so
+      either outcome ends the reported symptom.
+
+      No new unit tests: the new logic (phrase counting, the OR'd trigger
+      condition) lives entirely inside `PerformanceStateBridge.tsx`'s frame
+      callback, which has no dedicated test file today — same untested
+      convention F227/F228 already followed for this exact file, not a gap
+      introduced here.
+
+      `npm run check` clean: typecheck, lint, 1658 tests / 2 skipped
+      (unchanged — nothing new to cover per the above), build.
+
+      **Not verified live.** Whether 8 phrases is the right number — long
+      enough to feel like "holds for a section," short enough that "stuck
+      for over a minute" genuinely cannot recur — needs ears on a real
+      track with a musically static passage, not just the logic being
+      correct in isolation. If it still reads as changing too rarely or too
+      often, this is the one constant to retune.

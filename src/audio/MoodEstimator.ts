@@ -371,6 +371,36 @@ export class MoodEstimator {
         ? clamp01((f.danceability - DANCE_LO) / DANCE_SPAN) * DANCE_WEIGHT * band(e, 0.35, 1.01)
         : 0
 
+    /**
+     * MusiCNN's `aggressive` and `relaxed` heads, wired in the same shape as
+     * `partyBonus` above (additive, `moodsValid`-gated, capped at the same
+     * 0.18 weight — a real classifier biases the race, it doesn't decide it).
+     *
+     * Both heads were already computed by `voice.worker.ts` and shipped by
+     * `VoiceBridge.ts` — `aggressive` reached only `PerformanceStateBridge`'s
+     * glitch floor, `relaxed` only its fog term — but neither reached THIS
+     * scorer, the one place a real trained-on-labelled-data classifier could
+     * actually help. That mattered because `groove`'s DSP thresholds are
+     * wide and its floors generous (see the field report this fixes: a mood
+     * read that sat on `groove` for the overwhelming majority of a set,
+     * `ambient` and `peak` almost never winning): every other mood here
+     * competes with reasoned-through heuristics over raw features, while
+     * `groove` alone also got `party`'s genuine classifier vote. Extending
+     * the exact same mechanism to `aggressive`'s own mood and to `ambient`
+     * gives those two a comparable independent vote instead of leaving them
+     * to win on raw energy thresholds alone.
+     *
+     * `aggressiveBonus` gates on `loud` rather than `partyBonus`'s
+     * `band(e, 0.35, 1.01)`: `aggressive` is already a top-of-range mood (see
+     * `E_HARD_LO`), and `loud` is the exact gate its own
+     * `spectralRolloff`/`sparkleCue`/`pushed` terms below already use, so
+     * this reads as one more member of that family rather than a new
+     * mechanism. `relaxedBonus` gates on `calm`, matching `ambient`'s own
+     * `f.air`/`sparkleCue` terms for the identical reason.
+     */
+    const aggressiveBonus = f.moodsValid ? f.moods.aggressive * 0.18 * loud : 0
+    const relaxedBonus = f.moodsValid ? f.moods.relaxed * 0.18 * calm : 0
+
     return {
       // The engine's own call — nothing to add.
       silence: f.silence ? 1.5 : 0,
@@ -387,7 +417,8 @@ export class MoodEstimator {
         (f.silence ? 0 : 0.05) +
         f.air * 0.15 * calm +
         sparkleCue * calm +
-        dynamics * 0.1 * calm,
+        dynamics * 0.1 * calm +
+        relaxedBonus,
 
       // Soft energy AND bright-ish AND NOT bass-heavy AND holding steady.
       // `(1 - 0.85·bassHeavy)` is a real suppressor — a bass-forward mix drops
@@ -435,7 +466,8 @@ export class MoodEstimator {
         noisy * 0.28 * band(e, E_HARD_LO - 0.15, 1.01) +
         f.spectralRolloff * 0.12 * loud +
         sparkleCue * loud +
-        pushed * 0.1 * loud,
+        pushed * 0.1 * loud +
+        aggressiveBonus,
     }
   }
 

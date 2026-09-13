@@ -8,6 +8,7 @@ import type {
   EffectComposer as EffectComposerImpl,
   VignetteEffect,
 } from 'postprocessing'
+import { EchoPass } from './EchoPass'
 import { FeedbackPass } from './FeedbackPass'
 import { GradePass } from './GradePass'
 import { IsfFilterPass } from './IsfFilterPass'
@@ -86,6 +87,7 @@ export function PostFXChain() {
   /** Scratch for the renderer size read below — reused, never allocated in the loop. */
   const sizeVec = useRef(new Vector2())
   const feedbackPass = useMemo(() => new FeedbackPass(), [])
+  const echoPass = useMemo(() => new EchoPass(), [])
   const mirrorPass = useMemo(() => new MirrorPass(), [])
   const lensPass = useMemo(() => new LensPass(), [])
   /**
@@ -106,7 +108,7 @@ export function PostFXChain() {
    *  in the loop, matching this file's no-allocation-per-frame discipline. */
   const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
   const txLens = useRef<LensRackState>({ amount: 0, style: 0 })
-  useDispose(feedbackPass, mirrorPass, lensPass, isfFilterPass, gradePass)
+  useDispose(feedbackPass, echoPass, mirrorPass, lensPass, isfFilterPass, gradePass)
   /** F81 guard: warned about a mis-ordered chain at most once per mount. */
   const warnedChainOrder = useRef(false)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
@@ -240,6 +242,17 @@ export function PostFXChain() {
     // them vanish into the ground.
     feedbackTint.current.set(palette.slots.mid)
     feedbackPass.setTint(feedbackTint.current)
+    // Echo has no transition-rack contribution of its own (unlike `trails`
+    // above) — none of `transitionRack`'s styles currently animate it, so
+    // there is nothing to add in. Reuses `feedbackTint`, not a second Color
+    // instance: both passes tint toward the same palette mid tone for the
+    // same reason, and it is already computed this frame. `delta` is passed
+    // through (F232) because `EchoPass` now tracks its own slow envelope of
+    // `p.echo` internally to decide `enabled` — see that class's header for
+    // why `render()` (gated by the composer once `enabled` is false) cannot
+    // be where that decision is made.
+    echoPass.setEcho(p.echo, p.echoTapSpacingSec, delta)
+    echoPass.setTint(feedbackTint.current)
     if (bloomRef.current) {
       bloomRef.current.intensity = p.bloom
       bloomRef.current.luminanceMaterial.threshold = p.bloomThreshold
@@ -282,16 +295,22 @@ export function PostFXChain() {
       */}
       {/*
         Chain order is lilim's, and each position is load-bearing:
-        mirror -> feedback -> bloom/CA -> isf filter -> vignette -> lens -> grade.
+        mirror -> feedback -> echo -> bloom/CA -> isf filter -> vignette -> lens -> grade.
 
         Mirror sits ahead of feedback so the trail accumulates THROUGH the fold
         and the pattern compounds into itself; behind it, symmetry would just be
-        a symmetric copy of an asymmetrically-built trail. Lens sits after bloom
-        so the glow refracts through the material the way light does through
-        real optics — that is the difference between glass and a filter.
+        a symmetric copy of an asymmetrically-built trail. Echo sits directly
+        after feedback — both are history effects that want bloom to bloom the
+        accumulated result rather than only the live frame (see EchoPass.ts's
+        header), and echo reads the frame feedback has already warped, so a
+        discrete ghost of a tunnel-in-progress is a ghost of the tunnel, not a
+        ghost of the un-warped scene underneath it. Lens sits after bloom so
+        the glow refracts through the material the way light does through real
+        optics — that is the difference between glass and a filter.
       */}
       <primitive object={mirrorPass} />
       <primitive object={feedbackPass} />
+      <primitive object={echoPass} />
       <Bloom ref={bloomRef} intensity={0.8} luminanceThreshold={0.18} mipmapBlur radius={0.75} />
       <ChromaticAberration ref={caRef} offset={CA_INITIAL_OFFSET} />
       <Vignette ref={vignetteRef} eskil={false} offset={0.18} darkness={0.85} />

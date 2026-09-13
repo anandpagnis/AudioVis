@@ -83,6 +83,81 @@ export function trailsTarget(mood: MoodState, flux: number, energy: number): num
   return Math.min(1, Math.max(0, base * sustained * (1 - energy * 0.1)))
 }
 
+/**
+ * Per-mood ceiling on {@link echoTarget}'s response to the beat pulse. Zero
+ * through `silence`/`ambient` — echo repeats a beat that isn't there yet, and
+ * a slapback with nothing to slap back FROM reads as a stutter, not an
+ * effect. Rising through `groove`/`building`, where there is now a pulse for
+ * a repeat to reinforce, and topping out in `peak`/`aggressive`, where a
+ * percussive mix has the transient density an echo actually wants to chase.
+ * `mellow` gets a small nonzero floor rather than joining `ambient` at
+ * exactly zero, so the response is a genuine continuum across all seven
+ * moods and not six moods at zero plus a cliff.
+ */
+const ECHO_MOOD_GATE: Record<MoodState, number> = {
+  silence: 0,
+  ambient: 0,
+  mellow: 0.15,
+  groove: 0.55,
+  building: 0.75,
+  peak: 1,
+  aggressive: 0.9,
+}
+
+/**
+ * Echo: a rhythmic/percussive device, unlike `trails` above, which wants
+ * sustained material to persist. Multi-tap delay repeats whatever is already
+ * there — three copies of silence is still silence, and three copies of a
+ * steady low-passed pad reads as a slightly blurrier pad, not as an echo at
+ * all. What an echo actually needs to read as an echo is a transient to
+ * repeat: a kick, a clap, a vocal stab.
+ *
+ * ## Rewritten from a continuous mood/tension target to a beat-pulse response
+ * (F232 — user report after trying the v1 shape live: "don't like echo")
+ *
+ * v1 (see the original F231 entry in `docs/ISSUES.md`) modelled this exactly
+ * like `trailsTarget`: a mood-scaled number, eased toward with `approach()`,
+ * present continuously through most of a groove/building/peak/aggressive
+ * passage. That is precisely wrong for an echo. `trails` is a persistence
+ * effect and WANTS to be continuously present — see that function's own
+ * doc, "sustained material to persist." An echo is a repeat of a MOMENT, and
+ * a moment held continuously stops being a moment; it reads as a permanent
+ * blur sitting under the whole passage, off-beat with whatever the music is
+ * actually doing, since nothing about a wall-clock-eased mood target is
+ * locked to the beat grid at all. That is the "don't like it" — not a tuning
+ * problem, a shape problem.
+ *
+ * The fix: drive it directly off `beatPulse()` (`audio/AudioEngine.ts`), the
+ * same sharply-peaked-at-the-beat, decaying-toward-the-next-beat curve
+ * already used unsmoothed for `p.bloom`'s reactive term and `p.glitch`'s
+ * pulse term. `beatPulse` is already a pure function of `beatProgress`, so it
+ * IS the envelope — no `approach()` wrapper here, and none in the caller
+ * either: smoothing on top of a curve that already snaps to zero and back
+ * every beat would just blur the one thing that makes it read as a repeat
+ * rather than a wash. The mood gate above scales how HARD each beat's pulse
+ * shows up as an echo, not whether one is present continuously.
+ *
+ * `PerformanceStateBridge.tsx` also switched the tap SPACING itself from a
+ * wall-clock ramp to a beat-locked subdivision — see
+ * `echoParams.ts#resolveEchoTapSpacingSec` — so both halves of "this doesn't
+ * feel connected to the music" are addressed together: the ghosts now land
+ * on-beat, and they only appear with real strength on the beat itself.
+ *
+ * ## Why this is still not a section-scoped choice, unlike mirror/lens
+ *
+ * `mirrorForSection`/`lensForSection` below model their effects as a discrete
+ * CHOICE, re-taken at a musical boundary and held — appropriate there because
+ * a kaleidoscope fold or a glass material is the LOOK of the frame. An echo
+ * driven straight off the beat pulse already gets its "arrives and departs"
+ * shape for free, once per beat, without needing a section-level habituation
+ * gate on top — the fix that was actually missing was giving it a real
+ * envelope, not deciding whether whole sections get to have one.
+ */
+export function echoTarget(mood: MoodState, pulse: number): number {
+  const p = Number.isFinite(pulse) ? Math.min(1, Math.max(0, pulse)) : 0
+  return p * (ECHO_MOOD_GATE[mood] ?? 0)
+}
+
 /** A coherent mirror look. Combining these produces mush, so one is chosen. */
 /**
  * `wallpaper` (n x n tiling) and `shear` (alternating slice slabs) are RETIRED
@@ -186,26 +261,47 @@ export function mirrorForSection(
   // Silence and ambient stay clean, and that is the ONE restraint kept: a
   // kaleidoscope over a held pad is an effect that got stuck on, which is the
   // single failure this rack cannot recover from. Everything else qualifies
-  // readily now — `mellow` at any real tension, `groove` and `building` almost
-  // always, `peak` and `aggressive` unconditionally.
-  const mellowOk = mood === 'mellow' && t > 0.3
-  if (!hot && !(warm && t > 0.08) && !mellowOk && !(t > 0.4)) return MIRROR_OFF
-  // Five sections in six (raised from three in four, F131 — explicit request
-  // to make the rack show up more). Still not every one: an effect present in
-  // every eligible section is not an effect, it is the look. Per-scene
-  // suppression for the scenes whose own geometry is already kaleidoscopic
-  // (kifs, maze, wingfold) lives in PerformanceStateBridge, downstream of this
-  // function — it stays scene-blind on purpose, same reasoning as the mood
-  // gate above.
+  // readily — `mellow` at a real tension, `groove` and `building` once
+  // something is actually happening, `peak` and `aggressive` unconditionally.
   //
-  // With a habituation state, 5/6 is the rate at ZERO recent exposure, not a
+  // `warm`'s bar was 0.08 (F131), which `visualTensionFloor`'s resting-mood
+  // term alone clears the moment `mood.level` crosses about 0.32 — nothing to
+  // do with an actual build. Since groove/building ARE the resting moods of
+  // most of a set, that made the gate open almost for free rather than
+  // gating on "moderate tension" as intended (user report, F229: "mirrors
+  // trigger a bit too much"). Raised to 0.2, which the floor's own ceiling
+  // (0.25, at `level` == 1) can only just clear at the very top of the
+  // range — so `warm` now needs a real contribution from an actual build,
+  // prediction or drop, the same way `mellow`'s 0.3 already does.
+  const mellowOk = mood === 'mellow' && t > 0.3
+  if (!hot && !(warm && t > 0.2) && !mellowOk && !(t > 0.4)) return MIRROR_OFF
+  // Two sections in three (lowered from five in six, F229 — the 5/6 rate
+  // combined with the wide-open gate above to make the rack read as
+  // constant rather than as a choice; "mirrors also trigger a bit too
+  // much"). Still frequent when eligible, just no longer the common case
+  // across an ENTIRE eligible passage. Per-scene suppression for the scenes
+  // whose own geometry is already kaleidoscopic (kifs, maze, wingfold) lives
+  // in PerformanceStateBridge, downstream of this function — it stays
+  // scene-blind on purpose, same reasoning as the mood gate above.
+  //
+  // Dampening/floor are tightened from habituatedGate's general-purpose
+  // defaults (0.7 / 0.1) specifically for this call: at 0.85 / 0.05, a rack
+  // that keeps re-engaging can actually go quiet for a real stretch instead
+  // of floor-clamping at a still-frequent 25%. Passed explicitly rather than
+  // by changing the shared defaults, so `lensForSection` below (whose own
+  // base rate is already low) is not silently affected by a change tuned for
+  // the mirror's much higher rate.
+  //
+  // With a habituation state, 2/3 is the rate at ZERO recent exposure, not a
   // fixed one — see habituatedGate. The two branches roll DIFFERENT
-  // arithmetic (habituatedGate reduces the seed mod 997, not mod 6), so this
+  // arithmetic (habituatedGate reduces the seed mod 997, not mod 3), so this
   // is not bit-for-bit the same decision per seed as the original check — it
   // does not need to be. What has to hold, and does, is that a caller passing
-  // no habituation state gets the ORIGINAL `seed % 6 === 5` byte-for-byte,
+  // no habituation state gets the ORIGINAL `seed % 3 === 2` byte-for-byte,
   // preserving every existing test and call site exactly.
-  const engage = habituation ? habituatedGate(seed, habituation, 5 / 6) : seed % 6 !== 5
+  const engage = habituation
+    ? habituatedGate(seed, habituation, 2 / 3, 0.85, 0.05)
+    : seed % 3 !== 2
   if (!engage) return MIRROR_OFF
 
   // Three entries, not four, and the count is load-bearing: `seed % 4 === 3`
@@ -280,8 +376,26 @@ export function mirrorForSection(
  * specifically for a mood/tension pair that never budges — neither should be
  * held back. `moodMoved` also stays immediate: mood is comparatively slow and
  * stable, so a genuine mood change is a real reason to reconsider.
- * `nothingToInterrupt` (off -> on) stays immediate too — there is no live
- * look to cut short by committing to one.
+ * `nothingToInterrupt` (off -> on) stays immediate PROVIDED the rest-period
+ * guard below (F229) has cleared — see `offPhrasesHeld`/`minOffPhrases`.
+ *
+ * ## The rest-period guard (F229)
+ *
+ * Before this guard existed, `nothingToInterrupt` had NO resistance at all:
+ * the phrase immediately after the rack turned off, it was already eligible
+ * to re-engage at the full (habituation-dampened) base rate. Combined with a
+ * base rate that never fell below a real floor, the rack read as "always on"
+ * rather than as an effect that arrives — the user complaint this fixes
+ * ("mirrors also trigger a bit too much"). `offPhrasesHeld` (a counter
+ * mirroring `phrasesHeld`, but counting consecutive phrase-edges spent at
+ * OFF rather than at the current pick) must clear `minOffPhrases` before
+ * `nothingToInterrupt` alone may re-engage — `sectionChange`/`moodMoved`
+ * still bypass it unconditionally, because those are genuine "the music
+ * changed" signals, not the autopilot reflex this guard exists to slow down.
+ *
+ * Both new fields are optional and default to "no guard" (the original,
+ * unconditional `nothingToInterrupt` behaviour) when omitted, so every
+ * existing call site and test that predates this fix is unaffected.
  *
  * `tensionMoved` is the one gated, because it is the noisy, fast-moving
  * signal — especially right after a drop. `f.drop`'s `+0.5` visualTension
@@ -312,6 +426,15 @@ export function shouldRepickMirror(input: {
   phrasesHeld: number
   /** Phrases an engaged pick must hold before `tensionMoved` alone can re-decide it. */
   minHoldPhrases: number
+  /** Consecutive phrase-edges the rack has now sat at OFF, post-increment —
+   *  see the header's "rest-period guard". Meaningful only alongside
+   *  `minOffPhrases`; omitted, `nothingToInterrupt` is unconditional as it
+   *  always was. */
+  offPhrasesHeld?: number
+  /** Phrases an OFF pick must rest before `nothingToInterrupt` alone may
+   *  re-engage it (F229). Omitted (or `offPhrasesHeld` omitted), the original
+   *  unconditional "off -> on always commits" behaviour is unchanged. */
+  minOffPhrases?: number
 }): boolean {
   const {
     sectionChange,
@@ -322,10 +445,15 @@ export function shouldRepickMirror(input: {
     currentlyEngaged,
     phrasesHeld,
     minHoldPhrases,
+    offPhrasesHeld,
+    minOffPhrases,
   } = input
   const heldMinimum = !currentlyEngaged || phrasesHeld > minHoldPhrases
   const tensionMovedTrigger = tensionMoved && heldMinimum
-  return sectionChange || nothingToInterrupt || moodMoved || tensionMovedTrigger || stale
+  const restCleared =
+    offPhrasesHeld === undefined || minOffPhrases === undefined || offPhrasesHeld >= minOffPhrases
+  const nothingToInterruptTrigger = nothingToInterrupt && restCleared
+  return sectionChange || nothingToInterruptTrigger || moodMoved || tensionMovedTrigger || stale
 }
 
 /**
@@ -342,6 +470,27 @@ export function shouldRepickMirror(input: {
  * So it is off for most sections and properly present for the ones it takes.
  * The material is held for the whole section: it is the *look* of the frame,
  * and changing it mid-phrase reads as a glitch rather than as a choice.
+ *
+ * ## Why frequency alone never explained "the lens is always the same two
+ * materials" (F229)
+ *
+ * The engagement RATE here (one section in three) was never the problem the
+ * user reported — it is `mirrorForSection`'s rate that was too high. What was
+ * actually wrong is pool composition: `ambient`'s pool was `[glass ribs,
+ * glass fan]` and NOTHING else, and `mellow`'s was two-thirds the same pair.
+ * Ambient and mellow are exactly the moods that dominate a set's non-peak
+ * runtime, so on the rare section the lens DID engage during them, it was
+ * ribs or fan close to guaranteed — and with no anti-repeat, two consecutive
+ * engaged sections could trivially land on the identical material again.
+ * Habituation could not fix this: it gates WHETHER a lens fires, never WHICH
+ * one, so a perfectly-tuned frequency still produces "always the same
+ * material" if the pool it draws from is this thin. Fixed two ways below:
+ * `ambient` gains `fly eye` (already vetted as calm enough for `mellow`,
+ * unlike every other material) so it is no longer a two-item, single-family
+ * pool, and `avoidStyle` excludes the currently-held material before
+ * indexing — the same anti-repeat idiom `AutoPilot.tsx`'s `pickPalette`
+ * already uses (drop the current pick, fall back to the full pool only if
+ * nothing else survives).
  */
 export function lensForSection(
   mood: MoodState,
@@ -349,17 +498,31 @@ export function lensForSection(
   /** See {@link mirrorForSection}'s identical parameter — same contract,
    *  same "omitted means the original modulo, unchanged" guarantee. */
   habituation?: Habituation,
+  /**
+   * The currently-held style (`performanceState.lens.style`), excluded from
+   * the pool before indexing so back-to-back engagements cannot repeat the
+   * same material — see the header's F229 note. Omitted, every existing call
+   * site and test is unaffected (no exclusion applied).
+   */
+  avoidStyle?: number,
 ): number {
   // Moods pick a family, not a single material, so a set does not become
   // predictable — but a given mood always draws from materials that suit it.
   const pool: Record<MoodState, readonly number[]> = {
     silence: [],
-    ambient: [0, 1], // reeded glass, radial flutes — soft, refractive
-    mellow: [0, 1, 6], // + hex fly-eye
+    // + hex fly-eye (F229): was `[0, 1]`, both glass. Two materials from one
+    // family is not a rotation, it is a coin flip between near-identical
+    // looks — see the header note.
+    ambient: [0, 1, 6],
+    mellow: [0, 1, 6], // reeded glass, radial flutes, hex fly-eye
     groove: [2, 6], // anamorphic streaks, hex fly-eye
     building: [2, 3], // + melt, which plumes on kicks
-    peak: [3, 4], // melt, glitch tears
-    aggressive: [4, 3], // glitch, melt
+    // + pixel sort (F230): a third, distinct flavour of "signal breaking up"
+    // alongside melt's liquefy and glitch's tears — hard-edged streaks
+    // rather than either, so it earns its own slot in the two hottest moods
+    // rather than displacing one of the existing two.
+    peak: [3, 4, 7],
+    aggressive: [4, 3, 7],
   }
   // `pixels` (index 5) is deliberately absent from every pool.
   //
@@ -390,7 +553,25 @@ export function lensForSection(
   // this is the original `seed % 3 === 0` unchanged.
   const engage = habituation ? habituatedGate(seed, habituation, 1 / 3) : seed % 3 === 0
   if (!engage) return -1
-  return options[seed % options.length] % LENS_STYLES.length
+  // Anti-repeat (F229): drop the currently-held material before indexing, so
+  // a re-engagement cannot land on the exact same look as last time. Falls
+  // back to the full pool only when excluding it would leave nothing —
+  // `pickPalette`'s identical shape in AutoPilot.tsx.
+  const fresh =
+    avoidStyle !== undefined ? options.filter((o) => o % LENS_STYLES.length !== avoidStyle) : options
+  const choices = fresh.length > 0 ? fresh : options
+  // `Math.floor(seed / 3)`, not `seed` directly (F229 — found while widening
+  // `ambient` to a 3-item pool): the OMITTED-habituation engage check above
+  // is `seed % 3 === 0`, so indexing straight off `seed` shares that same
+  // modulus for any mood whose pool also has exactly 3 entries (`mellow`
+  // already did; the `ambient` rebalance above now does too). Every engaged
+  // seed is then a multiple of 3, so `seed % 3` is trivially 0 every single
+  // time — the pick always resolves to `choices[0]`, never the others. Same
+  // failure class as the mirror's vortex-sign bug (two selectors correlated
+  // through a shared bit), just with a length-3 pool instead of a factor of
+  // 2. Dividing out the bits the engage check already consumed decorrelates
+  // it while staying exactly as deterministic/reproducible.
+  return choices[Math.floor(seed / 3) % choices.length] % LENS_STYLES.length
 }
 
 /**

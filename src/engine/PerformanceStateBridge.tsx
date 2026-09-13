@@ -14,7 +14,9 @@ import { approach, performanceState } from './performanceState'
 import { advanceSteer, clearSteer } from './sceneSteer'
 import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC, type TransitionBoundaryType } from './transitions'
 import { createHabituation, stepHabituation, type Habituation } from './habituation'
+import { resolveEchoTapSpacingSec } from './echoParams'
 import {
+  echoTarget,
   lensAmountTarget,
   lensForSection,
   MIRROR_OFF,
@@ -65,6 +67,44 @@ const MIRROR_ONLY_EXCLUDED_SCENES = new Set(['djcam'])
 const MIRROR_MAX_PHRASES = 3
 
 /**
+ * Phrases (16-beat windows) a lens material may hold with NO decision
+ * opportunity at all before one is forced (F237).
+ *
+ * ## The gap this closes
+ *
+ * Unlike the mirror rack, which re-decides on every phrase edge regardless
+ * of section boundaries (see the comment above the phrase-edge block below —
+ * "the lens is a surface treatment and stays on sections"), `lensForSection`
+ * had exactly ONE trigger: `f.sectionChange`, a phrase-novelty detector
+ * (`PhraseDetector.ts`) that only fires when the spectral profile crosses a
+ * real change threshold. A musically consistent passage — a steady groove, a
+ * sustained pad, anything without a strong novelty spike — can leave
+ * `sectionChange` silent far longer than a normal section actually lasts,
+ * and with no other trigger at all, the lens has no way to notice. User
+ * report: the same material (fly eye) holding for "more than a min
+ * continuously." That is not a section holding unusually long — it is zero
+ * re-decision opportunities firing at all.
+ *
+ * The fix mirrors `MIRROR_MAX_PHRASES`'s own shape but is deliberately a
+ * much longer leash: the lens is meant to hold for a whole section, and a
+ * ceiling tuned to mirror's cadence (3 phrases, ~24s) would turn "stays on
+ * sections" into "changes every 24 seconds regardless," replacing one
+ * defect with the opposite one. 8 phrases is roughly a minute at a typical
+ * 120 BPM (16 beats/phrase x 8 phrases / 2 beats/sec) — long enough that a
+ * real section boundary almost always arrives first, short enough that the
+ * reported "stuck for over a minute" symptom cannot recur even in a passage
+ * with no novelty spike at all.
+ *
+ * Reuses `lensForSection`'s existing anti-repeat (`avoidStyle`, F229)
+ * unchanged: a stale-triggered re-roll goes through the exact same engage
+ * gate and pool exclusion a section-change-triggered one does, so if it
+ * re-engages it is guaranteed a DIFFERENT material, and if it does not
+ * engage the lens fades out instead of continuing to hold the same look —
+ * either outcome ends the "stuck" symptom.
+ */
+const LENS_MAX_PHRASES = 8
+
+/**
  * Phrases an ENGAGED mirror pick must hold before a `tensionMoved`-only
  * signal is allowed to re-decide it downward — see `shouldRepickMirror`'s doc
  * for why `tensionMoved` specifically needs this and `sectionChange`/`stale`/
@@ -77,6 +117,19 @@ const MIRROR_MAX_PHRASES = 3
  * above.
  */
 const MIRROR_MIN_HOLD_PHRASES = 1
+
+/**
+ * Consecutive phrase-edges the rack must sit at OFF before `nothingToInterrupt`
+ * alone may re-engage it (F229 — see `shouldRepickMirror`'s header). Before
+ * this existed, off -> on was completely unconditional: the very phrase after
+ * the rack turned off it was already eligible to fire again, which combined
+ * with a base rate that never fell below a real floor to make the whole rack
+ * read as "always on" rather than as an effect that arrives. 2 phrases is
+ * roughly 15-30s at typical tempos — long enough to register as the rack
+ * actually resting, short enough that a real section/mood change (which
+ * bypasses this guard entirely) is never held back by it.
+ */
+const MIRROR_MIN_OFF_PHRASES = 2
 
 /**
  * `approach()` rate for `p.mirror.mix` — the fold's VISIBILITY, as distinct
@@ -185,6 +238,9 @@ export function PerformanceStateBridge() {
   const sectionCount = useRef(0)
   /** Whether THIS section took a lens at all — see lensForSection. */
   const lensEngaged = useRef(false)
+  /** Phrases seen since the lens last got a decision opportunity, capped by
+   *  LENS_MAX_PHRASES below (F237). */
+  const lensPhrasesHeld = useRef(0)
   /** The mirror look this section committed to; eased toward every frame. */
   const mirrorTarget = useRef<MirrorTarget>(MIRROR_OFF)
   /** Phrases seen. Separate from the section counter so the two rotate apart. */
@@ -195,6 +251,10 @@ export function PerformanceStateBridge() {
   const mirrorTensionAtPick = useRef(-1)
   /** Phrases held on the current pick, capped by MIRROR_MAX_PHRASES below. */
   const mirrorPhrasesHeld = useRef(0)
+  /** Consecutive phrase-edges the rack has sat at OFF — the rest-period
+   *  counter `shouldRepickMirror`'s `offPhrasesHeld` reads (F229). Incremented
+   *  whenever the current pick is off, reset the moment a repick re-engages. */
+  const mirrorOffPhrases = useRef(0)
   /** Recent-engagement memory for the mirror and lens gates (audit c1),
    *  replacing the bare `seed % n` roll each used to make with no notion of
    *  how recently it last fired — see habituation.ts. */
@@ -513,13 +573,33 @@ export function PerformanceStateBridge() {
     // not in `MIRROR_TRAILS_EXCLUDED_SCENES` itself.
     const mirrorSuppressed = rackSuppressed || MIRROR_ONLY_EXCLUDED_SCENES.has(p.activeScene)
     p.trails = approach(p.trails, rackSuppressed ? 0 : trailsTarget(m.state, f.flux, m.level), 0.7, f.delta)
+    // NOT eased with approach() (F232) — `pulse` (computed above for bloom's
+    // reactive term) is already `beatPulse()`'s own sharply-peaked,
+    // per-beat-decaying curve, so it IS the envelope. Easing on top of a
+    // curve that already snaps to zero and back every beat would blur the
+    // one thing that makes it read as a repeat rather than a wash — the
+    // exact defect the F232 rewrite exists to fix; see `echoTarget`'s own
+    // doc in opticalDirector.ts for the full diagnosis. Not gated on
+    // `rackSuppressed`: that set exists because the three excluded scenes
+    // (kifs/maze/wingfold) are already kaleidoscopic geometry a MIRROR fold
+    // or a persistent TRAIL would double up on, which has nothing to do with
+    // three discrete repeats of whatever those scenes already draw.
+    p.echo = echoTarget(m.state, pulse)
+    // Beat-locked, not scaled by `p.echo`'s own value (F232) — see
+    // `resolveEchoTapSpacingSec`'s doc for why a wall-clock ramp was the
+    // wrong instrument. Resolved every frame (cheap: one division, no
+    // allocation) rather than only on a tempo change, since `f.bpm` itself
+    // can still be settling early in a set.
+    p.echoTapSpacingSec = resolveEchoTapSpacingSec(f.bpm)
     p.lens.amount = approach(
       p.lens.amount,
       lensAmountTarget(m.state, p.visualTension, lensEngaged.current),
       0.5,
       f.delta,
     )
-    // The mirror re-decides on every PHRASE, the lens only on a SECTION.
+    // The mirror re-decides on every PHRASE; the lens holds for a SECTION and
+    // only reaches for a phrase-level check as a staleness backstop (F237),
+    // not as its normal cadence.
     //
     // Not a symmetry worth having: they are different kinds of thing. The
     // mirror is a punctuating transform — it folds the frame and then it stops
@@ -530,7 +610,9 @@ export function PerformanceStateBridge() {
     //
     // The lens is a surface treatment and stays on sections, because a material
     // IS the look of the frame and swapping it every sixteen beats reads as a
-    // glitch rather than as a choice.
+    // glitch rather than as a choice. `LENS_MAX_PHRASES` below exists only to
+    // guarantee it EVENTUALLY gets a decision opportunity even when the music
+    // never trips `f.sectionChange` — see that constant's own doc.
     const phraseEdge = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
     if (f.sectionChange || phraseEdge) {
       // F134: the phrase edge is a chance to re-roll, not a mandate to. A
@@ -552,8 +634,13 @@ export function PerformanceStateBridge() {
       const moodMoved = m.state !== mirrorMoodAtPick.current
       const tensionMoved = tensionBucket !== mirrorTensionAtPick.current
       mirrorPhrasesHeld.current++
-      const stale = mirrorPhrasesHeld.current >= MIRROR_MAX_PHRASES
       const nothingToInterrupt = mirrorTarget.current.mode === 'off'
+      // F229: counts consecutive phrase-edges spent at off, independent of
+      // `mirrorPhrasesHeld` above (which tracks phrases since the last
+      // re-decision REGARDLESS of what it landed on). Reset the instant a
+      // repick re-engages, below.
+      if (nothingToInterrupt) mirrorOffPhrases.current++
+      const stale = mirrorPhrasesHeld.current >= MIRROR_MAX_PHRASES
       const repick = shouldRepickMirror({
         sectionChange: f.sectionChange,
         nothingToInterrupt,
@@ -563,6 +650,8 @@ export function PerformanceStateBridge() {
         currentlyEngaged: !nothingToInterrupt,
         phrasesHeld: mirrorPhrasesHeld.current,
         minHoldPhrases: MIRROR_MIN_HOLD_PHRASES,
+        offPhrasesHeld: mirrorOffPhrases.current,
+        minOffPhrases: MIRROR_MIN_OFF_PHRASES,
       })
       if (repick) {
         // The whole rack, not just the segment count. `tiles`, `twist` and
@@ -578,17 +667,29 @@ export function PerformanceStateBridge() {
         mirrorMoodAtPick.current = m.state
         mirrorTensionAtPick.current = tensionBucket
         mirrorPhrasesHeld.current = 0
+        if (mt.mode !== 'off') mirrorOffPhrases.current = 0
         mirrorHabituation.current = stepHabituation(mirrorHabituation.current, mt.mode !== 'off')
       }
     }
-    if (f.sectionChange) {
+    // F237: counts phrases since the lens last got ANY decision opportunity,
+    // independent of whether that opportunity changed anything — see
+    // LENS_MAX_PHRASES's own doc for why this exists (sectionChange alone
+    // could leave the lens with zero opportunities for well over a minute
+    // during a musically consistent passage).
+    if (phraseEdge) lensPhrasesHeld.current++
+    if (f.sectionChange || (phraseEdge && lensPhrasesHeld.current >= LENS_MAX_PHRASES)) {
       const seed = sectionCount.current++
-      const style = lensForSection(m.state, seed, lensHabituation.current)
+      // F229: exclude the currently-held material so a re-engagement cannot
+      // repeat the exact same look as last time — `p.lens.style` keeps its
+      // last value even while disengaged (see the comment below), so this is
+      // "the last material shown," not just "the last material picked."
+      const style = lensForSection(m.state, seed, lensHabituation.current, p.lens.style)
       lensEngaged.current = style >= 0
       lensHabituation.current = stepHabituation(lensHabituation.current, style >= 0)
       // Keep the previous material while a disengaged lens eases out. Swapping
       // it on the way down would show a material the section never chose.
       if (style >= 0) p.lens.style = style
+      lensPhrasesHeld.current = 0
     }
     // The continuous half of the rack eases toward the section's target, while
     // `segments` and `tiles` snap at the boundary — those two are counts, and
@@ -674,6 +775,7 @@ export function PerformanceStateBridge() {
     if (ov.vignette) p.vignette = dbg.vignette
     if (ov.fog) p.fog = dbg.fog
     if (ov.trails) p.trails = dbg.trails
+    if (ov.echo) p.echo = dbg.echo
     if (ov.mirrorSegments) p.mirror.segments = dbg.mirrorSegments
     if (ov.mirrorTiles) p.mirror.tiles = dbg.mirrorTiles
     if (ov.mirrorTwist) p.mirror.twist = dbg.mirrorTwist

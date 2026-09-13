@@ -50,6 +50,11 @@ export interface DebugPostFx {
   /** 0..1 — feedback pass: history persistence and trail drift. See
    *  engine/feedbackParams.ts for what this one number expands into. */
   trails: number
+  /** 0..1 — discrete multi-tap echo: tap spacing and per-tap decay. Director
+   *  default: mood-based, near 0 in silence/ambient, ~0.7-0.9 in peak/
+   *  aggressive. See engine/echoParams.ts for what this one number expands
+   *  into. */
+  echo: number
   /** Mirror rack. `segments`: 0 off · 1 mirror-x · 2 quad · >=3 n-fold. */
   mirrorSegments: number
   /** >=2 gives an n x n mirror-repeat wallpaper. */
@@ -85,6 +90,7 @@ export const DEBUG_POSTFX_KEYS: DebugPostFxKey[] = [
   'vignette',
   'fog',
   'trails',
+  'echo',
   'mirrorSegments',
   'mirrorTiles',
   'mirrorTwist',
@@ -775,6 +781,7 @@ export const useStore = create<AppState>()(
         vignette: 0.85,
         fog: 0,
         trails: 0,
+        echo: 0,
         mirrorSegments: 0,
         mirrorTiles: 0,
         mirrorTwist: 0,

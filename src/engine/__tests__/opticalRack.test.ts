@@ -144,6 +144,7 @@ describe('lensBeatMode', () => {
     expect(lensBeatMode(3)).toBe('plume') // melt
     expect(lensBeatMode(4)).toBe('seed') // glitch
     expect(lensBeatMode(6)).toBe('drift') // fly eye
+    expect(lensBeatMode(7)).toBe('seed') // pixel sort — a kick re-rolls uSeed
   })
 
   it('leaves the LED wall alone on the beat', () => {
@@ -173,6 +174,7 @@ describe('the style list is an on-disk contract', () => {
       'glitch',
       'pixels',
       'fly eye',
+      'pixel sort', // F230 — appended, not inserted; every prior index unchanged
     ])
   })
 })
