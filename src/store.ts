@@ -5,7 +5,7 @@ import { beginHandoff, endHandoff, handSource, isOutput } from './engine/outputL
 import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
-import { startRecording, stopRecording } from './engine/recorder'
+import { startRecording, stopRecording, type ExportPreset } from './engine/recorder'
 import { canHoldPrimary, canHoldRole, getSceneContract, preloadScene, resolveSceneMode } from './scenes'
 import {
   resolveSceneParams,
@@ -551,6 +551,11 @@ interface AppState {
   /** Phase 7/8: external sync + export (not persisted). */
   midiSync: boolean
   isRecording: boolean
+  /** Export shape for the NEXT recording. Mirrored to the output window like
+   *  any other look field (see `LOOK_FIELDS`), since recording always runs
+   *  there. Not persisted, same as `isRecording` — a stale preset from a past
+   *  session is a worse default than always starting on `'native'`. */
+  exportPreset: ExportPreset
 
   userPresets: Preset[]
   favoriteIds: string[]
@@ -594,6 +599,7 @@ interface AppState {
   applyCue: (cue: PerformanceCue) => void
   toggleMidiSync: () => Promise<void>
   toggleRecording: () => void
+  setExportPreset: (preset: ExportPreset) => void
   /** Returns false when the request was refused (already current, or the
    *  automatic dwell floor has not elapsed) — callers that act on the
    *  incoming scene must check, not assume. */
@@ -799,6 +805,7 @@ export const useStore = create<AppState>()(
       cueFollow: true,
       midiSync: false,
       isRecording: false,
+      exportPreset: 'native',
 
       userPresets: [],
       favoriteIds: [],
@@ -1042,10 +1049,12 @@ export const useStore = create<AppState>()(
         if (get().isRecording) {
           stopRecording()
           set({ isRecording: false })
-        } else if (startRecording()) {
+        } else if (startRecording(get().exportPreset)) {
           set({ isRecording: true })
         }
       },
+
+      setExportPreset: (preset) => set({ exportPreset: preset }),
 
       requestScene: (id, opts) => {
         if (!opts?.auto) set({ lastManualAt: audioEngine.features.time })

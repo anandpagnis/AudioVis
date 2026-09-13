@@ -111,6 +111,12 @@ export const LOOK_FIELDS = [
   'moodDrive',
   'cueFollow',
   'cues',
+  // The export shape for the NEXT recording. `toggle-record` always runs in
+  // the output window (see `runCommand`), so a preset picked on the console
+  // has to arrive here BEFORE that command fires, or `toggleRecording` reads
+  // whatever this window's own store still had — same failure mode as
+  // `pendingSceneId`'s comment above for a field left off this list.
+  'exportPreset',
   'debugPostFx',
   // Per-field manual-control flags for `debugPostFx` above (added alongside
   // it this session). Without this, a field overridden from the control
@@ -430,6 +436,46 @@ function snapshotLook(): Look {
 // Channel
 // ---------------------------------------------------------------------------
 
+/** Timer id for the hidden-tab telemetry fallback below; 0 when not running. */
+let hiddenPublishTimer = 0
+
+/**
+ * Keep `tele`/`detail` packets flowing while this (output) window is hidden.
+ *
+ * `MirrorPublisher` (Stage.tsx) is the only caller of `publishTelemetry`/
+ * `publishDetail`, deliberately run from `useFrame` rather than a timer so it
+ * "cannot report a frame rate the window is no longer producing" (see that
+ * component's own comment). That reasoning holds while visible; it stops
+ * holding once the tab is backgrounded, because browsers throttle rAF there —
+ * down to roughly 1Hz in Chromium, and observed stalling completely for
+ * seconds at a time (see sessionLog.ts's own note on this, incidents
+ * F144/F145/F152) — which starves the console and analytics panel of updates
+ * until this window is foregrounded again.
+ *
+ * The fix layers a plain interval on TOP of the rAF path rather than
+ * replacing it: it re-invokes the same two functions, which already
+ * self-rate-limit (`lastTelePublish`/`lastDetailAt`), so calling them from
+ * both places at once is idempotent. It does not fabricate a frame rate
+ * either — `publishTelemetry`'s `fps`/`frameMs` read `frameSampler`, which
+ * simply stops advancing while hidden, so the interval just re-delivers the
+ * last real measurement more often instead of inventing a new one.
+ * `noteFrame` is intentionally NOT called here: it logs actual per-frame
+ * durations, and there is nothing new to log for frames that never rendered.
+ */
+function startHiddenPublishFallback(): void {
+  if (hiddenPublishTimer !== 0) return
+  hiddenPublishTimer = window.setInterval(() => {
+    publishTelemetry()
+    publishDetail()
+  }, TELEMETRY_INTERVAL_MS)
+}
+
+function stopHiddenPublishFallback(): void {
+  if (hiddenPublishTimer === 0) return
+  window.clearInterval(hiddenPublishTimer)
+  hiddenPublishTimer = 0
+}
+
 export function startLink(): void {
   if (channel || typeof BroadcastChannel === 'undefined') return
   channel = new BroadcastChannel(CHANNEL)
@@ -476,6 +522,14 @@ export function startLink(): void {
     window.addEventListener('pagehide', () => {
       channel?.postMessage({ t: 'closing' } satisfies Msg)
     })
+    // See `startHiddenPublishFallback` above — covers both "opened already
+    // hidden" (rare, but free to handle) and every background/foreground
+    // toggle for the rest of this window's life.
+    if (document.hidden) startHiddenPublishFallback()
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) startHiddenPublishFallback()
+      else stopHiddenPublishFallback()
+    })
     return
   }
 
@@ -505,6 +559,7 @@ export function stopLink(): void {
   unsubscribe = null
   if (announceTimer !== 0) window.clearInterval(announceTimer)
   announceTimer = 0
+  stopHiddenPublishFallback()
   peers.clear()
   channel?.close()
   channel = null
