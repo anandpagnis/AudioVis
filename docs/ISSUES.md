@@ -11237,3 +11237,172 @@ per-frame canvas heavy enough to distort the reading.
       track with a musically static passage, not just the logic being
       correct in isolation. If it still reads as changing too rarely or too
       often, this is the one constant to retune.
+
+- [x] **F238 · `POST_CHAIN_MS` is one reasoned constant tuned to one GPU, and a
+      second machine's sweep proved it cannot be right for both** — *2026-09-14,
+      user-run `/bench?postchain` on an M1 MacBook, following the standing
+      FUTURE_IDEAS.md item asking for exactly this weak-hardware sweep after
+      F236* `src/engine/frameLoad.ts`, `src/engine/PerfMonitor.tsx`,
+      `src/engine/SceneManager.tsx`, `src/engine/__tests__/frameLoad.test.ts`
+
+      F236 closed the RTX 4060 laptop's own `POST_CHAIN_MS` calibration
+      question (0.6 + `FEEDBACK_MS` 0.3 = 0.9 ms reserved, against that
+      machine's own measured 1.01 ms — within 12%) and explicitly left "the
+      standing, separate question of calibrating the ladder's floor end on
+      genuinely weak hardware" open, since that sweep "only speaks to one
+      strong machine's ceiling." The user ran the identical `/bench` +
+      `/bench?postchain` pair on an M1 MacBook to answer it.
+
+      **The M1 sweep measured 2.817 ms/MP median against the 4060's 0.486
+      ms/MP** — 5.8x apart, which at `FILL_REFERENCE_MP` (2.07) is 5.83 ms
+      against 1.01 ms. `fillScale` (F110) already established that a flat
+      millisecond figure is wrong across RESOLUTIONS; this is the identical
+      mistake one level up, across DEVICES — there is no single
+      `POST_CHAIN_MS` that is not badly wrong for one end of that range.
+      Also notable and NOT trusted at face value: the M1 sweep's own per-cell
+      spread ran 1.73 to 67.9 ms/MP, a 40x range inside one machine, almost
+      certainly thermal throttling over a long fanless-laptop sweep rather
+      than the chain's real cost changing — a static constant "corrected" to
+      that sweep's raw median would just be wrong in a different direction.
+
+      **Rather than pick a second static number, made the reservation
+      self-calibrating per device**, using data the engine already collects
+      every session and never previously used for this: `PerfMonitor.tsx`'s
+      whole-frame GPU timer (`perf.gpuMs`) and `frameLoad.primary`'s
+      per-frame attributed scene cost. The chain's real cost on any given
+      device is `gpuMs - primary` — the same subtraction `postChainDelta` in
+      benchHarness.ts already performs offline between two lab sweeps, now
+      continuous and per-user instead of a one-off measurement someone has
+      to remember to run.
+
+      The gate matters more than the arithmetic, because `sceneCost.ts`'s own
+      header already admits its numbers are priced on one reference GPU and
+      do not scale to others. A sample is only accepted
+      (`observePostChainSample` in frameLoad.ts) when every other claimant is
+      provably zero — no crossfade/warming overlap, no layers, no effects,
+      trails at rest, both optical racks and the ISF slot off — so `primary`
+      is the only remaining source of cross-device estimate error instead of
+      five stacked ones. `PerfMonitor.tsx` additionally requires that gate to
+      have held for `POST_CHAIN_CLEAN_STREAK_FRAMES` (6) consecutive frames
+      before trusting a poll result, because `perf.gpuMs`'s own doc comment
+      says a timer query resolves 1-3 frames after it closes — a single-frame
+      gate check could credit the chain with a composition the polled
+      reading was never actually drawn against. The result feeds a slow EMA
+      (`POST_CHAIN_CALIBRATION_ALPHA = 0.02`, ~50-sample time constant),
+      seeded at `POST_CHAIN_MS`'s own reference-MP price so a session with no
+      GPU timer, or one that never accrues a gated sample, behaves exactly
+      like the old flat constant always did. `postChainMsFor(internalMP)`
+      replaces the `POST_CHAIN_MS * fillScale(...)` term at both call sites
+      in `SceneManager.tsx`; `FEEDBACK_MS`/the optical racks/the ISF slot stay
+      separately-reasoned static estimates, untouched — this only covers the
+      term the two-machine sweep actually measured (`/bench?postchain` mounts
+      the chain with trails at rest, so `FeedbackPass` never fires during
+      either sweep).
+
+      **A latent scaling bug surfaced and was fixed in passing.** The
+      `fixedMs` used for LAYER admission (feeding `nonLayerMs` ahead of
+      `resolveLayerIds`) was missing the `fillScale` multiply the identical
+      sum published to `applyFrameLoad` a few dozen lines later already had —
+      every fixed cost is a fullscreen draw and F110 says all four must scale
+      with resolution, and this call site had silently stopped doing that.
+      Fixed by moving `budgetMP`'s declaration above `fixedMs` (it did not
+      depend on anything computed between the two) and reusing one `fixedMs`
+      value at both call sites instead of two independently-drifting sums.
+
+      `npm run check` clean: typecheck, lint, **1666 tests, 2 skipped**
+      (8 new: the calibration's EMA arithmetic and degenerate-input guards —
+      the gate itself lives in `PerfMonitor.tsx` and depends on frame-timer
+      lag no unit test can drive), build.
+
+      **Verified as far as the arithmetic goes, not further.** The EMA
+      correctly seeds, moves toward, and converges near a simulated steady
+      reading, and correctly ignores degenerate input — all unit-tested
+      without a GPU. Not yet observed live: whether the gate's default
+      steady-state frame is common enough in a real show to accrue samples
+      at a useful rate, and whether the M1's true implied cost is genuinely
+      ~5.8 ms or itself partly throttling artifact — this fix removes the
+      NEED to answer that by hand for every new device, it does not itself
+      confirm what any specific machine converges to.
+
+- [x] **F239 · The lens rack's habituation gate was structurally unreachable
+      below ~100 decisions — so it read as "always on" for any realistic
+      session** — *2026-09-14, user-provided session recording, following a
+      report of "why are lenses always on" against a session run the same day
+      as F237's periodic backstop* `src/engine/habituation.ts`,
+      `src/engine/__tests__/habituation.test.ts`
+
+      The recording (`audiovis-session-2026-09-14-17-26-11`, 131.2s, RTX
+      4060 laptop) showed `lens duty cycle: 100% longest on 125.8s longest
+      off 0.0s` — one continuous "on" stretch spanning nearly the entire
+      show. The SAME session's mirror rack, driven through the identical
+      `habituatedGate` function, showed healthy `34%` duty with real on/off
+      cycling (`longest off 55.0s`) — a strong first clue that the shared
+      function was not simply broken, since one of its two callers looked
+      fine.
+
+      **Traced to the seed, not the dampening math.** Both racks feed
+      `habituatedGate` a seed from a `useRef(0)` counter
+      (`PerformanceStateBridge.tsx`'s `sectionCount`/`mirrorSeed`)
+      incremented by exactly 1 per DECISION, not per frame. The mirror
+      re-decides on most phrase edges (`shouldRepickMirror` fires on
+      `sectionChange`, a mood/tension move, or staleness — in practice
+      several times a minute), so its seed climbs into double/triple digits
+      within a normal session. The lens decides far more rarely by design —
+      a section change, or F237's 8-phrase backstop (~59s at this track's
+      ~130 BPM) — so over 131s its seed (`sectionCount`) never left the
+      single digits.
+
+      `habituatedGate`'s roll was `seed % 997` (997 chosen prime "so it
+      shares no common factor with small seed strides" — a real property,
+      but one about avoiding an ALIASED cycle, not about spreading small
+      sequential values across the comparison range at all). For
+      `seed = 0, 1, 2, …`, `roll` is just `0, 1, 2, …` again. Even FULL
+      habituation only dampens the comparison threshold down to
+      `floor * 997` (≈100 at the lens's own 0.1 floor) — so any seed run
+      shorter than about 100 decisions (at the lens's cadence, on the order
+      of ninety minutes) can mathematically never roll a value the
+      threshold fails to clear. Confirmed by literally replaying the old
+      formula against seeds 0-24 with real habituation stepping: engagement
+      was `true` on every single one, with `exposure` saturating to `1.000`
+      by seed 12 and staying there — the dampening was computing a real,
+      falling number the whole time, it was being compared against a roll
+      that could never reach it. This is the same species of bug this exact
+      file's own comments already catalogue twice over (F229's mirror
+      vortex-sign correlation, and `lensForSection`'s pool-index sharing a
+      modulus with its own engage check) — a seed that is deterministic and
+      individually well-reasoned at each step, but not decorrelated from
+      the very thing it is being compared against.
+
+      **Fixed by hashing the seed before the modulo** (`hashSeed` in
+      `habituation.ts`): one Knuth multiplicative-hash step
+      (`Math.imul(s, 0x9e3779b9) >>> 0`) spreads consecutive small seeds
+      across the full 32-bit range before the `% 997` reduction, so `roll`
+      explores the comparison range from the first decision instead of
+      needing hundreds of calls to climb there. Deterministic, so the
+      module's own "same seed, same state, same answer" contract (and every
+      existing statistical test, which samples ranges of seeds rather than
+      pinning specific seed→result pairs) is unaffected — confirmed by
+      running the full `habituation.ts`/`opticalDirector.ts` suites
+      unchanged before writing the fix, specifically to have a real baseline
+      rather than assuming the statistical tests would still pass.
+
+      New regression test reproduces the actual failure shape (a 25-seed
+      run, real `stepHabituation` stepping, asserting at least one
+      disengagement) — confirmed it fails against the pre-fix formula
+      (`anyDisengaged: false`, matching the session recording) before
+      confirming it passes against the hashed one.
+
+      `npm run check`-equivalent clean: typecheck, lint,
+      **1667 tests, 2 skipped** (1 new), build not re-run for this
+      isolated change (no build-affecting surface — pure function,
+      no new exports consumed outside this module).
+
+      **Not verified live.** The math and the regression test are solid; a
+      real show with the fix has not been recorded yet to confirm the lens
+      now actually reads as occasional rather than as a fixture. If it now
+      swings too far the other way (reads as barely present), the dial to
+      revisit is `lensForSection`'s own `1/3` base rate or the lens's
+      `dampening`/`floor` defaults (currently the general-purpose 0.7/0.1,
+      never tuned the way F229 explicitly tuned the mirror's to 0.85/0.05)
+      — not this fix, which only restores the gate's ability to say "no" at
+      all.

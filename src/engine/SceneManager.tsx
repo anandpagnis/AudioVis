@@ -30,7 +30,7 @@ import {
   isfFilterMsFor,
   lensRackMs,
   mirrorRackMs,
-  POST_CHAIN_MS,
+  postChainMsFor,
 } from './frameLoad'
 import { canFundOverlap, slotCostMs } from './slotBudget'
 import { perf, suspendFrameSampling } from './PerfMonitor'
@@ -354,8 +354,7 @@ export function resolveCommit(opts: {
 }): { commit: boolean; immediate: boolean } {
   const { gridTrusted, onDownbeat, pendingImmediate, incomingWarm, waited } = opts
   const immediate =
-    pendingImmediate &&
-    (incomingWarm === null || incomingWarm || waited > IMMEDIATE_WARM_GRACE_SEC)
+    pendingImmediate && (incomingWarm === null || incomingWarm || waited > IMMEDIATE_WARM_GRACE_SEC)
 
   /**
    * A downbeat commit ALSO waits for the incoming shader.
@@ -854,7 +853,9 @@ export function SceneManager() {
         const liveLayerMs = entriesRef.current.reduce((sum, e) => {
           if (e.role === 'primary' || e.role === 'effect' || e.dir === 0) return sum
           const meta = getScene(e.id).metadata
-          return sum + slotCostMs(e.id, tier, e.role, meta.roleScalable, meta.performanceCost, liveMP)
+          return (
+            sum + slotCostMs(e.id, tier, e.role, meta.roleScalable, meta.performanceCost, liveMP)
+          )
         }, 0)
         const fundsOverlap = canFundOverlap(
           quality.knobs.frameBudgetMs,
@@ -893,9 +894,7 @@ export function SceneManager() {
         }
         performanceState.transition.style = style as TransitionStyle
         // Committed once, here, so a fade cannot change speed while it runs.
-        const fadeSec = hardCut
-          ? 0
-          : fadeDurationFor(crossfadeDuration(f.bpm), !fundsOverlap)
+        const fadeSec = hardCut ? 0 : fadeDurationFor(crossfadeDuration(f.bpm), !fundsOverlap)
         performanceState.transition.durationSec = Math.max(1e-3, fadeSec)
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
@@ -952,16 +951,22 @@ export function SceneManager() {
     // so the value read is one frame old. Acceptable for a reservation — the
     // pass cannot switch on and cost a full unit within a single frame of the
     // director deciding to use it — but worth knowing it is not instantaneous.
-    const fixedMs =
-      POST_CHAIN_MS +
-      feedbackMsFor(performanceState.trails) +
-      mirrorRackMs(performanceState.mirror) +
-      lensRackMs(performanceState.lens) +
-      isfFilterMsFor(performanceState.filter)
-    const budgetTier = quality.tier
-    // Same fix as the overlap test above: price every slot at the resolution
-    // the frame is actually carrying, not the one its tier implies alone.
+    //
+    // Same fix as the overlap test above: price every slot — the fixed costs
+    // included — at the resolution the frame is actually carrying, not the one
+    // its tier implies alone. `budgetMP` moved above `fixedMs` (F238) because
+    // `postChainMsFor` needs it; the other three fixed terms were already
+    // supposed to scale by it too (F110) and had silently stopped doing so
+    // here, unlike the identical sum published to `applyFrameLoad` below.
     const budgetMP = renderScale.internalMP(renderScale.applied)
+    const fixedMs =
+      postChainMsFor(budgetMP) +
+      (feedbackMsFor(performanceState.trails) +
+        mirrorRackMs(performanceState.mirror) +
+        lensRackMs(performanceState.lens) +
+        isfFilterMsFor(performanceState.filter)) *
+        fillScale(budgetMP)
+    const budgetTier = quality.tier
     let nonLayerMs = fixedMs
     for (const e of entriesRef.current) {
       if (e.role === 'background' || e.role === 'accent' || e.role === 'overlay') continue
@@ -976,18 +981,13 @@ export function SceneManager() {
         budgetMP,
       )
     }
-    const wantedLayers = resolveLayerIds(
-      state.layerSceneIds,
-      state.sceneId,
-      state.pendingSceneId,
-      {
-        remaining: Math.max(0, quality.knobs.frameBudgetMs - nonLayerMs),
-        msFor: (id, role) => {
-          const meta = getScene(id).metadata
-          return slotCostMs(id, budgetTier, role, meta.roleScalable, meta.performanceCost, budgetMP)
-        },
+    const wantedLayers = resolveLayerIds(state.layerSceneIds, state.sceneId, state.pendingSceneId, {
+      remaining: Math.max(0, quality.knobs.frameBudgetMs - nonLayerMs),
+      msFor: (id, role) => {
+        const meta = getScene(id).metadata
+        return slotCostMs(id, budgetTier, role, meta.roleScalable, meta.performanceCost, budgetMP)
       },
-    )
+    })
     // Layers deliberately skip the primary streamer's pending/promote
     // lifecycle — they have their own independent fade and never participate
     // in the beat-locked commit above, so there is no warm SLOT to arbitrate
@@ -1113,16 +1113,14 @@ export function SceneManager() {
           ),
         }
       }),
-      // All four are fullscreen draws, so all four are linear in the frame's
-      // pixel count and none of them may be reserved as a flat number — see
-      // fillScale (F110). `renderScale.applied` is this frame's truth: PerfMonitor
-      // writes it before `setDpr`, and this component runs at priority -100.
-      (POST_CHAIN_MS +
-        feedbackMsFor(performanceState.trails) +
-        mirrorRackMs(performanceState.mirror) +
-        lensRackMs(performanceState.lens) +
-        isfFilterMsFor(performanceState.filter)) *
-        fillScale(renderScale.internalMP(renderScale.applied)),
+      // Reuses `fixedMs` computed above rather than re-deriving it: nothing this
+      // callback touches (trails/racks/filter, or `renderScale.applied`) changes
+      // between that read and this one — both are priority -100, before the
+      // bridge/PerfMonitor write either — so a second computation would only be
+      // a second chance to drift from the first. All four terms are fullscreen
+      // draws, linear in the frame's pixel count, and none may be reserved as a
+      // flat number — see fillScale (F110) and postChainMsFor (F238).
+      fixedMs,
     )
     // Everything on screen shares one framebuffer at one internal resolution, so
     // the budgets combine rather than compete — see combinePixelBudgets. Set at

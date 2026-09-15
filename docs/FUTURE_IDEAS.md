@@ -27,15 +27,22 @@ done as part of it:
   did report MP, so a rerun capturing it for both passes would close this
   in one sweep). `sceneCost.test.ts`'s cross-check between the model and
   the table is `it.skip`'d with the full reasoning, waiting on this.
-- **Calibrate the ladder's floor on genuinely weak hardware.** Every anchor
-  point in this system — fixed reservations, per-scene costs, the survival
-  tier itself — has now been measured on exactly one machine class (this
-  session's RTX 4060 + Ryzen 7, plus the earlier 2026-08-27 sweep's
-  presumed-similar laptop GPU). F236 closes the "is my strong machine being
-  throttled by bad numbers" question; it says nothing about whether the
-  survival tier is actually low enough for a genuinely weak or integrated
-  GPU. Needs the same `/bench` + `/bench?postchain` exercise repeated on
-  deliberately weak hardware before trusting that end of the ladder too.
+- **Calibrate the ladder's floor on genuinely weak hardware — partially
+  closed by F238 (`docs/ISSUES.md`).** The requested M1 MacBook sweep was
+  run, and it confirmed the fear: `POST_CHAIN_MS`'s fixed reservation was
+  5.8x wrong on that machine relative to the RTX 4060 it was tuned on.
+  F238 responded by making that ONE reservation self-calibrating per device
+  (a live EMA from the whole-frame GPU timer already running every session,
+  gated to isolate the chain's own cost) rather than hand-picking a second
+  static number — so this specific anchor point no longer needs a repeat
+  `/bench?postchain` exercise on every new device class. **Still open**:
+  `sceneCost.ts`'s PER-SCENE costs and `TIER_BUDGET_MS`'s ladder itself
+  remain flat numbers measured on exactly the 4060/Ryzen 7 class machine
+  (`sceneCost.ts`'s own header already admits they "scale with the
+  machine"), unaddressed by F238's narrower fix. Whether the survival tier
+  is actually low enough for the M1 class, or whether per-scene costs need
+  the same self-calibration treatment F238 gave the post chain, is still
+  unanswered.
 
 ---
 

@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   applyFrameLoad,
   committedMs,
+  FILL_REFERENCE_MP,
   frameLoad,
+  observePostChainSample,
+  postChainCalibration,
+  postChainMsFor,
   remainingMs,
   FEEDBACK_MS,
   feedbackMsFor,
@@ -63,6 +67,92 @@ describe('isfFilterMsFor', () => {
   })
 })
 
+/**
+ * F238: the post chain's live per-device calibration. See its doc comment in
+ * frameLoad.ts for the full reasoning — this is the part that can be pinned
+ * without a GPU: the EMA arithmetic and the degenerate-input guards. The gate
+ * that decides WHEN a real sample is trusted lives in PerfMonitor.tsx instead,
+ * since it depends on frame-timer lag this module has no notion of.
+ */
+describe('post-chain calibration', () => {
+  const seed = POST_CHAIN_MS / FILL_REFERENCE_MP
+
+  beforeEach(() => {
+    postChainCalibration.msPerMP = seed
+    postChainCalibration.samples = 0
+  })
+
+  it('starts seeded at the static estimate, not at zero', () => {
+    // A session with no GPU timer (no EXT_disjoint_timer_query_webgl2, or one
+    // that never accrues a gated sample) must behave exactly like the old flat
+    // constant always did, not like an under-reserved fresh start.
+    expect(postChainMsFor(FILL_REFERENCE_MP)).toBeCloseTo(POST_CHAIN_MS, 10)
+  })
+
+  it('scales the seed linearly with resolution, same shape as fillScale', () => {
+    expect(postChainMsFor(FILL_REFERENCE_MP * 2)).toBeCloseTo(POST_CHAIN_MS * 2, 10)
+  })
+
+  it('falls back to the reference megapixel count for a non-positive MP', () => {
+    // Same posture as fillScale: an uninitialised solver reserves the
+    // reference cost instead of nothing.
+    expect(postChainMsFor(0)).toBeCloseTo(POST_CHAIN_MS, 10)
+    expect(postChainMsFor(NaN)).toBeCloseTo(POST_CHAIN_MS, 10)
+  })
+
+  it('moves the estimate toward a real measurement, gradually', () => {
+    // A device measuring far more expensive than the seed (the M1 sweep's
+    // implied 5.83 ms at the reference resolution, against the 4060-tuned
+    // 0.6 ms seed) should not jump there in one sample — see the EMA's own
+    // "why not a one-shot measurement" reasoning.
+    const before = postChainCalibration.msPerMP
+    observePostChainSample(/* gpuMs */ 6, /* primaryMs */ 0, FILL_REFERENCE_MP)
+    expect(postChainCalibration.msPerMP).toBeGreaterThan(before)
+    expect(postChainCalibration.msPerMP).toBeLessThan(6 / FILL_REFERENCE_MP)
+  })
+
+  it('subtracts the attributed primary cost before pricing the residual', () => {
+    // gpuMs=6, primary=4 leaves a 2 ms chain residual, not a 6 ms one — the
+    // whole point of this being a subtraction rather than a raw GPU reading.
+    observePostChainSample(6, 4, FILL_REFERENCE_MP)
+    const after4 = postChainCalibration.msPerMP
+    postChainCalibration.msPerMP = seed
+    observePostChainSample(6, 0, FILL_REFERENCE_MP)
+    const after0 = postChainCalibration.msPerMP
+    expect(after4).toBeLessThan(after0)
+  })
+
+  it('never reserves a negative amount when the primary estimate overshoots', () => {
+    // sceneCost.ts's own numbers are estimates on other devices (see this
+    // function's doc) — a frame where the attributed primary cost exceeds the
+    // real GPU reading must floor at zero, not go negative and start pulling
+    // the reservation down below what a genuinely free chain would cost.
+    observePostChainSample(1, 4, FILL_REFERENCE_MP)
+    expect(postChainCalibration.msPerMP).toBeGreaterThanOrEqual(0)
+  })
+
+  it('converges close to a steady real cost given enough samples', () => {
+    // Simulates a device whose real post-chain cost is 5.83 ms at the
+    // reference MP (the M1 sweep's implied figure) — repeated identical
+    // gated samples should pull the EMA close to it, not just toward it.
+    for (let i = 0; i < 400; i++) {
+      observePostChainSample(5.83, 0, FILL_REFERENCE_MP)
+    }
+    expect(postChainMsFor(FILL_REFERENCE_MP)).toBeCloseTo(5.83, 1)
+  })
+
+  it('ignores non-finite or non-positive input rather than corrupting the EMA', () => {
+    const before = postChainCalibration.msPerMP
+    observePostChainSample(NaN, 0, FILL_REFERENCE_MP)
+    observePostChainSample(0, 0, FILL_REFERENCE_MP)
+    observePostChainSample(5, NaN, FILL_REFERENCE_MP)
+    observePostChainSample(5, -1, FILL_REFERENCE_MP)
+    observePostChainSample(5, 0, 0)
+    observePostChainSample(5, 0, NaN)
+    expect(postChainCalibration.msPerMP).toBe(before)
+    expect(postChainCalibration.samples).toBe(0)
+  })
+})
 
 beforeEach(() => {
   frameLoad.primary = 0
@@ -188,10 +278,7 @@ describe('applyFrameLoad — attribution', () => {
   })
 
   it('files the outgoing primary as overlap, not as the subject', () => {
-    applyFrameLoad(
-      [entry({ dir: 1, ms: 4 }), entry({ dir: -1, ms: 2 })],
-      0,
-    )
+    applyFrameLoad([entry({ dir: 1, ms: 4 }), entry({ dir: -1, ms: 2 })], 0)
     expect(frameLoad.primary).toBe(4)
     expect(frameLoad.incoming).toBe(2)
   })
@@ -205,10 +292,7 @@ describe('applyFrameLoad — attribution', () => {
     // Once compiled it is hidden and costs nothing. Charging for it would make
     // the budget refuse layers for the whole time a switch sits pending — which
     // can be a full bar under the warm-gate commit rule.
-    applyFrameLoad(
-      [entry({ dir: 1, ms: 4 }), entry({ dir: 0, ms: 4, drawing: false })],
-      0,
-    )
+    applyFrameLoad([entry({ dir: 1, ms: 4 }), entry({ dir: 0, ms: 4, drawing: false })], 0)
     expect(frameLoad.incoming).toBe(0)
   })
 

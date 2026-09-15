@@ -120,6 +120,110 @@ export function fillScale(internalMP: number): number {
 }
 
 /**
+ * Live per-device calibration of {@link POST_CHAIN_MS} (F238).
+ *
+ * ## Why the reasoned constant above cannot be the last word
+ *
+ * A `/bench?postchain` sweep on an RTX 4060 laptop (the machine `POST_CHAIN_MS`
+ * was reasoned about) measured the chain's real cost at 0.486 ms/MP median; the
+ * identical sweep on an M1 MacBook measured 2.817 ms/MP — a 5.8x spread, which
+ * at {@link FILL_REFERENCE_MP} is 1.01 ms against 5.83 ms. `fillScale` above
+ * already established that a flat millisecond figure is wrong across
+ * RESOLUTIONS; this is the identical mistake one level up, across DEVICES.
+ * There is no single constant that is not badly wrong for one end of that
+ * range — too conservative on a fast GPU (refusing layer/effect admission it
+ * could actually afford) or too optimistic on a slow one (under-reserving,
+ * which just hands the correction to `QualityGovernor`'s reactive tier
+ * demotion after the frame has already dropped).
+ *
+ * ## What this measures, and how it stays clean
+ *
+ * `PerfMonitor.tsx` already runs a whole-frame GPU timer every session
+ * (`perf.gpuMs`), and `frameLoad.primary` already carries the attributed
+ * primary-scene cost from `sceneCost.ts` for the current frame. The chain's
+ * real cost on THIS device is therefore `gpuMs - primary` — the identical
+ * subtraction `postChainDelta` in benchHarness.ts performs offline between two
+ * lab sweeps, just continuous and per-user instead of a one-off measurement
+ * someone has to remember to run.
+ *
+ * The gate at the call site matters more than the arithmetic. `sceneCost.ts`'s
+ * own header admits its numbers are priced on one reference GPU and that "a
+ * device three times slower carries three times these costs while the table
+ * still reads the same" — so `primary` is itself an unreliable estimate on any
+ * OTHER device, and subtracting it while a layer, an effect, a crossfade
+ * overlap, or an optical rack is also live would fold each of THEIR
+ * similarly-mis-scaled estimates into what is supposed to be a clean read of
+ * the chain alone. The caller (`PerfMonitor.tsx`) only feeds a sample once
+ * every other claimant has been provably zero and the frame sampler
+ * unsuspended (no resize or compile stall in flight) for several consecutive
+ * frames — not just the current one, because the GPU timer's own result lags
+ * 1-3 frames behind (see `perf.gpuMs`'s doc comment), so a single-frame check
+ * could gate on a composition the polled reading was never actually drawn
+ * against; see `POST_CHAIN_CLEAN_STREAK_FRAMES` in PerfMonitor.tsx. Deliberately
+ * restrictive, but also the default, overwhelmingly common steady-state frame
+ * this file's own comments already describe elsewhere. `primary` is still an
+ * estimate in that gated frame; it is just the only remaining source of error
+ * instead of five stacked ones.
+ *
+ * ## Why an EMA, not a one-shot measurement
+ *
+ * The same two-machine sweep shows why "measure once, use forever" would still
+ * be wrong: the M1 sweep's per-cell msPerMP spread 40x (1.73 to 67.9) inside a
+ * SINGLE device — almost certainly thermal throttling over a long sweep rather
+ * than the chain's real cost changing session to session. A slow EMA (roughly
+ * a 50-sample time constant, fed only gated steady-state samples) absorbs that
+ * the same way `provenTier` in quality.ts already absorbs a scene proving
+ * different costs across a session: one bad reading nudges the estimate
+ * slightly, it does not become the estimate.
+ *
+ * Seeded at `POST_CHAIN_MS`'s own reference-MP price, so a fresh session — or
+ * one where `EXT_disjoint_timer_query_webgl2` is unavailable and no sample
+ * ever lands — behaves exactly like the static estimate always did.
+ */
+export const postChainCalibration = {
+  /** Milliseconds per {@link FILL_REFERENCE_MP} megapixel, EMA'd from real
+   *  gated GPU-timer samples. */
+  msPerMP: POST_CHAIN_MS / FILL_REFERENCE_MP,
+  /** Samples folded in so far. Diagnostic only — nothing branches on this;
+   *  the EMA is well-defined (and inert) from the very first sample. */
+  samples: 0,
+}
+
+/** EMA weight per accepted sample — roughly a 50-sample time constant. */
+const POST_CHAIN_CALIBRATION_ALPHA = 0.02
+
+/**
+ * Fold in one gated GPU-timer sample (F238).
+ *
+ * Every argument is expected to already be the gated, single-primary,
+ * nothing-else-live case described on {@link postChainCalibration} — this
+ * function trusts the caller for that and only guards against non-finite or
+ * degenerate input, the same posture `fillScale` takes on its own argument.
+ */
+export function observePostChainSample(gpuMs: number, primaryMs: number, internalMP: number): void {
+  if (!isFinite(gpuMs) || gpuMs <= 0) return
+  if (!isFinite(primaryMs) || primaryMs < 0) return
+  if (!isFinite(internalMP) || internalMP <= 0) return
+  const perMP = Math.max(0, gpuMs - primaryMs) / internalMP
+  postChainCalibration.msPerMP +=
+    (perMP - postChainCalibration.msPerMP) * POST_CHAIN_CALIBRATION_ALPHA
+  postChainCalibration.samples += 1
+}
+
+/**
+ * The post chain's current reservation for a frame at `internalMP`, from the
+ * live calibration rather than a flat `POST_CHAIN_MS * fillScale(...)`.
+ *
+ * Same fallback shape as `fillScale`: a non-finite or non-positive MP (no
+ * resolution solved yet) reserves at the reference megapixel count rather
+ * than at zero.
+ */
+export function postChainMsFor(internalMP: number): number {
+  const mp = isFinite(internalMP) && internalMP > 0 ? internalMP : FILL_REFERENCE_MP
+  return postChainCalibration.msPerMP * mp
+}
+
+/**
  * `FeedbackPass`, mounted permanently in the post chain (see PostFXChain).
  *
  * Two fullscreen draws every frame regardless of the `trails` value — the

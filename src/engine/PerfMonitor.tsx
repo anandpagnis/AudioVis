@@ -7,6 +7,14 @@ import { frameSampler } from './frameSampler'
 import { performanceState } from './performanceState'
 import { resourceCache } from './streaming/resourceCache'
 import { ceilingForTier, evaluateLedger, type LedgerEntry } from './streaming/budgetLedger'
+import {
+  feedbackMsFor,
+  frameLoad,
+  isfFilterMsFor,
+  lensRackMs,
+  mirrorRackMs,
+  observePostChainSample,
+} from './frameLoad'
 import { useStore } from '../store'
 
 /**
@@ -132,6 +140,30 @@ const SCALE_EMERGENCY_RATIO = 3
  * additionally frozen outright while a transition runs — see the frame loop.
  */
 const RESIZE_COALESCE_SEC = 0.5
+
+/**
+ * Consecutive gated-clean frames required before a GPU-timer poll result is
+ * trusted for the post-chain calibration (F238).
+ *
+ * `perf.gpuMs`'s own doc comment states the timer's result is "available 1-3
+ * frames after it closes" — so whatever `timer.poll()` returns on frame N is
+ * really reporting frame N-1..N-3's GPU submission, not frame N's. Checking
+ * `frameLoad`/`performanceState` (frame N's own, freshly-written state) against
+ * that lagging result would risk crediting the chain with a composition it was
+ * never actually drawn against — a layer admitted one frame after a clean
+ * reading closed, attributed to the clean frame's residual instead.
+ *
+ * Requiring the gate to have held for several consecutive frames before a
+ * sample is accepted sidesteps computing which exact past frame a result
+ * belongs to: if the gate has been true for at least this many frames running,
+ * every frame within the timer's documented lag window was ALSO gated-clean,
+ * whichever one of them the current result actually reports on. 6 comfortably
+ * covers the documented 1-3 frame lag with margin, the same "cover the
+ * measurement's own latency with a frame-count cushion" reasoning
+ * `DEFAULT_SUSPEND_FRAMES` already uses in frameSampler.ts for a (much larger)
+ * reallocation stall.
+ */
+const POST_CHAIN_CLEAN_STREAK_FRAMES = 6
 
 /**
  * Largest upward jump in render scale one resize may make, as a multiple of the
@@ -307,6 +339,9 @@ export function PerfMonitor() {
   /** c11b: null on WebGL1 or a GPU/browser without the extension — every use
    *  below already treats that as "no measurement available", not an error. */
   const gpuTimer = useRef<GpuTimer | null>(null)
+  /** F238: consecutive frames the post-chain calibration's gate has held. See
+   *  {@link POST_CHAIN_CLEAN_STREAK_FRAMES} for why a streak, not a single check. */
+  const postChainCleanStreak = useRef(0)
 
   // Created once per renderer, disposed on unmount or if the renderer itself
   // ever changes (a context loss and recreate, in practice) — the same
@@ -611,7 +646,36 @@ export function PerfMonitor() {
     if (!timer) return
     timer.end()
     const ms = timer.poll()
-    if (ms !== null) perf.gpuMs = ms
+
+    // Feed the live post-chain calibration (F238) — see observePostChainSample's
+    // doc in frameLoad.ts for the full reasoning. Every other claimant on the
+    // frame must be provably zero before a GPU reading can stand in for the
+    // chain alone: no crossfade/warming overlap, no layers, no effects, trails
+    // at rest, both optical racks and the ISF slot off, and no resize/compile
+    // stall in flight (frameSampler.suspended covers the same "known one-off"
+    // frames the tier governor already refuses to learn from). This is the
+    // default steady-state frame, not a rare one, so the streak below fills
+    // through almost any ordinary session.
+    //
+    // Tracked every frame regardless of whether `ms` resolved this time —
+    // see POST_CHAIN_CLEAN_STREAK_FRAMES for why the streak, not this frame's
+    // gate alone, is what a poll result is checked against.
+    const gated =
+      !frameSampler.suspended &&
+      frameLoad.incoming === 0 &&
+      frameLoad.layers === 0 &&
+      frameLoad.effects === 0 &&
+      feedbackMsFor(performanceState.trails) === 0 &&
+      mirrorRackMs(performanceState.mirror) === 0 &&
+      lensRackMs(performanceState.lens) === 0 &&
+      isfFilterMsFor(performanceState.filter) === 0
+    postChainCleanStreak.current = gated ? postChainCleanStreak.current + 1 : 0
+
+    if (ms === null) return
+    perf.gpuMs = ms
+    if (postChainCleanStreak.current >= POST_CHAIN_CLEAN_STREAK_FRAMES) {
+      observePostChainSample(ms, frameLoad.primary, renderScale.internalMP(renderScale.applied))
+    }
   }, GPU_TIMER_END_PRIORITY)
 
   return null

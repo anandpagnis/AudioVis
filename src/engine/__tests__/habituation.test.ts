@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { createHabituation, habituatedGate, stepHabituation, type Habituation } from '../habituation'
+import {
+  createHabituation,
+  habituatedGate,
+  stepHabituation,
+  type Habituation,
+} from '../habituation'
 
 describe('createHabituation', () => {
   it('starts fresh', () => {
@@ -128,5 +133,36 @@ describe('habituatedGate', () => {
     const results = Array.from({ length: 50 }, (_, i) => habituatedGate(-i, FRESH, 5 / 6))
     expect(results.some((r) => r)).toBe(true)
     expect(results.some((r) => !r)).toBe(true)
+  })
+
+  /**
+   * F239: a real session recording showed the lens rack's duty cycle reading
+   * 100% — one continuous "on" stretch spanning nearly the whole 131s show —
+   * while the mirror rack, driven through this identical function in the same
+   * session, cycled normally (34% duty, real off periods). Both call sites
+   * feed a seed that increments by exactly 1 per DECISION (not per frame,
+   * per `PerformanceStateBridge.tsx`'s `sectionCount`/`mirrorSeed` refs); the
+   * lens just decides far less often (roughly once a minute vs. most phrase
+   * edges for the mirror), so its seed stays small for the whole session.
+   *
+   * The bug: `roll = seed % resolution` for `seed = 0, 1, 2, …` is just
+   * `0, 1, 2, …` again, and even FULL habituation only dampens the comparison
+   * threshold down to `floor * resolution` (~100 at a 0.1 floor) — so a seed
+   * run that never climbs past double digits can NEVER roll a "false",
+   * regardless of habituation. This test reproduces the lens's actual
+   * cadence (a decision roughly every phrase-backstop interval, not a tight
+   * loop) and asserts what real hardware showed was missing: at least one
+   * disengagement inside a run this short, once habituation has had a chance
+   * to build up from repeated engagement.
+   */
+  it('a small, sequential seed run (a realistic session) still shows real habituation', () => {
+    let state: Habituation = createHabituation()
+    let anyDisengaged = false
+    for (let seed = 0; seed < 25; seed++) {
+      const engaged = habituatedGate(seed, state, 1 / 3)
+      state = stepHabituation(state, engaged)
+      if (!engaged) anyDisengaged = true
+    }
+    expect(anyDisengaged).toBe(true)
   })
 })

@@ -70,6 +70,50 @@ export function stepHabituation(
 }
 
 /**
+ * Spread a small, densely-sequential seed across the full 32-bit range in one
+ * multiply (Knuth's multiplicative hash — the constant is `2^32` times the
+ * golden ratio's conjugate, the standard choice for this exact purpose).
+ *
+ * ## Why this had to exist (F239)
+ *
+ * `habituatedGate` used to reduce `seed` into its comparison range with a bare
+ * `seed % resolution` — reproducible, and reasoned as safe because `resolution`
+ * is prime "so it shares no common factor with small seed strides." That
+ * reasoning covers ALIASING (a fixed stride landing on a short repeating
+ * cycle); it says nothing about DISTRIBUTION, and the callers that actually
+ * exist in this codebase expose exactly the gap between those two properties.
+ *
+ * Every real caller's seed (`sectionCount`/`mirrorSeed` in
+ * `PerformanceStateBridge.tsx`) is a `useRef(0)` incremented by exactly 1 per
+ * DECISION, not per frame — and a decision is rare by design: the lens
+ * re-decides on a section change or an 8-phrase backstop, on the order of
+ * once a minute. `seed % resolution` for `seed = 0, 1, 2, 3, …` is just
+ * `0, 1, 2, 3, …` again for any session with fewer than `resolution` (997)
+ * decisions — every realistic session there is. A live 131s session recording
+ * showed the failure directly: the lens's `roll` never rose out of the
+ * single digits, and even FULL habituation only dampens the comparison
+ * threshold down to `floor * resolution` (≈100 at the lens's own 0.1 floor)
+ * — so `roll < threshold` held on literally every decision the whole
+ * session, regardless of what the habituation state said. The gate was not
+ * merely weak, it was structurally unreachable below ~100 decisions, which
+ * at the lens's own cadence is on the order of an hour and a half. The
+ * mirror's own seed happens to climb faster (a repick most phrase edges
+ * rather than roughly once a minute), which is why its duty cycle in that
+ * SAME recording showed real on/off cycling while the lens's read 100%,
+ * `longest on` spanning nearly the entire session.
+ *
+ * A single multiplicative-hash step fixes this at the source: consecutive
+ * seeds (0, 1, 2, …) hash to values scattered across the whole 32-bit range,
+ * so `roll` explores the comparison range from the very first decision
+ * instead of needing hundreds of calls to climb there. Deterministic and
+ * total for the same reason the rest of this module is — same seed, same
+ * hash, always.
+ */
+function hashSeed(s: number): number {
+  return Math.imul(s, 0x9e3779b9) >>> 0
+}
+
+/**
  * Deterministically decide whether a strong effect should engage this
  * decision, given a seed (for reproducibility — see the module header) and
  * the current habituation state.
@@ -83,9 +127,10 @@ export function stepHabituation(
  * the effect off for the rest of the set — a gate that can never reopen is a
  * switch, not a gate.
  *
- * The roll is `seed` reduced into a wide fixed range and compared against the
- * dampened rate, which is what lets the threshold move continuously while the
- * comparison itself stays a simple deterministic inequality.
+ * The roll is `seed` HASHED (see {@link hashSeed} — F239) into a wide fixed
+ * range and compared against the dampened rate, which is what lets the
+ * threshold move continuously while the comparison itself stays a simple
+ * deterministic inequality.
  */
 export function habituatedGate(
   seed: number,
@@ -98,6 +143,6 @@ export function habituatedGate(
   const rate = Math.max(floor, Math.min(1, baseRate * (1 - exposure * dampening)))
   const resolution = 997 // prime, so it shares no common factor with small seed strides
   const s = Number.isFinite(seed) ? Math.trunc(seed) : 0
-  const roll = ((s % resolution) + resolution) % resolution
+  const roll = hashSeed(s) % resolution
   return roll < rate * resolution
 }
