@@ -44,7 +44,7 @@ const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
  * {@link MIRROR_TRAILS_EXCLUDED_SCENES} above, which also drops trails.
  *
  * `djcam` is a hard cut to a live camera feed of the DJ: nothing composites
- * over that feed already (see the `djCamUp` layer-tenancy block below, and
+ * over that feed already (see the `cutawayUp` layer-tenancy block below, and
  * `DjCamScene`'s own "opaque, nothing composites over a camera feed" header)
  * — a kaleidoscopic fold across someone's face is the same rule, just
  * violated by a post-fx pass instead of a scene layer. Trails are
@@ -108,15 +108,20 @@ const LENS_MAX_PHRASES = 8
  * Phrases an ENGAGED mirror pick must hold before a `tensionMoved`-only
  * signal is allowed to re-decide it downward — see `shouldRepickMirror`'s doc
  * for why `tensionMoved` specifically needs this and `sectionChange`/`stale`/
- * `moodMoved` do not. 1 means the pick survives the very next phrase edge
- * unconditionally (the one a drop's brief tension spike would otherwise hit,
- * since the spike is long gone by then) and becomes eligible for a
- * tension-triggered re-decision from the phrase edge after that — i.e. it is
- * guaranteed at least one full held phrase (~7-8s at typical tempos) before
- * tension alone can end it, well short of the `MIRROR_MAX_PHRASES` backstop
- * above.
+ * `moodMoved` do not.
+ *
+ * Raised 1 -> 2 (this session, user report: "trigger a bit too less, and when
+ * they do trigger they dont stay active at all"). At 1, the pick survived only
+ * the very next phrase edge unconditionally and became eligible for a
+ * tension-triggered take-down from the phrase edge AFTER that — i.e. as little
+ * as one held phrase (~7-8s) before tension alone could end it, which reads as
+ * "barely stayed on" rather than as a held choice. At 2, that becomes ~15s
+ * minimum, well short of the `MIRROR_MAX_PHRASES` backstop above.
+ * `sectionChange`/`moodMoved`/`stale` are unaffected — they still bypass this
+ * guard unconditionally, exactly as before; only a tension-alone take-down is
+ * held back longer.
  */
-const MIRROR_MIN_HOLD_PHRASES = 1
+const MIRROR_MIN_HOLD_PHRASES = 2
 
 /**
  * Consecutive phrase-edges the rack must sit at OFF before `nothingToInterrupt`
@@ -124,12 +129,21 @@ const MIRROR_MIN_HOLD_PHRASES = 1
  * this existed, off -> on was completely unconditional: the very phrase after
  * the rack turned off it was already eligible to fire again, which combined
  * with a base rate that never fell below a real floor to make the whole rack
- * read as "always on" rather than as an effect that arrives. 2 phrases is
- * roughly 15-30s at typical tempos — long enough to register as the rack
- * actually resting, short enough that a real section/mood change (which
- * bypasses this guard entirely) is never held back by it.
+ * read as "always on" rather than as an effect that arrives.
+ *
+ * Lowered 2 -> 1 (this session, user report: "mirrors trigger a bit too
+ * less" — the opposite complaint from the one that set this to 2 in F229).
+ * That history: F131 raised the base rate for the same complaint, a session
+ * recording afterward still measured only 18% duty, then F229 lowered the
+ * base rate again AND added this rest-period guard for the opposite
+ * complaint ("trigger a bit too much"). Rather than re-litigate F229's base
+ * rate a second time in the same direction, this pass loosens the OTHER lever
+ * that also gates re-engagement — the two combined were plausibly making
+ * re-engagement doubly rare. 1 phrase is roughly 7-15s at typical tempos:
+ * still a real rest (a re-decision opportunity has to actually pass), just
+ * not a second one stacked on top of the base-rate roll below.
  */
-const MIRROR_MIN_OFF_PHRASES = 2
+const MIRROR_MIN_OFF_PHRASES = 1
 
 /**
  * `approach()` rate for `p.mirror.mix` — the fold's VISIBILITY, as distinct
@@ -281,16 +295,17 @@ export function PerformanceStateBridge() {
     // Effects are NOT mirrored from the store — EffectDirector owns that list
     // outright, so it must survive this write untouched.
     //
-    // While a DJ-cam cutaway is up, no scene layer composites over the DJ's
-    // face: the tenancy desires are held null here (PerformanceDirector is
-    // suppressed too, so nothing re-adds one) and restored the frame the
-    // cutaway releases. `DjCamDirector` runs at -87, after this, so the store
-    // desires still show for the single hard-cut-in frame — invisible against
-    // the cut.
-    const djCamUp = p.djCam.active
-    p.layers.background = djCamUp ? null : s.layerSceneIds.background
-    p.layers.accent = djCamUp ? null : s.layerSceneIds.accent
-    p.layers.overlay = djCamUp ? null : s.layerSceneIds.overlay
+    // While either directed cutaway (DJ Cam or Limitless) is up, no scene
+    // layer composites over it: the tenancy desires are held null here
+    // (PerformanceDirector is suppressed too, so nothing re-adds one) and
+    // restored the frame the cutaway releases. `DjCamDirector` (-87) and
+    // `LimitlessDirector` (-86.5) both run at this point, after this bridge
+    // (-95), so the store desires still show for the single hard-cut-in frame
+    // — invisible against the cut.
+    const cutawayUp = p.djCam.active || p.limitless.active
+    p.layers.background = cutawayUp ? null : s.layerSceneIds.background
+    p.layers.accent = cutawayUp ? null : s.layerSceneIds.accent
+    p.layers.overlay = cutawayUp ? null : s.layerSceneIds.overlay
     p.palette = s.paletteId
     p.mood = m.state
 
@@ -503,6 +518,10 @@ export function PerformanceStateBridge() {
     ra.mids = f.mid
     ra.onKick = pulse > 0.6 && !wasOnKick.current ? Math.min(1, pulse) : 0
     wasOnKick.current = pulse > 0.6
+    // The plain beat edge, no amplitude gate — see `rackAudio`'s own doc for
+    // why `onKick` above isn't enough for every re-seat mechanism (`pixel
+    // sort`'s `seedBeat`, this session).
+    ra.beat = f.beat
 
     // Style for the NEXT scene change. Chosen here rather than in SceneManager
     // because it is a creative decision and this is the decide band; SceneManager
@@ -591,9 +610,13 @@ export function PerformanceStateBridge() {
     // allocation) rather than only on a tempo change, since `f.bpm` itself
     // can still be settling early in a set.
     p.echoTapSpacingSec = resolveEchoTapSpacingSec(f.bpm)
+    // `p.lens.style` passed through so `lensAmountTarget` can apply the
+    // `pixels`-specific coarseness floor (see that function's doc) — it keeps
+    // its last value even while disengaged, same as the style-pick comment
+    // below notes, so this is "the material currently shown," not stale.
     p.lens.amount = approach(
       p.lens.amount,
-      lensAmountTarget(m.state, p.visualTension, lensEngaged.current),
+      lensAmountTarget(m.state, p.visualTension, lensEngaged.current, p.lens.style),
       0.5,
       f.delta,
     )

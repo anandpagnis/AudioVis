@@ -275,13 +275,16 @@ export function mirrorForSection(
   // prediction or drop, the same way `mellow`'s 0.3 already does.
   const mellowOk = mood === 'mellow' && t > 0.3
   if (!hot && !(warm && t > 0.2) && !mellowOk && !(t > 0.4)) return MIRROR_OFF
-  // Two sections in three (lowered from five in six, F229 — the 5/6 rate
-  // combined with the wide-open gate above to make the rack read as
-  // constant rather than as a choice; "mirrors also trigger a bit too
-  // much"). Still frequent when eligible, just no longer the common case
-  // across an ENTIRE eligible passage. Per-scene suppression for the scenes
-  // whose own geometry is already kaleidoscopic (kifs, maze, wingfold) lives
-  // in PerformanceStateBridge, downstream of this function — it stays
+  // Three sections in four (raised from 2/3, this session — user report:
+  // "mirrors trigger a bit too less"). History on this exact number: it was
+  // 5/6 (F131, "too rare"), then measured only 18% duty in a session
+  // recording anyway, then lowered to 2/3 (F229, the OPPOSITE complaint —
+  // "trigger a bit too much"). Rather than revert straight back to the
+  // already-rejected 5/6, this is a smaller step in between — half the
+  // distance back, not the whole way — so a still-too-rare or now-too-often
+  // read can tell which direction to move next. Per-scene suppression for the
+  // scenes whose own geometry is already kaleidoscopic (kifs, maze, wingfold)
+  // lives in PerformanceStateBridge, downstream of this function — it stays
   // scene-blind on purpose, same reasoning as the mood gate above.
   //
   // Dampening/floor are tightened from habituatedGate's general-purpose
@@ -292,15 +295,17 @@ export function mirrorForSection(
   // base rate is already low) is not silently affected by a change tuned for
   // the mirror's much higher rate.
   //
-  // With a habituation state, 2/3 is the rate at ZERO recent exposure, not a
+  // With a habituation state, 3/4 is the rate at ZERO recent exposure, not a
   // fixed one — see habituatedGate. The two branches roll DIFFERENT
   // arithmetic (habituatedGate reduces the seed mod 997, not mod 3), so this
   // is not bit-for-bit the same decision per seed as the original check — it
   // does not need to be. What has to hold, and does, is that a caller passing
   // no habituation state gets the ORIGINAL `seed % 3 === 2` byte-for-byte,
-  // preserving every existing test and call site exactly.
+  // preserving every existing test and call site exactly — that fallback is
+  // untouched by this change on purpose, since it pins the pre-habituation
+  // behaviour rather than the current tuning.
   const engage = habituation
-    ? habituatedGate(seed, habituation, 2 / 3, 0.85, 0.05)
+    ? habituatedGate(seed, habituation, 3 / 4, 0.85, 0.05)
     : seed % 3 !== 2
   if (!engage) return MIRROR_OFF
 
@@ -491,6 +496,18 @@ export function shouldRepickMirror(input: {
  * indexing — the same anti-repeat idiom `AutoPilot.tsx`'s `pickPalette`
  * already uses (drop the current pick, fall back to the full pool only if
  * nothing else survives).
+ *
+ * ## `fly eye` removed, pool shares reweighted (this session)
+ *
+ * User request: drop `fly eye` ("fisheye") entirely, and change the RELATIVE
+ * mix once a lens engages — ribs/fan/glitch less often, pixels/pixel sort
+ * more often — explicitly NOT the engagement rate above (still 1 in 3).
+ *
+ * The picker has no weight field, so the established way to bias a uniform
+ * pick without inventing one is to repeat an index in its pool — appearing
+ * twice makes it twice as likely under `choices[... % choices.length]` below,
+ * and `avoidStyle`'s filter already drops every matching copy correctly. See
+ * the pool table's own comments for the per-mood reasoning.
  */
 export function lensForSection(
   mood: MoodState,
@@ -508,38 +525,43 @@ export function lensForSection(
 ): number {
   // Moods pick a family, not a single material, so a set does not become
   // predictable — but a given mood always draws from materials that suit it.
+  //
+  // `pixels` (index 5) now appears here for the first time — it used to be
+  // deliberately absent from every pool, because its `amount` doesn't mean
+  // intensity, it means cell COARSENESS, inverted: `mix(140.0, 30.0, uAmt)`
+  // gives 140 fine cells at low amount and 30 coarse ones at high, so the
+  // ordinary magnitude floor every other material gets left the LED wall at
+  // ~118 cells — reading as a broken renderer, not a deliberate wall (see the
+  // history in `LENS_STYLES`' own doc and the old test this replaced). That is
+  // fixed below in `lensAmountTarget`, which now applies a `0.55` floor
+  // specifically for style 5 — see that function's doc. `pixels` is not
+  // selectable here without that floor also existing; the two changes ship
+  // together.
   const pool: Record<MoodState, readonly number[]> = {
     silence: [],
-    // + hex fly-eye (F229): was `[0, 1]`, both glass. Two materials from one
-    // family is not a rotation, it is a coin flip between near-identical
-    // looks — see the header note.
-    ambient: [0, 1, 6],
-    mellow: [0, 1, 6], // reeded glass, radial flutes, hex fly-eye
-    groove: [2, 6], // anamorphic streaks, hex fly-eye
-    building: [2, 3], // + melt, which plumes on kicks
-    // + pixel sort (F230): a third, distinct flavour of "signal breaking up"
-    // alongside melt's liquefy and glitch's tears — hard-edged streaks
-    // rather than either, so it earns its own slot in the two hottest moods
-    // rather than displacing one of the existing two.
-    peak: [3, 4, 7],
-    aggressive: [4, 3, 7],
+    // `fly eye` (6, "fisheye") removed entirely (this session, explicit
+    // request) — was `[0, 1, 6]` (F229's widening, see the header note above).
+    // `pixels` takes its place, weighted 2:1 over ribs/fan individually (was
+    // 33/33/33 across ribs/fan/fly-eye; now 25/25/50 across ribs/fan/pixels)
+    // — ribs/fan/glitch reading "too often" and pixels/pixel-sort reading
+    // "not enough" was this session's report, and this is the reweight for
+    // the calm end of that.
+    ambient: [0, 1, 5, 5],
+    mellow: [0, 1, 5, 5], // reeded glass, radial flutes, pixels (2x)
+    // `fly eye` removed (was `[2, 6]`); `pixels` takes its place as a single
+    // entry rather than doubled — groove wasn't named in the "too often/not
+    // enough" report, so this is the minimum change that avoids collapsing to
+    // a 1-item pool once fly-eye is gone, not a deliberate reweight.
+    groove: [2, 5], // anamorphic streaks, pixels
+    building: [2, 3], // + melt, which plumes on kicks — untouched, not named
+    // Pixel sort weighted 2:1 over glitch (was 33/33/33 across melt/glitch/
+    // pixel-sort; now 25/25/50) — the hot-mood half of the same reweight.
+    // Melt was not named in the report either way; its own share dips
+    // 33%->25% as an unavoidable side effect of the pool growing by one slot,
+    // not a deliberate target.
+    peak: [3, 4, 7, 7],
+    aggressive: [4, 3, 7, 7],
   }
-  // `pixels` (index 5) is deliberately absent from every pool.
-  //
-  // Its amount does not mean intensity, it means cell COARSENESS, inverted:
-  // `mix(140.0, 30.0, uAmt)` gives 140 fine cells at low amount and 30 coarse
-  // ones at high. So the floor this director applies to an engaged lens — right
-  // for every material where amount is a magnitude — puts the LED wall at about
-  // 118 cells, which does not read as a deliberate wall. It reads as a broken
-  // renderer, and was reported as exactly that.
-  //
-  // The material is effectively binary and needs a floor of its own (~0.55,
-  // where cells are coarse enough to be obviously a choice and the gutter is at
-  // full strength) before it can be selected automatically. Still fully
-  // available from the Post FX panel.
-  //
-  // `fly eye` has the same inverted mapping but not the same failure: at low
-  // amount it is a 22-bead lattice, which is coarse enough to read as a lens.
   const options = pool[mood] ?? []
   if (options.length === 0) return -1
   // One section in three. Was two in three — "off for most sections" above
@@ -606,12 +628,26 @@ export function lensForSection(
  * Engagement frequency is untouched at one section in three; if the lens should
  * appear less OFTEN rather than less strongly, the dial for that is the
  * `seed % 3` in {@link lensForSection}.
+ *
+ * ## `style`, and the `pixels` floor (this session)
+ *
+ * `pixels` (style 5) newly appears in `lensForSection`'s pools above, which
+ * only became safe once this function could give it a floor of its own: as
+ * explained on the pool table, its `amount` means inverted cell coarseness,
+ * so the ordinary 0.15-0.2 floor above reads as a broken renderer rather than
+ * a deliberate LED wall (~118 fine cells). `style` is optional and defaults
+ * to no override, so every pre-existing call site is unaffected; the one real
+ * caller (`PerformanceStateBridge.tsx`) now passes `p.lens.style`.
  */
-export function lensAmountTarget(mood: MoodState, tension: number, engaged: boolean): number {
+export function lensAmountTarget(mood: MoodState, tension: number, engaged: boolean, style?: number): number {
   if (!engaged || mood === 'silence') return 0
   const hard = mood === 'peak' || mood === 'aggressive'
   const floor = hard ? 0.2 : 0.15
   const ceiling = hard ? 0.38 : 0.24
   const t = Math.min(1, Math.max(0, tension))
-  return floor + (ceiling - floor) * t * t
+  const amt = floor + (ceiling - floor) * t * t
+  // 0.55: where the LED cells are coarse enough to read as a deliberate
+  // choice and the black gutter between them is at full strength — see the
+  // pool table's comment above for the full "broken renderer" reasoning.
+  return style === 5 ? Math.max(amt, 0.55) : amt
 }

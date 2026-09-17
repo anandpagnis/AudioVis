@@ -101,6 +101,14 @@ export const LOOK_FIELDS = [
   'djCamRequestNonce',
   'djCamEnabled',
   'djCamDeviceId',
+  // The Limitless-cutaway manual punch, its nonce, and its auto opt-in cross
+  // the wire for the identical reasons the DJ-cam trio just above does:
+  // `LimitlessDirector` runs in the OUTPUT window and never echoes its
+  // consume back, so the punch needs a value that changes on every press, and
+  // the opt-in has to reach the window that actually runs the director.
+  'pendingLimitless',
+  'limitlessRequestNonce',
+  'limitlessCutawayEnabled',
   'layerSceneIds',
   'paletteId',
   'params',
@@ -217,6 +225,16 @@ export interface Telemetry {
    * Sourced from `performanceState.djCam.active`.
    */
   djCamActive: boolean
+  /**
+   * Whether the Limitless cutaway is live this instant. Same shape and
+   * reasoning as {@link djCamActive}: `LimitlessDirector` runs in the OUTPUT
+   * window, so what is actually on screen is a fact only it has. The Console
+   * "Cut to Limitless" / "Return to scenes" button reads this rather than
+   * guessing from `scene`.
+   *
+   * Sourced from `performanceState.limitless.active`.
+   */
+  limitlessActive: boolean
   /**
    * What is ACTUALLY drawing in each layer slot — the MOUNTED state, not the
    * desire.
@@ -821,6 +839,7 @@ export function publishTelemetry(nowMs = performance.now()): void {
       filterId: performanceState.filter.id,
       filterMix: performanceState.filter.mix,
       djCamActive: performanceState.djCam.active,
+      limitlessActive: performanceState.limitless.active,
       // Two allocations per packet — this literal and the `map` below — and
       // both are judged fine rather than left unexamined. The no-allocation
       // rule `performanceState`'s header states is about the 60fps render

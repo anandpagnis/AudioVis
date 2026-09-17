@@ -186,3 +186,32 @@ describe('the manual DJ-cam punch crosses the window boundary', () => {
     expect(LINK_SRC).toMatch(/djCamActive:\s*performanceState\.djCam\.active/)
   })
 })
+
+/**
+ * The manual Limitless-cutaway punch — the same shape of wire crossing as DJ
+ * Cam's block just above, for the same reasons.
+ */
+describe('the manual Limitless punch crosses the window boundary', () => {
+  it('mirrors the punch, its nonce, and the opt-in state downward', () => {
+    expect(LOOK_FIELDS).toContain('pendingLimitless')
+    expect(LOOK_FIELDS).toContain('limitlessRequestNonce')
+    expect(LOOK_FIELDS).toContain('limitlessCutawayEnabled')
+  })
+
+  it('bumps the nonce on every punch, so a second identical toggle still publishes', () => {
+    const s = () => useStore.getState()
+    s().requestLimitless()
+    const first = s().limitlessRequestNonce
+    expect(s().pendingLimitless).toBe('toggle')
+
+    s().clearLimitlessRequest()
+
+    s().requestLimitless()
+    expect(s().limitlessRequestNonce).toBeGreaterThan(first)
+    s().clearLimitlessRequest()
+  })
+
+  it('reports the live cutaway back up on telemetry rather than letting the console guess', () => {
+    expect(LINK_SRC).toMatch(/limitlessActive:\s*performanceState\.limitless\.active/)
+  })
+})

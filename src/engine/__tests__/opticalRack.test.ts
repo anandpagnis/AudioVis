@@ -144,7 +144,10 @@ describe('lensBeatMode', () => {
     expect(lensBeatMode(3)).toBe('plume') // melt
     expect(lensBeatMode(4)).toBe('seed') // glitch
     expect(lensBeatMode(6)).toBe('drift') // fly eye
-    expect(lensBeatMode(7)).toBe('seed') // pixel sort — a kick re-rolls uSeed
+    // pixel sort — re-rolls on every BEAT (not gated on kick amplitude like
+    // glitch's 'seed'); see LensBeatMode's own doc for why (this session,
+    // user report: direction wasn't changing often enough).
+    expect(lensBeatMode(7)).toBe('seedBeat')
   })
 
   it('leaves the LED wall alone on the beat', () => {
@@ -156,7 +159,7 @@ describe('lensBeatMode', () => {
 
   it('gives every material a defined mode', () => {
     for (let i = 0; i < LENS_STYLES.length; i++) {
-      expect(['drift', 'seed', 'plume', 'none']).toContain(lensBeatMode(i))
+      expect(['drift', 'seed', 'seedBeat', 'plume', 'none']).toContain(lensBeatMode(i))
     }
   })
 })

@@ -79,6 +79,10 @@ export function ExposureSampler() {
     // fade): `exposure.gain` holds at its last value and the slow servo resumes
     // from there once sampling restarts.
     if (performanceState.djCam.active) return
+    // The Limitless cutaway is a user's own photo, potentially lit very
+    // differently from the show's usual palette — same reasoning as DJ Cam
+    // just above, so the servo is frozen for its cutaway too.
+    if (performanceState.limitless.active) return
     if (busy.current) return
     lastSampleAt.current = clock.elapsedTime
 

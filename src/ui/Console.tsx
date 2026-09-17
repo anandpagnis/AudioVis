@@ -53,7 +53,7 @@ import { selectableStyles } from '../engine/transitions'
 import { DEBUG_POSTFX_KEYS, type DebugPostFx, type DebugPostFxKey } from '../store'
 import { SceneParamsPanel } from './SceneParamsPanel'
 
-type RailTab = 'scene' | 'colour' | 'postfx' | 'djcam'
+type RailTab = 'scene' | 'colour' | 'postfx' | 'djcam' | 'limitless'
 
 /**
  * The DJ-facing control surface.
@@ -115,6 +115,12 @@ export function Console() {
             <button className={`tab ${tab === 'djcam' ? 'active' : ''}`} onClick={() => setTab('djcam')}>
               DJ Cam
             </button>
+            <button
+              className={`tab ${tab === 'limitless' ? 'active' : ''}`}
+              onClick={() => setTab('limitless')}
+            >
+              Limitless
+            </button>
           </div>
 
           <div className="rail-scroll">
@@ -152,6 +158,12 @@ export function Console() {
             {tab === 'djcam' && (
               <div className="card">
                 <DjCam tele={tele} />
+              </div>
+            )}
+
+            {tab === 'limitless' && (
+              <div className="card">
+                <Limitless tele={tele} />
               </div>
             )}
           </div>
@@ -847,6 +859,64 @@ function DjCamPreview() {
       <video ref={ref} autoPlay muted playsInline />
       {!live && <span className="cam-empty">no camera</span>}
     </div>
+  )
+}
+
+/* --------------------------------------------------------------- limitless */
+
+/**
+ * Limitless — punch to the photo-warp cutaway, and see when it's up.
+ *
+ * Structurally the same control as `DjCam` above: the **fire** is a request on
+ * the cross-window wire (`requestLimitless()` sets `pendingLimitless`, and
+ * `LimitlessDirector` in the OUTPUT window consumes it and commits the
+ * cutaway — hard-cut in, dissolve out, suppression of the other directors),
+ * and the **readout** (`Cut to Limitless` <-> `Return to scenes`) comes off
+ * `tele.limitlessActive`, not a local guess, for the identical reason DJ
+ * Cam's own doc gives: whether `limitless` is the scene on screen is a fact
+ * only the output window has.
+ *
+ * Unlike DJ Cam there is no camera to connect and nothing that can be
+ * "not ready" — `limitless` always has something to paint (the user's photo,
+ * or its own generated placeholder), so the punch button is never disabled.
+ * The photo itself is set from the Scene tab's `PhotoDrop`, which appears the
+ * moment this cutaway is live (it is gated on `tele?.scene === 'limitless'`,
+ * true whether that scene got there by hand or by this director).
+ */
+function Limitless({ tele }: { tele: Telemetry | null }) {
+  const enabled = useStore((s) => s.limitlessCutawayEnabled)
+  const active = tele?.limitlessActive ?? false
+
+  return (
+    <>
+      <h3>Limitless{enabled ? '' : ' · autofire off'}</h3>
+
+      <button
+        className={`punch-btn ${active ? 'on' : ''}`}
+        title={
+          active
+            ? 'cut back to the scene rotation now'
+            : 'punch to the Limitless cutaway now — ignores the auto cooldown and warm-up'
+        }
+        onClick={() => useStore.getState().requestLimitless()}
+      >
+        {active ? 'Return to scenes' : 'Cut to Limitless'}
+        <small>{active ? 'cutaway is live' : 'manual punch'}</small>
+      </button>
+
+      <button
+        className={`wide-toggle ${enabled ? 'on' : ''}`}
+        onClick={() => useStore.getState().toggleLimitlessCutaway()}
+      >
+        Limitless autofire
+        <small>{enabled ? 'director cuts away on a rare big drop' : 'manual punch only'}</small>
+      </button>
+
+      <p className="scene-note">
+        Set the photo it warps from the Scene tab once the cutaway is live — look for "Photo"
+        under Params.
+      </p>
+    </>
   )
 }
 

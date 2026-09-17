@@ -199,7 +199,8 @@ export function EffectDirector() {
       s.status !== 'running' ||
       f.silence ||
       cueState.governed ||
-      performanceState.djCam.active
+      performanceState.djCam.active ||
+      performanceState.limitless.active
 
     p.layers.effects = advanceEffects({
       active: p.layers.effects,

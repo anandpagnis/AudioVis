@@ -279,6 +279,35 @@ export interface PerformanceState {
   djCam: { active: boolean; since: number; manual: boolean; releasing: boolean }
 
   /**
+   * Limitless cutaway state — the photo-warp scene, treated the same way
+   * `djCam` above is: a rare directed takeover rather than a normal rotation
+   * pick. Single-writer: `LimitlessDirector` (-86.5) only. Readers: the
+   * suppression guards in `AutoPilot` / `PerformanceDirector` /
+   * `EffectDirector` / `FilterDirector` / `ExposureSampler`,
+   * `PerformanceStateBridge` (holds the layer-tenancy desires null while it's
+   * up, same as `djCam`), and `publishTelemetry` (→ the Console "Cut to
+   * Limitless" button, off `active`).
+   *
+   * No `releasing` field, unlike `djCam`: that field exists solely so
+   * `DjCamScene` can run its own scene-owned fade to black on the way out (a
+   * live camera feed can't cleanly crossfade into an abstract scene).
+   * `LimitlessScene` has no such constraint — it is an ordinary NoBlending
+   * primary scene like most of the roster, so `LimitlessDirector` requests an
+   * ordinary non-immediate dissolve on exit and needs nothing here for the
+   * scene itself to read. (`performanceState`'s own header: a field with no
+   * reader gets deleted, not kept "for later".)
+   *
+   * `active: false` ⇒ ignore every other field. `manual` selects the hold
+   * rule, exactly as `djCam.manual` does: an auto cutaway releases on the next
+   * structure boundary past a beat floor, a manual one holds until punched out
+   * or the dead-man ceiling. The two cutaways are mutually exclusive — neither
+   * may begin while the other is `active` (see `DjCamDirector`'s
+   * `otherCutawayActive` guard and `LimitlessDirector`'s own `djCamActive`
+   * one).
+   */
+  limitless: { active: boolean; since: number; manual: boolean }
+
+  /**
    * Raw-ish audio the optical racks need, published here rather than read
    * directly by the executor.
    *
@@ -287,17 +316,23 @@ export interface PerformanceState {
    * materials genuinely need beat information: kicks re-seat a material's
    * structure (a new flute phase, a re-rolled tear, a fresh heat plume), which
    * is the whole difference between glass and a filter. So the bridge, which
-   * already reads audio, publishes the four signals the racks consume.
+   * already reads audio, publishes the five signals the racks consume.
    *
    * `onKick` is a rising EDGE (0 on any frame that is not a beat), not a level.
    * The re-seat mechanisms are events; driving them from a continuous envelope
-   * is what turns a structural re-seat into a flicker.
+   * is what turns a structural re-seat into a flicker. `onKick` is itself
+   * gated on the beat-pulse envelope crossing a threshold (reliable near a
+   * confident beat, but can miss entirely at moderate confidence/strength —
+   * see `LensBeatMode`'s `seedBeat` doc). `beat` is the plainer `f.beat` edge,
+   * no amplitude gate, for materials that need to re-seat on every tracked
+   * beat regardless of how strongly it registered.
    */
   rackAudio: {
     kick: number
     highs: number
     mids: number
     onKick: number
+    beat: boolean
   }
 
   /**
@@ -399,7 +434,8 @@ export const performanceState: PerformanceState = {
   lens: { amount: 0, style: 0 },
   filter: { id: null, mix: 0 },
   djCam: { active: false, since: 0, manual: false, releasing: false },
-  rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0 },
+  limitless: { active: false, since: 0, manual: false },
+  rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0, beat: false },
   transitionStyle: 'dissolve',
   transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1 },
 

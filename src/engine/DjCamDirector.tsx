@@ -75,6 +75,16 @@ import { useStore } from '../store'
  * `ExposureSampler` freezes the auto-exposure servo so a bright room can't pull
  * the whole show down for the length of the cutaway.
  *
+ * `LimitlessDirector` (-86.5) is the other member of this cutaway family, and
+ * the two are mutually exclusive: `advanceDjCam`'s `otherCutawayActive`
+ * parameter refuses either cutaway from BEGINNING while the other is `active`
+ * (checked in `advanceDjCam` itself, ahead of the manual punch and the auto
+ * gate, so it is a property of the pure decision core rather than a wrapper
+ * side effect). `LimitlessDirector` carries the identical guard against
+ * `djCam.active`. Every suppression listed above ORs the two cutaways'
+ * `active` flags together, so normal rotation stands down while EITHER is
+ * live.
+ *
  * ## Mount priority: -87
  *
  * After `CueTimeline` (-88), so `cueState.governed` is current, and BEFORE
@@ -206,6 +216,15 @@ export function advanceDjCam(opts: {
   lastAutoCutawayAtMs: number
   /** `performance.now()` the last MANUAL cutaway ended, `-Infinity` if never. */
   lastManualEndedAtMs: number
+  /**
+   * `performanceState.limitless.active` — the two directed cutaways are
+   * mutually exclusive, so neither may BEGIN while the other is live.
+   * Optional (defaults to `false`) purely so every existing call site here and
+   * in `djCamDirector.test.ts` keeps compiling unchanged now that
+   * `LimitlessDirector` exists; every real caller passes it. See
+   * `LimitlessDirector`'s own symmetric `djCamActive` guard.
+   */
+  otherCutawayActive?: boolean
 }): DjCamCutaway | null {
   const {
     active,
@@ -226,6 +245,7 @@ export function advanceDjCam(opts: {
     firedThisSource,
     lastAutoCutawayAtMs,
     lastManualEndedAtMs,
+    otherCutawayActive = false,
   } = opts
 
   // Hold or release a live cutaway.
@@ -256,6 +276,12 @@ export function advanceDjCam(opts: {
     if ((nowMs - active.sinceMs) / 1000 >= DJCAM_MANUAL_MAX_SEC) return null
     return active
   }
+
+  // Mutual exclusion with the Limitless cutaway — only one directed takeover
+  // may own the frame at a time. Checked here, ahead of both the manual punch
+  // and the auto gate, rather than inside `enterCutaway`: a refusal at the
+  // decision core is what a test can assert directly.
+  if (otherCutawayActive) return null
 
   // Nothing live: the manual punch wins ahead of every auto guard.
   if (manualToggle) {
@@ -345,8 +371,17 @@ function enterCutaway(next: DjCamCutaway): void {
  *  roster's guaranteed primary (`SCENES[0]`, `wireframe`) rather than `null`:
  *  `silence` has no mood pool, and a cutaway that entered on `groove` can wind
  *  down to silence before it exits — the show must not strand on the (black)
- *  feed. */
-function pickReturnScene(mood: MoodState, currentId: string, recentIds: readonly string[]): string {
+ *  feed.
+ *
+ *  Exported so `LimitlessDirector` can reuse it for its own release
+ *  choreography — nothing about the pick is DJ-cam-specific, it just needs
+ *  the current subject's id (`currentId`, `djcam` or `limitless` as the case
+ *  may be) excluded from the candidates. */
+export function pickReturnScene(
+  mood: MoodState,
+  currentId: string,
+  recentIds: readonly string[],
+): string {
   const candidates = getPrimaryScenesForMood(mood).filter((sc) => sc.id !== currentId)
   const pick = pickVariedScene(candidates, mood, recentIds)?.id
   if (pick) return pick
@@ -481,6 +516,7 @@ export function DjCamDirector() {
       firedThisSource: firedThisSource.current,
       lastAutoCutawayAtMs: lastAutoCutawayAtMs.current,
       lastManualEndedAtMs: lastManualEndedAtMs.current,
+      otherCutawayActive: p.limitless.active,
     })
 
     const prev = active.current

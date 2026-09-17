@@ -50,7 +50,16 @@ export const LENS_STYLES = [
   'glitch',
   /** LED-wall mosaic: coarse cells, hard gaps, posterised colour. */
   'pixels',
-  /** Hex lattice of convex lenslets, each refracting its neighbourhood. */
+  /**
+   * Hex lattice of convex lenslets, each refracting its neighbourhood.
+   *
+   * RETIRED from every mood pool in `lensForSection` (this session, explicit
+   * request: "fisheye lens gone"). Kept in this array and in `LensPass`'s
+   * shader (index must stay stable — see the array's own doc) so a stored
+   * preset or the debug/Post-FX panel can still reach it; re-enabling is
+   * adding it back to whichever pools it belongs in. Same posture as
+   * `MirrorMode`'s retired `wallpaper`/`shear`.
+   */
   'fly eye',
   /**
    * Pseudo pixel-sort: bright runs smear along a column until the luminance
@@ -193,31 +202,41 @@ export function lensStyleName(raw: number): LensStyle {
 /**
  * Which materials re-seat their structure on a beat, and how.
  *
- * Three different mechanisms, so the per-frame driver has to know which one a
+ * Four different mechanisms, so the per-frame driver has to know which one a
  * given style wants rather than pushing the same number at all seven:
  *
  *  - `drift` — one slowly-advancing phase that a kick nudges. Serves the two
  *    flute materials (re-seat the pattern), `anamorphic` (rack the squeeze a
  *    quarter-phase) and `fly eye` (rotate the lattice a notch).
- *  - `seed` — an integer re-rolled per kick, so `glitch` tears land somewhere
+ *  - `seed` — an integer re-rolled per KICK, so `glitch` tears land somewhere
  *    new rather than shimmering in place.
+ *  - `seedBeat` — the same re-seat as `seed`, but on every tracked BEAT
+ *    (`f.beat`) rather than a detected kick specifically. `seed`'s trigger is
+ *    `rackAudio.onKick`, itself gated on the beat-pulse envelope crossing
+ *    0.6 — reliable near a confident, strongly-tracked beat, but at moderate
+ *    confidence/strength the pulse can peak under that threshold and never
+ *    fire at all (see `beatPulse()`, engine/AudioEngine.ts). `pixel sort` was
+ *    reported changing direction far less often than wanted — that gate is
+ *    why. `advance()` reseeds it on the plain `beat` edge instead, which
+ *    fires every beat regardless of amplitude.
  *  - `plume` — a kick spawns a rising heat plume in a ring of slots, which is
  *    the whole point of `melt`.
  *  - `none` — `pixels` deliberately holds its grid still. Sizing the LED cells
  *    off the kick moved every cell boundary on every hit and the wall read as
  *    jitter; kicks light the panel instead.
  */
-export type LensBeatMode = 'drift' | 'seed' | 'plume' | 'none'
+export type LensBeatMode = 'drift' | 'seed' | 'seedBeat' | 'plume' | 'none'
 
 export function lensBeatMode(styleIndex: number): LensBeatMode {
   switch (resolveLensStyle(styleIndex)) {
     case 4:
       return 'seed'
     case 7:
-      // pixel sort: a kick re-rolls the sort threshold's phase, same
-      // "re-seat on the beat" mechanism `glitch` already uses for its tears —
-      // a held note should not freeze the streak pattern in place.
-      return 'seed'
+      // pixel sort: re-rolls on every BEAT, not just a detected kick — see
+      // `LensBeatMode`'s own doc for why this is `seedBeat` and not `seed`
+      // like its sibling `glitch` (this session, user report: direction
+      // wasn't changing often enough).
+      return 'seedBeat'
     case 3:
       return 'plume'
     case 5:

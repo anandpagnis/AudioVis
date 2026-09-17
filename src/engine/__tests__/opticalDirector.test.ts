@@ -306,14 +306,15 @@ describe('the lens rack', () => {
   })
 
   it('draws harder materials for harder moods', () => {
-    // `ambient` gained `fly eye` (6) in F229 — see the pool-rebalance note
-    // above `lensForSection`'s pool table — so "soft" is no longer just the
-    // two glass materials.
+    // `ambient`'s pool is now `[0, 1, 5, 5]` (this session): `fly eye` (6)
+    // retired, `pixels` (5) added — see the pool-rebalance note above
+    // `lensForSection`'s pool table — so "soft" is the two glass materials
+    // plus the LED wall, never fly eye.
     const soft = Array.from({ length: 30 }, (_, i) => lensForSection('ambient', i)).filter((i) => i >= 0)
-    expect(soft.every((i) => i === 0 || i === 1 || i === 6)).toBe(true)
-    // `aggressive` draws glitch (4), melt (3) and, since F230, pixel sort
-    // (7); it used to include the LED wall (5), which is excluded from
-    // every pool — see below.
+    expect(soft.every((i) => i === 0 || i === 1 || i === 5)).toBe(true)
+    // `aggressive`'s pool is now `[4, 3, 7, 7]` — glitch (4), melt (3), pixel
+    // sort (7, now weighted 2:1 over glitch). The LED wall (5) is absent here
+    // on purpose — it belongs to the calm end of the roster, not this one.
     const hard = Array.from({ length: 30 }, (_, i) => lensForSection('aggressive', i)).filter((i) => i >= 0)
     expect(hard.every((i) => i === 3 || i === 4 || i === 7)).toBe(true)
   })
@@ -331,10 +332,11 @@ describe('the lens rack', () => {
   })
 
   it('excludes the currently-held material when an alternative exists (F229 anti-repeat)', () => {
-    // `ambient`'s pool is [0, 1, 6]. Excluding whichever one is already
-    // showing must never produce that same index again.
+    // `ambient`'s pool is [0, 1, 5, 5] (this session). Excluding whichever
+    // one is already showing must never produce that same index again — even
+    // for `5`, which now appears twice in the pool.
     for (let seed = 0; seed < 60; seed++) {
-      for (const avoid of [0, 1, 6]) {
+      for (const avoid of [0, 1, 5]) {
         const picked = lensForSection('ambient', seed, undefined, avoid)
         if (picked >= 0) expect(picked, `seed ${seed} avoid ${avoid}`).not.toBe(avoid)
       }
@@ -342,10 +344,10 @@ describe('the lens rack', () => {
   })
 
   it('falls back to the full pool when excluding the current pick would leave nothing', () => {
-    // `groove`'s pool is [2, 6]. If the held style is neither, exclusion
-    // removes nothing and the normal pick stands — this is really just
-    // confirming avoidStyle values outside the pool are inert, not a special
-    // case.
+    // `groove`'s pool is [2, 5] (this session — was [2, 6] before `fly eye`
+    // was retired). If the held style is neither, exclusion removes nothing
+    // and the normal pick stands — this is really just confirming avoidStyle
+    // values outside the pool are inert, not a special case.
     const withoutAvoid = Array.from({ length: 20 }, (_, i) => lensForSection('groove', i))
     const withIrrelevantAvoid = Array.from({ length: 20 }, (_, i) => lensForSection('groove', i, undefined, 99))
     expect(withIrrelevantAvoid).toEqual(withoutAvoid)
@@ -386,23 +388,44 @@ describe('the lens rack', () => {
 })
 
 /**
- * `pixels` is excluded from automatic selection, and the reason is a property
- * of that material rather than a preference.
+ * `pixels` used to be excluded from automatic selection because of a property
+ * of the material, not a preference: its amount means cell COARSENESS,
+ * inverted — 140 fine cells at low amount, 30 coarse ones at high — so the
+ * ordinary magnitude floor every other material gets left it at ~118 cells,
+ * reading as a broken renderer rather than a deliberate LED wall.
  *
- * Its amount means cell COARSENESS, inverted — 140 fine cells at low amount,
- * 30 coarse ones at high — so the floor an engaged lens gets, which is correct
- * for every material where amount is a magnitude, lands it at ~118 cells. That
- * does not read as a deliberate LED wall. It reads as a broken renderer, and
- * was reported as exactly that.
+ * Re-enabled (this session, user request: "pixels ... triggered more"), now
+ * that `lensAmountTarget` applies a coarseness-specific floor for it — see
+ * that function's own doc. The two changes ship together; a test for one
+ * without the other would let a regression in the floor slip through
+ * silently the same way the original bug did.
  */
-describe('the LED pixel wall is not selected automatically', () => {
+describe('the LED pixel wall', () => {
   const PIXELS = 5
-  it('never appears in any mood pool', () => {
-    for (const mood of MOODS) {
+
+  it('now appears in the calm-mood pools (this session)', () => {
+    const ambient = Array.from({ length: 30 }, (_, i) => lensForSection('ambient', i)).filter((i) => i >= 0)
+    expect(ambient).toContain(PIXELS)
+  })
+
+  it('never appears in the hot-mood pools — it belongs to the calm end', () => {
+    for (const mood of ['building', 'peak', 'aggressive'] as MoodState[]) {
       for (let seed = 0; seed < 60; seed++) {
         expect(lensForSection(mood, seed), `${mood} ${seed}`).not.toBe(PIXELS)
       }
     }
+  })
+
+  it('gets a coarseness floor well above the ordinary magnitude floor', () => {
+    // 0.55: where the LED cells are coarse enough to read as a deliberate
+    // choice rather than a broken renderer — see lensAmountTarget's own doc.
+    for (const mood of ['ambient', 'mellow', 'groove'] as MoodState[]) {
+      expect(lensAmountTarget(mood, 0, true, PIXELS), mood).toBeGreaterThanOrEqual(0.55)
+    }
+  })
+
+  it("a non-pixels style is unaffected by the floor — it's PIXELS-specific", () => {
+    expect(lensAmountTarget('ambient', 0, true, 0)).toBeLessThan(0.55)
   })
 
   it('is still a real material, so the debug panel can reach it', () => {

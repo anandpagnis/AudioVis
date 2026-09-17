@@ -7,6 +7,7 @@ import { AutoPilot } from './AutoPilot'
 import { CameraDirector } from './CameraDirector'
 import { CueTimeline } from './CueTimeline'
 import { DjCamDirector } from './DjCamDirector'
+import { LimitlessDirector } from './LimitlessDirector'
 import { EffectDirector } from './EffectDirector'
 import { FilterDirector } from './FilterDirector'
 import { PostFXChain } from './PostFXChain'
@@ -31,8 +32,8 @@ import { useStore } from '../store'
  *   analysis   `SceneManager` (-100, calls `audioEngine.update()` first)
  *   decide     `PerformanceStateBridge` (-95) → `AutoPilot` (-90) →
  *              `CueTimeline` (-88) → `DjCamDirector` (-87) →
- *              `EffectDirector` (-86) → `PerformanceDirector` (-85) →
- *              `FilterDirector` (-84)
+ *              `LimitlessDirector` (-86.5) → `EffectDirector` (-86) →
+ *              `PerformanceDirector` (-85) → `FilterDirector` (-84)
  *   execute    `CameraDirector` (-80) → scenes (0) → `PostFXChain` (1) →
  *              `ExposureSampler` / `ScreenshotCapture` (2)
  *
@@ -113,6 +114,7 @@ export function Stage() {
       <AutoPilot />
       <CueTimeline />
       <DjCamDirector />
+      <LimitlessDirector />
       <EffectDirector />
       <PerformanceDirector />
       <FilterDirector />

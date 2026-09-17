@@ -1273,6 +1273,95 @@ select.sel3 option {
   padding: 6px 8px;
 }
 
+/* ---------- limitless photo drop ---------- */
+
+/*
+ * `PhotoDrop` (Console.tsx) had NO rules here at all — every class it renders
+ * (`.photo-drop-wrap`, `.photo-drop`, `.photo-drop-input`, `.photo-drop-hint`,
+ * `.photo-drop-preview`, `.photo-drop-error`) was undeclared anywhere in the
+ * stylesheet. Two concrete consequences, not just a "looks plain" complaint:
+ *
+ *  1. The real `<input type="file">` had no `.photo-drop-input` rule to hide
+ *     or position it, so it rendered as a native, unstyled file-picker control
+ *     sitting inside the drop zone — a second, ugly "Choose File" button
+ *     fighting the styled hint text for the same click.
+ *  2. `.photo-drop` itself had no border/background/sizing, so with no photo
+ *     set yet it could collapse to the height of one line of text — nothing
+ *     read as a button or a drop target at all, which is the "add button
+ *     doesn't work" report: there was nothing there to visibly click.
+ *
+ * Fixed the standard way: the real input is stretched to cover the whole
+ * zone and made invisible (`opacity: 0`), so every click or drop anywhere in
+ * `.photo-drop` lands on the real file input (belt) while the div's own
+ * `onClick`/`onDrop` handlers (suspenders) keep working identically.
+ */
+.photo-drop-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.photo-drop {
+  position: relative;
+  min-height: 120px;
+  border-radius: 10px;
+  border: 1px dashed var(--card-border);
+  background: rgba(var(--cream-rgb), 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.photo-drop:hover {
+  background: rgba(var(--cream-rgb), 0.07);
+  border-color: rgba(var(--cream-rgb), 0.4);
+}
+.photo-drop:focus-visible {
+  outline: 2px solid var(--crimson);
+  outline-offset: 2px;
+}
+.photo-drop.drag {
+  border-color: var(--crimson);
+  background: rgba(var(--crimson-rgb), 0.12);
+}
+.photo-drop.has-photo {
+  border-style: solid;
+  padding: 0;
+}
+.photo-drop-hint {
+  font: 500 11.5px/1.5 var(--sans);
+  color: rgba(var(--cream-rgb), 0.6);
+  padding: 0 8px;
+}
+.photo-drop-preview {
+  display: block;
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 9px;
+}
+/* Stretched over the whole zone and invisible — the actual click/drop target,
+   layered under nothing so it always wins the pointer event; see this
+   section's own header for why an unstyled native input was the bug. */
+.photo-drop-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.photo-drop-error {
+  color: var(--cream);
+  background: rgba(var(--maroon-rgb), 0.4);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: 400 10.5px/1.5 var(--sans);
+}
+
 /* ---------- transport bar (bottom) ---------- */
 
 .transport-bar {

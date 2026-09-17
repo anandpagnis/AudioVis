@@ -419,6 +419,28 @@ interface AppState {
    */
   djCamRequestNonce: number
 
+  /**
+   * A manual Limitless-cutaway punch the operator pressed by hand, waiting for
+   * `LimitlessDirector` to act on it. Same shape as {@link pendingDjCam} and
+   * for the identical reason: `LimitlessDirector` owns
+   * `performanceState.limitless` and rewrites it every frame, so the punch
+   * flows THROUGH the director — requested here, consumed there. `'toggle'`
+   * flips the cutaway: enter it while inactive, exit it while active.
+   *
+   * Transient, and deliberately absent from `partialize` below, matching
+   * `pendingDjCam`.
+   */
+  pendingLimitless: 'toggle' | null
+  /**
+   * Bumped on every {@link requestLimitless} — the reason punching Limitless a
+   * second time from the console works at all. Same mechanism as
+   * {@link djCamRequestNonce}: the output window's `LimitlessDirector`
+   * consumes a punch and clears its OWN copy, so a second identical punch
+   * needs a value that changes to publish at all. Nothing reads its value;
+   * only that it changed matters.
+   */
+  limitlessRequestNonce: number
+
   uiHidden: boolean
   debugOpen: boolean
   /** Lightweight fps / frame-time / tier readout. Separate from `debugOpen`
@@ -577,6 +599,13 @@ interface AppState {
    * regardless of this flag.
    */
   djCamEnabled: boolean
+  /**
+   * Opt-in: may `LimitlessDirector` cut away to the photo-warp scene on its
+   * own at a rare high point of the set? Same pattern as {@link djCamEnabled}
+   * — governs the AUTOMATIC trigger only, the Console's manual "Cut to
+   * Limitless" punch works regardless. Persisted, like `djCamEnabled`.
+   */
+  limitlessCutawayEnabled: boolean
   /** Cameras offered to the Console's DJ-cam picker. Scratch, like
    *  {@link micDevices}: a device list is only valid for this session's
    *  hardware and permission grant, so it is rebuilt on demand and excluded
@@ -628,6 +657,13 @@ interface AppState {
    *  `pendingDjCam`, so an unconsumed request cannot re-fire forever —
    *  matching `clearFilterRequest`. */
   clearDjCamRequest: () => void
+  /** Ask `LimitlessDirector` to punch the Limitless cutaway on its next frame
+   *  — enter it if it is not up, exit it if it is. Same shape as
+   *  {@link requestDjCam}. See {@link AppState.pendingLimitless}. */
+  requestLimitless: () => void
+  /** Clear a consumed punch. Called by `LimitlessDirector` on the frame it
+   *  reads `pendingLimitless`, matching {@link clearDjCamRequest}. */
+  clearLimitlessRequest: () => void
   setLayer: (role: LayerRole, id: string | null, opts?: { auto?: boolean }) => void
   setLayerFx: (role: LayerRole, patch: Partial<LayerFx>) => void
   setResponseTuning: (patch: Partial<ResponseTuning>) => void
@@ -638,6 +674,9 @@ interface AppState {
   toggleMoodDrive: () => void
   /** Flip the DJ-cam auto opt-in ({@link AppState.djCamEnabled}). */
   toggleDjCam: () => void
+  /** Flip the Limitless-cutaway auto opt-in
+   *  ({@link AppState.limitlessCutawayEnabled}). */
+  toggleLimitlessCutaway: () => void
   commitScene: () => void
   setPalette: (id: string, opts?: { auto?: boolean }) => void
   toggleUi: () => void
@@ -765,6 +804,8 @@ export const useStore = create<AppState>()(
       filterRequestNonce: 0,
       pendingDjCam: null,
       djCamRequestNonce: 0,
+      pendingLimitless: null,
+      limitlessRequestNonce: 0,
 
       uiHidden: false,
       debugOpen: false,
@@ -799,6 +840,7 @@ export const useStore = create<AppState>()(
       autoPilot: true,
       moodDrive: true,
       djCamEnabled: false,
+      limitlessCutawayEnabled: false,
       lastManualAt: 0,
 
       responseTuning: { attack: 1, release: 1, subdivision: 1 },
@@ -1116,6 +1158,16 @@ export const useStore = create<AppState>()(
         set((s) => ({ pendingDjCam: 'toggle', djCamRequestNonce: s.djCamRequestNonce + 1 })),
       clearDjCamRequest: () => set({ pendingDjCam: null }),
 
+      // Same plain hand-off, to the one component that owns
+      // `performanceState.limitless` — `LimitlessDirector`, where every rule
+      // about whether the cutaway may start already lives.
+      requestLimitless: () =>
+        set((s) => ({
+          pendingLimitless: 'toggle',
+          limitlessRequestNonce: s.limitlessRequestNonce + 1,
+        })),
+      clearLimitlessRequest: () => set({ pendingLimitless: null }),
+
       setLayer: (role, id, opts) => {
         if (id === get().sceneId) id = null
         // A scene not authored for this role must never be mounted in it.
@@ -1211,6 +1263,8 @@ export const useStore = create<AppState>()(
       toggleAutoPilot: () => set((s) => ({ autoPilot: !s.autoPilot })),
       toggleMoodDrive: () => set((s) => ({ moodDrive: !s.moodDrive })),
       toggleDjCam: () => set((s) => ({ djCamEnabled: !s.djCamEnabled })),
+      toggleLimitlessCutaway: () =>
+        set((s) => ({ limitlessCutawayEnabled: !s.limitlessCutawayEnabled })),
       commitScene: () => {
         const pending = get().pendingSceneId
         if (pending) {
@@ -1520,6 +1574,7 @@ export const useStore = create<AppState>()(
         autoPilot: s.autoPilot,
         moodDrive: s.moodDrive,
         djCamEnabled: s.djCamEnabled,
+        limitlessCutawayEnabled: s.limitlessCutawayEnabled,
         responseTuning: s.responseTuning,
         bandMappings: s.bandMappings,
         layerFx: s.layerFx,
