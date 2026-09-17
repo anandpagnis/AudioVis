@@ -11406,3 +11406,97 @@ per-frame canvas heavy enough to distort the reading.
       never tuned the way F229 explicitly tuned the mirror's to 0.85/0.05)
       — not this fix, which only restores the gate's ability to say "no" at
       all.
+
+- [x] **F240 · `web`'s "camera shake left-right, bumpy" survived three
+      Round 2-4 fixes because none of them were looking at the right
+      function** — *2026-09-18, user report, repeated across a hard refresh, a
+      from-scratch dev server on a different port, and post-fx disabled — each
+      meant to rule out one candidate explanation and none of them changed
+      anything* `src/scenes/OversaturatedWebScene.tsx`
+
+      This file's own header already documents three earlier passes at this
+      exact complaint: Round 2 replaced a bounded Lissajous camera weave with
+      a monotonic helix, Round 3 removed `uBeatSin4` from the screen-roll
+      angle, and (this session, immediately prior to this entry) a Round 4
+      simplified the helix to a dead-straight `+z` path so `main()`'s camera
+      setup has no revolution left at all to be mistaken for a pan. The user
+      kept reporting the identical symptom after every one of them, including
+      after Round 4 landed on a genuinely fresh `WebGLRenderer` (new dev
+      server process, new browser tab, verified by this session directly —
+      see the live-capture note below) — which meant the bug could not be a
+      caching artifact and could not be in `main()`'s camera math, because
+      that math is now provably incapable of producing motion beyond forward
+      travel.
+
+      **Traced by re-reading `git diff` against the last commit in full**,
+      not just the hunks already suspected. `plane()` — not `main()` — had
+      `p2 *= ROT(tau*0.1*n+0.05*TIME+uHihat*0.15)`, added in the same pass as
+      Round 2 per the routing section at the top of the file, and absent from
+      the pre-Round-1 committed source. `uHihat` is a fast-attack,
+      fast-decay percussion envelope that fires on 8th/16th notes — far more
+      often than a kick or a beat — and this term is applied identically to
+      every one of the scene's up to 6 depth planes, so every hi-hat hit
+      snapped the WHOLE composited lattice, every layer at once, by the same
+      few degrees and back. That reads as the camera juddering left-right on
+      the hi-hat pattern even though no camera code is anywhere near it —
+      exactly why disabling post-fx and starting from a clean server never
+      ruled it out, and why three rounds scoped to `main()`'s
+      `offset`/`doffset`/`ddoffset`/`uRoll` could not have found it. Same bug
+      class Round 3 already catalogued for `uBeatSin4` (a live signal riding
+      a rotation ANGLE swings the frame out and back by construction,
+      regardless of magnitude), just in a function nobody had looked at for
+      this complaint.
+
+      Fixed the same way Round 3 was: removed from the angle, not damped.
+      `uHihat`'s visual channel now lives at the hex-cell edge glow term
+      instead, alongside the existing `uHighs` routing — a brightness pop
+      reads as a hit, a rotation pop reads as a shake. There is now no
+      per-plane, per-frame or per-pixel term anywhere in this file that adds
+      a live signal into a rotation angle.
+
+      **Live-capture verified, partially.** This session drove a real,
+      unmodified dev server through Playwright (headless Chromium, real
+      microphone/file audio input, not a mock) and screenshotted the `web`
+      scene over multiple seconds both before and after the straight-path
+      Round 4 change — confirmed no lateral drift on a silent input, which is
+      what motivated looking past `main()` in the first place once the user
+      reported the symptom persisting under conditions that ruled out
+      everything Round 2-4 could explain. The fix in this entry (`uHihat` off
+      the rotation) was verified to compile, typecheck, lint and render
+      without shader errors against real audio (an electronic track with
+      audible hi-hats, via the app's own file-input source), but a
+      frame-by-frame visual confirmation that the judder is specifically
+      gone — as opposed to reduced, or coincidentally quiet during capture —
+      was not captured; that needs the user's own eyes on a real set.
+
+      `npm run check` clean: typecheck, lint, 1722 tests (2 skipped), build.
+
+- [x] **F241 · Lens rack kick reactivity raised a second time, `pixels`
+      widened specifically** — *2026-09-18, explicit follow-up request: "I
+      want the quant of the pixels lens change a lot, like a lot, for all
+      lens actually, should change a lot on beat"* `src/engine/LensPass.ts`
+
+      Earlier this session (see the inline comments this entry's changes sit
+      next to) every material's kick coefficient had already been raised once
+      in response to a "too static" report. This is explicitly a second,
+      larger pass in the same direction, not a correction of the first one.
+
+      `pixels`: the `coarse` kick coefficient raised 0.6 → 1.3 AND the
+      cell-count range it drives widened 140..30 → 220..8, so a kick both
+      crosses the 0..1 range faster and lands on a chunkier grid at the top
+      of it, while the resting grid (no kick) is also noticeably finer than
+      before — the combination is what makes the on-beat jump read as large
+      rather than a shift between two already-similar grids. Its brightness
+      pulse raised 0.35 → 0.7 to match. Ribs/fan's `amt`, anamorphic's
+      squeeze and flare, glitch's shift, pixel-sort's threshold reach, and the
+      shared per-kick `drift` phase-click (ribs/fan/anamorphic's common
+      driver) all had their kick coefficients raised again on top of the
+      earlier pass.
+
+      `npm run check` clean: typecheck, lint, 1722 tests (2 skipped), build.
+      Rendered clean against real audio (electronic track, file-input source)
+      in this session's own Playwright capture — no shader errors, no NaN/
+      blowout artifacts visible in the captured frames. Exact magnitudes
+      ("a lot") are a judgement call matched to the request's own wording,
+      not a measurement; if it now reads as too much, these are the same
+      per-material coefficients to come back and ease.
