@@ -15,7 +15,7 @@ import { LensPass } from '../LensPass'
  * what's checkable off-GPU is `Pass.enabled`, which is exactly the switch
  * this behaviour turns on, not that the shader draws anything.
  */
-const NO_AUDIO = { kick: 0, highs: 0, mids: 0, onKick: 0 }
+const NO_AUDIO = { kick: 0, highs: 0, mids: 0, onKick: 0, beat: false }
 
 describe('LensPass — re-enabled after F229', () => {
   it('engages on an ordinary scene now that the F142 kill switch is off', () => {

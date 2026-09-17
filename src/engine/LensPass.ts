@@ -110,10 +110,15 @@ const LENS_FRAG = /* glsl */ `
       }
       float f = fract(c) - 0.5;
       float slope = f * inversesqrt(max(0.25 - f * f, 0.02));
-      float amt = uAmt * (0.55 + 0.25 * uKick);
+      // Kick coefficient widened again 0.55 -> 1.0, base dropped 0.45 -> 0.3
+      // (explicit follow-up request: "for all lens... should change a lot on
+      // beat" — the previous 0.45/0.55 split was still read as too static).
+      // A full kick now swings amt to over 4x its resting value instead of
+      // ~2.2x, and sheen's own kick term is raised to match.
+      float amt = uAmt * (0.3 + 1.0 * uKick);
       off = dirAcross * slope * amt * 0.9;
       shade = 1.0 - 0.35 * amt * smoothstep(0.15, 0.5, abs(f));
-      sheen = pow(max(0.0, 1.0 - abs(abs(f) - 0.32) * 9.0), 3.0) * amt * (0.10 + 0.18 * uKick);
+      sheen = pow(max(0.0, 1.0 - abs(abs(f) - 0.32) * 9.0), 3.0) * amt * (0.10 + 0.35 * uKick);
     } else if (uStyle < 2.5) {
       // anamorphic: horizontal squeeze that breathes (uDrift clicks a
       // quarter-phase per kick, which reads as a focus rack), cubic edge smear,
@@ -121,12 +126,16 @@ const LENS_FRAG = /* glsl */ `
       // streaks carry the source pixel's own colour, lightly cooled, so the
       // palette stays in charge rather than the flare inventing a hue.
       float breathe = 0.5 + 0.5 * sin(uDrift * 6.2831853);
-      float squeeze = uAmt * (0.06 + 0.16 * breathe + 0.08 * uKick);
+      // Kick coefficients raised again (explicit follow-up: "for all
+      // lens... should change a lot on beat"): squeeze 0.18 -> 0.4, flare
+      // 0.9 -> 1.6 below — the earlier pass widened these once already; this
+      // pushes further in the same direction rather than a second small step.
+      float squeeze = uAmt * (0.06 + 0.16 * breathe + 0.4 * uKick);
       float cx = vUv.x - 0.5;
       off.x = cx * squeeze + cx * cx * cx * 0.5 * uAmt;
       off.y = -(vUv.y - 0.5) * squeeze * 0.22;
       shade = 1.0 - 0.22 * uAmt * smoothstep(0.28, 0.5, abs(cx));
-      float fl = uAmt * (0.5 + 0.6 * uKick);
+      float fl = uAmt * (0.35 + 1.6 * uKick);
       vec3 st = vec3(0.0);
       for (int i = 1; i <= 12; i++) {
         float d = float(i) / 12.0;
@@ -175,7 +184,9 @@ const LENS_FRAG = /* glsl */ `
       float bid = floor(vUv.y * 26.0);
       vec2 h = hash2(vec2(bid, uSeed));
       float on = step(1.0 - 0.5 * uAmt, h.x);
-      float shift = (h.y - 0.5) * 0.25 * uAmt * on * (0.4 + 0.6 * uKick);
+      // Kick coefficient raised 0.6 -> 1.3, base dropped 0.4 -> 0.25 (same
+      // follow-up request as the other materials above).
+      float shift = (h.y - 0.5) * 0.25 * uAmt * on * (0.25 + 1.3 * uKick);
       vec2 h2 = hash2(vec2(floor(vUv.y * 160.0), uSeed * 1.31));
       shift += (h2.x - 0.5) * 0.05 * uAmt * step(0.93 - 0.2 * uAux, h2.y);
       off = vec2(shift, 0.0);
@@ -185,19 +196,41 @@ const LENS_FRAG = /* glsl */ `
     } else if (uStyle < 5.5) {
       // pixels: LED-wall mosaic, snapping sampling to cell centres.
       //
-      // The cell grid is FIXED, and lilim's comment records why: sizing it off
-      // the kick moved every cell boundary on every hit, and the kick envelope
-      // has no accent gate, so at fast tempo the wall never settled and the
-      // whole effect read as jitter. Kicks light the panel instead, which holds
-      // the geometry still and keeps the wall alive.
-      float n = mix(140.0, 30.0, uAmt);
+      // The grid was previously FIXED — lilim's comment recorded that sizing
+      // it off the kick moved every cell boundary on every hit, and the kick
+      // envelope had no accent gate, so at fast tempo the wall never settled
+      // and the whole effect read as jitter.
+      //
+      // Re-enabled (this session, explicit user request: "drastically
+      // increase and decrease complexity in beat", accepting the jitter risk
+      // named above). The mitigating difference from whatever the original
+      // attempt drove this off: uKick here is rackAudio.kick, already a
+      // SMOOTH, DECAYING beat-pulse envelope (see PerformanceStateBridge.tsx),
+      // not a raw per-frame trigger — so the grid should ease back toward
+      // uAmt's own coarseness between beats rather than snapping every
+      // frame. Not guaranteed to avoid the original failure; verify by ear,
+      // especially at fast tempo. If it still jitters, the documented fallback
+      // is a dedicated, slower-release smoothed value private to this pass
+      // (free-decaying like KifsRoseScene's st.accent) instead of reading
+      // the shared, faster uKick directly.
+      // Round 2 of the same request ("I want the quant of the pixels lens
+      // to change A LOT"): kick coefficient on coarse raised 0.6 -> 1.3
+      // AND the cell-count range itself widened 140..30 -> 220..8, so a kick
+      // both crosses the 0..1 range faster and lands on a far chunkier grid
+      // at the top of it. Resting (uAmt alone, no kick) is now noticeably
+      // FINER than before too (220 vs 140 at coarse=0), which is what makes
+      // the on-beat jump read as large rather than a shift from one already-
+      // coarse grid to a slightly coarser one.
+      float coarse = clamp(uAmt + 1.3 * uKick, 0.0, 1.0);
+      float n = mix(220.0, 8.0, coarse);
       vec2 g = vec2(n, n / uAspect);
       vec2 center = (floor(vUv * g) + 0.5) / g;
       off = center - vUv;
       vec2 fp = fract(vUv * g);
       float gap = step(0.08, fp.x) * step(fp.x, 0.92) * step(0.08, fp.y) * step(fp.y, 0.92);
       shade = mix(1.0, gap, min(1.0, uAmt * 2.0)); // hard black grid
-      shade *= 1.0 + 0.18 * uKick;                 // lamps brighten on the hit
+      // Brightness pulse strengthened again 0.35 -> 0.7 to match.
+      shade *= 1.0 + 0.7 * uKick;                  // lamps brighten on the hit
     } else if (uStyle < 6.5) {
       // fly eye: hex lattice of convex lenslets, each refracting its
       // neighbourhood like a glass bead — the radial cousin of the flute slope.
@@ -266,7 +299,9 @@ const LENS_FRAG = /* glsl */ `
       // could otherwise drive the threshold low enough that nearly every tap
       // qualifies, which would collapse the hard per-tap cutoff into a soft
       // average and read as a blur rather than a sort.
-      float threshold = clamp(1.0 - uAmt * 0.55 - uKick * 0.25, 0.05, 1.0);
+      // Kick term raised 0.25 -> 0.45 (same follow-up request as the other
+      // materials) so a hit visibly grabs more of the frame for the sort.
+      float threshold = clamp(1.0 - uAmt * 0.55 - uKick * 0.45, 0.05, 1.0);
       float step0 = 0.0025 * (2.0 + 10.0 * uAmt);
       float bestLum = -1.0;
       float bestOff = 0.0;
@@ -382,8 +417,11 @@ export class LensPass extends Pass {
    * selected material uses.
    *
    * `onKick` is a rising-edge strength (0 on a frame that is not a beat), not a
-   * level — the three re-seat mechanisms are all events, and driving them from a
+   * level — the re-seat mechanisms are all events, and driving them from a
    * continuous envelope is what turns a structural re-seat into a flicker.
+   * `beat` is a plainer edge (`f.beat`, no amplitude gate at all) — see
+   * `LensBeatMode`'s `seedBeat` doc for why `pixel sort` needs that instead of
+   * `onKick`'s beat-pulse threshold.
    *
    * Sets {@link Pass.enabled}; an inert rack is skipped by the composer rather
    * than rendering an identity transform. Allocation-free.
@@ -391,7 +429,7 @@ export class LensPass extends Pass {
   advance(
     l: LensRackState,
     dt: number,
-    audio: { kick: number; highs: number; mids: number; onKick: number },
+    audio: { kick: number; highs: number; mids: number; onKick: number; beat: boolean },
     djCamActive: boolean,
   ): void {
     const active = (!LENS_HARD_DISABLED || djCamActive) && isLensActive(l)
@@ -415,8 +453,22 @@ export class LensPass extends Pass {
         if (audio.onKick > 0) this.seed += 1
         u.uSeed.value = this.seed + Math.floor(this.time * 3) * 0.017
         break
+      case 'seedBeat':
+        // Same re-seat as 'seed', but on the plain beat edge (this session —
+        // pixel sort's direction wasn't changing as often as wanted, because
+        // 'seed's onKick trigger is gated on the beat-pulse envelope crossing
+        // 0.6, which a moderate-confidence beat can miss entirely). `beat`
+        // fires every tracked beat regardless of amplitude.
+        if (audio.beat) this.seed += 1
+        u.uSeed.value = this.seed + Math.floor(this.time * 3) * 0.017
+        break
       case 'drift':
-        this.drift += step * (0.02 + audio.mids * 0.05) + audio.onKick * 0.25
+        // Kick-jump term raised again 0.45 -> 0.8 (explicit follow-up
+        // request: "for all lens... should change a lot on beat") — a much
+        // bigger per-kick "click" in the flute/squeeze phase shared by
+        // ribs/fan/anamorphic (fly eye also read this before it was retired
+        // from every mood pool).
+        this.drift += step * (0.02 + audio.mids * 0.05) + audio.onKick * 0.8
         u.uDrift.value = this.drift
         break
       case 'plume':

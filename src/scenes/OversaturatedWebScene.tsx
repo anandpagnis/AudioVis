@@ -101,12 +101,147 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  *   mids    -> flythrough rate
  *   energy  -> overall luminance / glow gain
  *   highs   -> hex-cell edge glow
+ *
+ *   The three routings below all read prelude uniforms (SHADER_SCENE_PRELUDE)
+ *   that the engine populates every frame for free -- `uSnare`/`uHihat`/
+ *   `uBeatSin4` were sitting unused, and every visual dimension they now touch
+ *   (hue, lattice rotation, camera roll) was previously static or driven only
+ *   by a scene param, never by audio:
+ *
+ *   uSnare  -> hue-shift POP in `bcol`'s cosine phase. Kick and bass already
+ *              own geometry (radius); the color half is what "oversaturated"
+ *              is named for, and nothing was driving it. A snare hit visibly
+ *              reshuffles the plane's hue for the length of its envelope,
+ *              legible as a distinct percussive color flash under the kick's
+ *              radial wave rather than a rename of it.
+ *   uHihat  -> hex-cell edge glow pop, alongside `uHighs` (Round 5: MOVED off
+ *              lattice rotation -- see "Round 5 fix" below. Was extra
+ *              ROTATION on top of each plane's existing
+ *              `ROT(tau*0.1*n+0.05*TIME)` spin; hihat's envelope is the
+ *              shortest-lived of the three drum signals and fires on 8th/
+ *              16th notes, so riding a rotation angle read as the whole
+ *              lattice juddering on every hit, not a flicker).
+ *   uBeatSin4 -> REMOVED from camera roll (Round 3, see below). Originally a
+ *              small tempo-locked sway added on top of `uRoll`; turned out to
+ *              be the same bug class Round 2 fixed in camera POSITION, just
+ *              in ROLL instead.
+ *
+ * ## Round 2 fixes: camera weave, and denser/deeper/on-beat spawning
+ *
+ * Reported: "camera movement is bumpy... back and forth, just make the camera
+ * movement smooth in one direction" and "change the spawning of the new web
+ * fragments more often, deeper and on beat" (lighting/color explicitly called
+ * out as good and left untouched).
+ *
+ *   Camera: `offset(z)` (and its exact derivatives `doffset`/`ddoffset`, which
+ *   `main()` needs to build the ww/uu/vv look-basis) used to be a Lissajous
+ *   weave -- `vec3(pathB*sin(pathA*z), z)`, two independently-phased sin()
+ *   terms on x/y. That is BOUNDED motion: each axis turns around and heads
+ *   back the moment its own sin() term crests, no matter how smoothly z
+ *   itself advances -- the textbook "back and forth" bug, same class as
+ *   GyroidFluxScene's old camera-rotation swing (see that file's header).
+ *   Replaced with a helix driven by ONE monotonically-increasing angle
+ *   (`pathRadius`/`pathRate`, declared right above `offset()`), which can only
+ *   ever revolve one way. `pathA`/`pathB` are gone; see the offset() doc for
+ *   the radius/rate derivation.
+ *
+ *   Spawn rate/depth: the kick-triggered wavefront only fired from a detected
+ *   `s.onKick`, so in a passage with a steady beat but a soft or absent bass
+ *   transient the web could sit silent for bars. Added a second, independent
+ *   wavefront (`uSinceBeat`, its own `ImpulseClock` at `st.beat` in
+ *   `update()`, its own fixed `beatPulseAmp` in the shader) charged on every
+ *   `ctx.f.beat` instead -- see the pulse block in `plane()` for how the two
+ *   combine. "Deeper": `waveSpan` 6->9 and `waveDecay` 8->6 so the same
+ *   1/3 s crossing now reaches 1.5x the physical radius with a proportionally
+ *   wide ring (not a thin one lost in more distance); `FURTHEST` 6->8 so
+ *   distant planes stay drawn long enough to actually show that farther
+ *   reach instead of it vanishing past the old visibility cutoff.
+ *
+ * ## Round 3 fix: camera ROLL was still swinging back and forth
+ *
+ * Reported (after Round 2 shipped): "camera shake left right, looks very
+ * bumpy." Round 2 fixed POSITION (`offset(z)`) but the routing section above
+ * had separately wired `uBeatSin4` — a plain -1..1 sine, one cycle per bar
+ * (`engine/beatOscillators.ts`) — straight into the roll angle:
+ * `p *= ROT(uRoll + uBeatSin4*0.05)`. A sine riding on a rotation angle
+ * swings the frame to one side and back to the other every bar by
+ * construction — exactly the bug class Round 2 diagnosed and fixed in
+ * position, just missed here because it was added in a separate pass and
+ * never connected to the same complaint.
+ *
+ * `GyroidFluxScene`'s header already worked out why the general fix has to be
+ * removal, not damping: "ANY term riding on a rotation ANGLE that rises and
+ * falls makes the camera swing out and back by definition — no amount of
+ * smoothing changes that, only removing it from the angle does." A
+ * half-rectified or scaled-down `uBeatSin4` would still rise and fall inside
+ * the angle every bar; it would shrink the shake, not remove it. Fixed the
+ * same way: `uBeatSin4` is out of the roll entirely, `p *= ROT(uRoll)`,
+ * `uRoll` unchanged (still the pure static tilt dial its own doc always
+ * said). The "camera roll is the one dimension with zero audio input" gap
+ * this term was trying to close is still open — worth closing later with a
+ * one-shot decaying pop on a kick (the pattern every other audio-driven
+ * angle-adjacent term in this codebase actually uses safely, e.g. this
+ * scene's own `uKickAmp`-scaled wavefront), never a continuous oscillator
+ * riding on the angle again.
+ *
+ * ## Round 4 fix: the helix ITSELF was still "the camera", just slower
+ *
+ * Reported again (after Round 3 shipped, hard refresh confirmed, post-fx off
+ * to rule out the lens/mirror racks): "whole view panning/rolling." Round 2's
+ * helix is monotonic in POSITION — it can't turn back — but `doffset`/
+ * `ddoffset` still trace a full circle every ~180s, and a revolving
+ * look-basis reads as "the camera is panning" over any observation window
+ * shorter than that period, same as a slow orbit always does. Round 2 fixed
+ * the bounded-oscillation bug class; it didn't remove revolution as a
+ * category, and revolution is its own member of "the camera visibly turns."
+ *
+ * Fixed by deleting the revolution outright: `offset`/`doffset`/`ddoffset`
+ * are now a dead-straight `+z` path (see the doc right above `offset()`).
+ * The only remaining camera motion is forward travel and the static `uRoll`
+ * tilt — neither can pan or roll by construction, so there is nothing left
+ * in `main()`'s camera setup that a "the camera is moving" report could be
+ * describing. (It wasn't: see Round 5.)
+ *
+ * ## Round 5 fix: it was never `main()` — `plane()`'s own `uHihat` rotation
+ *
+ * Reported a THIRD time, after Round 4 shipped on a from-scratch dev server
+ * with a hard-refreshed, never-before-loaded tab (ruling out every caching
+ * explanation too): "still shaking... def some code change, didn't happen
+ * before you touched web." That last part was the real clue — checked `git
+ * diff` against the last commit, before any of these Rounds, and it doesn't
+ * have this bug. So it was introduced somewhere in Round 1-2's own changes,
+ * and every "Round" since has been staring at the wrong function.
+ *
+ * `plane()` — not `main()` — had `p2 *= ROT(tau*0.1*n+0.05*TIME+uHihat*0.15)`,
+ * added in the same pass as Round 2 (see the routing section above, at the
+ * time it was written). `uHihat` is a fast-attack, fast-decay envelope that
+ * fires on 8th/16th notes — far more often than a kick or a beat — and this
+ * term is IDENTICAL across every one of the up to 6 depth planes, so every
+ * hihat hit snapped the whole composited lattice, every layer at once, by
+ * the same few degrees and back. That reads as the camera juddering
+ * left-right on the hihat pattern, even though no camera code is anywhere
+ * near it — exactly why post-fx off and a from-scratch dev server never
+ * ruled it out, and why Rounds 2-4 (all scoped to `main()`'s
+ * offset/doffset/ddoffset/uRoll) could not have found it.
+ *
+ * Same rule as Round 3, same fix shape: removed from the angle, not damped.
+ * uHihat's visual channel now lives at the hex-cell edge glow term instead
+ * (alongside `uHighs`, see `plane()`) — a brightness pop reads as a hit; a
+ * rotation pop reads as a shake. There is now no per-plane, per-frame, or
+ * per-pixel term anywhere in this file that adds a live signal into a
+ * rotation angle. If that temptation comes up again for some other band,
+ * route it into radius or glow instead — never an angle.
  */
 
 export const FRAG = /* glsl */ `
   uniform float uFly;
   uniform float uSinceKick;  // seconds since the last kick (engine/response.ts)
   uniform float uKickAmp;    // strength of that kick, so soft hits make soft waves
+  // Round 2: secondary wavefront clock, fired on every tracked beat
+  // (ctx.f.beat) rather than only a detected kick -- see beatPulseAmp above
+  // and the 'beat' ImpulseClock in update(). Same 1e4 "never fired" sentinel
+  // as uSinceKick.
+  uniform float uSinceBeat;
   uniform float uEnergy;
   uniform float uHighs;
   uniform float uBass;      // s.sub -> strand/node glow radius (continuous)
@@ -127,18 +262,62 @@ export const FRAG = /* glsl */ `
     pi        = 3.14159265358979
   , tau       = 2.*pi
   , planeDist = .5
-  , FURTHEST  = 6.
+  // Round 2: FURTHEST raised 6 -> 8 so the fade-out that governs how far down
+  // the tunnel a plane stays visible reaches farther before cutting off --
+  // paired with the waveSpan increase below, distant planes now stay drawn
+  // long enough to actually show the wavefront arriving at them, instead of
+  // the far half of its enlarged reach falling past the old cutoff unseen.
+  , FURTHEST  = 8.
   , fadeFrom  = 4.
   , cutOff    = .975
-  // Kick propagation. See the pulse block in plane() for the full reasoning.
-  , waveSpan  = 6.      // hex cells from the axis at which pos reaches 1.0
+  // Kick (and, since round 2, beat) propagation. See the pulse block in
+  // plane() for the full reasoning.
+  //
+  // waveSpan raised 6 -> 9 (the radius, in hex cells, at which pos reaches
+  // 1.0) so the SAME 1/3 s axis-to-edge crossing time (waveSpeed unchanged)
+  // now covers 1.5x the physical distance -- the wave reaches farther out
+  // into the lattice ("deeper") without changing its cadence, because pos is
+  // normalised: raising the denominator only rescales how much physical
+  // radius one unit of pos covers. waveDecay eased 8 -> 6 so the lit band
+  // (width = speed/decay of the span -- see the pulse comment in plane())
+  // stays proportionally wide too: a bigger reach with the same relative
+  // ring thickness, not a thin ring lost in more distance.
+  , waveSpan  = 9.      // hex cells from the axis at which pos reaches 1.0
   , waveSpeed = 3.      // spans per second -- one span in 1/3 s
-  , waveDecay = 8.      // trailing falloff behind the front
+  , waveDecay = 6.      // trailing falloff behind the front
+  // Secondary, beat-locked pulse amplitude (paired with uSinceBeat / update()'s
+  // 'beat' clock): fires on every tracked beat, not only a detected kick, so
+  // the web keeps visibly conducting through passages with a steady beat but
+  // a weak or absent bass transient. Kept well under the kick's up-to-1.5
+  // ceiling ('hitAmp') so a real kick landing on a beat still reads as the
+  // louder, primary event -- this is the ambient "still conducting" pulse,
+  // not a replacement for the kick wave.
+  , beatPulseAmp = 0.6
   ;
   const vec3 L = vec3(0.299, 0.587, 0.114);
 
-  const vec2 pathA = vec2(.31, .41);
-  const vec2 pathB = vec2(1.41421356, 1.0);
+  // Round 4 fix -- Round 2's helix (see the old comment this replaced, still
+  // in git history) turned out to be the same complaint again: "whole view
+  // panning/rolling", reported AFTER Round 2 had already shipped and AFTER a
+  // hard refresh with post-fx off, which rules out both the old Lissajous
+  // bug it replaced and anything outside this shader. A revolving path still
+  // revolves -- doffset/ddoffset trace a full circle in the look-basis every
+  // ~180s regardless of which direction offset() itself is barred from
+  // reversing in, and that reads as exactly the "camera panning" complaint
+  // over any viewing window shorter than the full period. There is no
+  // magnitude of that revolution that both moves and cannot look like a pan.
+  //
+  // So the path is no longer a helix at all: dead straight down +z, zero
+  // lateral excursion. pathRadius/pathRate are gone along with it --
+  // offset/doffset/ddoffset below are the straight-line camera path itself,
+  // not parameterised by anything. The only remaining camera motion is
+  // forward travel (tm, driven by TIME) and the static uRoll tilt dial;
+  // neither can pan or roll on its own by construction. If a "gentle drift"
+  // is wanted back later, it has to be a bounded, EXPLICITLY re-centring
+  // wobble (e.g. eased toward 0 between kicks), never a revolving angle --
+  // see this file's own Round 2/3 history and GyroidFluxScene's header for
+  // why a revolving OR oscillating term on camera position/orientation always
+  // reads as shake/pan, regardless of speed or amplitude.
 
   const vec4 U = vec4(0.0, 1.0, 2.0, 3.0);
 
@@ -156,9 +335,13 @@ export const FRAG = /* glsl */ `
     return                 vec2(-0.5, -0.5);
   }
 
-  vec3 offset(float z)   { return vec3(pathB*sin(pathA*z), z); }
-  vec3 doffset(float z)  { return vec3(pathA*pathB*cos(pathA*z), 1.0); }
-  vec3 ddoffset(float z) { return vec3(-pathA*pathA*pathB*sin(pathA*z), 0.0); }
+  // Straight path -- see "Round 4 fix" above. doffset/ddoffset MUST stay the
+  // true analytic first/second derivatives of offset (main() uses them to
+  // build the camera's ww/uu/vv look-direction basis), which is why all
+  // three are kept together here even though two are now trivial constants.
+  vec3 offset(float z)   { return vec3(0.0, 0.0, z); }
+  vec3 doffset(float z)  { return vec3(0.0, 0.0, 1.0); }
+  vec3 ddoffset(float z) { return vec3(0.0, 0.0, 0.0); }
 
   float tanh_approx(float x) {
     float x2 = x*x;
@@ -267,6 +450,23 @@ export const FRAG = /* glsl */ `
   vec4 plane(vec3 ro, vec3 rd, vec3 pp, vec3 off, float aa, float n) {
     vec2 p = (pp-off*U.yyx).xy;
     vec2 p2 = p;
+    // Round 5 fix -- uHihat USED to ride straight into this rotation angle
+    // ("+uHihat*0.15" here). Same bug class Round 3 already fixed for
+    // uBeatSin4 in the outer screen roll, just missed here because it lives
+    // in a different function: hihat's envelope rises and falls fast (it is
+    // the shortest-lived of the three drum signals, firing on 8th/16th notes
+    // -- far more often than a kick or a bar), and it was added IDENTICALLY
+    // to every one of the up-to-6 depth planes, so every hihat hit snapped
+    // the WHOLE composited lattice a few degrees and back, in sync across
+    // every layer at once. That reads as the camera juddering left-right on
+    // the hihat pattern -- reported as "whole view panning/rolling" -- even
+    // though no camera code was involved; Rounds 2-4 never found it because
+    // they were all looking at offset()/doffset()/ddoffset()/uRoll in
+    // main(), never at this per-plane rotation in plane(). Per Round 3's own
+    // rule, the fix is removal from the angle, not damping. uHihat's glow
+    // channel lives on now at the hex-cell edge term below instead (see
+    // "highs -> hex-cell edge glow" in the routing table above) -- a
+    // brightness pop reads as a hit; a rotation pop reads as a shake.
     p2 *= ROT(tau*0.1*n+0.05*TIME);
     p2 += 0.125*(ro.z-pp.z)*vec2(1.0)*ROT(tau*hash(vec2(n)));
     vec2 hp = p2;
@@ -297,18 +497,32 @@ export const FRAG = /* glsl */ `
     //
     // speed 3.0 -> the span is crossed in 1/3 s, inside one beat at any tempo
     // above 90 BPM, so the wave reads as belonging to THIS hit and is spent
-    // before the next. decay 8.0 puts the lit band at speed/decay = 0.375 of
-    // the span (~2 hex rings): narrow enough to read as a ring, wide enough
-    // that it never falls between rings and strobes. Together they run about
-    // 0.7 s from axis to rim-and-gone, close to the old uShock envelope's
-    // total lifetime -- the event is the same LENGTH, it is just no longer
-    // happening everywhere at once.
-    float pulse = travellingPulse(uSinceKick, length(hn)/waveSpan, waveSpeed, waveDecay) * uKickAmp;
+    // before the next. decay 6.0 puts the lit band at speed/decay = 0.5 of
+    // the span (~4-5 hex rings at the round-2 span of 9): wide enough to read
+    // clearly as it now travels farther, narrow enough that it never
+    // straddles the whole visible lattice at once.
+    //
+    // Round 2 adds a second, beat-locked wavefront using the same pos/speed/
+    // decay shape but its own clock (uSinceBeat, charged on every ctx.f.beat
+    // in update() rather than on a detected kick) and its own, smaller
+    // amplitude (beatPulseAmp). The two are combined with max() rather than
+    // summed: both read out of the SAME travellingPulse curve, so summing
+    // could push the combined value past what the downstream radius/glow
+    // math below was tuned for (see uKickAmp's 1.5 ceiling), whereas max()
+    // lets a real kick landing on a beat still win as the louder, primary
+    // event while the beat pulse alone still fires reliably in between.
+    float kickPulse = travellingPulse(uSinceKick, length(hn)/waveSpan, waveSpeed, waveDecay) * uKickAmp;
+    float beatPulse = travellingPulse(uSinceBeat, length(hn)/waveSpan, waveSpeed, waveDecay) * beatPulseAmp;
+    float pulse = max(kickPulse, beatPulse);
 
     float h0 = hash(hn+n);
     vec2 p0 = coff(h0);
 
-    vec3 bcol = 0.5*(1.0+cos(vec3(0.0, 1.0, 2.0) + 2.0*(p2.x*p2.y+p2.x) - 0.33*n));
+    // uSnare (prelude uniform, engine-populated): a hue-shift pop on top of
+    // the existing phase term. Shared equally across the three channels, so
+    // it still reads as a hue ROTATION rather than a flash-to-white -- the
+    // "oversaturated" identity's color half finally has an audio driver.
+    vec3 bcol = 0.5*(1.0+cos(vec3(0.0, 1.0, 2.0) + 2.0*(p2.x*p2.y+p2.x) - 0.33*n + uSnare*1.6));
     vec3 col = vec3(0.0);
 
     for (int i = 0; i < 6; ++i) {
@@ -354,7 +568,10 @@ export const FRAG = /* glsl */ `
     {
       float hd = hexagon(hp, 0.485);
       float gd = max(abs(hd), 0.005);
-      col += 0.0005*bcol*bcol/(gd) * (1.0 + uHighs*1.0);
+      // uHihat moved here from the rotation in plane() above (Round 5) --
+      // brightness, not angle, so a hit pops the edges instead of spinning
+      // the lattice.
+      col += 0.0005*bcol*bcol/(gd) * (1.0 + uHighs*1.0 + uHihat*1.5);
     }
 
     float l = dot(col, L);
@@ -404,6 +621,12 @@ export const FRAG = /* glsl */ `
     vec2 fragCoord = gl_FragCoord.xy;
     vec2 r = RESOLUTION.xy, q = fragCoord/r.xy, pp = -1.0+2.0*q, p = pp;
     p.x *= r.x/r.y;
+    // Round 3: uBeatSin4 REMOVED from here -- it was a plain -1..1 sine (one
+    // cycle per bar) added straight into the roll angle, which swings the
+    // frame to one side and back every bar by construction. See the file's
+    // top doc, "Round 3 fix", for why this has to be removal rather than a
+    // smaller coefficient. uRoll alone is the pure static tilt dial its own
+    // doc always said.
     p *= ROT(uRoll);
 
     float tdist = length(pp);
@@ -444,6 +667,14 @@ interface WebState {
   kick: ImpulseClock
   /** How hard that kick was, held until the next one. */
   hitAmp: number
+  /**
+   * Round 2: a second wavefront clock, charged on every `ctx.f.beat` instead
+   * of a detected kick, so a wave still fires reliably on the tracked beat
+   * grid through passages with a weak or absent bass transient. Fixed
+   * amplitude (`beatPulseAmp` in the shader) rather than a held `hitAmp` --
+   * a beat crossing has no "how hard" to measure, unlike an onset.
+   */
+  beat: ImpulseClock
 }
 
 export const OversaturatedWebScene = createShaderScene<WebState>({
@@ -483,6 +714,8 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
     // has an already-spent wave rather than one mid-flight.
     uSinceKick: { value: 1e4 },
     uKickAmp: { value: 0 },
+    // Same 1e4 "never fired" sentinel as uSinceKick, same reasoning.
+    uSinceBeat: { value: 1e4 },
     uEnergy: { value: 0 },
     uHighs: { value: 0 },
     uBass: { value: 0 },
@@ -492,7 +725,7 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
     uPlanes: { value: 5 },
     uStrands: { value: 4 },
   }),
-  state: () => ({ fly: 0, kick: impulseClock(), hitAmp: 0 }),
+  state: () => ({ fly: 0, kick: impulseClock(), hitAmp: 0, beat: impulseClock() }),
   update({ u, s, P, st, dt, ctx }) {
     // Source clock was a raw iTime driving the flythrough + per-strand wobble.
     // Accumulate so a changing rate stays continuous; mids lean on the throttle.
@@ -512,6 +745,13 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
     // engine's seconds, which is what the onset itself was stamped with.
     u.uSinceKick.value = sinceImpulse(st.kick, ctx.f.time, s.onKick > 0)
     u.uKickAmp.value = st.hitAmp
+
+    // Round 2: secondary wavefront on the tracked beat grid itself, not just
+    // a detected kick -- see the `beat` field's doc and beatPulseAmp in the
+    // shader. `ctx.f.beat` is true the exact frame a beat crosses, which is
+    // exactly the "fired" edge sinceImpulse() wants; no amplitude to latch
+    // here (unlike the kick) since a beat crossing carries no "how hard".
+    u.uSinceBeat.value = sinceImpulse(st.beat, ctx.f.time, ctx.f.beat)
 
     u.uFly.value = st.fly
     u.uEnergy.value = s.energy
