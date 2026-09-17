@@ -5,7 +5,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
 import { WireframeGeometry2 } from 'three/examples/jsm/lines/WireframeGeometry2.js'
 import { CURL_NOISE_GLSL } from '../engine/shaderLib'
-import { slew } from '../engine/response'
+import { slew, spring, springStep, type SpringState } from '../engine/response'
 import { proceduralDispatcher } from '../engine/streaming/proceduralDispatcher'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
@@ -37,6 +37,8 @@ import { useDispose } from '../engine/useDispose'
  *   high        -> sparse per-particle sparkle, cage colour drive
  *   transient   -> per-particle jitter (see "Response identity" below)
  *   energy + presence -> per-particle brightness
+ *   kick        -> cage rattle (roll) + stroke flash, via one underdamped
+ *                  spring (see "Response identity" below)
  *
  * ## Response identity: per-particle stagger, refined rather than replaced
  *
@@ -59,10 +61,90 @@ import { useDispose } from '../engine/useDispose'
  *     now reads as a subset of debris catching the impulse, which deepens the
  *     per-particle differentiation the stagger already started rather than
  *     competing with it.
+ *   - The cage's only whole-object reaction used to be a generic tempo-locked
+ *     sway — `rotation.x = animationSignals.oscillate * 0.12`, a free-running
+ *     sine shared by every scene that opts into it — nodding the frame on a
+ *     clock that had no relationship to anything the music actually DID. In a
+ *     scene this fine-grained everywhere else, that one large, unmotivated
+ *     motion was the picture ("the cube bounces up and down") instead of the
+ *     dissolve/cage mechanic being the picture — reported as wasted
+ *     potential. It is gone. In its place a kick charges `cageJolt`, one
+ *     underdamped spring (`CAGE_JOLT_*` below, well under
+ *     `criticalDamping(CAGE_JOLT_STIFFNESS)`), that rattles the cage's roll
+ *     and snaps its stroke bright, then rings back through zero and settles —
+ *     the "struck, has mass" character `response.ts`'s own header says a
+ *     plain decay cannot give. A hit now knocks the CONTAINER that is actually
+ *     holding the dissolve together, instead of moving the whole group on a
+ *     beat the kick never touched. Kept deliberately small (see
+ *     `CAGE_JOLT_ROLL`) — secondary texture on top of the steady mid-driven
+ *     spin, not a replacement primary reaction.
+ *   - 2026-09-17: reported as "stutter" in the cage movement — traced to
+ *     `cageJolt` being underdamped enough (damping 5 against this
+ *     stiffness's critical damping of ~16.7, ratio ~0.30) to ring through
+ *     zero several times per hit, so back-to-back kicks overlaid multiple
+ *     out-of-phase ringdowns on `rotation.z` at once. `CAGE_JOLT_DAMPING`
+ *     raised to 13 (see the constant's own comment) so a hit settles in
+ *     roughly one visible overshoot instead of several, and the charge-on-
+ *     trigger now floors the spring's current value at 0 before adding the
+ *     new impulse so a retrigger during a still-negative undershoot cannot
+ *     produce a phase-dependent charge. Separately, and to answer the actual
+ *     feature request ("speed up on beat") rather than only the bug: a
+ *     smooth `beatSpeedup` multiplier (see `CAGE_BEAT_SPEEDUP` and the
+ *     `rotation.y` update below) now swells the steady spin's rate right on
+ *     each beat and eases back by the next one, continuous in
+ *     `f.beatProgress` so it never steps or snaps. That lives on
+ *     `rotation.y` (the monotonic spin), never on `rotation.z` (the kick
+ *     spring's roll) — the two are meant to read as separate layers.
  */
 const COUNT = 24000
 const CYCLE_BEATS = 24
 const CAGE = 7.0
+
+/** Per-hit charge into `cageJolt`, scaled by strike strength so a soft kick
+ *  barely nudges it and a hard one rings visibly longer off the same spring. */
+const CAGE_JOLT_IMPULSE = 1.0
+/** Clamp on accumulated charge — a fast kick flurry saturates the rattle
+ *  rather than compounding into something that spins off unbounded. */
+const CAGE_JOLT_MAX = 1.6
+/** Well under `criticalDamping(CAGE_JOLT_STIFFNESS)` (~16.7) on purpose: the
+ *  point of this spring is the ring-and-settle read, not a fast clean
+ *  arrival — see the "Response identity" note above for why. */
+const CAGE_JOLT_STIFFNESS = 70
+/**
+ * 2026-09-17 stutter fix: was 5 (damping ratio ~0.30 against this
+ * stiffness's critical damping of ~16.7). That is underdamped enough to ring
+ * through zero three-plus times before settling (~1.6s to decay inside a
+ * ~2% band, `8 / damping` at this stiffness) — on a steady kick pattern
+ * (roughly every beat or half-beat) the NEXT kick lands mid-ring almost every
+ * time, so `rotation.z` was overlaying two or three out-of-phase ringdowns
+ * at once. That reads as stutter, not rattle.
+ *
+ * Raised to 13 (ratio ~0.78, still comfortably underdamped so the "struck,
+ * has mass" overshoot survives) which cuts the settle time to ~0.6s — inside
+ * a typical beat interval — and the logarithmic decrement at this ratio
+ * means the SECOND swing is already under 2% of the first, i.e. one clean
+ * overshoot-and-settle per hit instead of a multi-bounce ring. A retrigger
+ * now lands on an already-quiet spring almost all the time instead of a
+ * still-oscillating one.
+ */
+const CAGE_JOLT_DAMPING = 13
+/** Radians of roll at `cageJolt.value === 1` — small. This is secondary
+ *  texture riding on the steady spin, never the scene's primary reaction. */
+const CAGE_JOLT_ROLL = 0.05
+/** How hard the jolt can brighten the cage stroke on top of the existing
+ *  pulse/high drive, at `cageJolt.value === 1`. */
+const CAGE_JOLT_FLASH = 0.9
+
+/**
+ * "Speed up on beat" — 2026-09-17 addition (user-requested: cage motion
+ * should quicken on the beat, smoothly, not stutter). Fractional boost to
+ * `rotation.y`'s rate right as a beat lands, easing back to no boost by the
+ * next one. This is intentionally on the CONTINUOUS spin (rotation.y), never
+ * on the kick spring's roll axis — the two read as distinct layers: a
+ * steady quickening pulse on the turn, plus a separate struck rattle on the
+ * roll. See the `beatSpeedup` term in the update loop below for the curve.
+ */
+const CAGE_BEAT_SPEEDUP = 0.9
 
 /** Ease used for both the dissolve envelope and the cycle dwell. */
 function smooth(x: number): number {
@@ -205,6 +287,9 @@ export function DissolveCageScene() {
   const midEnv = useRef(0)
   const cycleStart = useRef(-1)
   const cageRef = useRef<THREE.Group>(null)
+  /** Underdamped kick spring driving the cage's rattle + flash — see the
+   *  "Response identity" note at the top of this file for why. */
+  const cageJolt = useRef<SpringState>(spring(0))
 
   const cageMat = useMemo(
     () =>
@@ -332,12 +417,42 @@ export function DissolveCageScene() {
       // the only real bug, and that is what this change fixes.
       dissolve.current = slew(dissolve.current, target, dt, f.drop ? 9 : 2.2, f.drop ? 9 : 2.2)
 
+      // Kick charges the cage's rattle; strength scales the charge so a soft
+      // hit barely nudges it and a hard one rings visibly longer off the same
+      // spring. Stepped toward 0 every frame regardless of whether a hit just
+      // landed — that is what lets it ring PAST rest and settle instead of
+      // sliding straight back down. See CAGE_JOLT_STIFFNESS/DAMPING above and
+      // the "Response identity" note at the top of the file for why.
+      if (f.percussion.kick.trigger) {
+        // `Math.max(0, ...)` before adding the new charge — 2026-09-17 fix,
+        // paired with the CAGE_JOLT_DAMPING raise above. Without it, a
+        // retrigger landing while the spring is still in its negative
+        // undershoot (a real possibility even at the tamer damping, on a
+        // fast kick pattern) added the new impulse ON TOP OF a negative
+        // value, so the resulting charge — and thus how far the NEXT
+        // overshoot reaches — depended on the retrigger's random phase
+        // against the still-ringing spring instead of the strike strength
+        // alone. Flooring at 0 first means every hit charges from a clean
+        // baseline, so equal-strength kicks always produce the same-sized
+        // rattle regardless of timing.
+        cageJolt.current.value = Math.min(
+          CAGE_JOLT_MAX,
+          Math.max(0, cageJolt.current.value) + CAGE_JOLT_IMPULSE * f.percussion.kick.strength,
+        )
+      }
+      springStep(cageJolt.current, 0, dt, CAGE_JOLT_STIFFNESS, CAGE_JOLT_DAMPING)
+
       cageMat.resolution.set(gl.domElement.width, gl.domElement.height)
       // Overdriven colour rather than low opacity — LineMaterial's alpha caps at
       // 1, so brightness has to come from the colour to read as hot phosphor
       // (same reasoning as WireframeHeroScene). The cage stays below the particle
       // cloud's brightness so the dissolving form remains the subject.
-      cageMat.color.copy(col.a).multiplyScalar(0.75 + b.pulse * 0.7 + b.high * 0.5)
+      // `max(0, jolt)` because the underdamped spring rings negative on its
+      // way to rest — clamped here so that reads as the flash briefly
+      // dipping rather than the colour inverting.
+      cageMat.color
+        .copy(col.a)
+        .multiplyScalar(0.75 + b.pulse * 0.7 + b.high * 0.5 + Math.max(0, cageJolt.current.value) * CAGE_JOLT_FLASH)
       cageMat.opacity = Math.min(1, vis * 0.85)
       // Presence owns the cage's stroke weight — the frame sharpens on snares.
       cageMat.linewidth = 1.6 + b.presence * 1.6 + b.pulse * 0.6
@@ -349,10 +464,32 @@ export function DissolveCageScene() {
         // (GyroidFluxScene, JavaZoneLatticeScene). This file already uses
         // `slew()` for `dissolve` above; same primitive, same file.
         midEnv.current = slew(midEnv.current, b.mid, dt, 3, 3)
-        cageRef.current.rotation.y += dt * (0.06 + midEnv.current * 0.14) * params.speed
-        // Tempo-locked sway rather than a wall-clock sine: the cage now tilts in
-        // time with the track instead of drifting against it.
-        cageRef.current.rotation.x = anim.oscillate * 0.12
+        // "Speed up on beat" — 2026-09-17 addition, user-requested. A smooth,
+        // continuous multiplier on the spin RATE that peaks exactly on the
+        // beat crossing and eases back to 1x by the next one, so the turn
+        // visibly quickens right on the beat instead of holding one constant
+        // speed. `f.beatProgress` runs 0 (just landed on a beat) to 1
+        // (about to land on the next); squaring `(1 - beatProgress)` gives a
+        // curve that starts at its peak and eases OUT smoothly — no discrete
+        // jump on the beat and no snap back afterward, unlike gating on
+        // `f.beat` (true for one frame) directly. This is deliberately a
+        // multiplier on the already-smooth, monotonically-accumulating
+        // rotation.y rate (never on rotation.z, the kick spring's roll) —
+        // it reads as a distinct "steady turn quickens with the tempo" layer
+        // sitting alongside, not competing with, the struck rattle below.
+        const beatSpeedup = 1 + CAGE_BEAT_SPEEDUP * Math.pow(1 - f.beatProgress, 2)
+        cageRef.current.rotation.y += dt * (0.06 + midEnv.current * 0.14) * params.speed * beatSpeedup
+        // Replaces the old tempo-locked sway (`rotation.x = anim.oscillate *
+        // 0.12`) — see the "Response identity" note at the top of the file.
+        // That was a generic sine nodding the whole cage regardless of what
+        // the track did, and being the one large-amplitude motion here it
+        // read as the picture ("bounces up and down") instead of the
+        // dissolve mechanic reading as the picture. Roll now rattles on the
+        // kick's own spring instead: it rings through zero and settles,
+        // which is a struck frame, not a metronome. Small on purpose — this
+        // is secondary texture riding the steady spin, not a new primary
+        // reaction.
+        cageRef.current.rotation.z = cageJolt.current.value * CAGE_JOLT_ROLL
       }
 
       u.uDissolve.value = dissolve.current

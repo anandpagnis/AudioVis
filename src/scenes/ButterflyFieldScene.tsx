@@ -27,9 +27,13 @@ import { bipolar, drastic } from './contract'
  *      rim, so it is a FILL mask, not an outline;
  *   2. the wings are a cloud of fine SHARP points — not a noise haze — that
  *      stream along curved field lines around the body;
- *   3. the fixed colour identity `vec3(1.0 + c.x, 1.0 + c.y, 0.0)` — yellow in
- *      the body (field `c` = 0), green on the left (`c.x < 0`), red on the
- *      right / bottom (`c.x > 0`, `c.y < 0`);
+ *   3. the ORIGINAL source's fixed colour identity `vec3(1.0 + c.x, 1.0 + c.y,
+ *      0.0)` — yellow in the body (field `c` = 0), green on the left
+ *      (`c.x < 0`), red on the right / bottom (`c.x > 0`, `c.y < 0`). **This
+ *      hard-coded hue is gone as of the round-2 rework — see "Colour rework,
+ *      round 2" below** — but the `c` field itself (a 0..1 "how far from the
+ *      body core toward the wing edge" scalar) is unchanged and still shapes
+ *      the new palette-driven colour;
  *   4. black everywhere else; a slow wing flap; no camera.
  *
  * ## How the single-pass port builds it
@@ -55,20 +59,155 @@ import { bipolar, drastic } from './contract'
  *
  * ## Reactivity — FLOWY, not twitchy (explicit requirement)
  *
- * Nothing is wired to `ctx.b.transient` or a raw onset. Every response is a
- * tempo-locked oscillator or a slewed envelope:
+ * Nothing is wired to `ctx.b.transient` or a raw onset directly as a flash.
+ * Every response is a tempo-locked oscillator or a slewed envelope — but a
+ * live audit (2026-09-16, live report "fix reactivity") found the whole
+ * cluster of visible effects — flap rate, flap depth, halo reach, body
+ * brightness AND spark brightness — routed through one signal (`energyEnv`),
+ * the exact "one band times everything" pattern `MalachiteScene`'s header
+ * documents removing. Two changes fix that without touching the "flowy, not
+ * twitchy" identity:
  *
- *   wing flap   uFlapPhase advances at `dt · FLAP_RATE · (1 + energyEnv·0.3)
+ *   wing flap   uFlapPhase advances at `dt · FLAP_RATE · (1 + energyEnv·0.55)
  *               · drastic(speed)`; the shader folds in `uBeatSin2` (one cycle
  *               per two beats) so the wingbeat sits ON the bar. `energyEnv` is
- *               `s.energy` slewed (~0.8 s).
+ *               `s.energy` slewed (~0.8 s). The coefficient was 0.3 — close to
+ *               the 0.15 Malachite's own header names as "barely distinguishable
+ *               from silence" before ITS coefficient was raised to 0.55; raised
+ *               here to the same figure for the same reason.
  *   flow drift  uFlowPhase advances with `s.mids` folded in — the blink travels
  *               along the field lines faster in busy sections, eases in quiet
  *               ones, never lurches.
  *   kick        st.bloom = decaying envelope, `exp(-dt·2.4)` — a small tail +
- *               brightness SWELL, not a snap.
- *   hihat       uHihat (prelude) lifts point twinkle only.
- *   energy      body + spark brightness, flap depth, halo reach — all slewed.
+ *               brightness SWELL, not a snap. Previously reached ONLY the spark
+ *               brightness; the solid body — the most visually dominant part of
+ *               the frame — never pulsed on a hit at all. Now nudges both.
+ *   hihat       uHihat (prelude) lifts point twinkle instantaneously (per-hit).
+ *   highs       NEW: `highsEnv` (`s.highs` slewed ~0.5 s) now carries the spark
+ *               brightness on its own dedicated band instead of borrowing
+ *               `energyEnv` — sustained high-frequency energy reads as a
+ *               shimmering wing-dust, distinct from the hihat's per-hit twinkle
+ *               and from the body's energy-driven brightness.
+ *   energy      body brightness, flap rate/depth, halo reach — still one
+ *               signal, but now the ONLY thing riding it is "how hard is the
+ *               track hitting overall", which is what `energy` means; the
+ *               texture/highlight layers (sparks, background) now have their
+ *               own bands.
+ *   loud        NEW: `bgLift` (`s.loud` slewed ~1.5 s) — see "Background" below.
+ *
+ * ## Background — was pure black, now a deliberate ambient field
+ *
+ * The whole frame outside the body's halo used to be literal `vec3(0.0)`:
+ * nothing added `uBg`/`uShadow` under the picture the way this roster's other
+ * full-bleed primaries do (`kifs`: `uBg + col`; `wingfold`: `mix(uBg, uShadow,
+ * ...)` for its unescaped interior). Against a scene that IS one, that reads as
+ * "no background" rather than "black background", especially since the primary
+ * slot is forced to additive blending on-screen (`createShaderScene.tsx`'s
+ * `blending` doc) — a `col` of exactly zero contributes nothing, so nothing was
+ * ever composited there at all.
+ *
+ * Fixed with `beyond` — the halo mask's complement, so it costs nothing extra
+ * (`b0`/`halo` are already computed) and by construction fades to zero exactly
+ * where the body/spark halo begins, never muddying either — filled with
+ * concentric "flux shell" rings (`sin(length(q) * 9.0 - uFlowPhase * 0.12)`
+ * as first shipped — round 2 below retunes the frequency and decouples the
+ * sampling coordinate from the wing flap; read "Round 2" for the current
+ * numbers), the same field vocabulary the streamline sparks already ride (a magnetic
+ * field extends everywhere, not just near the source), just far too slow and
+ * far too faint to resolve into points. Tinted `mix(uBg, uShadow,
+ * shell)` — the two darkest palette slots, so it recolours under the live
+ * palette like everything else in this shader but never competes with the
+ * body/sparks for brightness. Lifted by `uBgLift` (`s.loud`, this scene's one
+ * genuinely slow signal — `lilimState.ts` names it explicitly for "scale a
+ * whole look, not a hit") so the ambience breathes with the track's overall
+ * level across a phrase, not with any single band or hit.
+ *
+ * ## Round 2 — full visual rework (2026-09-17, user: "butterfly looks ass,
+ * fix completely" / "a lot of the scenes are wasted potential")
+ *
+ * A strong, mechanism-free aesthetic complaint after the reactivity pass
+ * above already shipped — so this round touches ONLY how the scene is
+ * coloured, lit and balanced, not the technique (dipole flow field,
+ * streamline-walking sharp points, analytic butterfly field all unchanged;
+ * they were never the complaint). Four independent problems, diagnosed by
+ * re-reading the render maths cold rather than guessing at one number:
+ *
+ *   1. Colour was hue-LOCKED, not palette-driven. `vec3(1.0 + c.x, 1.0 + c.y,
+ *      0.0)` can only ever produce yellow/green/red combinations — the B
+ *      channel is a hard-coded zero, full stop — with the live palette only
+ *      allowed a 0.32-strength tint on TOP of that fixed hue. Every other
+ *      palette-reactive scene in the roster looks different per palette; this
+ *      one always looked like the same yellow-green-red bug regardless of
+ *      which of the ~30 palettes was active, which reads as broken/dated next
+ *      to the rest of the show. Fixed by dropping the fixed RGB literal
+ *      entirely — colour is now built from `uAccent`/`uMid`/`uGlow` directly
+ *      (see "Colour rework" below), the same live-palette slots the rest of
+ *      the roster draws its identity from.
+ *   2. The background "flux shell" rings (added in the prior pass to fix a
+ *      literal-black background) sampled `length(q)` where `q` already had
+ *      the wing-flap squeeze (`q.x *= 1.5 * (1 - flap * uFlapDepth)`) baked
+ *      in — so the concentric rings stretched and un-stretched every wingbeat,
+ *      turning a meant-to-be-subtle ambient field into a warping, moiré-prone
+ *      pulse synced to the flap. Fixed by sampling the rings from a coordinate
+ *      frame taken BEFORE the flap squeeze (zoom + tilt only) — the ambience
+ *      now only drifts with `uFlowPhase`, never breathes with the wingbeat —
+ *      and the ring frequency was cut 9.0 -> 3.5 (fewer, calmer bands; the old
+ *      figure put several full cycles across the frame, which reads as a
+ *      grid/moiré rather than an ambient field at this resolution).
+ *   3. Sparks defaulted toward maximum fineness/hardness: `uGrid` topped out
+ *      at 76 cells/unit and `uSharp` bottomed out at 0.025 cell-radii — a
+ *      cloud of near-invisible, razor-edged, independently-blinking dots at
+ *      that end of the dial reads as TV static, not "iron filings streaming
+ *      along a field line," especially stacked 44-deep along each pixel's
+ *      streamline walk. Both ranges were pulled in (`uGrid` 22..64,`uSharp`
+ *      0.04..0.09 — still sharp at the harsh end of `contrast`, just not
+ *      sub-pixel) and the comet-tail decay raised (0.87 -> 0.90 baseline) so
+ *      each point's trail is longer and reads as a visible streak of flow
+ *      rather than a lone blip — legibility over sheer point count.
+ *   4. Brightness could blow the body to a flat white disc: `uCoreBright`
+ *      reached 2.4+1.6(energy)+0.6(bloom) = 4.6, run through
+ *      `uExposure` up to 2.2, i.e. `1 - exp(-4.6*2.2)` ≈ 1.0 on every colour
+ *      channel simultaneously — the moment the track got loud, the carefully
+ *      built colour identity clipped to white and disappeared. Both the
+ *      brightness ceilings and the exposure curve were pulled down (see
+ *      "Brightness rework" below) so a loud/kick moment reads as MORE colour
+ *      (saturated, punchy) rather than LESS (clipped to white).
+ *
+ * ### Colour rework, round 2
+ *
+ * `tint` is now built entirely from live palette slots — no fixed RGB
+ * literal, no post-hoc palette "tint" fighting a hard-coded hue underneath:
+ *
+ *   - `uAccent` is the core colour (where `c` -> 0, i.e. deep inside the
+ *     body) — the palette's "second voice," reused here as this scene's one
+ *     dominant hue, matching how `mid`/`accent` read as "what the subject
+ *     mostly is" across the roster (see `palettes.ts`'s slot doc).
+ *   - a `wingHue` term mixes `uMid` (`c.x - c.y*0.6` negative — was the
+ *     source's green wing) toward `uGlow` (positive — was the source's red
+ *     wing/underside), preserving the ORIGINAL shader's left/right + top/
+ *     bottom structural identity as a blend axis instead of a literal colour
+ *     channel.
+ *   - `tint = mix(uAccent, wingHue, length(c) * uPalStrength)` — `length(c)`
+ *     is exactly the same 0-at-core, 1-at-wing-edge scalar the source's fixed
+ *     scheme used, just now driving a PALETTE blend instead of a hard-coded
+ *     one.
+ *   `uPalStrength` is repurposed (was "how hard the palette fights the fixed
+ *   hue," now moot since there is no fixed hue to fight): it is now "wing
+ *   colour SPREAD" — at 0 the whole butterfly is a single glowing `uAccent`
+ *   silhouette (no left/right identity at all); at 1 the wingtips fully
+ *   saturate toward `uMid`/`uGlow`. Default raised 0.32 -> 0.85 since this is
+ *   now the PRIMARY colour mechanism, not a marginal tint on top of one.
+ *
+ * ### Brightness rework, round 2
+ *
+ * `uCoreBright` (1.7 base, was 2.4), `uFurBright` (1.3 base, was 2.0) and
+ * `uExposure` (0.55..1.5, was 0.7..2.2) were all pulled down together so their
+ * PRODUCT stays under the clip point through ordinary energy/bloom swings and
+ * only approaches full-white on a genuinely hard, loud, kick-locked peak —
+ * exposure's job is to make loud moments feel harder-edged and more saturated
+ * (the "ink" contract dial), not to erase colour by flooding every channel to
+ * 1.0. The spark layer's own bloom leverage was trimmed to match (0.7 -> 0.45)
+ * for the same reason.
  *
  * ## Scene Contract
  *
@@ -91,14 +230,15 @@ export const FRAG = /* glsl */ `
   uniform float uSpread;    // density dial (+energy) -> spark-halo reach
   uniform float uEdge;      // contrast dial -> body-fill inner edge
   uniform float uContour;   // dipole <-> butterfly-contour blend for the flow
-  uniform float uGrid;      // complexity dial -> spark cells per unit
-  uniform float uSharp;     // contrast dial -> point radius (tiny = katana)
+  uniform float uGrid;      // complexity dial -> spark cells per unit (round 2: ceiling pulled 76 -> 64, see header)
+  uniform float uSharp;     // contrast dial -> point radius (round 2: floor raised 0.025 -> 0.04, less static)
   uniform float uStep;      // streamline step length (q space)
-  uniform float uDecay;     // per-step comet-tail falloff
-  uniform float uCoreBright;// energy -> solid body brightness
-  uniform float uFurBright; // energy + kick bloom -> spark brightness
-  uniform float uExposure;  // contrast dial -> exposure tonemap hardness
-  uniform float uPalStrength;// how hard the live palette tints the fixed colour
+  uniform float uDecay;     // per-step comet-tail falloff (round 2: baseline 0.87 -> 0.90, longer visible trails)
+  uniform float uCoreBright;// energy -> solid body brightness (round 2: ceilings pulled down, see "Brightness rework")
+  uniform float uFurBright; // highs + kick bloom -> spark brightness (round 2: ceilings pulled down, see "Brightness rework")
+  uniform float uExposure;  // contrast dial -> exposure tonemap hardness (round 2: range pulled 0.7..2.2 -> 0.55..1.5)
+  uniform float uPalStrength;// round 2: repurposed as "wing colour spread" now colour is palette-first, see header
+  uniform float uBgLift;    // s.loud (slow) -> background ambience strength
   uniform int   uMaxSteps;  // quality-gated streamline step count
 
   vec2 hash2(vec2 p) {
@@ -131,7 +271,8 @@ export const FRAG = /* glsl */ `
   }
 
   // The source's \`c\`: radial unit vector, hard-gated to b > -5, faded past b=10
-  // so the deep interior is pure yellow (c = 0).
+  // so the deep interior is c = 0 (round 2: this now selects the CORE palette
+  // colour rather than a literal "pure yellow" -- see main()'s colour block).
   vec2 fieldTintVec(vec2 p, float b) {
     return normalize(p + 1e-4) * step(-5.0, b) * smoothstep(10.0, -10.0, b);
   }
@@ -179,6 +320,11 @@ export const FRAG = /* glsl */ `
     vec2 q = (uv - 0.5) * uZoom;
     float cs = cos(uRot), sn = sin(uRot);
     q = mat2(cs, -sn, sn, cs) * q;
+    // Round 2: the background "flux shell" rings below sample THIS pre-squeeze
+    // frame (zoom + tilt only), never the flap-squeezed \`q\`, so the ambient
+    // rings never stretch/un-stretch every wingbeat -- see header's "Round 2"
+    // point 2 for why that used to read as a moire pulse.
+    vec2 qAmbient = q;
     q.x *= 1.5 * (1.0 - flap * uFlapDepth);
 
     float b0;
@@ -210,12 +356,32 @@ export const FRAG = /* glsl */ `
     float halo = smoothstep(-5.0 - uSpread, -1.0, b0);
     float core = smoothstep(uEdge, uEdge + 3.5, b0);
 
-    // --- colour: source's vec3(1.0 + c.xy, 0.0), then palette-tinted -------
-    vec3 tint = vec3(1.0 + c.x, 1.0 + c.y, 0.0);
-    vec3 palN = uGlow / max(1e-3, max(uGlow.r, max(uGlow.g, uGlow.b)));
-    tint *= mix(vec3(1.0), palN * 1.4, uPalStrength);
+    // --- colour: round 2 -- palette-first, no fixed hue -- see header's
+    // "Colour rework, round 2" for the full reasoning. \`c\` still carries the
+    // ORIGINAL source's structural identity (0 at the body core, unit length
+    // toward the wing edge, signed by which side/quadrant of the wing), it
+    // just now blends live palette slots instead of literal R/G/B channels.
+    vec3 wingHue = mix(uMid, uGlow, clamp(0.5 + 0.5 * (c.x - c.y * 0.6), 0.0, 1.0));
+    vec3 tint = mix(uAccent, wingHue, clamp(length(c), 0.0, 1.0) * uPalStrength);
 
-    vec3 col = vec3(0.0);
+    // --- background: the field's own ambience, not empty black ------------
+    // \`beyond\` is the halo mask's complement -- free (halo is already
+    // computed) and, by construction, zero exactly where the body/spark halo
+    // begins, so this never muddies either. Filled with slow concentric
+    // "flux shell" rings -- the same field vocabulary the streamline sparks
+    // ride, just far too slow/faint to resolve into points -- tinted toward
+    // the two darkest palette slots so it recolours with the live palette
+    // without ever competing with the body/sparks for brightness. uBgLift
+    // (s.loud, slewed) breathes the whole ambience with the track's overall
+    // level across a phrase; see the header's "Background" section. Round 2:
+    // sampled from \`qAmbient\` (pre-flap-squeeze) at a lower frequency (9.0 ->
+    // 3.5) and a slightly tighter lift range -- both changes exist purely to
+    // stop the rings reading as a warping moiré grid; see header point 2.
+    float beyond = 1.0 - halo;
+    float shell = 0.5 + 0.5 * sin(length(qAmbient) * 3.5 - uFlowPhase * 0.12);
+    vec3 bg = mix(uBg, uShadow, shell) * beyond * (0.04 + 0.13 * uBgLift);
+
+    vec3 col = bg;
     col += core * tint * uCoreBright * (0.9 + 0.2 * sparks);
     col += sparks * halo * tint * uFurBright;
     col = 1.0 - exp(-col * uExposure);
@@ -229,13 +395,25 @@ interface ButterflyState {
   flapPhase: number
   /** Blink-travel clock (the flow). Its own accumulator, same reason. */
   flowPhase: number
-  /** Slewed `s.energy` — opens flap depth / brightness / halo smoothly. */
+  /** Slewed `s.energy` — opens flap rate/depth, body brightness, halo reach. */
   energyEnv: number
   /** Slewed `s.mids` — see `update()`'s own note; `flowPhase` below was the
    *  one clock in this file that missed the "flowy not twitchy" treatment
    *  its neighbour already gets. */
   midsEnv: number
-  /** Decaying kick swell — tail length + brightness. `exp(-dt*2.4)` tail. */
+  /** Slewed `s.highs` (~0.5s) — the spark/fur brightness's OWN band, split
+   *  out from `energyEnv` in the 2026-09-16 reactivity pass (see header) so
+   *  the fine spark texture reads sustained high-frequency energy instead of
+   *  just re-aping the body's overall-intensity signal. */
+  highsEnv: number
+  /** Slewed `s.loud` (~1.5s) — background ambience lift. `loud` is this
+   *  scene's one genuinely slow signal (see `lilimState.ts`'s own doc on it),
+   *  fit for scaling the whole background rather than reacting to a hit. */
+  bgLift: number
+  /** Decaying kick swell — tail length + body/spark brightness. `exp(-dt*2.4)`
+   *  tail. Now nudges `uCoreBright` too, not just `uFurBright`: the solid
+   *  body is the most visually dominant part of the frame and previously
+   *  never pulsed on a hit at all. */
   bloom: number
 }
 
@@ -260,17 +438,29 @@ export const ButterflyFieldScene = createShaderScene<ButterflyState>({
     uSpread: { value: 3 },
     uEdge: { value: 0 },
     uContour: { value: 0.4 },
-    uGrid: { value: 46 },
-    uSharp: { value: 0.05 },
+    uGrid: { value: 40 },
+    uSharp: { value: 0.06 },
     uStep: { value: 0.007 },
-    uDecay: { value: 0.87 },
-    uCoreBright: { value: 2.6 },
-    uFurBright: { value: 2.2 },
-    uExposure: { value: 1 },
-    uPalStrength: { value: 0.32 },
+    uDecay: { value: 0.9 },
+    uCoreBright: { value: 2.1 },
+    uFurBright: { value: 1.7 },
+    uExposure: { value: 0.9 },
+    // Round 2: repurposed + raised 0.32 -> 0.85 -- now the PRIMARY colour
+    // mechanism (wing-vs-core spread), not a marginal tint on a fixed hue.
+    // See header's "Colour rework, round 2".
+    uPalStrength: { value: 0.85 },
+    uBgLift: { value: 0 },
     uMaxSteps: { value: 36 },
   }),
-  state: () => ({ flapPhase: 0, flowPhase: 0, energyEnv: 0, midsEnv: 0, bloom: 0 }),
+  state: () => ({
+    flapPhase: 0,
+    flowPhase: 0,
+    energyEnv: 0,
+    midsEnv: 0,
+    highsEnv: 0,
+    bgLift: 0,
+    bloom: 0,
+  }),
   update({ u, s, P, st, dt }) {
     // --- slewed envelopes: the whole "flowy not twitchy" contract ---------
     st.energyEnv += (s.energy - st.energyEnv) * Math.min(1, dt / 0.8)
@@ -283,12 +473,26 @@ export const ButterflyFieldScene = createShaderScene<ButterflyState>({
     // convention already established here rather than mixing two idioms in
     // one file.
     st.midsEnv += (s.mids - st.midsEnv) * Math.min(1, dt / 0.8)
+    // NEW (2026-09-16 reactivity pass, see header): `highsEnv` gives the spark
+    // layer its own band instead of re-reading `energyEnv` — a bit faster than
+    // the 0.8s energy/mids time constant (sparks are the fine-detail layer, so
+    // a touch more responsive reads as "shimmer" rather than "swell") but still
+    // one-pole smoothed, same idiom as its neighbours, never a raw sample.
+    st.highsEnv += (s.highs - st.highsEnv) * Math.min(1, dt / 0.5)
+    // NEW: `bgLift` is `s.loud` slewed hard (~1.5s) — `lilimState.ts` names
+    // `loud` explicitly as the field for "scale a whole look, not a hit", so
+    // the background ambience (see shader) is the one thing in this file tied
+    // to it rather than to `energy`/`mids`/`highs`.
+    st.bgLift += (s.loud - st.bgLift) * Math.min(1, dt / 1.5)
     if (s.onKick > 0) st.bloom = Math.min(1.4, st.bloom + s.onKick)
     st.bloom *= Math.exp(-dt * 2.4)
 
     // --- clocks: accumulators, never `elapsed * rate` -------------------
     const spd = drastic(P.speed)
-    st.flapPhase += dt * FLAP_RATE * (1 + st.energyEnv * 0.3) * spd
+    // 0.3 -> 0.55: the old figure was close to the 0.15 Malachite's own header
+    // names as "barely distinguishable from silence" before being raised to
+    // 0.55 for the same reason — see header.
+    st.flapPhase += dt * FLAP_RATE * (1 + st.energyEnv * 0.55) * spd
     st.flowPhase += dt * (0.3 + st.midsEnv * 0.5) * spd
 
     u.uFlapPhase.value = st.flapPhase
@@ -297,8 +501,11 @@ export const ButterflyFieldScene = createShaderScene<ButterflyState>({
     // --- contract dials ----------------------------------------------
     // shape 0 -> rounded blob, 0.5 -> ~source, 1 -> exaggerated butterfly
     u.uWing.value = 0.35 + 1.3 * P.shape
-    // complexity -> spark density: finer grid, more points
-    u.uGrid.value = 24 + 52 * P.complexity
+    // complexity -> spark density: finer grid, more points. Round 2: ceiling
+    // pulled 76 -> 64 -- max fineness at max complexity, stacked 44-deep along
+    // every pixel's streamline walk, was reading as static rather than
+    // "iron filings"; see header's "Round 2" point 3.
+    u.uGrid.value = 22 + 42 * P.complexity
     // density -> how far the spark halo reaches past the body; energy widens it
     u.uSpread.value = 3.0 + bipolar(P.density, 3.0) + st.energyEnv * 2.0
     // fill 0.5 -> 1.5 (source const); lower zoom = wings fill more of the frame
@@ -306,24 +513,47 @@ export const ButterflyFieldScene = createShaderScene<ButterflyState>({
     // tilt -> static roll of the field
     u.uRot.value = bipolar(P.tilt, Math.PI)
     // contrast -> exposure hardness, point sharpness (higher = tinier point),
-    // and where the solid body begins
-    u.uExposure.value = 0.7 + 1.5 * P.contrast
-    u.uSharp.value = 0.085 - 0.06 * P.contrast
+    // and where the solid body begins. Round 2: `uExposure`'s range pulled
+    // 0.7..2.2 -> 0.55..1.5 and `uSharp`'s floor raised 0.025 -> 0.04 -- the
+    // old ranges could blow the body to flat white (see "Brightness rework")
+    // and reduce points to sub-pixel noise at the harsh end of the dial; see
+    // header's "Round 2" points 3-4.
+    u.uExposure.value = 0.55 + 0.95 * P.contrast
+    u.uSharp.value = 0.09 - 0.05 * P.contrast
     u.uEdge.value = bipolar(P.contrast, 2.5)
 
-    // flap depth: source const 0.3, opened a little by the energy envelope
-    u.uFlapDepth.value = 0.24 + 0.1 * st.energyEnv
+    // flap depth: source const 0.3, opened by the energy envelope. Coefficient
+    // raised 0.1 -> 0.18 alongside the flap-rate bump above, for the same reason.
+    u.uFlapDepth.value = 0.24 + 0.18 * st.energyEnv
     // dipole <-> contour blend: mostly the magnet, drifting slowly so the lines
     // breathe between "pure loops" and "hugging the wing edge"
     u.uContour.value = 0.4 + 0.15 * Math.sin(st.flapPhase * 0.5)
-    // comet tail: a touch longer on a kick
-    u.uDecay.value = 0.86 + st.bloom * 0.04
+    // comet tail: a touch longer on a kick. Round 2: baseline raised 0.86 ->
+    // 0.90 so every point's trail is a visible streak along the flow instead
+    // of a near-invisible blip -- see header's "Round 2" point 3.
+    u.uDecay.value = 0.90 + st.bloom * 0.035
     // brightness: baselines carry what the source's unbounded feedback used to
-    // build; energy + kick bloom ride on top, slewed.
-    u.uCoreBright.value = 2.4 + st.energyEnv * 1.6
-    u.uFurBright.value = (2.0 + st.energyEnv * 1.4) * (1 + st.bloom * 0.5)
+    // build. `uCoreBright` (the solid body) now also gets a kick-bloom nudge —
+    // it used to be the one visible element in the frame a hit never reached at
+    // all, which is why the body could read as inert even on a hard kick.
+    // `uFurBright` (the sparks) is driven by `highsEnv`, its own dedicated band,
+    // instead of re-reading `energyEnv` — see header.
+    // Round 2: all three coefficients pulled down (2.4->1.7 / +1.6->+1.0 /
+    // +0.6->+0.4 for the body; 2.0->1.3 / +1.8->+1.0 for the sparks; bloom's
+    // spark leverage 0.7->0.45) so the brightest realistic frame (loud +
+    // kick + high contrast) lands well short of `1 - exp(-x)` saturating
+    // every channel to white -- a hit should read as MORE colour, not a flash
+    // of white that erases the palette; see header's "Brightness rework".
+    u.uCoreBright.value = 1.7 + st.energyEnv * 1.0 + st.bloom * 0.4
+    u.uFurBright.value = (1.3 + st.highsEnv * 1.0) * (1 + st.bloom * 0.45)
+    // background ambience lift — see shader's `bg` term and the header's
+    // "Background" section. Slow (`bgLift`) on purpose: this breathes with the
+    // track's overall level, not with any single band or hit.
+    u.uBgLift.value = st.bgLift
 
-    // uGlow is bound live by the factory — nothing to copy for the palette tint.
+    // uBg/uShadow/uMid/uAccent/uGlow are all bound live by the factory — the
+    // shader's colour/background blocks read them directly every frame,
+    // nothing to copy here.
 
     // Step count is the real tier lever (the per-step analytic field eval is
     // the cost). Floored at 12/44 so the streamlines never collapse.

@@ -350,3 +350,21 @@ describe('djcam — primary-capable but out of every automatic pool', () => {
     }
   })
 })
+
+describe('limitless — primary-capable but out of every automatic pool', () => {
+  // Same invariant as `djcam` above, pinned again here since `limitless` was
+  // reclassified from a normal roster scene (six moods, a moodFit) to this
+  // same shape of directed cutaway, reached only through `LimitlessDirector`.
+  it('is registered in SCENES with a unique id and the primary role', () => {
+    const limitless = SCENES.filter((s) => s.id === 'limitless')
+    expect(limitless, 'limitless must be in SCENES, not DISABLED_SCENES').toHaveLength(1)
+    expect(limitless[0].metadata.roles).toContain('primary')
+  })
+
+  it('is never returned by getPrimaryScenesForMood, for any mood', () => {
+    for (const mood of MOOD_STATES) {
+      const ids = getPrimaryScenesForMood(mood).map((s) => s.id)
+      expect(ids, `mood "${mood}"`).not.toContain('limitless')
+    }
+  })
+})

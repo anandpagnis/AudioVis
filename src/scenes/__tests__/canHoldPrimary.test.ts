@@ -237,6 +237,43 @@ describe('DJ Cam: primary-capable, hidden from every by-hand picker', () => {
   })
 })
 
+/**
+ * Limitless is the second cutaway, reclassified from a normal roster scene to
+ * one reached only through `LimitlessDirector` — same shape of exception as
+ * `djcam` above, so this block mirrors that one's structure directly.
+ */
+describe('Limitless: primary-capable, hidden from every by-hand picker', () => {
+  it('is a registered, primary-capable scene', () => {
+    const limitless = SCENES.find((s) => s.id === 'limitless')
+    expect(limitless, 'limitless must be in SCENES, not DISABLED_SCENES').toBeDefined()
+    expect(limitless?.metadata.roles).toEqual(['primary'])
+    expect(canHoldPrimary('limitless')).toBe(true)
+    expect(canHoldRole('limitless', 'primary')).toBe(true)
+  })
+
+  it('is in HIDDEN_PICKER_IDS', () => {
+    expect(HIDDEN_PICKER_IDS.has('limitless')).toBe(true)
+  })
+
+  it('never enters an automatic pool: empty moods, no moodFit', () => {
+    const limitless = SCENES.find((s) => s.id === 'limitless')
+    expect(limitless?.metadata.moods).toEqual([])
+    expect(limitless?.metadata.moodFit).toBeUndefined()
+    for (const mood of MOOD_STATES) {
+      expect(getScenesForMood(mood).map((s) => s.id), mood).not.toContain('limitless')
+    }
+  })
+
+  it('is filtered out of both by-hand pickers via HIDDEN_PICKER_IDS', () => {
+    expect(HUD_SRC).toMatch(
+      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*!HIDDEN_PICKER_IDS\.has\(s\.id\)/s,
+    )
+    expect(CONSOLE_SRC).toMatch(
+      /PICKABLE_SCENES\s*=\s*SCENES\.filter\(.*!HIDDEN_PICKER_IDS\.has\(s\.id\)/s,
+    )
+  })
+})
+
 describe('canHoldRole', () => {
   it('agrees with canHoldPrimary for the primary role', () => {
     for (const s of SCENES) {

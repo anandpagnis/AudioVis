@@ -42,11 +42,12 @@ import { bipolar, drastic } from './contract'
  * makes for its own two-sided estimate — and is a documented worst-case
  * estimate, not a fabricated ceiling built to clear `slotBudget.test.ts`.
  *
- * ## FORCED LIVE by explicit request — pending a real /bench
- *
- * ACTION: run `/bench`, get a real number, then decide whether it needs
- * `pixelBudget` tightened further, a step-count cut, or is fine as measured.
- * Do not trust the estimate above longer than it takes to get a measurement.
+ * Was FORCED LIVE by explicit request for a session; parked back into
+ * `DISABLED_SCENES` (2026-09-17) pending the same real `/bench` measurement —
+ * nothing about the cost picture changed, the estimate above is still
+ * undischarged. ACTION: run `/bench`, get a real number, then decide whether
+ * it needs `pixelBudget` tightened further, a step-count cut, or is fine as
+ * measured before it comes back to `SCENES`.
  *
  * ## Port notes (Shadertoy -> AudioVis prelude)
  *
@@ -73,6 +74,12 @@ import { bipolar, drastic } from './contract'
  *                            camera swing out and back by definition — no
  *                            amount of smoothing changes that, only removing
  *                            it from the angle does.
+ *
+ *                            `tt`'s own multiplier (below) was later raised
+ *                            0.46 -> 0.62 (2026-09-17, "move it deeper into
+ *                            it") — see the Round 2 section below for the
+ *                            full note; flagged here too so this port-notes
+ *                            block does not go stale next to it.
  *   mainImage/fragColor   -> main() / gl_FragColor, final * uFade
  *   fragCoord              -> gl_FragCoord.xy
  *
@@ -84,7 +91,9 @@ import { bipolar, drastic } from './contract'
  *   speed + mids  -> the one flight/warp clock (see uRawT above)
  *   shape         -> U_WARP, the domain-warp amount: rectilinear grid at low,
  *                    molten/organic at high
- *   complexity    -> U_SCALE, the lattice cell frequency
+ *   complexity    -> U_SCALE, the lattice cell frequency, also now pulsed
+ *                    +-10% by `uBeatSin` once per beat (2026-09-16, "move
+ *                    complexity with beat" — see `gyroid()`)
  *   density       -> U_THICK, the glow-band thickness (see `map()` — higher
  *                    packs more of the volume into the glowing region)
  *   contrast+highs-> glow falloff sharpness (was the constant `8.0`)
@@ -106,20 +115,85 @@ import { bipolar, drastic } from './contract'
  *   highs     -> tighter glow edges (stacks with the contrast dial)
  *   energy    -> overall glow brightness
  *   transient -> overall glow brightness (NOT the camera — see port notes)
+ *   beat      -> +-10% lattice-frequency pulse (uBeatSin, `gyroid()`),
+ *                added 2026-09-16 on direct request ("move complexity
+ *                with beat")
  *
  * ## Scene Contract
  *
  *   speed       flight/orbit + domain-warp clock rate
  *   shape       domain-warp amount — "warp", grid to molten
- *   complexity  lattice cell frequency — "scale"
+ *   complexity  lattice cell frequency — "scale", also beat-pulsed (above)
  *   density     glow-band thickness — "thickness"
  *   contrast    glow falloff sharpness
  *   fill        focal length / zoom
  *   tilt        static camera-wobble offset (replaces the source's mouse look)
+ *
+ * ## Camera movement reduced (2026-09-16, direct request)
+ *
+ * Orbit rate, gaze-roll rate, orbit-radius swing and the kick zoom-punch were
+ * all independently cut (roughly 35-50% each — not one master multiplier,
+ * since they are four unrelated quantities: an angular rate, a smaller
+ * angular rate, a radius, and a focal-length delta). None of the earlier
+ * "one direction only" fixes above were touched — `orbitPhase` is still used
+ * directly as a monotonically increasing angle, never as input to a bounded
+ * sin/cos swing, so the camera still never reverses; it now simply covers
+ * less ground doing it. See `main()`'s `orbitPhase`/`rd.yz`/`rd.xz` lines and
+ * `update()`'s `uOrbitR`/`uFocal` assignments for the specific numbers.
+ *
+ * ## Round 2 (2026-09-17): step-count flicker, beat-pulse loudness, depth
+ *
+ * Reported after the round above: "camera is better, maybe move it deeper
+ * into it? but whatever you've done makes it looks horribly bumpy, with
+ * absolutely no changes as well." The camera math itself (`orbitPhase`,
+ * still a single monotonically-increasing angle, never a bounded sin/cos
+ * swing — see above) traces smooth and continuous under inspection, so
+ * "horribly bumpy" was investigated as coming from somewhere ELSE first,
+ * rather than reopening math that was already correct:
+ *
+ *   - `quality.ts`'s adaptive governor snaps `quality.knobs.raymarchSteps`
+ *     to a new tier's raw number in a single frame outside a transition
+ *     discount (its `applyKnobs()`: `this.knobs = base`, no easing at all)
+ *     whenever it steps the render tier up or down. This scene's own
+ *     estimated cost (7-22 ms, see the "PARKED" section above) straddles the
+ *     governor's own demote/promote thresholds (roughly 17.5-25 ms at 60 Hz
+ *     — `STEP_UP_MEAN_RATIO`..`STEP_DOWN_MEAN_RATIO` in quality.ts) almost
+ *     exactly, which is precisely the profile that makes a governor hunt:
+ *     climb once frame time looks steady for `CLIMB_HOLD_SEC`, get demoted
+ *     again once the richer tier's real cost actually lands, back off,
+ *     repeat. This scene fed that raw, un-eased tier number straight into
+ *     `uMaxSteps` every frame with no smoothing of its own — the same shape
+ *     `TunnelDriftScene`/`BeatsScene` also use for their own raymarchers,
+ *     they are just far enough under the thresholds in practice not to hunt
+ *     as visibly. Every hunt cycle changed how far the glow accumulation
+ *     reaches, which reads as a flicker/bump completely independent of the
+ *     actually-smooth camera path, and large enough to bury the beat pulse
+ *     in `gyroid()` — matching "no changes as well" (the real per-beat pulse
+ *     was there, just drowned out by a much bigger, non-musical jump).
+ *     Fixed two ways, both local to this file (the governor's own hunting
+ *     behaviour is a separate, cross-scene concern, out of scope here):
+ *     `uMaxSteps` is now eased in this scene's own `update()`
+ *     (`st.stepsSmooth`, see its doc) rather than snapped, and the ceiling it
+ *     eases toward was cut 150 -> 120 (`RAYMARCH_STEP_CAP`) so this scene's
+ *     worst-case cost sits further from the thresholds and the governor has
+ *     less reason to hunt over it in the first place. Once the flicker is
+ *     addressed, the beat pulse's own amplitude was raised 0.10 -> 0.16 (see
+ *     `gyroid()`) since on its own it was judged too subtle to read clearly
+ *     against what is now a calm background.
+ *   - "move it deeper into it": the forward-crawl rate (`tt`, which IS
+ *     `ro.z` — see `main()`) raised 0.46 -> 0.62, and the base focal length
+ *     (`update()`'s `uFocal`) tightened 1.2 -> 1.35 — both independent of the
+ *     orbit radius/rate and roll rate that were cut last round on direct
+ *     request and are NOT reopened here; this is the depth/zoom axis, not
+ *     the orbit-amplitude axis. `orbitPhase` was rewritten to derive its
+ *     angular rate directly from `uRawT` (0.1012 = the previous
+ *     `0.46 * 0.22`) rather than as a fraction of `tt`, specifically so
+ *     speeding up `tt` could not drag the orbit's own rate up along with it
+ *     — see `main()`'s own note on this.
  */
 
 export const FRAG = /* glsl */ `
-  uniform float uRawT;    // JS-accumulated clock; tt = uRawT*0.46, warp phase = uRawT*0.6
+  uniform float uRawT;    // JS-accumulated clock; tt = uRawT*0.62, warp phase = uRawT*0.6
   uniform float uWarp;    // shape dial (+ sub swell) -> domain-warp amount, source const 2.5
   uniform float uScale;   // complexity dial -> gyroid cell frequency, source const 0.6
   uniform float uThick;   // density dial -> glow-band thickness, source const 0.0
@@ -141,8 +215,28 @@ export const FRAG = /* glsl */ `
   }
 
   float gyroid(vec3 p) {
-    p *= uScale;
-    return abs(dot(sin(p), cos(p.yzx))) / uScale - uThick;
+    // Beat-locked complexity pulse (2026-09-16, "move complexity with beat"):
+    // uBeatSin is prelude-injected and already phase-locked to the tracked
+    // beat grid (see SHADER_SCENE_PRELUDE / beatOscillators.ts) -- one full
+    // sine cycle per beat, continuous and self-easing by construction, so
+    // riding the cell frequency on it swells/relaxes the lattice detail once
+    // a beat with no snap and no JS-side state to add.
+    //
+    // Amplitude raised 0.10 -> 0.16 (2026-09-17, "absolutely no changes"):
+    // the original +-10% was tuned as a standalone number, but in practice
+    // it was being visually drowned out by the uMaxSteps step-count flicker
+    // (see RAYMARCH_STEP_CAP's own doc, below the FRAG block) firing on every
+    // governor tier change -- a much larger, much more frequent-looking
+    // swing in how far the glow reaches, next to which a +-10% frequency
+    // wobble read as noise rather than as a deliberate pulse. Now that the
+    // step count eases instead of snapping, +-16% is close to the loudest
+    // this can go before the lattice visibly tears at the top of the swing
+    // (the original ceiling this comment already warned about) while still
+    // reading clearly as "moves with the beat" against a now-calm
+    // background.
+    float scale = uScale * (1.0 + uBeatSin * 0.16);
+    p *= scale;
+    return abs(dot(sin(p), cos(p.yzx))) / scale - uThick;
   }
 
   float map(vec3 p) {
@@ -152,14 +246,35 @@ export const FRAG = /* glsl */ `
   void main() {
     vec2 uv = (2.0 * gl_FragCoord.xy - uRes.xy) / uRes.y;
 
-    float tt = uRawT * 0.46;
+    // Forward-crawl rate raised 0.46 -> 0.62 (2026-09-17, "move it deeper
+    // into it"): tt IS the camera's z position (ro.z, below) as well as the
+    // warp-phase time base, so this is the "how fast are we flying through
+    // the lattice" dial. Deliberately decoupled from orbitPhase below (see
+    // its own note right after) -- depth/immersion is a different axis from
+    // the orbit amplitude/rate that was cut last round on direct request and
+    // must stay cut.
+    float tt = uRawT * 0.62;
     // Single orbit phase, not the source's two independently-timed sin/cos
     // pairs — see update()'s own note on why that read as "back and forth"
     // rather than a flow. cos/sin of ONE continuously-advancing phase is a
     // true constant-speed revolution: it never stalls or reverses, unlike
     // two mismatched frequencies on X and Y, which trace a Lissajous path
     // that visibly doubles back on itself wherever the two axes fight.
-    float orbitPhase = tt * 0.35;
+    // Orbit rate cut 0.35 -> 0.22 of tt (2026-09-16, "reduce camera
+    // movement"). Now written directly against uRawT instead, as
+    // 0.46 * 0.22 = 0.1012 (2026-09-17, "move it deeper into it"): once tt
+    // itself sped up just above for the forward-crawl fix, leaving this as a
+    // fraction OF tt would have dragged the orbit's own angular rate up
+    // right along with it -- reopening the exact reduction that was cut last
+    // round on direct request, just through a different multiplier than the
+    // one someone would think to check. Deriving orbitPhase from uRawT
+    // directly instead reproduces the EXACT same absolute angular rate the
+    // "reduce camera movement" fix landed on, so that reduction holds no
+    // matter how fast the camera now flies forward. Still the one
+    // continuously-increasing phase, never a bounded sin/cos swing -- only
+    // decoupled from a variable (tt) that now has its own separate reason to
+    // change speed.
+    float orbitPhase = uRawT * 0.1012;
     vec3 ro = vec3(uOrbitR * cos(orbitPhase), uOrbitR * sin(orbitPhase), tt);
     vec3 rd = normalize(vec3(uv, uFocal));
     // Second fix (still reported jerky after the first): the position orbit
@@ -174,14 +289,24 @@ export const FRAG = /* glsl */ `
     // sin/cos swing -- a slow, continuous roll that never stalls or reverses,
     // at a rate slow enough (roughly one full turn per 11 orbit revolutions)
     // to read as a gentle drift rather than a spin.
-    rd.yz = rot(orbitPhase * 0.09 + uWobble.y) * rd.yz;
-    rd.xz = rot(orbitPhase * 0.11 + uWobble.x) * rd.xz;
+    // Roll rate also cut (2026-09-16, same request) -- roughly halved, so the
+    // slow drift reads as closer to one full turn per 22 orbit revolutions
+    // rather than 11. Still orbitPhase used directly as the angle, never as
+    // input to a sin/cos swing -- see the long note above on why that
+    // specific shape is what keeps this "one direction only".
+    rd.yz = rot(orbitPhase * 0.045 + uWobble.y) * rd.yz;
+    rd.xz = rot(orbitPhase * 0.055 + uWobble.x) * rd.xz;
 
     float t = 0.0;
     float atten = 1.0;
     vec3 col = vec3(0.0);
 
-    for (int i = 0; i < 150; i++) {
+    // Loop bound cut 150 -> 120 (2026-09-17, RAYMARCH_STEP_CAP in the JS
+    // below) -- must stay equal to that constant or steps above it silently
+    // do nothing; kept a literal here rather than interpolating the JS
+    // constant into this template literal, matching how U_DEPTH above is
+    // also a literal with no JS-side twin.
+    for (int i = 0; i < 120; i++) {
       if (i >= uMaxSteps) break;
       vec3 p = ro + rd * t;
       float d = map(p);
@@ -211,6 +336,41 @@ export const FRAG = /* glsl */ `
 const COL_A_BASE = new THREE.Color(0.0, 0.25, 1.0)
 const COL_B_BASE = new THREE.Color(0.3, 0.3, 1.0)
 
+/**
+ * Raymarch step ceiling/floor (2026-09-17, see the header's "Round 2"
+ * section for the full step-count-flicker investigation).
+ *
+ * Ceiling cut 150 -> 120 (20%): this scene's own header already reads it as
+ * likely the most expensive one in the roster (7-22 ms, no hit-based
+ * early-out), which is exactly the profile that keeps forcing the adaptive
+ * governor (quality.ts) to intervene on it — and every intervention snapped
+ * straight through to `uMaxSteps` with no easing of its own (see
+ * `raymarchStepsTarget`/`st.stepsSmooth` below), which is the flicker that
+ * was reported as "horribly bumpy". Trimming the ceiling lowers the
+ * worst-case cost so the governor needs to reach for THIS scene less often
+ * in the first place, on top of the easing fix. The floor is untouched, so
+ * the worst case (survival tier) still marches at least 70 steps, same
+ * guarantee as before — just a smaller ceiling-to-floor range to ease across
+ * when the governor does move (120->70, 58%, vs. the old 150->70, 47%). The
+ * FRAG loop's own compile-time bound (`main()`'s `for (int i = 0; i < 120;
+ * ...)`) must stay equal to this or steps above it silently do nothing.
+ */
+const RAYMARCH_STEP_CAP = 120
+/** Unchanged from the original 150-step version's floor — see `update()`'s
+ *  own trailing note on why this is floored meaningfully higher (58% of the
+ *  new, smaller ceiling) than `beats`'/`tunnel`'s own floors. */
+const RAYMARCH_STEP_FLOOR = 70
+
+/**
+ * The governor-driven step-count TARGET, shared by `state()`'s seed and
+ * `update()`'s own easing so the two can never drift apart into two
+ * independently-maintained copies of the same formula.
+ */
+function raymarchStepsTarget(): number {
+  const qFrac = Math.min(1, quality.knobs.raymarchSteps / 96)
+  return Math.max(RAYMARCH_STEP_FLOOR, Math.min(RAYMARCH_STEP_CAP, RAYMARCH_STEP_CAP * qFrac))
+}
+
 interface GyroidState {
   /** Unscaled accumulated clock — tt and the warp phase are both derived from this in-shader. */
   rawT: number
@@ -219,6 +379,15 @@ interface GyroidState {
   /** `s.mids`, slewed — see `update()`'s own note on why the raw band feeds
    *  a rate rather than a position. */
   midsSlew: number
+  /**
+   * Floating-point raymarch step count, eased toward
+   * `raymarchStepsTarget()` every frame and rounded only when written to
+   * `u.uMaxSteps` (2026-09-17, see `RAYMARCH_STEP_CAP`'s own doc). Kept as a
+   * float rather than re-deriving an int fresh each frame specifically so it
+   * can sit BETWEEN two governor tiers' step counts while easing from one to
+   * the other, instead of jumping the instant the governor's own knob moves.
+   */
+  stepsSmooth: number
 }
 
 export const GyroidFluxScene = createShaderScene<GyroidState>({
@@ -243,9 +412,15 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     uGlowAmt: { value: 4.6 },
     uColA: { value: new THREE.Color().copy(COL_A_BASE) },
     uColB: { value: new THREE.Color().copy(COL_B_BASE) },
-    uMaxSteps: { value: 150 },
+    // 150 -> RAYMARCH_STEP_CAP (120), matching the ceiling cut below.
+    uMaxSteps: { value: RAYMARCH_STEP_CAP },
   }),
-  state: () => ({ rawT: 0, shock: 0, midsSlew: 0 }),
+  // stepsSmooth seeded from the governor's CURRENT target rather than left at
+  // 0/RAYMARCH_STEP_CAP, so the very first frame does not itself read as a
+  // pop (a mount at a demoted tier would otherwise ease UP from a cold 0 or
+  // snap DOWN from a hot 120 before settling) — see RAYMARCH_STEP_CAP's own
+  // doc for why this is eased every frame after.
+  state: () => ({ rawT: 0, shock: 0, midsSlew: 0, stepsSmooth: raymarchStepsTarget() }),
   update({ u, s, P, pal, st, dt, ctx }) {
     // Slowed and smoothed on direct request (2026-09-07): this clock's rate
     // used to read `s.mids` — a live audio envelope, not itself smoothed —
@@ -299,7 +474,10 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     //   3. The gaze's own slow roll (FRAG) is itself riding on `orbitPhase`,
     //      which is already mids-modulated via `uRawT`'s own rate above — so
     //      it already breathes with the music without a fourth signal.
-    u.uOrbitR.value = 0.8 + st.midsSlew * 0.25
+    // Radius + swing both cut (2026-09-16, "reduce camera movement"): base
+    // 0.8 -> 0.6, mids breathing 0.25 -> 0.12 -- the orbit still breathes
+    // with the track, it just doesn't swing as wide doing it.
+    u.uOrbitR.value = 0.6 + st.midsSlew * 0.12
 
     if (s.onKick > 0) st.shock = Math.min(1.5, st.shock + s.onKick)
     st.shock *= Math.exp(-dt * 4.0)
@@ -323,7 +501,16 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     // additive and self-decaying rather than oscillating, so it cannot
     // reopen the same "back and forth" complaint no matter how hard or how
     // often it fires.
-    u.uFocal.value = 1.2 + P.fill * 0.8 + st.shock * 0.25
+    // Kick zoom-punch amplitude also cut (2026-09-16, same request):
+    // 0.25 -> 0.12 -- still a punch on a hit, just a smaller one.
+    // Base tightened 1.2 -> 1.35 (2026-09-17, "move it deeper into it"): a
+    // larger uFocal narrows the ray fan (`rd = normalize(vec2, uFocal)` in
+    // FRAG), which is a lens getting more telephoto rather than the camera
+    // moving — the structure reads closer/more enveloping without touching
+    // the orbit radius this round is explicitly not allowed to reopen. Kept
+    // modest ("somewhat" tighter, not a hard zoom) since `P.fill` and the
+    // kick punch both still add on top of this same base.
+    u.uFocal.value = 1.35 + P.fill * 0.8 + st.shock * 0.12
     // tilt replaces the source's mouse look — a fixed user offset only, no
     // live signal riding on it.
     //
@@ -356,11 +543,38 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
     // No hit-based early-out (see header) — cutting steps genuinely shortens
     // how far the ray reaches before the glow accumulation truncates, not
     // just resolution softness (same Finding-4 shape `beats` documents).
-    // Floored higher than beats' 20/77 (26%) for that reason: 70/150 (~47%).
+    // Floored higher than beats' 20/77 (26%) for that reason: 70/120 (~58%,
+    // was 70/150 ~47% before the ceiling cut below).
     // Purely governor-driven, no user dial on top — same call TunnelDriftScene
     // makes for its own `uMaxSteps`, and for the same reason: a dial that
     // could reach this floor would be a dial that breaks the scene.
-    const qFrac = Math.min(1, quality.knobs.raymarchSteps / 96)
-    u.uMaxSteps.value = Math.max(70, Math.min(150, Math.round(150 * qFrac)))
+    //
+    // EASED rather than assigned directly (2026-09-17, "horribly bumpy" —
+    // see the header's Round 2 section for the full investigation this
+    // traces to): outside a transition discount, quality.ts's `applyKnobs()`
+    // assigns a tier's raw numbers with NO easing of its own
+    // (`this.knobs = base`), so `quality.knobs.raymarchSteps` itself jumps
+    // in a single frame every time the governor's hysteresis fires a tier
+    // change. This scene sits close enough to the governor's own
+    // demote/climb thresholds (see the header) that those changes are not
+    // rare, and assigning the resulting target straight to `uMaxSteps` (as
+    // this scene used to, and as `TunnelDriftScene`/`BeatsScene` still do)
+    // turned every one of them into a visible snap in how far the glow
+    // accumulation reaches — a bump with nothing to do with the (already
+    // smooth) camera path. `st.stepsSmooth` now tracks the target as a float
+    // and is rounded only at the very last moment, so a tier change reads as
+    // the lattice gradually gaining or losing depth over roughly a second
+    // rather than as a pop. Asymmetric on purpose: FALLING (the governor
+    // shedding load) eases in over well under a second — fast enough that a
+    // genuine frame-budget rescue is not meaningfully delayed, since
+    // quality.ts's separate CONSECUTIVE_OVERBUDGET_FRAMES emergency path
+    // already reacts to the RAW measured frame time, not to this uniform —
+    // while RISING (the governor offering headroom back) eases in over
+    // roughly two seconds, since a climb is explicitly a PROBE in quality.ts
+    // (`RUNG_PROOF_SEC`) that may get reverted within 10 s, and there is no
+    // reason for the visual to race to spend a headroom grant that might not
+    // hold.
+    st.stepsSmooth = slew(st.stepsSmooth, raymarchStepsTarget(), dt, 1.3, 3.8)
+    u.uMaxSteps.value = Math.round(st.stepsSmooth)
   },
 })

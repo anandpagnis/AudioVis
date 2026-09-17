@@ -56,13 +56,20 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * is **held** for the rest of the bar:
  *
  *   - `uSymmetry` — the kaleidoscope wedge count, the literal fold count —
- *     steps to the next entry of {@link BAR_SYMMETRY} and stays there. It cuts
- *     rather than eases, because a petal count is an integer and the cut *is*
- *     the event.
+ *     targets the next entry of {@link BAR_SYMMETRY} and eases there over
+ *     {@link FOLD_STEP_RATE} (~100ms), same as `uFoldStep` below. This used to
+ *     be a hard integer cut on the grounds that a petal count is an integer
+ *     and the cut *is* the event; in practice that meant the wedge count and
+ *     the fractal web changed shape on the same frame the accent envelope
+ *     also popped (see `KifsRoseState.accent`) — three discontinuities
+ *     stacked on one downbeat, which is what read as "jerky" rather than "on
+ *     beat." `segAngle = TAU / uSymmetry` is just an angle, so it is
+ *     perfectly continuous in a fractional wedge count — easing this costs
+ *     nothing structurally, it only removes a pop.
  *   - `uFoldStep` — the Kaliset offset and the per-iteration rotation bias —
  *     steps to the next entry of {@link BAR_FOLDS} and eases in over ~100 ms,
- *     so the fractal web morphs in behind the petal count's cut instead of
- *     both snapping together and reading as a dropped frame.
+ *     so the fractal web morphs in behind the petal count instead of both
+ *     snapping together and reading as a dropped frame.
  *
  * Beats 2, 3 and 4 get one quarter of the accent (see {@link OFFBEAT_ACCENT})
  * and it reaches exactly one term — the orbit-trap line width. A mandala that
@@ -84,14 +91,24 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *     drives a ~2% radial breath and a slow drift of the ramp position, which
  *     is what fills the three beats the structural response deliberately
  *     leaves empty.
+ *   - `uBeatSin` (prelude, one cycle per beat, free — no JS beat-tracking of
+ *     its own) drives a deliberate ~6% outward-growth swell on top of the bar
+ *     breath (see `BEAT_GROWTH` in `FRAG`, and "Round 2" below — this
+ *     used to be a much smaller ~1% pulse, before the fold's own chaotic
+ *     sensitivity to `cfg` got tamed and this became the real feature instead
+ *     of an accident). It phase-locks to all four beats, not just the
+ *     downbeat, so the "on beat" feel does not depend on a kick being
+ *     detected at all — pure beat-grid motion, always continuous, never a
+ *     reset.
  *   - `highs` still shimmer the trap layers apart per frame.
  *
  * ## Band routing
  *
- *   downbeat crossing → steps uSymmetry (fold count) + uFoldStep, then HOLDS
- *                       both for the bar. Fires off the beat GRID, not off a
- *                       detected kick, so the mandala keeps reconfiguring
- *                       through a passage with no drums in it.
+ *   downbeat crossing → retargets uSymmetry (fold count) + uFoldStep, both
+ *                       eased in over ~100ms and then HELD for the bar. Fires
+ *                       off the beat GRID, not off a detected kick, so the
+ *                       mandala keeps reconfiguring through a passage with no
+ *                       drums in it.
  *   onKick on beat 1  → full uBeatAccent: narrows the orbit-trap line width
  *                       AND hardens the tone curve
  *   onKick on 2/3/4   → quarter uBeatAccent: line width only. The contrast
@@ -136,6 +153,40 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * Nothing added here costs an iteration: `kifs` is `performanceCost: 'high'`
  * and the loop bound is untouched. `uSymmetry` is a divisor, `uFoldStep` is two
  * multiply-adds outside the loop and one inside a `rot()` that already ran.
+ *
+ * ## Round 2 — taming the fold's chaotic sensitivity, and a real growth feature
+ *
+ * User complaint: "fractal rose window ... I dont want it bumping out of the
+ * screen, theres like outward growth as well right? maybe put that on the
+ * beat, just stop the bumping." Investigation: `uFoldStep` (and the `cfg`
+ * derived from it) already eases smoothly between bar-held `BAR_FOLDS` entries
+ * via `slew()` — but the Kaliset fold it feeds (`z = abs(z)/dot(z,z); z =
+ * R*z; z -= off`, iterated up to `MAXI`=20 times) is a CHAOTIC map. A smooth
+ * INPUT to a chaotic iterated system does not guarantee a smooth OUTPUT: the
+ * fractal's own geometry can swing outward non-monotonically mid-ease even
+ * though `uFoldStep` itself never jumps. That is almost certainly what read
+ * as "bumping out of the screen" during a bar transition — an artifact of the
+ * map's sensitivity to `cfg`, not a discontinuity anywhere in the JS-side
+ * easing (which really was, and still is, continuous).
+ *
+ * Two levers control how hard `cfg` leans on the fold: `BAR_FOLDS`' spread
+ * around its neutral 0.5, and the coefficients that scale `cfg` into the
+ * fold's rotation (`R`) and offset (`off`) inside `FRAG`'s `main()`. Both are
+ * now reduced to roughly 60% of their original magnitude — taming the
+ * worst-case mid-ease excursion by more than half while keeping each bar's
+ * fold recognisably different from the last (the cycle's relative ordering
+ * and spacing are preserved, only its amplitude is turned down).
+ *
+ * Separately, the "outward growth" the complaint names is now a deliberate,
+ * controlled feature instead of an accidental side effect of the chaos above:
+ * see `BEAT_GROWTH` in `FRAG` — a real, continuous, beat-locked radial swell
+ * (`uBeatSin`, already free from the prelude) large enough to read clearly,
+ * replacing the old +/-1% pulse that shared its phase and was too small to
+ * register as "growth" at all.
+ *
+ * Also removed: a dead `ACCENT_FOLLOW_RATE` constant, documented for a
+ * `slew()`-chases-`s.kick` accent design that was never actually wired up —
+ * see the note above `st.accent`'s decay in `update()`.
  */
 
 /**
@@ -151,8 +202,15 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * Entry 0 is 0.5 — the shader reads this as `uFoldStep - 0.5`, so the cycle
  * starts at exactly the authored fold and a scene that has not seen a downbeat
  * yet renders the original picture.
+ *
+ * Round 2: the spread between entries is compressed to ~60% of its original
+ * amplitude (was `[0.5, 0.86, 0.22, 0.68, 0.34]`) — see "Round 2" in the
+ * file's top doc comment. The cycle's length, order and relative spacing are
+ * unchanged; only how far `cfg` (= `uFoldStep - 0.5`) can swing is turned
+ * down, because that swing is exactly what the chaotic Kaliset fold in `FRAG`
+ * amplifies during a bar-transition ease.
  */
-const BAR_FOLDS = [0.5, 0.86, 0.22, 0.68, 0.34] as const
+const BAR_FOLDS = [0.5, 0.72, 0.33, 0.61, 0.4] as const
 
 /**
  * Wedge-count offset applied on top of the `shape` dial, one per bar, in step
@@ -167,12 +225,13 @@ const BAR_FOLDS = [0.5, 0.86, 0.22, 0.68, 0.34] as const
 const BAR_SYMMETRY = [0, 2, -1, 1, -2] as const
 
 /**
- * How fast `uFoldStep` eases to a newly stepped configuration, in `slew` rate.
+ * How fast `uFoldStep` AND `uSymmetry` ease to a newly stepped configuration,
+ * in `slew` rate. Shared between the two so the wedge count and the fractal
+ * web arrive together instead of one visibly lagging the other.
  *
  * ~100 ms to most of the way — under a fifth of a beat at 120 BPM, so it still
- * reads as landing *on* the downbeat, but long enough that the fractal web
- * morphs rather than cuts. The petal count cuts on the same frame; having one
- * of the two ease is what keeps the change from reading as a dropped frame.
+ * reads as landing *on* the downbeat, but long enough that both morph rather
+ * than cut.
  */
 const FOLD_STEP_RATE = 11
 
@@ -226,7 +285,10 @@ export const FRAG = /* glsl */ `
   uniform float uBeatAccent;
   uniform float uFoldStep;
   uniform float uBarSweep;
-  uniform int uSymmetry;
+  // Float, not int: it now EASES between bar-held wedge counts (see
+  // FOLD_STEP_RATE) instead of cutting, and segAngle = TAU / uSymmetry is
+  // continuous in a fractional value -- fine to interpolate through.
+  uniform float uSymmetry;
   uniform int uIterCount;
   uniform float uMorph;
   uniform float uFill;
@@ -236,6 +298,14 @@ export const FRAG = /* glsl */ `
 
   const int MAXI = 20;
   const float TAU = 6.28318530718;
+  // Round 2: the deliberate on-beat outward swell (see the uv scale line in
+  // main()) -- a real, controlled feature now, replacing what used to read as
+  // an uncontrolled "bumping out of the screen" side effect of the fold's own
+  // chaotic sensitivity to cfg (see the note above 'off'/'R' below). Shrinking
+  // uv zooms the whole mandala IN (visually larger, same convention as the
+  // uFill dial above); growing uv zooms it back out. 0.06 reads clearly as a
+  // swell at a glance without needing any change to uFill's own zoom range.
+  const float BEAT_GROWTH = 0.06;
 
   mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
 
@@ -248,7 +318,15 @@ export const FRAG = /* glsl */ `
     float sweep = sin(uBarSweep * TAU);
 
     vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
-    uv *= (1.7 / uFill) * (1.0 + 0.020 * sweep);
+    // Bar-long breath (sweep, ~2%) plus a deliberate beat-locked outward swell
+    // (BEAT_GROWTH * uBeatSin, one cycle per beat, free from the prelude) --
+    // continuous life on all four beats, not only the one the structural
+    // response below reacts to. The minus sign is deliberate: uBeatSin is
+    // positive for the first half of each beat, and SHRINKING uv there zooms
+    // the mandala IN, so the rose visibly grows right after every hit and
+    // recedes before the next one -- this is the "outward growth ... on the
+    // beat" the complaint asked for, now intentional rather than an artifact.
+    uv *= (1.7 / uFill) * (1.0 + 0.020 * sweep - BEAT_GROWTH * uBeatSin);
 
     float th = uPhase;
 
@@ -269,9 +347,17 @@ export const FRAG = /* glsl */ `
     // visibly different web and then keeps it. Centred on uFoldStep == 0.5, so
     // the authored constants are exactly reproduced at the cycle's entry 0.
     float cfg = uFoldStep - 0.5;
-    mat2 R = rot(0.08 * sin(th) + 0.060 * cfg);
+    // Round 2: both cfg coefficients below were reduced to ~60% of their
+    // original magnitude (rotation: was 0.060; offset: was vec2(0.052,
+    // -0.038)). The Kaliset fold is a CHAOTIC map, so even though uFoldStep
+    // eases smoothly bar-to-bar (see FOLD_STEP_RATE) and cfg's own range is
+    // now smaller too (see BAR_FOLDS), the fractal's geometry could still
+    // swing outward non-monotonically mid-ease. Cutting how hard cfg leans on
+    // the fold tames that swing directly, without touching the easing itself,
+    // which was never where the discontinuity actually was.
+    mat2 R = rot(0.08 * sin(th) + 0.036 * cfg);
     vec2 off = vec2(0.74 + 0.10 * uMorph * sin(th), 0.56 + 0.10 * uMorph * cos(th))
-             + vec2(0.052, -0.038) * cfg;
+             + vec2(0.031, -0.023) * cfg;
     float t1 = 1.0e9, t2 = 1.0e9, t3 = 1.0e9;
     for (int i = 0; i < MAXI; i++) {
       if (i >= uIterCount) break;
@@ -338,6 +424,12 @@ interface KifsRoseState {
   /** Eased, held fold configuration — the rendered value of `BAR_FOLDS[barStep]`. */
   fold: number
   /**
+   * Eased, held wedge count — the rendered value of `symmetryForBar(P.shape,
+   * barStep)`. See the "still bumping" note above `st.symmetry`'s assignment
+   * in `update()`.
+   */
+  symmetry: number
+  /**
    * `beatIndex` of the downbeat already stepped on.
    *
    * `f.beat` is documented as true for exactly one frame, so this is belt and
@@ -353,7 +445,14 @@ export const KifsRoseScene = createShaderScene<KifsRoseState>({
   id: 'kifs',
   frag: FRAG,
   include: PALETTE_RAMP_GLSL,
-  state: () => ({ phase: 0, accent: 0, barStep: 0, fold: BAR_FOLDS[0], lastStepBeat: -1 }),
+  state: () => ({
+    phase: 0,
+    accent: 0,
+    barStep: 0,
+    fold: BAR_FOLDS[0],
+    symmetry: symmetryForBar(0.5, 0),
+    lastStepBeat: -1,
+  }),
   uniforms: () => ({
     uPhase: { value: 0 },
     uBeatAccent: { value: 0 },
@@ -390,12 +489,34 @@ export const KifsRoseScene = createShaderScene<KifsRoseState>({
     // the right primitive over a hand-rolled lerp because it is exponential in
     // `dt` and so cannot snap or change shape with frame rate.
     st.fold = slew(st.fold, BAR_FOLDS[st.barStep], dt, FOLD_STEP_RATE, FOLD_STEP_RATE)
+    // "Still bumping out of the screen" (Round 3): every doc comment on
+    // `uSymmetry` and `FOLD_STEP_RATE` above claims the wedge count eases
+    // alongside the fold — but this line was reading `symmetryForBar()`'s
+    // integer result straight into the uniform below with no `slew()` at all,
+    // so the wedge count actually SNAPPED on every downbeat while the prose
+    // said otherwise. `segAngle = TAU / uSymmetry` then jumped hard, and
+    // folding `a = mod(a, segAngle)` through a hard angle change is exactly
+    // what re-buckets the whole kaleidoscope into a visibly different wedge
+    // shape in one frame — indistinguishable, at a glance, from the fold's
+    // own chaotic mid-ease excursion Round 2 already dampened. Fixed the same
+    // way `fold` is: hold a slewed state value and read that into the
+    // uniform, not the raw target.
+    st.symmetry = slew(st.symmetry, symmetryForBar(P.shape, st.barStep), dt, FOLD_STEP_RATE, FOLD_STEP_RATE)
 
     // --- Beat accent. One envelope, two amplitudes.
     if (s.onKick > 0) {
       const weight = onDownbeat(f.beatInBar, f.beatProgress) ? 1 : OFFBEAT_ACCENT
       st.accent = Math.min(1.2, st.accent + s.onKick * weight)
     }
+    // Round 2 cleanup: an earlier pass left a dead `ACCENT_FOLLOW_RATE`
+    // constant here, documented for a `slew()`-chases-`s.kick` design that was
+    // never actually wired in. That design doesn't match what this envelope
+    // is: a single-frame `onKick` SPIKE charges it above (not a continuous
+    // chase of `s.kick`), and it free-decays afterwards — there is no
+    // "target" for `slew` to chase, so `slew` was never the right primitive
+    // here. Removed the constant rather than force-fit it; this exponential
+    // decay is the real, working design and matches `KifsRoseState.accent`'s
+    // own doc comment ("one envelope with two amplitudes").
     st.accent *= Math.exp(-dt * 3.2)
 
     u.uPhase.value = st.phase
@@ -405,7 +526,7 @@ export const KifsRoseScene = createShaderScene<KifsRoseState>({
     // (AudioEngine), so this ramp and `isDownbeat` above agree on where the bar
     // line is by construction rather than by coincidence.
     u.uBarSweep.value = barPhase(f.beatIndex, f.beatProgress)
-    u.uSymmetry.value = symmetryForBar(P.shape, st.barStep)
+    u.uSymmetry.value = st.symmetry
     // Fold count no longer reads the quality tier (F129 reverts F111 here):
     // the tier's job is resolution, via the global pixelBudget/performanceCost
     // system (engine/renderScale.ts) — it already scales this scene's canvas

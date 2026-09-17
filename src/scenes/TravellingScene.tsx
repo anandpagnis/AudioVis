@@ -120,10 +120,82 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  *                     of, same property at a different timescale
  *   sub            -> eye scale per plane (uBass) -- likewise the continuous
  *                     breath under the discrete dilation
+ *   speed          -> uTravelZ cadence (beats per plane, see below) -- NOT
+ *                     uClock's rate any more
+ *
+ * ## The camera now reaches a plane exactly on the beat
+ *
+ * "Moving Without Travelling" was uncomfortably literal about its own name:
+ * `effect()` set its forward-travel parameter as `tm = TIME*0.5*BPM/60.0`,
+ * a `#define BPM 150.0` fed by `uClock` (`dt*(1 + s.energy*0.4)*drastic(P.speed)`
+ * accumulated in real seconds). Three independent ways for a plane -- each one
+ * carries an eye, see `completeEye()` -- to drift off the track's actual beat:
+ * the 150 BPM guess is rarely the real tempo, `s.energy` speeds the crawl up
+ * and down continuously frame to frame, and even a correct guess is still an
+ * assumption rather than a read of the engine's own tracked beat grid. Motion
+ * that only ever correlates with loudness, never locks to it, is exactly the
+ * complaint: constant travel with nothing timed to arrive.
+ *
+ * `tm` is now `uTravelZ`, computed in JS straight from
+ * `ctx.f.beatIndex + ctx.f.beatProgress` -- the same continuous "beats
+ * elapsed" quantity `beatCyclePhase`/`barPhase` (engine/beatOscillators.ts,
+ * engine/response.ts) are built from -- divided by a beats-per-plane cadence.
+ * `color()`'s `planeDist` is 1.0, so `uTravelZ` crossing an integer means a
+ * plane has reached the camera; because `beatIndex` increments and
+ * `beatProgress` resets to 0 on the exact frame `ctx.f.beat` fires, `uTravelZ`
+ * crosses that integer on that same exact frame whenever beats-per-plane is a
+ * whole number. The eye arrives ON the beat because it is now a function of
+ * the beat count, not of elapsed seconds with audio sprinkled on top.
+ * `P.speed` still sets the pace -- it now picks how many beats a plane takes
+ * to arrive (fewer beats = faster arrivals) instead of a raw rate, so the
+ * dial changes cadence without ever taking it off the grid. `uClock`
+ * (`TIME`/`TTIME`) is untouched and still drives the internal warp/hue drift
+ * inside `weird()`/`warp()` -- only the camera's forward position moved off
+ * it.
+ *
+ * ## Round 2: the beat-lock itself read as LESS smooth (2026-09-17)
+ *
+ * User report: "moving wo travelling: the prev movement which was smooth was
+ * much better, do that again and see if it can be improved but kept fully
+ * smooth." Diagnosis: `uTravelZ = (beatIndex + beatProgress) / beatsPerPlane`
+ * (the fix directly above) derives a POSITION straight from the live
+ * beat-tracker's own running estimate, recomputed fresh every frame.
+ * `beatIndex + beatProgress` is exactly the quantity `beatCyclePhase()`/
+ * `barPhase()` are built from and it is fine for a PHASE, but any
+ * frame-to-frame jitter in the tracker's `beatProgress` estimate (tempo
+ * re-locking, a slightly early/late onset) now reads straight through as
+ * jitter in camera POSITION -- and position jitter, unlike phase jitter, is
+ * visible as the whole tunnel shuddering rather than as a beat landing a hair
+ * off. That is a worse trade than the plain continuous accumulator this scene
+ * flew with before the beat-lock existed: smooth motion, only loosely locked
+ * to tempo.
+ *
+ * Fixed the same way `JavaZoneLatticeScene`'s near-identical "smooth AND
+ * on-beat" requirement was fixed there (see its `st.travel` /
+ * `FLOW_SCALE_PER_BEAT` / `BEAT_PUSH_STRENGTH` / `beatPush` idiom, inside its
+ * `update()`): `uTravelZ` is now driven by `st.travelZ`, a JS `dt`-accumulated,
+ * monotonically-increasing counter (see `update()`) -- it is never ASSIGNED
+ * from the beat grid, only nudged by it. The nudge is a smooth per-beat
+ * "push" applied to the forward RATE (`beatPush = (1 - beatProgress)^3`,
+ * sharp right on the beat and fully decayed by mid-beat), so plane arrivals
+ * still gravitate toward landing close to the beat, but the quantity that
+ * actually accumulates frame to frame is `dt * rate`, which cannot be made to
+ * jump or reverse by the tracker's estimate moving -- every increment added
+ * is `>= 0` by construction. This is the same fix shape `BeatsScene`'s
+ * `uSpin` and `JavaZoneLatticeScene`'s `uTravel` both use, for the identical
+ * reason: replace a position read straight off a live multiplier/estimate
+ * with a `dt`-accumulated rate that estimate can only ever bias, not define.
  */
 
 export const FRAG = /* glsl */ `
   uniform float uClock;    // speed-scaled time accumulator (replaces iTime)
+  uniform float uTravelZ;  // JS dt-accumulated forward position -- st.travelZ, strictly
+                            // increasing (dt * rate, rate gets a smooth push on each beat --
+                            // see update()). Drives ONLY the camera path's z argument in
+                            // effect(), so a plane (its eye) still gravitates toward arriving
+                            // close to the beat, but as a smooth accumulator rather than a
+                            // value read straight off the beat tracker's own live estimate.
+                            // See the header's "Round 2" note for the full story.
   uniform float uSinceKick; // seconds since the last kick (engine/response.ts)
   uniform float uKickAmp;   // strength of that kick, so soft hits make soft waves
   uniform float uMidDrift; // s.mids -> extra kaleidoscope drift
@@ -142,7 +214,6 @@ export const FRAG = /* glsl */ `
   #define ROT(a) mat2(cos(a), sin(a), -sin(a), cos(a))
   #define BPERIOD 5.6
   #define PCOS(x) (0.5 + 0.5*cos(x))
-  #define BPM 150.0
 
   const vec4 hsv2rgb_K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
   vec3 hsv2rgb(vec3 c) {
@@ -471,10 +542,10 @@ export const FRAG = /* glsl */ `
         // it goes, which is what sells it as travelling rather than as the
         // planes taking turns.
         //
-        // speed 3.0 -> the front crosses all four planes in 1/3 s. The scene's
-        // own BPM define is 150, one beat = 0.4 s, so the far plane lights just
+        // speed 3.0 -> the front crosses all four planes in 1/3 s. At a typical
+        // tempo (100-160 BPM, one beat 0.6-0.375 s) the far plane lights just
         // inside the beat that triggered it and the tunnel is clear again
-        // before the next kick. At 120 BPM (0.5 s) there is more room still.
+        // before the next kick.
         //
         // decay 6.0 is set by the sampling, not by taste: the stack is only
         // FOUR planes, so the lit band has to span at least two of them or the
@@ -524,7 +595,15 @@ export const FRAG = /* glsl */ `
 
   vec3 effect(vec2 p, vec2 q) {
     compute_globals();
-    float tm = TIME*0.5*BPM/60.0;
+    // Forward travel is uTravelZ (JS dt-accumulated in update(), see the
+    // header's "Round 2" note) -- NOT TIME. TIME still drives the warp/hue
+    // drift inside weird()/warp(); only the camera's position along the
+    // tunnel moved off the wall clock. uTravelZ is never ASSIGNED from the
+    // beat grid -- it only accumulates a rate that the beat grid nudges
+    // upward near each beat -- so a plane's eye still gravitates toward
+    // arriving on the beat without inheriting the beat-tracker's own
+    // frame-to-frame jitter as position jitter.
+    float tm = uTravelZ;
     vec3 ro = offset(tm);
     vec3 dro = doffset(tm);
     vec3 ddro = ddoffset(tm);
@@ -553,6 +632,22 @@ export const FRAG = /* glsl */ `
   }
 `
 
+// uTravelZ-units of forward travel added per beat at neutral speed. 0.5
+// reproduces the Round-1 beat-lock's own cadence at neutral P.speed (that fix
+// used beatsPerPlane = 2, i.e. 1.0 unit of travel (one plane, planeDist in
+// color()) every 2 beats = 0.5 units/beat) -- so the "same cadence spirit as
+// before" holds, only the MECHANISM producing it changed (dt-accumulated rate
+// instead of a position read off the beat grid). See the header's Round 2 note.
+const TRAVEL_PER_BEAT = 0.5
+
+// How much extra forward speed the on-beat push adds, at its peak (right on
+// the beat, decaying to 0 by mid-beat via beatPush below). This is what makes
+// arrivals gravitate toward the beat WITHOUT ever deriving position from the
+// beat-tracker's own live estimate -- same role as JavaZoneLatticeScene's own
+// BEAT_PUSH_STRENGTH, tuned modestly so the push reads as a lurch forward
+// rather than a jolt that would itself look like a bump.
+const BEAT_PUSH_STRENGTH = 0.6
+
 interface TravellingState {
   /** Time accumulator, so a changing speed/energy rate stays continuous. */
   clock: number
@@ -565,6 +660,14 @@ interface TravellingState {
   kick: ImpulseClock
   /** How hard that kick was, held until the next one. */
   hitAmp: number
+  /**
+   * JS-accumulated forward travel through the plane stack (uTravelZ in FRAG)
+   * -- monotonically increasing, dt by dt, so it can never jump or reverse
+   * regardless of how the beat tracker's live beatProgress estimate moves.
+   * See the header's "Round 2" note for the "back and forth"-shaped bug this
+   * replaces (JavaZoneLatticeScene's `travel` field is the same idiom).
+   */
+  travelZ: number
 }
 
 export const TravellingScene = createShaderScene<TravellingState>({
@@ -604,6 +707,10 @@ export const TravellingScene = createShaderScene<TravellingState>({
   pixelBudget: () => (quality.knobs.raymarchSteps >= 72 ? 5.6 : 3.3),
   uniforms: () => ({
     uClock: { value: 0 },
+    // Starts at 0 like uClock -- st.travelZ (update()) accumulates from here.
+    // The bpm fallback in update() (120 before a tempo locks) keeps the
+    // accumulated rate finite even pre-lock, so this is never NaN.
+    uTravelZ: { value: 0 },
     // 1e4 = sinceImpulse()'s "never fired" sentinel, so the first frame shows
     // an already-spent wave rather than one mid-flight down the tunnel.
     uSinceKick: { value: 1e4 },
@@ -616,12 +723,44 @@ export const TravellingScene = createShaderScene<TravellingState>({
     uSat: { value: -0.4 },
     uOctaves: { value: 4 },
   }),
-  state: () => ({ clock: 0, kick: impulseClock(), hitAmp: 0 }),
+  state: () => ({ clock: 0, kick: impulseClock(), hitAmp: 0, travelZ: 0 }),
   update({ u, s, P, st, dt, ctx }) {
     // Source drove everything off iTime. Accumulate so a changing rate stays
     // continuous; energy leans on the throttle (cf. NeonJungleScene).
     st.clock += dt * (1 + s.energy * 0.4) * drastic(P.speed)
     u.uClock.value = st.clock
+
+    // Camera forward travel, decoupled from st.clock on purpose (same
+    // separation as before): st.clock drives the internal warp/hue drift,
+    // st.travelZ drives only the camera's position down the tunnel.
+    //
+    // Round 2 (see header): this used to be uTravelZ = (beatIndex +
+    // beatProgress) / beatsPerPlane -- a POSITION read straight off the beat
+    // tracker's own live estimate every frame. That locked arrivals to the
+    // beat exactly, but any jitter in the tracker's beatProgress (tempo
+    // re-locking, an early/late onset) came through as jitter in camera
+    // POSITION, which reads as the whole tunnel shuddering -- reported as
+    // less smooth than the plain accumulator this scene had before the lock.
+    //
+    // Fixed the JavaZoneLatticeScene way: st.travelZ is a dt-accumulated,
+    // monotonically-increasing counter -- it is only ever pushed forward, so
+    // the beat tracker's live estimate can bias the RATE but can never move
+    // the position backward or make it jump. bps is the real tracked tempo
+    // (beats/second, falling back to 120 before a tempo locks, same
+    // convention as JavaZoneLatticeScene's own bps); TRAVEL_PER_BEAT (0.5)
+    // reproduces the Round-1 lock's cadence at neutral speed (see its own
+    // comment). beatPush reuses the sharp-then-decaying pow(1-x, n) shape
+    // JavaZoneLatticeScene's own on-beat flash and travel push use: it peaks
+    // the instant beatProgress resets to 0 (i.e. right on the beat) and is
+    // fully spent by mid-beat, so the accumulator visibly QUICKENS on each
+    // beat -- pulling the NEXT arrival toward landing close to it -- without
+    // the position itself ever being derived from beatIndex/beatProgress.
+    // P.speed still sets the overall pace, exactly as before.
+    const bps = (ctx.f.bpm > 0 ? ctx.f.bpm : 120) / 60
+    const beatPush = Math.pow(1 - ctx.f.beatProgress, 3)
+    const travelRate = bps * TRAVEL_PER_BEAT * (1 + beatPush * BEAT_PUSH_STRENGTH)
+    st.travelZ += dt * travelRate * drastic(P.speed)
+    u.uTravelZ.value = st.travelZ
 
     // Latch the hit's strength when it fires: the wave it launches outlives
     // the onset frame by most of a beat, so the amplitude has to be held

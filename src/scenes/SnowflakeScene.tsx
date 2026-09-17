@@ -79,20 +79,62 @@ import { drastic } from '../engine/sceneParams'
  * expensive knob to gate — same as `matrix` / `wireframe` (F111). Its
  * `SCENE_COST_MS` row is therefore flat across tiers.
  *
- * ## Response identity addendum: the hub bounce is a SEPARATE reaction
+ * ## Response identity addendum: the beat pulse is a SEPARATE reaction — and
+ * ## now it GROWS the crystal, not just the hub
  *
  * The flinch above is kick-onset-driven — it answers a detected drum hit and
- * shrinks the arms. The hub bounce is a different signal entirely: it fires
+ * shrinks the arms. The beat pulse is a different signal entirely: it fires
  * on `f.beat`, the tracked beat GRID itself, not on a transient. That
  * distinction matters because they can disagree. A track with a weak or
- * buried kick transient still walks a tracked beat grid, so the hub keeps
- * popping in time even on material that barely flinches the arms at all;
+ * buried kick transient still walks a tracked beat grid, so the crystal keeps
+ * pulsing in time even on material that barely flinches the arms at all;
  * conversely a busy hi-hat or snare fill can spike `onKick`-adjacent energy
- * without ever being a beat crossing, and the hub stays quiet through it.
+ * without ever being a beat crossing, and the pulse stays quiet through it.
  * The two reactions are independent springs/followers driving disjoint
- * geometry (arms vs. the centre point) for exactly this reason — conflating
- * them into one signal would have made the scene only as reactive as
- * whichever detector is weaker on a given track.
+ * geometry (arm/branch length + hub vs. the flinch's arm/branch contraction)
+ * for exactly this reason — conflating them into one signal would have made
+ * the scene only as reactive as whichever detector is weaker on a given
+ * track.
+ *
+ * This used to be a hub-only spring pop — correct per the identity above (a
+ * signal separate from the flinch) but too narrow a target: the only visible
+ * growth lived in a five-pixel ring at the centre, which reads as "the
+ * crystal just bumps its inner circle" rather than as the beat growing the
+ * crystal. It now does two things, blended in the shader (see BEAT_RAMP_GROW
+ * / BEAT_POP_GROW near `uBeatPulse` below):
+ *
+ *   1. `uBeatRamp` — a monotonic 0..1 ramp through the current beat (JS-side,
+ *      from `ctx.f.beatProgress`) — drives a small CONTINUOUS swell of
+ *      `armLen` and the fern branch length `bl`, building up over the beat
+ *      and resetting at the next beat crossing. This is the fix for "should
+ *      move smoothly": the crystal's branches are visibly growing in time
+ *      with the music on every frame, not just snapping on the frame a beat
+ *      lands.
+ *   2. The spring (`uBeatPulse`, formerly `uHubBounce`) rides on top of that
+ *      same ramp as the sharper, percussive layer a pure ramp can't give,
+ *      scaling the same armLen/branch terms plus its original hub-ring
+ *      contribution. The spring is now a layer on the reaction, not the
+ *      whole of it.
+ *
+ * ## Round 2 fix: the ramp replaces a sine — "grow then come back" was the bug
+ *
+ * `uBeatRamp` used to be `uBeatSin`, the prelude's beat-locked sine. A sine is
+ * symmetric by construction — it rises AND falls every single cycle — so the
+ * continuous swell above literally bred a "grow then shrink" breath on every
+ * beat, on top of a percussive spring that itself decays back down after each
+ * pop. Two falling motions stacked on every beat is what read as "bumpy" /
+ * "back and forth": the branches never got to just grow.
+ *
+ * The fix (per THE #2 RULE — a bounded oscillation reversing at its own
+ * turning points can't be smoothed away, only replaced): drive the continuous
+ * term from `ctx.f.beatProgress` — which counts 0 -> 1 once per beat and then
+ * resets, monotonically, never reversing — through an ease-in curve
+ * (`BEAT_RAMP_EXP`, see below) instead of a sine. The crystal now visibly
+ * accretes detail across the beat, reaching its fullest growth right before
+ * the next beat lands, then resets cleanly at that same beat crossing — which
+ * is the natural "on beat" moment for the reset, not an arbitrary snap. The
+ * only remaining "back-and-forth" motion is the spring's own settle after its
+ * impulse, which is the intended percussive layer, not a bug.
  */
 
 /**
@@ -132,18 +174,34 @@ const FLINCH_FALL = 30
 const FLINCH_RISE = 2.2
 
 /**
- * Hub-bounce spring (see "Response identity" for the reasoning): a beat-
- * synced pop at the crystal's centre, independent of the flinch above.
- * Stiffness 100 rings faster than Malachite's phrase swell or Wingfold's
- * structural jump — a beat bounce should read as quick and percussive, not
- * as a slow breathe. Damping at 0.35 of critical keeps it visibly springy.
+ * Beat-pulse spring (see "Response identity addendum" for the reasoning): the
+ * percussive layer riding on top of `uBeatRamp`'s continuous growth, now
+ * scaling arm/branch length as well as the hub ring, independent of the
+ * flinch above. Stiffness 100 rings faster than Malachite's phrase swell or
+ * Wingfold's structural jump — a beat pulse should read as quick and
+ * percussive, not as a slow breathe. Damping at 0.35 of critical keeps it
+ * visibly springy. (Formerly named HUB_* / `uHubBounce` when this drove only
+ * the hub ring; renamed now that it reaches the branch geometry too.)
  */
-const HUB_STIFFNESS = 100
-const HUB_DAMPING = criticalDamping(HUB_STIFFNESS) * 0.35
-/** Displacement added to the hub spring per beat. */
-const HUB_IMPULSE = 1.0
-/** Ceiling so a very fast tempo can't stack the bounce without limit. */
-const HUB_MAX = 1.5
+const BEAT_STIFFNESS = 100
+const BEAT_DAMPING = criticalDamping(BEAT_STIFFNESS) * 0.35
+/** Displacement added to the beat-pulse spring per beat crossing. */
+const BEAT_IMPULSE = 1.0
+/** Ceiling so a very fast tempo can't stack the pulse without limit. */
+const BEAT_MAX = 1.5
+
+/**
+ * Ease exponent for `uBeatRamp` (see "Round 2 fix" in the top doc comment):
+ * `beatProgress ** BEAT_RAMP_EXP`, so the continuous growth starts slow right
+ * after a beat crossing and accelerates into the next one, rather than
+ * growing at a constant rate. 2.0 (a plain quadratic ease-in) reads as the
+ * crystal "building up toward" the next hit instead of ticking up linearly —
+ * a linear ramp is legible too, but the ease-in visibly gathers momentum,
+ * which is a better anticipation cue right before the spring's percussive
+ * pop lands. Not so steep (>~3) that all the growth crams into the last
+ * instant and the earlier part of the beat looks static.
+ */
+const BEAT_RAMP_EXP = 2.0
 
 export const FRAG = /* glsl */ `
   uniform float uAngle;    // accumulated turn (rate + static tilt offset), JS-side
@@ -161,10 +219,44 @@ export const FRAG = /* glsl */ `
    * exactly and silence is the authored image.
    */
   uniform float uOpen;
-  /** Beat-synced spring displacement driving the hub's percussive pop. */
-  uniform float uHubBounce;
+  /**
+   * Beat-synced spring displacement (0..BEAT_MAX), the percussive layer of
+   * the beat reaction. Blended with \`uBeatRamp\` below to grow armLen /
+   * branch length / the hub ring — see BEAT_RAMP_GROW and BEAT_POP_GROW just
+   * below main(). Formerly \`uHubBounce\`, when it only reached the hub ring.
+   */
+  uniform float uBeatPulse;
+  /**
+   * Monotonic 0..1 ramp through the current beat, computed JS-side from
+   * \`ctx.f.beatProgress\` (see "Round 2 fix" above). Replaces a beat-locked
+   * sine that used to drive this same growth term and, being a sine, grew
+   * AND shrank every beat -- read as bumpy / "back and forth" rather than as
+   * directional growth. This counts up from 0 at each beat crossing toward 1
+   * right before the next one, never reversing, then resets.
+   */
+  uniform float uBeatRamp;
 
   #define PI 3.14159265
+  /**
+   * How much \`uBeatRamp\` (JS-computed, 0..1, counting up across the current
+   * beat then resetting — see "Round 2 fix" above) swells armLen/branch
+   * length on its own. This is the CONTINUOUS half of the beat reaction: it
+   * runs every frame, in time with the tracked beat grid, with no spring or
+   * onset involved, so the growth is visible between hits, not just snapping
+   * on the frame a beat lands. Unlike the sine it replaced, it only ever
+   * counts UP through the beat -- the reset at the beat crossing is a single
+   * clean re-start, not a symmetric fall. Kept small relative to
+   * BEAT_POP_GROW below — it is the floor the percussive pop rides on top
+   * of, not the headline motion.
+   */
+  #define BEAT_RAMP_GROW 0.05
+  /**
+   * How much the spring (\`uBeatPulse\`) adds to the same growth term, on top
+   * of the ramp above. This is the sharp-attack layer a pure ramp can't
+   * give — it is what makes a beat crossing still land as a percussive pop,
+   * while BEAT_RAMP_GROW keeps the crystal visibly growing between hits.
+   */
+  #define BEAT_POP_GROW 0.09
 
   mat2 rot(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
   float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -194,16 +286,29 @@ export const FRAG = /* glsl */ `
     // arm with it so the crystal contracts as one body instead of stretching.
     float armScale = mix(0.70, 1.0, uOpen);
 
-    float armLen = (0.78 + 0.05 * sin(uTime * 0.4) + uEnergy * 0.12) * armScale;
+    // The beat reaction: a directional ramp (BEAT_RAMP_GROW, counts up across
+    // the beat then resets -- see "Round 2 fix" above) with a percussive
+    // spring pop (BEAT_POP_GROW) layered on top. Both terms are already
+    // one-sided (uBeatRamp is 0..1 and only ever rising within a beat;
+    // uBeatPulse is a one-sided impulse), so no remap is needed here any
+    // more -- the old sine term needed the 0.5 + 0.5 * remap specifically
+    // because a sine goes negative, which a directional ramp never does.
+    float beatGrow = uBeatRamp * BEAT_RAMP_GROW + uBeatPulse * BEAT_POP_GROW;
+
+    float armLen = (0.78 + 0.05 * sin(uTime * 0.4) + uEnergy * 0.12 + beatGrow) * armScale;
     float d = seg(p, vec2(0.04, 0.0), vec2(armLen, 0.0));     // main spine
 
-    // side branches (a little fern), 60 degrees off the spine, shrinking to the tip
+    // side branches (a little fern), 60 degrees off the spine, shrinking to the tip.
+    // The fern length itself also blooms with beatGrow (1.6x its weight below,
+    // since a branch visibly lengthening reads as "growth" far more than the
+    // spine stretching does) -- this is the part of the beat reaction that
+    // answers "generate branches on beat", not just the hub ring.
     float bAng = PI / 3.0;
     vec2 bdir = vec2(cos(bAng), sin(bAng));
     for (int k = 1; k <= 6; k++){
       float bx = 0.10 * float(k);
       if (bx > armLen) break;
-      float bl = uBranch * 0.22 * (1.0 - bx / armLen);
+      float bl = uBranch * 0.22 * (1.0 - bx / armLen) * (1.0 + beatGrow * 1.6);
       vec2 btip = vec2(bx, 0.0) + bdir * bl;
       d = min(d, seg(p, vec2(bx, 0.0), btip));
 
@@ -223,10 +328,11 @@ export const FRAG = /* glsl */ `
     d = min(d, abs(length(p - vec2(0.34 * armScale, 0.0)) - 0.05));
     d = min(d, abs(length(p - vec2(0.6 * armScale, 0.0)) - 0.035));
     // Base radius nudged down (0.09 -> 0.07) and bass's weight cut (0.05 ->
-    // 0.03) now that the beat-synced bounce is the dominant, percussive term;
-    // bass keeps only a smaller "the heart still breathes with the bass"
-    // contribution alongside it.
-    d = min(d, abs(r - (0.07 + uBass * 0.03 + uHubBounce * 0.05)));
+    // 0.03) now that the beat pulse is the dominant, percussive term; bass
+    // keeps only a smaller "the heart still breathes with the bass"
+    // contribution alongside it. The hub also gets a sliver of beatGrow so
+    // it breathes continuously in time too, not only on the spring's attack.
+    d = min(d, abs(r - (0.07 + uBass * 0.03 + uBeatPulse * 0.05 + beatGrow * 0.15)));
 
     // A kick THINS the strokes rather than blooming them -- the flake gets
     // finer and colder on the hit, not fatter. Carries the glow radius below
@@ -266,12 +372,13 @@ interface SnowflakeState {
    */
   open: number
   /**
-   * Hub-bounce spring: fires on the tracked beat grid (not on kick onset), a
+   * Beat-pulse spring: fires on the tracked beat grid (not on kick onset), a
    * separate reaction from `open` above — see "Response identity addendum".
+   * Now the percussive layer for arm/branch growth as well as the hub ring.
    */
-  hubBounce: SpringState
-  /** `beatIndex` the hub bounce last fired on, so a beat fires it exactly once. */
-  lastHubBeat: number
+  beatPulse: SpringState
+  /** `beatIndex` the beat pulse last fired on, so a beat fires it exactly once. */
+  lastBeatIndex: number
 }
 
 export const SnowflakeScene = createShaderScene<SnowflakeState>({
@@ -290,9 +397,10 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
     uHighs: { value: 0 },
     uBass: { value: 0 },
     uOpen: { value: 1 },
-    uHubBounce: { value: 0 },
+    uBeatPulse: { value: 0 },
+    uBeatRamp: { value: 0 },
   }),
-  state: () => ({ angle: 0, open: 1, hubBounce: spring(0), lastHubBeat: -1 }),
+  state: () => ({ angle: 0, open: 1, beatPulse: spring(0), lastBeatIndex: -1 }),
   update({ u, s, P, st, dt, ctx }) {
     const f = ctx.f
     // Source's authored turn was a fixed TIME*0.08. Accumulate so a changing
@@ -314,16 +422,29 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
     // kick the same gesture. See FLINCH_RISE for the ratio's reasoning.
     st.open = slew(st.open, 1 - hit * FLINCH_DEPTH, dt, FLINCH_RISE, FLINCH_FALL)
 
-    // Hub bounce: a SEPARATE reaction from the flinch above, tempo-locked to
+    // Beat pulse: a SEPARATE reaction from the flinch above, tempo-locked to
     // the tracked beat grid rather than to kick onset — see "Response
     // identity addendum". Guarded to fire exactly once per beat crossing,
-    // same idiom as WingfoldJuliaScene's gated jump.
-    if (f.beat && f.beatIndex !== st.lastHubBeat) {
-      st.lastHubBeat = f.beatIndex
-      st.hubBounce.value = Math.min(HUB_MAX, st.hubBounce.value + HUB_IMPULSE)
+    // same idiom as WingfoldJuliaScene's gated jump. This is only the
+    // percussive layer now — the shader blends it with `uBeatRamp` (below)
+    // to also grow armLen/branch length smoothly between beats, not just pop
+    // the hub on the beat frame.
+    if (f.beat && f.beatIndex !== st.lastBeatIndex) {
+      st.lastBeatIndex = f.beatIndex
+      st.beatPulse.value = Math.min(BEAT_MAX, st.beatPulse.value + BEAT_IMPULSE)
     }
-    springStep(st.hubBounce, 0, dt, HUB_STIFFNESS, HUB_DAMPING)
-    u.uHubBounce.value = st.hubBounce.value
+    springStep(st.beatPulse, 0, dt, BEAT_STIFFNESS, BEAT_DAMPING)
+    u.uBeatPulse.value = st.beatPulse.value
+
+    // Continuous beat-growth ramp — see "Round 2 fix" in the top doc comment.
+    // `f.beatProgress` counts 0 -> 1 once per beat and resets at the next
+    // crossing; it never falls back on its own, unlike the `uBeatSin` sine
+    // this replaced. Eased with BEAT_RAMP_EXP so growth gathers momentum
+    // toward the next beat instead of ticking up linearly. No smoothing
+    // needed here (contrast THE #1 RULE) because this is a derived function
+    // of the tracked beat grid, not a raw noisy audio band — it is already
+    // exactly as smooth as the beat clock itself.
+    u.uBeatRamp.value = Math.pow(f.beatProgress, BEAT_RAMP_EXP)
 
     // `tilt` is a static rotation offset folded onto the running angle so the
     // slider centre (0.5) is the source's zero offset.

@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
 import { drastic } from '../engine/sceneParams'
+import { slew } from '../engine/response'
 
 /**
  * Truchet Kaleidoscope — an endless flythrough of stacked kaleidoscope planes,
@@ -66,6 +67,12 @@ import { drastic } from '../engine/sceneParams'
  *                         transient line-width bloom
  *   energy             -> plane + sky brightness
  *   highs              -> a bright-area shimmer
+ *   uBeatSin2 (free)   -> a small breathing on the kaleidoscope rep/symmetry
+ *                         count (`rep` in `plane()`), so the fold order
+ *                         itself ticks with the tempo grid, not just the
+ *                         static complexity dial (see "Second pass" below)
+ *   highs              -> ALSO the fold's smoothing radius (`sm`): a
+ *                         structural shimmer alongside the brightness one
  *
  * ## Band routing
  *
@@ -73,7 +80,74 @@ import { drastic } from '../engine/sceneParams'
  *   sub     -> Truchet cell arc radius (continuous swell)
  *   mids    -> flythrough rate
  *   energy  -> overall luminance / sky glow
- *   highs   -> highlight shimmer
+ *   highs   -> highlight shimmer (main()) AND fold smoothing radius `sm`
+ *              (plane()) — one band, two distinct dimensions: color vs. shape
+ *   uBeatSin2 -> kaleidoscope rep/symmetry count: a small +-5% beat-locked
+ *              breathing layered on the static complexity dial
+ *
+ * ## "jerky and bumpy, should be smooth" (reported directly) — the flythrough
+ * ## rate was reading a live envelope, not a trend
+ *
+ * `st.fly` is the *only* clock in this scene: it drives the camera's forward
+ * position (`tm = TIME*0.25` in `effect()`), every plane's per-plane spin
+ * (`ROT(...*TIME)` in `plane()`), and — through the fold's own phase — the
+ * kaleidoscope symmetry's apparent rotation. One noisy input there is not one
+ * bump, it is the whole scene bumping in lockstep every frame.
+ *
+ * The rate used to read `s.mids` directly — `dt * (1 + s.mids * 0.6)` — and
+ * `s.mids` is a live audio envelope, not itself smoothed frame-to-frame. Every
+ * fluctuation of the mids band landed straight in the flythrough's velocity,
+ * so the camera visibly sped up and slowed down (and every plane's spin
+ * along with it) on every wobble of the band rather than gliding — this is
+ * the identical root cause `GyroidFluxScene.update()` found and fixed on
+ * direct request, and the same fix applies here: `slew()` the band before it
+ * touches a rate. `slew(..., 3, 3)` tracks the real mids trend within a few
+ * tenths of a second while erasing the frame-to-frame jitter a rate is
+ * uniquely sensitive to (a position tolerates noise; an integrated velocity
+ * does not — the noise never washes out, it accumulates as stutter).
+ *
+ * `uShock` (the kick line-bloom + brightness punch) keeps its instant attack
+ * on purpose — that is the roster's standard percussive accent (see
+ * `response.ts`'s `slew` doc), a deliberately sharp, momentary snap riding on
+ * top of an otherwise-smooth scene, not the source of the reported jerkiness.
+ *
+ * ## Second pass — "see if some specific bands can be wired specifically"
+ *
+ * Two dimensions were still purely time/dial-driven with no audio at all:
+ * `uKRep` (kaleidoscope rep/symmetry count — driven only by the static
+ * complexity dial) and the fold's own smoothing radius `sm` (derived purely
+ * from `rep`, no band feeding it either). Separately, no scene-wide clock in
+ * this file ever reads the engine's tempo-locked oscillators (`uBeatSin*`),
+ * despite them being free in every shader — everything here is either a raw
+ * band, `st.fly`, or a per-plane hash times `TIME`.
+ *
+ * Added, both small and additive per the house convention of one band
+ * driving one distinct visual dimension rather than a blanket multiplier:
+ *
+ *  - `uBeatSin2` (half-bar oscillator) -> a +-5% breathing on the pre-floor
+ *    `rep` scalar in `plane()`, so the fold count itself gently ticks with
+ *    the tempo grid instead of sitting dead-static on the complexity dial.
+ *    `uBeatSin2` needs no JS wiring (no new uniform, no new `st` field) — the
+ *    prelude injects it directly, and it is a deterministic function of the
+ *    tracked beat grid rather than a noisy audio band, so it is safe to use
+ *    as-is rather than needing a `slew()` pass first.
+ *  - `uHighs` -> ALSO the fold's smoothing radius `sm` (previously derived
+ *    from `rep` alone with no band input at all), a *structural* shimmer —
+ *    the fold's own corner-rounding breathes with the highs — distinct from
+ *    the existing `uHighs` term in `main()`, which only scales the final
+ *    color and never touches geometry.
+ *
+ * Passed over: driving the per-plane spin (`ROT(0.5*(h4-0.5)*TIME)` in
+ * `plane()`) with a beat term. That rotation's angle already comes straight
+ * off the monotonically-increasing `TIME` clock; laying a bounded oscillator
+ * over it the way GyroidFluxScene's orbit path did before its own fix is the
+ * wrong shape of fix here too — several planes draw an `h4` near 0.5, i.e. a
+ * per-plane base spin rate near zero, and once an added oscillator's swing is
+ * comparable to that base rate, the *combined* angle's rate can flip sign at
+ * the oscillator's own turning points, reading as back-and-forth rather than
+ * a tick. The `rep` / `sm` routes above land the same "the tempo grid should
+ * be felt somewhere" request on two quantities that are magnitudes, not
+ * angles, so there is no turning-point risk to weigh for either of them.
  */
 
 export const FRAG = /* glsl */ `
@@ -83,6 +157,8 @@ export const FRAG = /* glsl */ `
   uniform float uHighs;
   uniform float uBass;     // s.sub -> Truchet cell arc radius (continuous)
   uniform float uKRep;     // complexity dial -> kaleidoscope symmetry multiplier
+                           // (also gets a small beat-locked breathing in-shader
+                           // via the free uBeatSin2 -- see rep in plane())
   uniform float uLw;       // density dial -> Truchet line weight
   uniform float uFov;      // fill dial -> field of view
   uniform float uTilt;     // tilt dial -> static roll, radians
@@ -261,8 +337,20 @@ export const FRAG = /* glsl */ `
     vec2 p = (pp-off*vec3(1.0, 1.0, 0.0)).xy;
     p *= ROT(0.5*(h4 - 0.5)*TIME);
     // round() is ES 3.00 only -> floor(x + 0.5). uKRep is the complexity dial.
-    float rep = 2.0*floor(mix(5.0, 30.0, h2)*uKRep + 0.5);
-    float sm = 0.05*20.0/rep;
+    // uBeatSin2 (free half-bar oscillator, no JS wiring needed) rides on top
+    // as a +-5% breathing so the fold count itself ticks with the tempo grid
+    // -- a magnitude nudge on a pre-floor scalar, not a rotation or a rate,
+    // so it carries none of the back-and-forth risk a bounded oscillator
+    // would have if it drove a rotation angle instead. Kept small: since rep
+    // varies quite a bit from plane to plane, a bigger swing would
+    // occasionally pop the fold count by more than one step, reading as a
+    // glitch rather than a tick.
+    float rep = 2.0*floor(mix(5.0, 30.0, h2)*uKRep*(1.0 + 0.05*uBeatSin2) + 0.5);
+    // uHighs also nudges the fold's own smoothing radius -- a structural
+    // shimmer on the kaleidoscope corner rounding, distinct from main()'s
+    // post-hoc brightness multiply on the same band (that one scales the
+    // final color; this one changes the shape of the fold itself).
+    float sm = 0.05*20.0/rep * (1.0 + uHighs*0.2);
     float sn = smoothKaleidoscope(p, sm, rep);
     p *= ROT(TAU*h0+0.025*TIME);
     float z = mix(0.2, 0.4, h3);
@@ -382,6 +470,9 @@ interface TruchetState {
   fly: number
   /** Kick bloom, decaying. */
   shock: number
+  /** `s.mids`, slewed — see the "jerky and bumpy" note above for why the raw
+   *  band must not feed a rate directly. */
+  midsSlew: number
 }
 
 export const TruchetKaleidoScene = createShaderScene<TruchetState>({
@@ -466,11 +557,18 @@ export const TruchetKaleidoScene = createShaderScene<TruchetState>({
     uTilt: { value: 0 },
     uPlanes: { value: 6 },
   }),
-  state: () => ({ fly: 0, shock: 0 }),
+  state: () => ({ fly: 0, shock: 0, midsSlew: 0 }),
   update({ u, s, P, st, dt }) {
     // Source's clock was a raw iTime (the flythrough uses TIME*0.25). Accumulate
     // so a changing rate stays continuous; mids lean on the throttle.
-    st.fly += dt * (1 + s.mids * 0.6) * drastic(P.speed)
+    //
+    // Slewed rather than read raw — see the "jerky and bumpy" header note.
+    // `s.mids` is a live envelope; feeding it straight into a rate every frame
+    // makes the camera (and every plane's spin, which rides the same clock)
+    // visibly lurch on the band's own noise instead of gliding. `slew(..., 3, 3)`
+    // follows the trend within a few tenths of a second and drops the jitter.
+    st.midsSlew = slew(st.midsSlew, s.mids, dt, 3, 3)
+    st.fly += dt * (1 + st.midsSlew * 0.6) * drastic(P.speed)
     if (s.onKick > 0) st.shock = Math.min(1.5, st.shock + s.onKick)
     st.shock *= Math.exp(-dt * 3.5)
 

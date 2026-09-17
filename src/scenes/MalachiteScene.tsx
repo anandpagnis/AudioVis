@@ -84,10 +84,74 @@ import { drastic } from '../engine/sceneParams'
  * ## Band routing
  *
  *   energy → one slow swell (`slew`, ~7.5 s attack / ~15 s release), driving
- *             colour-ramp position, vein width, and the drift rate
+ *             colour-ramp position, vein width, and the flow/rotation rate
  *
  * Nothing else. No `onKick`, no `mids`, no `highs` — all three were the
  * template's own terms and all three are gone.
+ *
+ * ## Addendum: "breathes" was reading as "frozen"
+ *
+ * The swell above governs COLOUR, not motion, and was always meant to be
+ * near-subliminal (0.035 / 0.02 additive terms against a 0..1 ramp — see the
+ * shader body). The scene's actual sense of being alive was supposed to come
+ * from the domain-warp field drifting under `uPhase`. It didn't read that
+ * way, for a structural reason, not a taste one: the old `drift` term —
+ * `vec2(0.3*sin(t), 0.2*cos(t*1.1))` — is a BOUNDED orbit, not a walk. At
+ * `uPhase`'s authored rate (`dt*0.08`) that orbit takes ~78s to close one
+ * loop, and because it is periodic and small (amplitude 0.3/0.2 against a
+ * `uScale`-2.4 field) the pattern spends its whole visible lifetime near one
+ * point of that loop, wobbling a few percent and never actually going
+ * anywhere. A background that "breathes" needs a lung that moves air, not
+ * one that flexes 3% and holds.
+ *
+ * Two additions below, both still driven off nothing but `uPhase` (so
+ * `P.speed` and the swell's existing rate modulation keep working
+ * unchanged) and neither touching brightness or reintroducing a per-hit
+ * term — the "does not punch" identity above is untouched:
+ *
+ *   - **`flow`** — an UNBOUNDED advection of the fbm sample point, replacing
+ *     the bounded orbit as the field's primary motion. The old orbit is kept
+ *     as `wobble`, a small secondary term riding on top, so short-timescale
+ *     motion still has some non-linear texture rather than reading as a
+ *     pure scroll.
+ *   - **rotation** — the whole sample plane turns slowly around centre
+ *     before anything else touches it. This is a second, independent axis
+ *     of motion: even a viewer who never registers the fbm churning gets a
+ *     large-scale cue (the vein field's centre of mass visibly precessing)
+ *     that something is moving.
+ *
+ * The swell's leverage over rate also went from a 15%-at-full-energy nudge
+ * to 55% — the old figure was itself part of why energy arriving did
+ * nothing you could see.
+ *
+ * ## Addendum 2: "breathes" still wasn't "on beat" — added a bar-locked tick
+ *
+ * Everything above moves on either a phrase timescale (`uSwell`, several
+ * seconds) or free-running real time (`uPhase`'s drift/rotation, no relation
+ * to tempo at all). Nothing in the file ticked with the actual beat/bar grid
+ * — a grep for `uBeatSin` over the FRAG string came back empty. That is a
+ * real gap distinct from "does not punch": a background can decline to flash
+ * on every kick and still read as in time with the music, via smooth
+ * continuous motion locked to the tempo clock rather than a per-hit snap.
+ *
+ * Fixed by reading the prelude's `uBeatSin4` (one continuous sine per BAR,
+ * not per beat — engine-computed from `ctx.f.beatIndex`/`beatProgress`, see
+ * `createShaderScene.tsx`; nothing to wire up in this file's `update()`) and
+ * adding it, small and purely additive, to the whole-field rotation angle
+ * (`ROT_BEAT_AMOUNT`, next to `ROT_RATE` below). Bar-length rather than
+ * per-beat on purpose: a scene whose whole identity is "breathes, does not
+ * punch" should tick with the phrase's larger pulse, not twitch four times
+ * as fast as that identity implies.
+ *
+ * This is NOT the "exactly one audio input" rule being quietly broken.
+ * `uBeatSin4` is a tempo-grid oscillator, not an audio-envelope band — it has
+ * no amplitude relationship to loudness the way `s.energy`/`s.mids` do, so it
+ * cannot reintroduce a punch; it only answers "where in the bar are we".
+ * Nor is it engine rule #2's bounded-oscillator bug: it rides ADDITIVELY on
+ * top of the monotonically-increasing `t * ROT_RATE` sweep as a small
+ * decoration, not as that sweep's only driver, so the plane's overall
+ * precession never reverses — it just ticks a couple of degrees early or
+ * late across each bar.
  */
 
 /** Octaves per fbm call. Constant loop bound; `uOctaves` early-breaks inside. */
@@ -136,21 +200,53 @@ export const FRAG = /* glsl */ `
     return s;
   }
 
+  // Rotation rate for the whole sample plane, in radians per \`uPhase\` unit.
+  // Deliberately much smaller than FLOW_RATE below -- this is a large-scale,
+  // slow precession, the second independent axis of motion described in the
+  // header's addendum, not a spin you can clock.
+  const float ROT_RATE = 0.045;
+  // Bar-locked tick on top of that precession (see header addendum 2). Small
+  // on purpose -- about 2.9 degrees of swing across a whole bar, similar
+  // order to this scene's other additive nudges (uSwell * 0.06 / 0.035
+  // below). It is added, never multiplied, onto an angle that keeps
+  // increasing on its own via t * ROT_RATE, so this term can only nudge the
+  // sweep a little early or late each bar -- it never becomes the sweep's
+  // only driver and so never turns it into a back-and-forth oscillation.
+  const float ROT_BEAT_AMOUNT = 0.05;
+  // Unbounded per-axis walk rate for the fbm sample point, replacing the old
+  // bounded sin/cos orbit as the field's primary motion (see header). Two
+  // different rates so the walk isn't a straight diagonal line.
+  const vec2 FLOW_RATE = vec2(0.085, -0.061);
+
   void main() {
-    vec2 uv = (vUv - 0.5) * vec2(uAspect, 1.0);
-    vec2 p = uv * uScale;
+    vec2 uvBase = (vUv - 0.5) * vec2(uAspect, 1.0);
     float t = uPhase;
 
-    // Heavy domain warp -> botryoidal swirls. The warp is now exactly the
-    // authored depth with no audio term at all: a kick used to deepen it as a
-    // churn burst, which is precisely the per-hit reaction a background has no
-    // business making.
+    // Slow whole-field rotation -- see header addendum. Applied before the
+    // warp so the ring ramp's centre-of-mass visibly precesses, independent
+    // of the fbm churn below. The uBeatSin4 term is the scene's one
+    // beat-grid-locked motion (header addendum 2): a continuous per-bar
+    // sine, not a per-hit snap, so the stone visibly ticks with tempo
+    // without touching the "does not punch" identity above.
+    float ang = t * ROT_RATE + uBeatSin4 * ROT_BEAT_AMOUNT;
+    float ca = cos(ang), sa = sin(ang);
+    vec2 uv = mat2(ca, -sa, sa, ca) * uvBase;
+    vec2 p = uv * uScale;
+
+    // Heavy domain warp -> botryoidal swirls. The warp DEPTH is exactly the
+    // authored constant with no audio term at all: a kick used to deepen it
+    // as a churn burst, which is precisely the per-hit reaction a background
+    // has no business making. Where the warp SAMPLES, though, now walks
+    // continuously (\`flow\`) instead of orbiting a fixed point (\`wobble\`,
+    // the old bounded term, kept as a secondary ripple on top of the walk) --
+    // see header addendum for why the old orbit alone read as static.
     float warpAmt = uWarp;
-    vec2 drift = vec2(0.3 * sin(t), 0.2 * cos(t * 1.1));
-    vec2 q = vec2(fbm(p + drift), fbm(p + vec2(5.2, 1.3) - drift));
+    vec2 flow = t * FLOW_RATE;
+    vec2 wobble = vec2(0.3 * sin(t * 1.7), 0.2 * cos(t * 1.9));
+    vec2 q = vec2(fbm(p + flow + wobble), fbm(p + vec2(5.2, 1.3) - flow - wobble));
     vec2 r = vec2(
-      fbm(p + warpAmt * q + vec2(1.7, 9.2) + drift),
-      fbm(p + warpAmt * q + vec2(8.3, 2.8))
+      fbm(p + warpAmt * q + vec2(1.7, 9.2) + flow),
+      fbm(p + warpAmt * q + vec2(8.3, 2.8) - flow * 0.6)
     );
     float f = fbm(p + warpAmt * r);
 
@@ -165,12 +261,16 @@ export const FRAG = /* glsl */ `
     // across a phrase, NOT a glow term. Purely additive from zero so silence
     // reproduces the authored ramp exactly; clamped because s.energy runs to
     // ~1.1 and an over-1 mix factor would extrapolate past the palette.
-    float lit = clamp(litness + uSwell * 0.035, 0.0, 1.0);
+    // Nudged up from 0.035 -- at the old figure this term was small enough
+    // to be functionally invisible against the palette mix, which was part
+    // of why "one slow swell" wasn't reading as motion at all.
+    float lit = clamp(litness + uSwell * 0.06, 0.0, 1.0);
     // Base hardness from toxicity. Veins BROADEN slightly as the phrase
     // swells (the old term tightened them on hats, per-transient); against the
     // lifting ramp above this reads as the stone gaining definition rather
-    // than gaining brightness.
-    float veinW = max(0.02, mix(0.20, 0.06, uTox) + uSwell * 0.02);
+    // than gaining brightness. Also nudged up (0.02 -> 0.035) for the same
+    // readability reason as \`lit\` above.
+    float veinW = max(0.02, mix(0.20, 0.06, uTox) + uSwell * 0.035);
     float vein = smoothstep(veinW, 0.0, abs(band));
     // Deliberately off the swell: crest is the specular sheen, the surface a
     // punch would have travelled through. It stays where the source authored
@@ -186,7 +286,13 @@ export const FRAG = /* glsl */ `
     vec3 midCol = mix(uMid, uAccent, uTox * 0.4);
     vec3 lightCol = mix(uAccent, uGlow, uTox);
 
-    vec3 col = mix(uShadow, midCol, litness);
+    // \`lit\`, not \`litness\`: this mix is the colour-ramp position the header
+    // and comment above describe as swell-driven. It previously read
+    // \`litness\` here -- \`lit\` was computed and never consumed, so the
+    // swell's colour term was dead code and the ramp never actually moved
+    // no matter how much energy arrived. That silent no-op was as much a
+    // cause of "feels static" as the motion terms above.
+    vec3 col = mix(uShadow, midCol, lit);
     col = mix(col, lightCol, crest);
     col += uGlow * pow(crest, 2.0) * 0.25;
     col *= 1.0 - (0.5 + 0.4 * uTox) * vein;
@@ -313,10 +419,14 @@ export const MalachiteScene = createShaderScene<MalachiteState>({
     u.uSwell.value = st.swell
 
     // Source was a fixed TIME*0.08 with no speed control at all. The swell
-    // now drives the drift rate too — this was `s.mids` before the rewrite;
-    // this scene has exactly one audio input, so the phrase breath widens
-    // the drift instead of a band level that no longer reaches this scene.
-    st.phase += dt * 0.08 * (1 + st.swell * 0.15) * drastic(P.speed)
+    // now drives the flow/rotation rate too — this was `s.mids` before the
+    // rewrite; this scene has exactly one audio input, so the phrase breath
+    // widens the flow instead of a band level that no longer reaches this
+    // scene. The 0.15 multiplier here originally made high energy barely
+    // distinguishable from silence (max +15% rate); raised to 0.55 so a loud
+    // phrase visibly quickens the churn/rotation against the quiet baseline,
+    // per the header addendum on why this scene read as static.
+    st.phase += dt * 0.08 * (1 + st.swell * 0.55) * drastic(P.speed)
     u.uPhase.value = st.phase
 
     // Piecewise so each param's neutral 0.5 lands exactly on the source's

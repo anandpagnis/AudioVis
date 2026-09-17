@@ -521,6 +521,23 @@ export const SCENES: SceneDef[] = [
       // project's own CURL_NOISE_GLSL. See `wireframe` for why this is now
       // stated instead of inferred.
       license: 'original',
+      // 2026-09-16 rework (glow-soup fix): `density` -> fraction of the 70k
+      // field actually drawn (was previously pinned to ~100% minus only the
+      // quality/role cuts, which is what made the field read as one bright
+      // mass). `shape` -> dash<->dot sweep, defaulted dot-leaning per the
+      // request that prompted this rework. `fill` -> per-particle point size
+      // (how much of the frame each element occupies). `contrast` -> glow
+      // falloff width — higher pinches each particle down to a hard dot,
+      // lower softens it, but even the softest setting is tighter than the
+      // pre-rework constant. No `complexity`/`tilt`: nothing discrete or
+      // orientational to bind them to.
+      contract: {
+        version: 1,
+        params: { density: 0.5, shape: 0.6, fill: 0.5, contrast: 0.5 },
+        paramLabels: {
+          '*': { density: 'density', shape: 'dash <-> dot', fill: 'point size', contrast: 'glow tightness' },
+        },
+      },
       roles: ['primary', 'accent', 'overlay'],
       moods: ['groove', 'building', 'peak', 'aggressive'],
       bands: ['bass', 'high', 'energy'],
@@ -1441,78 +1458,6 @@ export const SCENES: SceneDef[] = [
     },
   },
   {
-    id: 'gyroid',
-    name: 'Gyroid Flux',
-    component: GyroidFluxScene,
-    metadata: {
-      // Shadertoy source, supplied directly by the requester and credited as
-      // CC0 -> `license: 'original'`, same basis as `beats` / `harkonnen` /
-      // `web`. No URL was given with the paste — see GyroidFluxScene.tsx's
-      // header if a source page turns up later.
-      //
-      // FORCED LIVE by explicit request. A 150-step march with NO hit-based
-      // early-out (every pixel accumulates glow for every step it is given —
-      // same shape as `beats`, not `maze`). Op-count against the two nearest
-      // analogues lands 7-22 ms at tier 0 depending on method (kifs-scaled vs
-      // beats-scaled — see the .tsx header for both), well past
-      // `slotBudget.test.ts`'s `< sceneBudget(0)/2` = 5.05 ms bar either way.
-      // `SCENE_COST_MS.gyroid` is priced at the pessimistic (kifs-scaled) end
-      // of that range — a documented worst-case estimate, not a fabricated
-      // ceiling built to clear the test. ACTION: run `/bench` and replace it
-      // with a measurement.
-      //
-      // `speed` -> flight/orbit + domain-warp clock rate. `shape` -> warp
-      // amount. `complexity` -> lattice cell frequency. `density` -> glow-band
-      // thickness. `contrast` -> glow falloff sharpness. `fill` -> zoom.
-      // `tilt` -> static camera-wobble offset (replaces the source's mouse
-      // look, which this project has no equivalent input for).
-      license: 'original',
-      contract: {
-        version: 1,
-        params: {
-          speed: 0.5,
-          shape: 0.5,
-          complexity: 0.5,
-          density: 0.5,
-          contrast: 0.5,
-          fill: 0.5,
-          tilt: 0.5,
-        },
-        paramLabels: {
-          '*': {
-            shape: 'warp',
-            complexity: 'scale',
-            density: 'thickness',
-            fill: 'zoom',
-            tilt: 'wobble',
-          },
-        },
-      },
-      // Subject only — a full-bleed drift through an infinite lattice that
-      // owns its own camera, same as `maze` / `neonjungle` / `tunnel`.
-      roles: ['primary'],
-      // Slow orbital drift and a soft glow-accumulation look read cooler and
-      // more hypnotic than a committed flythrough like `tunnel` — starts at
-      // `ambient` rather than `groove`. No inherent chaos in the structure
-      // itself (same reasoning as `tunnel`), so it stops at `building`
-      // rather than reaching `peak`/`aggressive`.
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'medium',
-      // FORCED LIVE — see the licence note above and SCENE_COST_MS.gyroid in
-      // sceneCost.ts for the worst-case estimate this ceiling is priced from.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a full-bleed flythrough.
-      compatibleWith: [],
-      moodFit: { ambient: 0.7, mellow: 0.85, groove: 0.84, building: 0.76 },
-      // The shader flies its own scripted path and never reads the engine
-      // camera — declared only for CameraDirector.test.ts's variety
-      // invariant, same as `maze` / `tunnel` / `neonjungle`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
     id: 'fridaylines',
     name: 'Friday Lines',
     component: FridayLinesScene,
@@ -1927,15 +1872,25 @@ export const SCENES: SceneDef[] = [
       // declaration), so there is nothing left for a layer underneath to
       // show through. Same reasoning `kifs`/`malachite`/`snowflake` give for
       // their own `compatibleWith: []`.
+      // Primary-capable ONLY so `store.requestScene('limitless', { immediate:
+      // true })` is accepted — same reasoning `djcam`'s own metadata gives.
+      // `LimitlessDirector` (useFrame -86.5) is the sole caller: its auto
+      // trigger, or the Console "Cut to Limitless" punch button (which routes
+      // through `store.requestLimitless()`, never `requestScene`). `moods: []`
+      // keeps it out of every automatic pool for free, same as `djcam`, and
+      // `HIDDEN_PICKER_IDS` keeps it out of every by-hand picker.
+      //
+      // This used to be a normal roster entry with a six-mood pool
+      // (`['ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive']`)
+      // and a `moodFit` — AutoPilot/PerformanceDirector could pick it like any
+      // other scene. Reclassified to a directed cutaway (matching `djcam`'s
+      // treatment) so it reads as a rare, deliberate moment rather than a
+      // roster fixture; see `LimitlessDirector.tsx`'s own header for the full
+      // rationale.
       roles: ['primary'],
-      // Deliberately wide: which of the 15 modes is actually showing is a
-      // contract param, not something this scene or the director knows about
-      // at the SceneMetadata level, and they range from `solar`/`breathe`
-      // (genuinely calm) to `shatter`/`vhs`/`prism` (hard-edged and
-      // strobe-adjacent). The default mode ('none': the plain photo, full
-      // brightness) is itself mood-neutral, which is the honest basis for
-      // this range rather than a guess at whichever mode a preset might pick.
-      moods: ['ambient', 'mellow', 'groove', 'building', 'peak', 'aggressive'],
+      moods: [],
+      // Inert for a `moods: []` scene — declared only because `SceneMetadata`
+      // requires at least one, same as `djcam`'s own `bands`.
       bands: ['bass', 'mid', 'high', 'energy'],
       // Not uniformly high: the default mode is one texture fetch at full
       // brightness. Several of the 15 (shatter/prism/vhs/sort) read as hard
@@ -1949,19 +1904,9 @@ export const SCENES: SceneDef[] = [
       // than sort's bounded 24-tap walk.
       performanceCost: 'medium',
       compatibleWith: [],
-      // Matches the mood range above: present but not dominant across the
-      // board, lowest at the aggressive end since the scene's OWN default
-      // mode does not escalate the way a purpose-built aggressive scene's
-      // shader does — an explicit preset picking `shatter`/`vhs` is what
-      // would actually earn that end of the range, not this scene by itself.
-      moodFit: {
-        ambient: 0.55,
-        mellow: 0.6,
-        groove: 0.62,
-        building: 0.6,
-        peak: 0.55,
-        aggressive: 0.45,
-      },
+      // No `moodFit` — it is never chosen by fit, and a `moodFit` entry over
+      // the empty `moods` fails `registry.test.ts`'s "moodFit only scores
+      // moods the scene claims", same reasoning `djcam`'s own metadata gives.
       // Flat fullscreen shader, no camera concept at all — inert here,
       // declared only for CameraDirector.test.ts's variety invariant, same
       // as `kifs`/`chrome`.
@@ -2028,18 +1973,28 @@ export const SCENES: SceneDef[] = [
  * autonomy directors accept them — but must never appear in a by-hand scene
  * picker.
  *
- * `djcam` is the only member and the whole reason this exists. It declares
- * `roles: ['primary']` so `DjCamDirector`'s `requestScene('djcam', { immediate:
- * true })` commits, but a DJ-cam cutaway has to go through that director every
- * time: it owns the hard-cut in, the scene-owned dip out, the auto-exposure
- * freeze, and the suppression of the other directors. Its one manual entry is
- * the Console "Cut to DJ Cam" button, which routes through
- * `store.requestDjCam()`, never `requestScene`. `HUD.tsx` and `Console.tsx`
- * both AND `!HIDDEN_PICKER_IDS.has(s.id)` into their `PICKABLE_SCENES` filter;
- * `canHoldPrimary` and the store's own guard deliberately do NOT, so the
- * director's request still succeeds. See `canHoldPrimary.test.ts`.
+ * `djcam` was the original reason this exists. It declares `roles: ['primary']`
+ * so `DjCamDirector`'s `requestScene('djcam', { immediate: true })` commits,
+ * but a DJ-cam cutaway has to go through that director every time: it owns the
+ * hard-cut in, the scene-owned dip out, the auto-exposure freeze, and the
+ * suppression of the other directors. Its one manual entry is the Console "Cut
+ * to DJ Cam" button, which routes through `store.requestDjCam()`, never
+ * `requestScene`.
+ *
+ * `limitless` joined it for the same shape of reason, once it was reclassified
+ * from a normal roster scene to a directed cutaway (see its own metadata
+ * comment and `LimitlessDirector.tsx`'s header): `roles: ['primary']` so
+ * `LimitlessDirector`'s hard-cut-in commits, `moods: []` to stay out of every
+ * automatic pool, and `HIDDEN_PICKER_IDS` to stay off every by-hand picker —
+ * its one manual entry is the Console "Cut to Limitless" button, which routes
+ * through `store.requestLimitless()`.
+ *
+ * `HUD.tsx` and `Console.tsx` both AND `!HIDDEN_PICKER_IDS.has(s.id)` into
+ * their `PICKABLE_SCENES` filter; `canHoldPrimary` and the store's own guard
+ * deliberately do NOT, so either director's request still succeeds. See
+ * `canHoldPrimary.test.ts`.
  */
-export const HIDDEN_PICKER_IDS = new Set(['djcam'])
+export const HIDDEN_PICKER_IDS = new Set(['djcam', 'limitless'])
 
 /**
  * Registered, built, and deliberately WITHHELD from the roster.
@@ -2051,8 +2006,8 @@ export const HIDDEN_PICKER_IDS = new Set(['djcam'])
  * only, so a disabled id degrades to the `SCENES[0]` fallback exactly like an
  * unknown one.
  *
- * `tunnel` and `panic` are here on request while their look is still being
- * worked on. Note `panic` is ALSO non-commercial; see KNOWN_NC_SOURCE_IDS,
+ * `tunnel`, `panic`, and `gyroid` are here on request while their look/cost is
+ * still being worked on. Note `panic` is ALSO non-commercial; see KNOWN_NC_SOURCE_IDS,
  * which deliberately tracks licence independently of whether a scene is
  * currently in the roster.
  *
@@ -2112,6 +2067,79 @@ export const DISABLED_SCENES: SceneDef[] = [
       // The shader frames itself — flat screen-space fractal math, no engine
       // camera. Declared only for CameraDirector.test.ts's variety invariant,
       // same as `kifs` / `wingfold`.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
+    },
+  },
+  {
+    id: 'gyroid',
+    name: 'Gyroid Flux',
+    component: GyroidFluxScene,
+    metadata: {
+      // Shadertoy source, supplied directly by the requester and credited as
+      // CC0 -> `license: 'original'`, same basis as `beats` / `harkonnen` /
+      // `web`. No URL was given with the paste — see GyroidFluxScene.tsx's
+      // header if a source page turns up later. Disabled on explicit request
+      // (2026-09-17), same as `harkonnen` above — cost, not licence.
+      //
+      // A 150-step march with NO hit-based early-out (every pixel accumulates
+      // glow for every step it is given — same shape as `beats`, not `maze`).
+      // Op-count against the two nearest analogues lands 7-22 ms at tier 0
+      // depending on method (kifs-scaled vs beats-scaled — see the .tsx
+      // header for both), well past `slotBudget.test.ts`'s
+      // `< sceneBudget(0)/2` = 5.05 ms bar either way. `SCENE_COST_MS.gyroid`
+      // is priced at the pessimistic (kifs-scaled) end of that range — a
+      // documented worst-case estimate, not a fabricated ceiling built to
+      // clear the test. Re-enabling is moving this entry back into `SCENES`
+      // once `/bench` gives a real number.
+      //
+      // `speed` -> flight/orbit + domain-warp clock rate. `shape` -> warp
+      // amount. `complexity` -> lattice cell frequency. `density` -> glow-band
+      // thickness. `contrast` -> glow falloff sharpness. `fill` -> zoom.
+      // `tilt` -> static camera-wobble offset (replaces the source's mouse
+      // look, which this project has no equivalent input for).
+      license: 'original',
+      contract: {
+        version: 1,
+        params: {
+          speed: 0.5,
+          shape: 0.5,
+          complexity: 0.5,
+          density: 0.5,
+          contrast: 0.5,
+          fill: 0.5,
+          tilt: 0.5,
+        },
+        paramLabels: {
+          '*': {
+            shape: 'warp',
+            complexity: 'scale',
+            density: 'thickness',
+            fill: 'zoom',
+            tilt: 'wobble',
+          },
+        },
+      },
+      // Subject only — a full-bleed drift through an infinite lattice that
+      // owns its own camera, same as `maze` / `neonjungle` / `tunnel`.
+      roles: ['primary'],
+      // Slow orbital drift and a soft glow-accumulation look read cooler and
+      // more hypnotic than a committed flythrough like `tunnel` — starts at
+      // `ambient` rather than `groove`. No inherent chaos in the structure
+      // itself (same reasoning as `tunnel`), so it stops at `building`
+      // rather than reaching `peak`/`aggressive`.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // See the licence note above and SCENE_COST_MS.gyroid in sceneCost.ts
+      // for the worst-case estimate this ceiling is priced from.
+      performanceCost: 'high',
+      // Owns the frame; nothing composites with a full-bleed flythrough.
+      compatibleWith: [],
+      moodFit: { ambient: 0.7, mellow: 0.85, groove: 0.84, building: 0.76 },
+      // The shader flies its own scripted path and never reads the engine
+      // camera — declared only for CameraDirector.test.ts's variety
+      // invariant, same as `maze` / `tunnel` / `neonjungle`.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },

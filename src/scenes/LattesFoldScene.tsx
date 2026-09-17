@@ -146,7 +146,21 @@ export const FRAG = /* glsl */ `
   #define PI ${PI}
 
   vec2 cMul(in vec2 z1, in vec2 z2) { return mat2(z1, -z1.y, z1.x) * z2; }
-  vec2 cDiv(in vec2 z1, in vec2 z2) { return z1 * mat2(z2, -z2.y, z2.x) / dot(z2, z2); }
+  // Epsilon-floored denominator: dot(z2, z2) is the modulus-squared of a
+  // complex number and is EXACTLY zero whenever z2 is the origin. lattes()
+  // below feeds this a denominator that is a rational function of the pixel's
+  // screen coordinate, and a Lattes map of this construction has genuine
+  // poles (points where that denominator is mathematically zero) at specific
+  // z values. As the coordinate feeding lattesN() sweeps across pixels and
+  // drifts over time via uRoll/uRawT, some pixel can land on (or extremely
+  // near) a pole, sending this division to Infinity/NaN for that pixel --
+  // which then feeds forward through the rest of lattesN()'s iterations
+  // (each iteration consumes the previous one's output) and ultimately blows
+  // up main()'s accumulation, reading on screen as a black or corrupted
+  // frame. Root cause of the "blacked out" report -- max()'d against a small
+  // floor rather than left an exact division so it can only ever get large,
+  // never actually reach the singularity.
+  vec2 cDiv(in vec2 z1, in vec2 z2) { return z1 * mat2(z2, -z2.y, z2.x) / max(dot(z2, z2), 1e-6); }
 
   vec2 lattes(in vec2 z) {
     vec2 z2 = cMul(z, z);
@@ -231,7 +245,18 @@ export const FRAG = /* glsl */ `
         n1 = abs(n1) * foldScale - foldOffset + v;
       }
 
-      float e = length(n1.yx + n1.zx) / s;
+      // Epsilon-floored: s itself never reaches 0 (it starts at 6.0 and only
+      // ever multiplies upward by foldScale, which stays comfortably
+      // positive), but length(n1.yx + n1.zx) is an edge-distance estimate
+      // that CAN land at exactly 0.0 for some pixel/fold-state combination
+      // (n1 passes through repeated abs()/fold operations that can produce a
+      // zero vector at certain configurations). e feeds 'uBright / e' two
+      // lines down, so an unguarded zero here is a second, independent
+      // Infinity/NaN source (on top of the cDiv pole above) that also reads
+      // as a black/blown-out frame once it reaches gl_FragColor. Floored to
+      // a small positive constant rather than left exact so the reciprocal
+      // can only ever get large, never actually divide by zero.
+      float e = max(length(n1.yx + n1.zx) / s, 1e-4);
       g += e;
       o += mix(vec3(1.0), hue(g * 0.1), sin(0.8)) * uBright / e / uClip;
     }
