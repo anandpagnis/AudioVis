@@ -12038,3 +12038,51 @@ per-frame canvas heavy enough to distort the reading.
       mobile breakpoint already in `home.css`). No console errors.
 
       `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+- [x] **F251 · /demo could show a non-free scene — the whitelist only ever
+      restricted FUTURE autopilot picks, never the scene already active on
+      load** — *2026-09-18, user report from the live deployed site: asked
+      which 5 scenes are free, then caught /demo actually showing Kifs Rose,
+      not one of them* `src/routes/Visualizer.tsx`
+
+      Root cause: `sceneId` and `layerSceneIds` are both in `store.ts`'s
+      `partialize` allowlist, persisted to `localStorage` under
+      `audiovis-settings` for the WHOLE origin — there is no per-route
+      scoping, so `/app`, `/demo`, and `?output` all read and write the same
+      persisted scene state on the same browser. `DemoSurface`'s mount effect
+      called `setSceneWhitelist(FREE_TIER_SCENE_IDS)`, which only narrows the
+      candidate pool `getScenesForMood()` draws from for the NEXT autopilot
+      pick — it does nothing about whatever scene was already active when the
+      page loaded. A visitor on the same browser as a prior Console session
+      (the site's own owner, almost certainly, in the report that surfaced
+      this) landed on whatever non-free scene was last active there instead.
+
+      Fixed by having the same mount effect also correct the CURRENT
+      selection, not just constrain future ones: if the persisted `sceneId`
+      isn't in `FREE_TIER_SCENE_IDS`, `requestScene(FREE_TIER_SCENE_IDS[0],
+      { auto: true, immediate: true })` — `immediate` bypasses the normal
+      dwell floor so this resolves before the visitor sees anything, not on
+      the engine's own schedule. Each `layerSceneIds` role gets the same
+      check against `setLayer(role, null)`, since a background/accent/overlay
+      scene leaks the exact same way and isn't covered by fixing the primary
+      alone.
+
+      **Verification hit a real limit of this session's tooling, not the
+      fix.** Seeded `localStorage['audiovis-settings']` with a non-free
+      `sceneId` and reloaded `/demo`: temporary debug logging confirmed
+      `requestScene` is called with the correct target and `immediate: true`,
+      and returns `true` (`pendingSceneId` becomes `'wireframe'` correctly)
+      — that's the part this fix actually changes. The last step, `sceneId`
+      catching up to `pendingSceneId`, is `SceneManager`'s existing commit
+      logic, which runs inside a `useFrame` (rAF-driven) hook — and
+      `document.hidden` reads `true` in this browser pane even after
+      explicitly fronting the tab (a pre-existing, documented constraint of
+      this environment: rAF never fires on a hidden page, so 0 frames render
+      here regardless of what's requested). That commit path is unmodified,
+      pre-existing code already exercised by every other scene-change caller
+      in the app (manual picks, autopilot, cue playback) — not something this
+      fix touches or has reason to behave differently through. Confirmed live
+      on the actual deployed site is still owed; the store-level call is as
+      far as this session's tools can verify directly.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.

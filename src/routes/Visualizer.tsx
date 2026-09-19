@@ -8,7 +8,7 @@ import { djCamSource } from '../engine/djCamSource'
 import { FREE_TIER_SCENE_IDS, preloadAllScenes, setSceneWhitelist } from '../scenes'
 import { useAuth, useEntitlement } from '../auth/authStore'
 import { trackEvent } from '../lib/posthogClient'
-import { useStore } from '../store'
+import { LAYER_ROLES, useStore } from '../store'
 
 /** Idle time before the pointer disappears on the output surface. */
 const CURSOR_HIDE_MS = 2000
@@ -53,6 +53,26 @@ function DemoSurface() {
 
   useEffect(() => {
     setSceneWhitelist(FREE_TIER_SCENE_IDS)
+    // The whitelist above only restricts FUTURE autopilot picks — it does
+    // nothing about whatever scene is already active. `sceneId` (and
+    // `layerSceneIds`) are in store.ts's `partialize` allowlist, persisted
+    // to localStorage for the whole origin with no per-route scoping. A
+    // visitor on the SAME browser as a prior Console session (the site's own
+    // owner, most likely) would otherwise land on whatever non-free scene
+    // was last active there — outside the free tier, in the one place that's
+    // supposed to guarantee it. `immediate: true` bypasses the normal dwell
+    // floor so this corrects before the visitor sees anything, not on the
+    // engine's own schedule.
+    const s = useStore.getState()
+    if (!FREE_TIER_SCENE_IDS.includes(s.sceneId)) {
+      s.requestScene(FREE_TIER_SCENE_IDS[0], { auto: true, immediate: true })
+    }
+    for (const role of LAYER_ROLES) {
+      const layerId = s.layerSceneIds[role]
+      if (layerId && !FREE_TIER_SCENE_IDS.includes(layerId)) {
+        s.setLayer(role, null)
+      }
+    }
     return () => setSceneWhitelist(null)
   }, [])
 
