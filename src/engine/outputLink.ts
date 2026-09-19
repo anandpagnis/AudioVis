@@ -444,6 +444,25 @@ export function isOutput(): boolean {
   return new URLSearchParams(window.location.search).has('output')
 }
 
+/**
+ * Is this the public, anonymous /demo window?
+ *
+ * Deliberately a separate check from `isOutput()` rather than routing `/demo`
+ * through `?output`: that query flag means "paired to a control window" —
+ * everything in this file's `startLink()` assumes a hello/look handshake with
+ * one. A demo visitor has no control window and never will, so main.tsx skips
+ * `startLink()`/`installMirrorHook()` entirely when this is true (a demo tab
+ * must never announce itself as a controller and contend for a real DJ's
+ * output window open in another tab of the same browser). `store.startAudio`
+ * also checks this alongside `isOutput()` — see its own note — so the demo
+ * page can self-acquire its mic exactly like an output window does, with no
+ * handoff to wait for.
+ */
+export function isDemoWindow(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.location.pathname.startsWith('/demo')
+}
+
 function snapshotLook(): Look {
   const s = useStore.getState() as unknown as Record<string, unknown>
   const look = {} as Look

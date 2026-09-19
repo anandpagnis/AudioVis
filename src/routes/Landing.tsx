@@ -1,20 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { TunnelScene, type TunnelFrameState } from '../landing/TunnelScene'
 import { scroll } from '../landing/scroll'
 import { tunnelAudio } from '../landing/tunnelAudio'
 import { pageTransition } from '../landing/pageTransition'
 import { CHAPTERS } from '../landing/chapters'
+import { AccountMenu } from '../ui/AccountMenu'
 import { preloadVisualizer } from './lazyRoutes'
 
 const REDUCED = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 /**
  * The gateway. A full-bleed audio-reactive tunnel visitors scroll through;
- * chapters narrate what AudioVis is as they descend. The last chapter holds
+ * chapters narrate what Lilim is as they descend. The last chapter holds
  * on screen instead of fading back out and carries the Enter CTA — no
  * separate "the end" takeover screen, the still-rendering, wide-open tail of
- * the tunnel IS the backdrop for it, leading into the real app (`/app`).
+ * the tunnel IS the backdrop for it, leading into the real app (`/app`), or
+ * (secondary CTA alongside it) the anonymous demo at `/demo`. A small top-right
+ * `tnav` (Features/Pricing/Marketplace anchors on `/home` + AccountMenu) sits
+ * alongside the masthead so that page is one click away without touching the
+ * scroll choreography below — deliberately not a scrollable in-tunnel section.
  *
  * All per-frame state (depth, chapter opacity, spectrum, beat flash) is
  * written straight to DOM refs from `TunnelScene`'s onFrame callback rather
@@ -93,6 +98,7 @@ export function Landing() {
       tunnelAudio.onTrackChange = null
       tunnelAudio.onToast = null
       scroll.onAdvance = null
+      scroll.unbind()
     }
   }, [])
 
@@ -231,9 +237,22 @@ export function Landing() {
 
       <div className={`tchrome ${entered ? 'live' : ''}`}>
         <header className="tmasthead">
-          <div className="tmark">AudioVis</div>
+          <div className="tmark">Lilim</div>
           <div className="teyebrow">Browser&#8209;based AI VJ agent</div>
         </header>
+
+        <nav className="tnav">
+          <Link className="tnavlink" to="/home#features">
+            Features
+          </Link>
+          <Link className="tnavlink" to="/home#pricing">
+            Pricing
+          </Link>
+          <Link className="tnavlink" to="/home#marketplace">
+            Marketplace
+          </Link>
+          <AccountMenu />
+        </nav>
 
         <div className="tinstrument" aria-hidden="true">
           <div className="tinst-readout">
@@ -274,18 +293,26 @@ export function Landing() {
               <h2 dangerouslySetInnerHTML={{ __html: c.titleHtml }} />
               <p>{c.copy}</p>
               {i === CHAPTERS.length - 1 && (
-                <button className="tchapter-cta" onClick={() => pageTransition.enter(navigate, '/app')}>
-                  <span>Enter AudioVis</span>
-                  <svg width="22" height="10" viewBox="0 0 22 10" fill="none" aria-hidden="true">
-                    <path
-                      d="M0 5h20M15 1l5 4-5 4"
-                      stroke="currentColor"
-                      strokeWidth="1.4"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
+                <div className="tchapter-ctas">
+                  <button className="tchapter-cta" onClick={() => pageTransition.enter(navigate, '/app')}>
+                    <span>Enter Lilim</span>
+                    <svg width="22" height="10" viewBox="0 0 22 10" fill="none" aria-hidden="true">
+                      <path
+                        d="M0 5h20M15 1l5 4-5 4"
+                        stroke="currentColor"
+                        strokeWidth="1.4"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    className="tchapter-cta secondary"
+                    onClick={() => pageTransition.enter(navigate, '/demo')}
+                  >
+                    <span>Try the free demo</span>
+                  </button>
+                </div>
               )}
             </article>
           ))}
@@ -318,8 +345,8 @@ export function Landing() {
 
       <div className="tgate" data-ready={ready}>
         <span className="teyebrow">Browser&#8209;based AI VJ agent</span>
-        <h1 aria-label="AudioVis">
-          {'AudioVis'.split('').map((ch, i) => (
+        <h1 aria-label="Lilim">
+          {'Lilim'.split('').map((ch, i) => (
             <span key={i} style={{ animationDelay: `${0.06 * i}s` }}>
               {ch}
             </span>

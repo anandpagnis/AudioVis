@@ -33,6 +33,10 @@ public/tfjs/
 
 # Wrangler local cache/logs (Cloudflare deploy tooling)
 .wrangler/
+# Local secrets for `wrangler dev` (Stripe/Supabase keys) — *.local below
+# already covers .env.local, but wrangler's own convention has no .local
+# suffix, so it needs its own line.
+.dev.vars
 
 # Editor / OS
 .idea/

@@ -51,6 +51,28 @@ export const Bench = import.meta.env.DEV
   : null
 
 /**
+ * `/home` — reached by a click from the tunnel, /demo, or `/app` itself (an
+ * anonymous or Free visitor is redirected here — see Visualizer.tsx's
+ * ControlSurface), never a visitor's first load, so it gets the same lazy
+ * treatment as `Visualizer` rather than `Landing`'s static-import exception.
+ */
+export const Home = lazy(() => import('./Home').then((m) => ({ default: m.Home })))
+
+/** `/account` — same lazy treatment as `Home`, reached from AccountMenu. */
+export const Account = lazy(() => import('./Account').then((m) => ({ default: m.Account })))
+
+/** `/help` — same lazy treatment as `Account`, reached from AccountMenu. */
+export const Help = lazy(() => import('./Help').then((m) => ({ default: m.Help })))
+
+/**
+ * `/sign-in` — same lazy treatment; this is also where `@supabase/
+ * auth-ui-react`'s real weight now lives (previously pulled in lazily by
+ * AccountMenu's own AuthPanel import — see F245, which replaced that modal
+ * with this route).
+ */
+export const SignIn = lazy(() => import('./SignIn').then((m) => ({ default: m.SignIn })))
+
+/**
  * Start downloading the visualizer chunk without mounting it.
  *
  * The landing CTA fades to black and *then* navigates, so a cold chunk fetch

@@ -16,3 +16,30 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+
+  # First deploy this project has ever had — previously build-only. Runs only
+  # on an actual push to main (never on a PR) and only once `check` is green.
+  # Pure static-assets deploy — no Worker, no server-side secrets; just the
+  # client-side VITE_* build vars and a Cloudflare API token as repo secrets.
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # Public PostHog project key (F249) — same public posture as the
+          # Supabase anon key above, still a repo secret for consistency and
+          # so it's not hand-typed into this file.
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

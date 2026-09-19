@@ -943,7 +943,15 @@ body,
 /* ---------- start overlay ---------- */
 
 .overlay {
-  position: absolute;
+  /* Fixed, not absolute: every existing caller happened to sit directly
+     inside a `position: fixed; inset: 0` (or unpositioned, i.e. viewport)
+     ancestor, so `absolute` looked identical to covering the viewport by
+     coincidence — until F242's AccountMenu briefly rendered a modal from a
+     small, non-fixed nav element, where `absolute` resolved against that
+     tiny container instead of the screen. `fixed` is what every caller
+     actually means. (That modal is gone — F245 made sign-in a page instead —
+     but UnsupportedScreen still depends on this behaving correctly.) */
+  position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
@@ -989,7 +997,10 @@ body,
   font-weight: 700;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  background: linear-gradient(90deg, #7cd6ff, #b388ff, #7cffc4);
+  /* Brand palette (console.css's --maroon/--cream, extended with --brick/
+     --purple in hero.css) — was an unrelated cyan/violet/mint gradient before,
+     inconsistent with the rest of the product. */
+  background: linear-gradient(90deg, #780000, #c1121f, #510049);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

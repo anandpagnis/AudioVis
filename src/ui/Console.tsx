@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router'
 import { SCENES, canHoldRole, getEffectScenes, HIDDEN_PICKER_IDS, type SceneDef } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
+import { AccountMenu } from './AccountMenu'
 
 /**
  * The scenes a user may pick as the SUBJECT, background, accent, overlay, or
@@ -252,7 +254,11 @@ function TopBar({
 
   return (
     <header className="topbar">
-      <span className="word">AudioVis</span>
+      {/* /home, not the tunnel at / — a Pro user in here wants their account
+          and the pitch/pricing page, not to re-watch the gateway (F244). */}
+      <Link className="word" to="/home" title="Lilim home">
+        Lilim
+      </Link>
 
       <div className="signal-chip">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
@@ -284,6 +290,7 @@ function TopBar({
       </div>
 
       <Diagnostics />
+      <AccountMenu />
     </header>
   )
 }

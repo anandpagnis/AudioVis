@@ -11500,3 +11500,541 @@ per-frame canvas heavy enough to distort the reading.
       ("a lot") are a judgement call matched to the request's own wording,
       not a measurement; if it now reads as too much, these are the same
       per-material coefficients to come back and ease.
+
+- [x] **F242 · Account/billing/marketplace UI pass — persistent nav, /account,
+      /marketplace, Pro priced at $20/mo; found and fixed a modal-positioning
+      bug it exposed in `.overlay`** — *2026-09-18, user request, following a
+      CTO/GTM review of the uncommitted `launch-prod` auth work* `src/ui/AccountMenu.tsx`,
+      `src/routes/Account.tsx`, `src/routes/Marketplace.tsx`, `src/routes/Pricing.tsx`,
+      `src/routes/Landing.tsx`, `src/routes/Features.tsx`, `src/ui/Console.tsx`,
+      `src/ui/Paywall.tsx`, `src/App.tsx`, `src/routes/lazyRoutes.ts`, `src/main.tsx`,
+      `src/styles.css`, `src/styles/accountMenu.css`, `src/styles/account.css`,
+      `src/styles/marketplace.css`, `src/styles/marketing.css`, `src/styles/pricing.css`,
+      `src/styles/features.css`
+
+      The prior session's Supabase auth/paywall work (uncommitted on
+      `launch-prod`) had no account-management surface at all — signing out
+      was only reachable from the Paywall screen, and a signed-in Pro user
+      inside `<Console/>` had zero auth UI. This session added the pieces a
+      CTO/GTM read of that branch called for, scoped exactly to what was
+      asked: UI only, no real billing, no code-level rebrand.
+
+      **New `AccountMenu`** (`src/ui/AccountMenu.tsx`) is the one auth-aware
+      nav element, dropped into every page's own header — the tunnel's new
+      `tnav`, Pricing/Features/Marketplace's nav rows, and the Console
+      TopBar. Anonymous → a "Sign in" trigger; signed in → an avatar
+      (initial-letter) opening a dropdown with email, plan badge, a link to
+      `/account`, and sign out. It lazy-loads `AuthPanel` (`@supabase/
+      auth-ui-react` is real weight) so the tunnel's static, non-code-split
+      entry bundle doesn't grow — confirmed post-build: `AuthPanel` ships as
+      its own ~59 kB chunk, not inlined into `index-*.js`.
+
+      **New `/account`** (`routes/Account.tsx` + `styles/account.css`,
+      lazy-loaded like `/pricing`/`/features`) — Profile (email, sign out),
+      Plan (current tier, `$20/mo` for Pro, link to `/pricing`), and Billing
+      history. Billing is an explicit empty-state placeholder — skeleton rows
+      plus "No billing history yet," never fabricated invoice rows — because
+      there is still no payment processor wired up (see Paywall.tsx's own
+      note on why: manual-grant only). Not signed in → an inline sign-in
+      prompt, same "stay on the page, don't redirect" reasoning as Paywall.
+
+      **New `/marketplace`** (`routes/Marketplace.tsx` + `styles/
+      marketplace.css`) — a holding page, deliberately not a feature: no
+      listings, no checkout, and no email-capture form either (a form with
+      nowhere real to submit is worse than none). Three category teasers
+      (scene packs, presets & cue timelines, community creations), each
+      labelled "Coming soon."
+
+      **Pro is now `$20/mo`**, shown in `Pricing.tsx`'s tier card, restated in
+      `Paywall.tsx`'s copy and `Account.tsx`'s Plan/Billing sections. This is
+      a price anchor, not a live charge — every one of those surfaces still
+      only leads to sign-up, and access is still granted by hand; the
+      wording says so explicitly in all three places so nothing implies a
+      checkout that doesn't exist.
+
+      **Home page nav, scoped deliberately narrow.** The tunnel at `/` is a
+      ~700-line choreographed 3D scroll sequence bound to fixed depth values
+      (see `landing/TunnelScene.tsx`, `landing/scroll.ts`). Rather than
+      embedding a pricing teaser INTO that scroll — a materially bigger,
+      riskier change to code tuned around exact `at` offsets — this added
+      only a small top-right `tnav` (Features/Pricing/Marketplace +
+      AccountMenu) beside the existing masthead, leaving the scroll
+      choreography itself untouched. `/pricing` and `/features` were
+      previously unreachable from `/` at all (only from `/demo`'s badge); now
+      one click away from the actual front door.
+
+      **Rebrand stayed UI-layer only, per explicit instruction.** New code
+      uses neutral file/class names (`account.css`, `marketplace.css`, no
+      `lilim`/`audiovis` prefix either way) and only user-visible strings say
+      "Lilim" — `package.json`'s `"audiovis"` name, `wrangler.jsonc`'s Worker
+      name, and `README.md` were left exactly as they already were; not an
+      oversight, the user asked for this explicitly.
+
+      **Bug found and fixed along the way: `.overlay` (`src/styles.css`) was
+      `position: absolute`,** which had only ever been exercised inside a
+      `position: fixed; inset: 0` (or unpositioned) ancestor — Paywall,
+      UnsupportedScreen — so it happened to cover the viewport by coincidence
+      of always resolving against one that already did. `AccountMenu` broke
+      that coincidence: it renders `<AuthPanel/>` from small, statically-
+      positioned nav elements (the tunnel's `tnav`, the Console TopBar), so
+      `absolute` resolved the "cover the screen" backdrop against a ~30px nav
+      button instead — caught visually in this session's own browser-pane
+      verification (the panel rendered pinned to one corner, clipped) before
+      it could ship. Changed to `position: fixed`, which is what every
+      existing caller already meant; verified identical in all of them since
+      each one's nearest positioned ancestor already filled the viewport
+      exactly.
+
+      **Verified in-browser**, not just by type/build: a second local dev
+      server (the primary port was held by another session) driven through
+      this session's own browser pane — tunnel nav, the sign-in modal
+      correctly centered from both the tunnel and the Console TopBar,
+      `/pricing` showing `$20/mo`, `/marketplace`, `/account` signed-out
+      state, and the Console TopBar's new AccountMenu slot, all screenshotted
+      directly. The signed-in Account/AccountMenu branches were verified by
+      type-safe code review against Paywall's already-proven `plan==='free'`
+      pattern, not live-screenshotted — doing so would have meant either a
+      real Google OAuth round-trip or creating a real row in the owner's
+      production Supabase project, neither of which this session does
+      without being asked.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build. No console
+      errors observed across any of the pages exercised above.
+
+- [x] **F243 · The tunnel's virtual-scroll wheel listener was never unbound,
+      so it silently ate scroll input on every other page forever after the
+      first tunnel visit** — *2026-09-18, user report: scroll didn't work on
+      /features, /pricing, /marketplace ("scrolls the tunnel instead"), and
+      was reported broken on the tunnel itself too* `src/landing/scroll.ts`,
+      `src/routes/Landing.tsx`
+
+      `ScrollController.bind()` attaches a `window`-level `wheel` listener
+      with an unconditional `e.preventDefault()` — needed to turn real scroll
+      into the tunnel's virtual 0..1 progress value instead of actually
+      scrolling a fixed, non-scrolling page. `scroll` is a module-level
+      singleton, not tied to React lifecycle, and `Landing`'s effect cleanup
+      only ever nulled its callbacks (`onAdvance = null`) — nothing called
+      the unbind this class never had. Once F242 gave the tunnel real
+      `<Link>`s to pages that DO scroll natively (`overflow-y: auto`), every
+      one of them had its scroll input eaten by a listener left over from a
+      page that had already unmounted. The `bound` guard flag meant this had
+      no visible symptom before F242 — nothing reachable from the tunnel by
+      client-side nav ever needed native scroll until then.
+
+      Fixed by converting the inline listener closures to stable instance
+      methods (`onWheel`/`onKeydown`) and adding a real `unbind()` that
+      removes them, called from the same effect cleanup that calls `bind()`.
+      Re-entering the tunnel re-binds cleanly on remount.
+
+      Verified live: scrolled `/pricing` after visiting the tunnel first
+      (previously a no-op, now scrolls the page), then navigated back to `/`
+      and confirmed the tunnel's own depth/chapter scroll still works
+      (advanced to 383m, chapter 2 visible). `npm run check` clean:
+      typecheck, lint, 1726 tests, build.
+
+- [x] **F244 · Replaced /features, /pricing, /marketplace with one merged
+      /home page; /app now redirects instead of showing a paywall card; Free
+      users get the real demo instead of a blocking screen** — *2026-09-18,
+      user request, reacting to F242's fragmented pages ("I hate the way this
+      looks")* `src/routes/Home.tsx`, `src/styles/home.css`,
+      `src/routes/Visualizer.tsx`, `src/routes/Landing.tsx`, `src/ui/Console.tsx`,
+      `src/routes/Account.tsx`, `src/App.tsx`, `src/routes/lazyRoutes.ts`,
+      `src/main.tsx`, `src/auth/AuthPanel.tsx`, `src/auth/authStore.ts`
+      — removed: `src/routes/{Features,Pricing,Marketplace}.tsx`,
+      `src/styles/{features,pricing,marketplace}.css`, `src/ui/Paywall.tsx`
+
+      **One page, not four.** `/home` is hero → features → pricing →
+      marketplace-teaser as sections on a single scrollable page (nav links
+      are in-page `scrollIntoView` anchors, not route changes) rather than
+      the three separate destinations F242 built. The hash is honoured on
+      mount (`/home#pricing` scrolls there), since client-side nav doesn't do
+      that on its own the way a full page load would. All three old routes
+      and their stylesheets are deleted outright, not left unreferenced —
+      the content moved into `Home.tsx`, it didn't gain a second copy.
+
+      **No more paywall card.** `Paywall.tsx` is deleted; ControlSurface
+      (`/app`) now redirects instead of rendering a blocking screen:
+      pro → `<Console/>` (unchanged), free → `<Navigate to="/demo"/>` (the
+      exact same restricted experience /demo already is, not a second
+      implementation of it), anonymous → `<Navigate to="/home"/>` (sign-up
+      now lives on the pricing section there, via the Pro tier's CTA calling
+      `openAuthPanel()` directly). `Navigate` fires before paint, same
+      pattern `App.tsx`'s catch-all route already used.
+
+      **The Pro tier's CTA and status note are now state-aware** — computed
+      from `useEntitlement()`/`useAuth()` right on the pricing card: pro sees
+      "Open Lilim", free sees "You're on the list" (linking to `/account`),
+      anonymous sees "Sign in / Sign up". This is where Paywall's old
+      "you're on the list" honesty carried over to — it didn't just get
+      deleted with that file.
+
+      **Every stale internal reference updated**, not just the routes:
+      `/demo`'s logo/badge (`/pricing` → `/home#pricing`), the tunnel's
+      `tnav`, `Account.tsx`'s own nav, the Console TopBar's wordmark (now
+      `/home`, not `/`, per the request that a signed-in Pro user's way back
+      should reach the new page, not the tunnel they've already seen), and
+      three doc comments in `AuthPanel.tsx`/`authStore.ts`/`Account.tsx` that
+      named "the Paywall" as a concept that no longer exists.
+
+      **Verified live** against a real `vite preview` build (not `vite dev`
+      — `useEntitlement()` short-circuits to `'pro'` under
+      `import.meta.env.DEV`, which would have silently skipped exactly the
+      redirect branches this entry is about): anonymous visit to `/app`
+      redirected to `/home` and rendered correctly; `/home#pricing`'s anchor
+      scroll landed on the right section; the Pro tier's "Sign in / Sign up"
+      opened `AuthPanel` correctly centered (confirming F242's `.overlay` fix
+      holds here too); `/demo`'s badge/logo both read `href="/home#pricing"`
+      in the live DOM. No console errors across any page visited.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+- [x] **F245 · Sign-in was a flex-centered modal that clipped top and bottom
+      on any viewport shorter than its content, with no way to scroll to the
+      hidden part, and rendered in Supabase's default gray/green theme
+      instead of the brand palette** — *2026-09-18, user report with a
+      screenshot showing the clipped modal, plus an explicit request: real
+      page instead of an overlay, and match the branding* `src/routes/SignIn.tsx`
+      (new), `src/styles/sign-in.css` (new), `src/ui/AccountMenu.tsx`,
+      `src/routes/Home.tsx`, `src/routes/Account.tsx`, `src/auth/authStore.ts`,
+      `src/App.tsx`, `src/routes/lazyRoutes.ts`, `src/main.tsx`, `src/styles.css`
+      — removed: `src/auth/AuthPanel.tsx`
+
+      **Root cause of the clipping**, confirmed from the user's screenshot:
+      `.overlay` centers its child with `align-items: center;
+      justify-content: center` inside a `position: fixed` container with no
+      scroll of its own. When the Supabase widget's rendered height exceeded
+      the viewport, centering pushed the top of the form above `y=0` and the
+      bottom past the fold — both clipped, neither reachable, since a
+      flex-centered overflow child is exactly the layout that traps content
+      this way. This was always latent (present since F242 first wired the
+      widget up); the screenshot is what made it visible.
+
+      **Fixed by removing the modal entirely**, per the explicit request
+      rather than patching the overlay's CSS: `/sign-in` is now a route,
+      `AuthPanel.tsx` is deleted, and `authStore.ts`'s `showAuthPanel`/
+      `openAuthPanel`/`closeAuthPanel` are gone with it — every call site
+      (`AccountMenu`'s "Sign in", `Home`'s anonymous Pro-tier CTA, `Account`'s
+      sign-in prompt) now just navigates to `/sign-in`. The new page uses
+      ordinary top-down document flow inside its own `overflow-y: auto` root
+      (`sign-in.css`) — the same safe pattern `.account`/`.home` already use —
+      instead of flex-centering, so a tall form scrolls instead of clipping,
+      on any viewport. After a session lands, the page's own effect
+      `navigate('/app', { replace: true })`s rather than the old "dismiss the
+      modal" step — `/app` already knows how to route pro/free/anonymous
+      correctly (ControlSurface, F244), so this reuses that instead of a
+      second copy of the decision.
+
+      **Rebranded via Supabase's real theming API** (`appearance.theme`, a
+      full custom `ThemeVariables` object — not CSS overrides fighting the
+      library's own stitches-generated classes, which is the wrong way to
+      reskin this component and wouldn't reliably win the specificity fight).
+      Every colour in `LILIM_AUTH_THEME` is one of the brand's five hexes at
+      an alpha — same rule console.css documents for its own colour system —
+      including the primary button's hover state, which reuses maroon
+      (`#780000`) rather than inventing a sixth shade, since maroon and
+      crimson are already used together as a gradient pair elsewhere (e.g.
+      `.home-cta.primary`).
+
+      **Verified live**, including the exact failure mode: loaded `/sign-in`
+      at 1000×420 (shorter than the widget's rendered height) and confirmed
+      the page scrolls to reveal the password field, Sign in button, and
+      sign-up link — all previously unreachable at that viewport. Confirmed
+      the button renders solid crimson (not Supabase's default green) and
+      inputs/borders read as brand cream-at-alpha, not gray. Confirmed both
+      navigation entry points (`AccountMenu`'s `<Link>`, `Home`'s Pro-tier
+      button) land on `/sign-in` correctly. No console errors.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build. `SignIn` is
+      its own ~59 kB lazy chunk (the `@supabase/auth-ui-react` weight), not
+      part of any eager bundle — same discipline F242 established when this
+      was still AccountMenu's lazy `AuthPanel` import.
+
+- [x] **F246 · /home now branches on plan — a signed-in Pro visitor gets a
+      real dashboard, not the marketing pitch they've already converted
+      from** — *2026-09-18, user request: a launch panel styled like the
+      Console, sections for marketplace/owned scenes/account, and concrete
+      placeholder ideas instead of generic "more coming soon"*
+      `src/routes/Home.tsx`, `src/styles/home.css`
+
+      `Home()` now checks `useEntitlement()` before rendering anything:
+      `plan === 'pro'` renders the new `ProDashboard`, everyone else
+      (free/anonymous) gets `MarketingHome` — the exact hero/features/
+      pricing/marketplace page F244 built, unchanged in content, just
+      renamed and no longer reachable by a signed-in Pro visitor. Guarded by
+      the same `authLoading` check `ControlSurface`/`AccountMenu` already
+      use, so a returning Pro visitor doesn't flash the marketing page for a
+      frame before Supabase resolves their session.
+
+      **The launch panel deliberately echoes the Console's own empty-preview
+      look** (console.css's `.mirror`/`.preview-head`/`.badge-ar` — black
+      box, 16:9, thin low-alpha border, centered dim label) rather than
+      inventing a new visual language for "this is where the engine lives" —
+      but renders nothing real, exactly as asked ("not actually in
+      function"). Its one job is the `Launch Lilim` button, a real
+      `navigate('/app')` — verified live: lands on Console with "no output /
+      no scene selected," pixel-for-pixel the same empty state the real
+      Console shows on a cold load.
+
+      **"Your scene library" is real data, not a placeholder** — pulled live
+      from `commerciallyShippableScenes()` (the same licensing-aware list
+      `scenes/index.ts` already exposes to `FREE_TIER_SCENE_IDS`), not a
+      hardcoded name list that could drift from the actual roster. Verified
+      live: reads "29 scenes unlocked with Pro," first 10 shown as chips,
+      "+19 more" — both numbers computed from the real array length, not
+      typed in.
+
+      **Three new placeholder ideas, each checked against what already
+      exists or is already promised** so none of them quietly contradicts
+      another part of the app (see the `DASHBOARD_PLACEHOLDERS` comment in
+      Home.tsx for the reasoning on each):
+        - *Set analytics* — a post-set history view, explicitly NOT the same
+          thing as `ui/AnalyticsPanel.tsx`, which is a live in-session debug
+          instrument (beat accuracy, frame time) with a different job.
+        - *Venue profiles* — saved per-room/per-rig settings, giving the
+          existing "Venues & Nightclubs" pricing tier's "multi-rig / multi-
+          room setups" line something concrete to point at.
+        - *Creator profile* — the account-side counterpart to Marketplace's
+          existing "Community creations" category (publishing needs
+          somewhere to publish TO).
+      Deliberately did NOT add a fourth tile for "Presets & cue timelines" —
+      `engine/presets.ts` already has a full data model for this (including
+      a `PerformanceCue[]` timeline), and the Pricing section already checks
+      it off as included for Pro. Listing it again as "coming soon" would
+      contradict that. **Separately worth flagging, not fixed here:** there
+      is no Console UI to actually save/load a preset or author a cue
+      timeline today, despite the engine support existing and Pricing
+      claiming it's included — a real gap between what's promised and what's
+      reachable, independent of this dashboard.
+
+      Marketplace's card reuses the exact `MARKETPLACE_CATEGORIES` data
+      `MarketingHome` already defines (one source of the three category
+      descriptions, not two copies to keep in sync).
+
+      Verified live in both directions: dev server (always-Pro) showed the
+      full dashboard correctly (scene chips, real counts, all four cards);
+      a production preview build with no session showed the unchanged
+      marketing page. No console errors either way.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+- [x] **F247 · F246 made ProDashboard the ONLY thing a Pro visitor could ever
+      reach at /home — every `#features`/`#pricing`/`#marketplace` link
+      (ProDashboard had none of its own, but /demo's badge, Account's nav,
+      and any old bookmark still pointed at them) got silently bounced back
+      to the dashboard, hash and all** — *2026-09-18, user report: "even if
+      signed in the features pricing marketplace show up as intended right
+      now it just redirects home page all the time," plus a request to add a
+      Home link to the profile menu* `src/routes/Home.tsx`, `src/ui/AccountMenu.tsx`
+
+      `Home()` branched purely on `plan`, never looking at the URL at all —
+      so `/home#pricing` and bare `/home` were indistinguishable to it. Fixed
+      by making the hash win: `SECTION_HASHES` (`features`/`pricing`/
+      `marketplace`) checked via `useLocation().hash`, not a one-time
+      `window.location.hash` read — this needs to react to a hash-ONLY
+      navigation (same `/home` pathname), which only a router-subscribed hook
+      catches. A bare `/home` still means "Pro's dashboard, the default"; a
+      section hash always wins regardless of plan.
+
+      Three follow-on fixes this reachability restore required:
+      - `ProDashboard` had no Features/Pricing/Marketplace nav of its own
+        (only AccountMenu) — added `<Link>`s to `/home#<section>`, so a Pro
+        visitor can reach them on purpose, not just via an incidental link
+        from elsewhere.
+      - `MarketingHome`'s Pricing-tier CTA had its `plan === 'pro'` branch
+        deleted in F246 on the (now wrong) assumption Pro could never render
+        this component. Restored — a Pro visitor viewing Pricing via the hash
+        now correctly sees "Open Lilim" / "You have full access," not stale
+        free/anonymous copy.
+      - AccountMenu's dropdown gained a **Home** link (`/account` and
+        `/home`, both real routes, are now both one click away from the same
+        menu — the profile menu the user asked for) — this is also the
+        return path from a hash-scoped MarketingHome view back to the bare
+        `/home` dashboard, since `Link to="/home"` clears the existing hash.
+
+      Verified live (dev server, always-Pro): confirmed a stale diagnostic
+      first — `window.scrollY` reads 0 on this layout because `.home` is
+      `position: fixed` with its OWN internal `overflow-y: auto` (the whole
+      app resets body scroll), so the real check is `.home`'s `scrollTop`,
+      which correctly read ~1090px after clicking Pricing from the
+      dashboard — landed on the Pricing section with correct Pro copy, not
+      bounced back. Confirmed the reverse too: navigating back to bare
+      `/home` returns to ProDashboard. No console errors.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+- [x] **F248 · SEO meta tags, favicon link, Venues mailto correction, and a
+      new /help feedback page** — *2026-09-18, user request (batched small
+      asks)* `index.html`, `src/routes/Home.tsx`, `src/routes/Help.tsx` (new),
+      `src/styles/help.css` (new), `src/routes/lazyRoutes.ts`, `src/App.tsx`,
+      `src/main.tsx`, `src/ui/AccountMenu.tsx`
+
+      `index.html` gained a real `<meta name="description">`, Open Graph and
+      Twitter card tags, and an explicit `<link rel="icon" href="/favicon.ico">`
+      — the user is dropping `favicon.ico` into `public/` themselves. `og:image`
+      deliberately omitted for now: a linked image that 404s reads worse on a
+      social share than no image tag, and there's no real image asset yet
+      (see the still-open screenshot handoff below).
+
+      Venues tier's mailto corrected from the placeholder `hello@lilim.app`
+      to the user's actual inbox, `lilim.aivj@gmail.com`.
+
+      **New `/help`** — title + body request/feedback form, reached from
+      AccountMenu's dropdown. Explicit scope per the request: no backend,
+      submitting just flips to a client-side "Thank you — submitted" state.
+      Nothing is sent, saved, or emailed anywhere — kept honest in code
+      comments and here even though the UI itself doesn't say so, since the
+      point was a complete-feeling loop to test, not a "Coming soon" label
+      like Marketplace/Billing got. Same safe top-down page-shell pattern as
+      `/sign-in` (F245) — no flex-centering, so a tall form can't clip on a
+      short viewport the way the old sign-in modal did.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+- [x] **F249 · Funnel analytics wired to PostHog — pageviews (including
+      hash-only navigation), demo connects, the Pro CTA, and an identify/
+      reset lifecycle tied to sign-in/out** — *2026-09-18, user request,
+      after a self-hosted-vs-third-party discussion; user provided a real
+      PostHog project token* `src/lib/posthogClient.ts` (new), `src/main.tsx`,
+      `src/App.tsx`, `src/auth/authStore.ts`, `src/routes/Visualizer.tsx`,
+      `src/routes/Home.tsx`, `.github/workflows/ci.yml`, `.env.local`,
+      `.env.example`, `package.json`
+
+      **Why PostHog over self-hosted**, for the record: real funnel/drop-off
+      visualization and session replay are substantial engineering to get
+      right from scratch (session stitching, time windows, dedup), and
+      PostHog's free tier (1M events/mo) needed only a 2-minute signup — no
+      new infrastructure, no in-app dashboard to build and maintain. The
+      trade discussed and accepted: visitor data now leaves this Supabase
+      project for a third party, and viewing the data means the PostHog
+      dashboard, not a page inside Lilim.
+
+      **The token is treated as public** (`VITE_POSTHOG_KEY`), same posture
+      as the Supabase anon key already in this codebase — PostHog's own docs
+      confirm this key is write-only (can't read data back out), so exposing
+      it client-side is the intended use, not a leak. Still handled the same
+      way as the Supabase keys for consistency: real value in `.env.local`
+      (gitignored, confirmed via `git check-ignore` before writing it — this
+      repo's `*.local` glob already covers it), placeholder in `.env.example`,
+      and `${{ secrets.VITE_POSTHOG_KEY }}` added to the CI deploy job's build
+      env — **the user still needs to add that secret to the GitHub repo
+      themselves** (same as they already did for the Supabase ones); this
+      session has no path to do that from here.
+
+      **Deferred via idle-callback + dynamic `import()`, not a static
+      top-level import.** The first pass imported `posthog-js` directly from
+      `main.tsx`, which is NOT code-split (see lazyRoutes.ts's own doc on why
+      `Landing` stays a static import) — that put the SDK's real weight
+      (~100 kB gzipped) straight into the tunnel's entry bundle, confirmed by
+      a build showing `index-*.js` jump from ~192 kB to ~292 kB gzipped.
+      Rebuilt to match `preloadVisualizer`'s existing pattern instead
+      (`requestIdleCallback` with a `setTimeout` fallback, dynamic `import()`)
+      — the rebuild's build output shows the entry bundle back at its
+      original size, with PostHog's weight isolated to its own ~102 kB lazy
+      chunk. Calls made before that idle-deferred import resolves — the very
+      first `$pageview`, fired from `App.tsx` on initial mount, reliably beats
+      any idle callback — are queued and replayed in order once the module
+      loads, rather than silently dropped; losing that specific event would
+      mean never seeing the actual top of the funnel.
+
+      **Deliberately narrow capture surface**, not PostHog's defaults:
+      `autocapture`, automatic `capture_pageview`, and session recording are
+      all off. None of those were asked for, and PostHog's autocapture in
+      particular records every click and input site-wide — turning it on
+      would mean tracking far more than "funnel analytics" was actually
+      scoped to. Pageviews are captured manually instead, from a small
+      `AnalyticsPageviewTracker` inside `<BrowserRouter>` keyed on
+      `location.key` (react-router's own per-navigation identity) rather than
+      `pathname` specifically so a hash-only change (`/home` → `/home#pricing`)
+      still re-fires it — `posthog-js`'s own automatic pageview capture only
+      fires once, on initial load, which would make every in-SPA navigation
+      invisible.
+
+      **Two custom events, chosen for what a raw pageview can't show:**
+      `demo_source_connected` (mic/system, fired from `DemoSurface`'s `pick`)
+      proves someone actually engaged with the free demo rather than bounced
+      off a blank canvas; `pro_cta_clicked` (tagged with `plan`) fires on
+      Home's Pricing-tier CTA in all three plan states, capturing sign-up
+      *intent* even for a visitor who abandons at the Google OAuth screen —
+      a completed sign-in alone would miss that.
+
+      **Identify/reset tied to the real auth transitions** — `authStore.ts`'s
+      `onAuthStateChange` now calls `identifyUser(session.user.id, {email})`
+      on `SIGNED_IN` and `resetIdentity()` on `SIGNED_OUT`, so whatever
+      anonymous activity preceded sign-in (viewed pricing, clicked the CTA)
+      gets tied to the account it became, and a later anonymous session on a
+      shared machine doesn't inherit the previous person's identity.
+
+      **Verified live**, not just by type/build, and past an initial false
+      alarm: a `vite dev` cold start triggered Vite's own dependency
+      re-optimization + auto-reload for the newly-added `posthog-js` import
+      (an unhandled rejection on the FIRST attempt, silently swallowed since
+      the original code had no `.catch()` — worth knowing if a future session
+      sees a similar one-time console error after adding a new dynamic
+      import), after which the module loaded cleanly. `read_network_requests`
+      never showed the SDK's own outbound calls even after a long wait — a
+      tooling/observability limit of this session's browser pane, not a real
+      failure: confirmed by manually POSTing to the exact same token/host/
+      endpoint posthog-js uses (`https://us.i.posthog.com/i/v0/e/`) with the
+      `fetch` API directly, which returned `{"status":"Ok"}` — proof the
+      token is valid, the region guess (US) is correct, and the ingestion
+      pipeline accepts events end-to-end. That direct call sent one real
+      event, `lilim_setup_verification`, into the project — harmless, but it
+      will show up in the dashboard's event list and is safe to ignore/filter.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+      **Still open, not done here:** the five screenshots for the marketing
+      "proof" section (console + 4 scene captures) are on the user's Desktop,
+      outside this session's filesystem sandbox even with it disabled —
+      `find`/`Read` can see them, `cp`/`sips`/`wc` cannot (a macOS TCC Desktop-
+      folder permission gap between whatever backs each tool, not something
+      `dangerouslyDisableSandbox` reaches). Needs the user to move the files
+      into the project themselves; three of the five also still have the
+      browser's fullscreen notification bar baked into the frame and need
+      cropping once they're in-repo. `og:image` is blocked on the same thing.
+
+- [x] **F250 · Real screenshots wired into a new "proof" section on the
+      marketing home page, and set as og:image — unprocessed, on the user's
+      explicit instruction not to crop them** — *2026-09-18, user moved the
+      five files into `public/proof/` themselves and said to include them
+      as-is, crop later* `src/routes/Home.tsx`, `src/styles/home.css`,
+      `index.html`, `public/proof/*.png` (new, 5 files)
+
+      New section between the hero and Features on `MarketingHome` — the
+      real Console mid-set plus the four scene captures in a grid. This
+      session tried to crop the three that still have the browser's
+      fullscreen notification bar baked into the frame first (scene2.png,
+      scene3.png, and faintly scene1.png) — `sips --cropOffset` (documented
+      as "crop offset from top left corner") accepted the flags without
+      error but silently produced no crop in every combination tried
+      (combined with `-c`, standalone, flag order reversed); a two-step
+      pad-then-crop composition was ruled out once a padding test confirmed
+      `sips -p` pads symmetrically too, and composing symmetric operations
+      can only ever produce a symmetric (equal top/bottom) result, never an
+      asymmetric top-only trim. Neither ImageMagick nor ffmpeg is installed
+      to fall back to. **Stopped there on explicit instruction** — the user
+      said not to crop at all and to include them as-is; cropping is
+      deliberately left for them to do later, however they choose to.
+
+      Every image ships at its native resolution with no CSS-level crop
+      either: the four scene shots are genuinely 2880×1800 (16:10) and the
+      grid tiles' `aspect-ratio: 16/10` matches that exactly, so
+      `object-fit: cover` never actually trims anything — it's there only in
+      case a future replacement image has a different native ratio.
+      `console.png` (2879×1625, ~16:9) gets no forced aspect ratio at all
+      (`height: auto`), for the same reason.
+
+      `og:image`/`twitter:image` in `index.html` now point at
+      `/proof/console.png` (relative path — resolves fine for social
+      crawlers without hardcoding a production domain this session isn't
+      certain of).
+
+      Verified live: reloaded `/home` and hit a real transient layout bug
+      while these multi-megabyte PNGs (console.png 1.5 MB; the four scene
+      shots 4–11 MB each) were still decoding — confirmed by re-screenshotting
+      after a longer wait, which resolved cleanly to the intended layout
+      (console image full-width at its natural ratio, four scene shots in a
+      2×2 grid at this session's ~800px pane width, matching the `860px`
+      mobile breakpoint already in `home.css`). No console errors.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.

@@ -13,12 +13,12 @@ export function UnsupportedScreen({ reason }: UnsupportedScreenProps) {
   return (
     <div className="overlay">
       <div className="start-card glass">
-        <h1>AudioVis</h1>
+        <h1>Lilim</h1>
         <p className="tagline">Real-time generative visuals, driven by your music.</p>
         <p className="error">
           {reason === 'mobile'
-            ? "AudioVis isn't available on mobile yet — it needs a desktop browser to capture audio and drive the GPU visuals."
-            : "Your browser doesn't support WebGL2, which AudioVis requires to render."}
+            ? "Lilim isn't available on mobile yet — it needs a desktop browser to capture audio and drive the GPU visuals."
+            : "Your browser doesn't support WebGL2, which Lilim requires to render."}
         </p>
         <p className="hint">
           {reason === 'mobile'

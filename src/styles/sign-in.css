@@ -1,0 +1,97 @@
+/* /sign-in — same reasoning as pricing.css/features.css: brand tokens
+   redeclared locally since this repo has no global token layer.
+   Deliberately NOT flex-centered vertically (see SignIn.tsx's doc for why —
+   that's what clipped the old modal on short viewports): ordinary top-down
+   flow inside this root's own overflow-y: auto, same safe pattern
+   .account/.home already use. */
+.sign-in {
+  --black: #000000;
+  --cream: #fdf0d5;
+  --cream-rgb: 253, 240, 213;
+  --maroon: #780000;
+  --brick: #c1121f;
+  --purple: #510049;
+
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--black);
+  color: var(--cream);
+}
+
+.sign-in::before {
+  content: '';
+  position: absolute;
+  top: -20%;
+  left: 50%;
+  width: 1400px;
+  height: 900px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, rgba(81, 0, 73, 0.35), rgba(120, 0, 0, 0.12) 45%, transparent 70%);
+  pointer-events: none;
+}
+
+.sign-in-nav {
+  position: relative;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 32px 0;
+}
+
+.sign-in-mark {
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  color: var(--cream);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sign-in-body {
+  position: relative;
+  max-width: 380px;
+  margin: 0 auto;
+  padding: 56px 24px 100px;
+  text-align: center;
+}
+
+.sign-in-eyebrow {
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, var(--brick), var(--purple));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.sign-in-title {
+  margin-top: 14px;
+  font-family: var(--t-display, inherit);
+  font-size: clamp(28px, 4.4vw, 36px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--cream);
+}
+
+.sign-in-sub {
+  margin-top: 10px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: rgba(var(--cream-rgb), 0.6);
+}
+
+.sign-in-widget {
+  margin-top: 32px;
+  text-align: left;
+}
+
+.sign-in-error {
+  margin-top: 32px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(var(--cream-rgb), 0.75);
+}

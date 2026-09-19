@@ -7,16 +7,22 @@
 
 :root {
   --t-void: #04040b;
-  --t-violet: #7b4dff;
-  --t-cyan: #3fe0ff;
-  --t-ember: #ffb35c;
-  --t-rose: #ff5fa2;
+  /* Brand palette (console.css's --maroon/--cream, extended in hero.css) —
+     these four were an unrelated cyan/violet/amber/rose set before. Every
+     chrome element below reads through these tokens, so redeclaring just the
+     four re-themes the whole tunnel UI without touching each usage site. The
+     3D scene itself (TunnelScene.tsx) reads none of these — untouched by
+     design, see the memory note this session left on why. */
+  --t-violet: #510049;
+  --t-cyan: #c1121f;
+  --t-ember: #fdf0d5;
+  --t-rose: #780000;
 
-  --t-ink-1: rgba(237, 233, 255, 1);
-  --t-ink-2: rgba(237, 233, 255, 0.78);
-  --t-ink-3: rgba(237, 233, 255, 0.52);
-  --t-ink-4: rgba(237, 233, 255, 0.14);
-  --t-hair: rgba(237, 233, 255, 0.12);
+  --t-ink-1: rgba(253, 240, 213, 1);
+  --t-ink-2: rgba(253, 240, 213, 0.78);
+  --t-ink-3: rgba(253, 240, 213, 0.52);
+  --t-ink-4: rgba(253, 240, 213, 0.14);
+  --t-hair: rgba(253, 240, 213, 0.12);
 
   --t-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   --t-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -157,6 +163,29 @@
     opacity: 1;
     transform: scale(1.25);
   }
+}
+
+.tnav {
+  position: absolute;
+  top: var(--t-gut);
+  right: var(--t-gut);
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.tnavlink {
+  font-family: var(--t-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--t-ink-3);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+.tnavlink:hover {
+  color: var(--t-ink-1);
 }
 
 .tinstrument {
@@ -335,6 +364,25 @@
 }
 .tchapter-cta:hover svg {
   transform: translateX(4px);
+}
+.tchapter-ctas {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 28px;
+}
+/* Dimmer, monochrome version of the same underline-reveal mechanic — the demo
+   link sits next to the gradient-underlined primary CTA without competing
+   with it for attention. */
+.tchapter-cta.secondary {
+  color: var(--t-ink-2);
+}
+.tchapter-cta.secondary::after {
+  background: var(--t-ink-2);
+  opacity: 0.35;
+}
+.tchapter-cta.secondary:hover {
+  color: var(--t-ink-1);
 }
 
 /* ---------- console ---------- */

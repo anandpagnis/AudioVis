@@ -1,0 +1,185 @@
+/* /help — same reasoning as sign-in.css: brand tokens redeclared locally,
+   ordinary top-down flow inside this root's own overflow-y: auto (never
+   flex-centered — see sign-in.css's note on why that clips tall content). */
+.help {
+  --black: #000000;
+  --cream: #fdf0d5;
+  --cream-rgb: 253, 240, 213;
+  --maroon: #780000;
+  --brick: #c1121f;
+  --purple: #510049;
+
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--black);
+  color: var(--cream);
+}
+
+.help::before {
+  content: '';
+  position: absolute;
+  top: -20%;
+  left: 50%;
+  width: 1400px;
+  height: 900px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, rgba(81, 0, 73, 0.35), rgba(120, 0, 0, 0.12) 45%, transparent 70%);
+  pointer-events: none;
+}
+
+.help-nav {
+  position: relative;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 32px 0;
+}
+
+.help-mark {
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  color: var(--cream);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.help-body {
+  position: relative;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 56px 24px 100px;
+  text-align: center;
+}
+
+.help-eyebrow {
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, var(--brick), var(--purple));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.help-title {
+  margin-top: 14px;
+  font-family: var(--t-display, inherit);
+  font-size: clamp(28px, 4.4vw, 36px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--cream);
+}
+
+.help-sub {
+  margin-top: 10px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: rgba(var(--cream-rgb), 0.6);
+}
+
+.help-form {
+  margin-top: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  text-align: left;
+}
+
+.help-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.help-field-label {
+  font-size: 12px;
+  color: rgba(var(--cream-rgb), 0.55);
+}
+
+.help-input,
+.help-textarea {
+  appearance: none;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--cream-rgb), 0.16);
+  background: rgba(var(--cream-rgb), 0.04);
+  padding: 12px 14px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--cream);
+  transition: border-color 0.2s ease;
+}
+.help-input::placeholder,
+.help-textarea::placeholder {
+  color: rgba(var(--cream-rgb), 0.32);
+}
+.help-input:focus,
+.help-textarea:focus {
+  outline: none;
+  border-color: var(--brick);
+}
+.help-textarea {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.help-submit {
+  appearance: none;
+  margin-top: 4px;
+  border: none;
+  border-radius: 999px;
+  padding: 13px 20px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cream);
+  background: linear-gradient(120deg, var(--maroon), var(--brick));
+  box-shadow: 0 12px 26px -12px rgba(193, 18, 31, 0.55);
+  cursor: pointer;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    opacity 0.2s ease;
+}
+.help-submit:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 32px -12px rgba(193, 18, 31, 0.65);
+}
+.help-submit:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}
+
+.help-thanks {
+  margin-top: 40px;
+}
+.help-thanks-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--cream);
+}
+.help-thanks-body {
+  margin-top: 8px;
+  font-size: 13.5px;
+  color: rgba(var(--cream-rgb), 0.6);
+}
+
+.help-navlink {
+  appearance: none;
+  background: none;
+  border: none;
+  margin-top: 20px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brick);
+  cursor: pointer;
+}
+.help-navlink:hover {
+  color: var(--cream);
+}

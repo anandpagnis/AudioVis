@@ -90,6 +90,9 @@
   letter-spacing: 0.01em;
   color: var(--cream);
   flex-shrink: 0;
+  /* Now a <Link> back to / — plain wordmark look, not an underlined link. */
+  text-decoration: none;
+  cursor: pointer;
 }
 
 .signal-chip {

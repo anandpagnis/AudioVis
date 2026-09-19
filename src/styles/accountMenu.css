@@ -1,0 +1,123 @@
+/* AccountMenu — dropped into every page's own nav (tunnel masthead, Home's
+   nav, the Console TopBar). Hardcodes the brand's five hex values locally
+   (see the component's own doc for why) rather than reading a host page's
+   differently-named tokens. */
+.account-menu {
+  --am-black: #000000;
+  --am-cream: #fdf0d5;
+  --am-cream-rgb: 253, 240, 213;
+  --am-crimson: #c1121f;
+  --am-maroon: #780000;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* A <Link> (F245), not a <button> — needs its own decoration/display reset. */
+.account-menu-signin {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(var(--am-cream-rgb), 0.25);
+  background: transparent;
+  border-radius: 999px;
+  padding: 7px 16px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: rgba(var(--am-cream-rgb), 0.9);
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.account-menu-signin:hover {
+  border-color: rgba(var(--am-cream-rgb), 0.5);
+  background: rgba(var(--am-cream-rgb), 0.06);
+}
+
+.account-menu-avatar {
+  appearance: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(var(--am-cream-rgb), 0.3);
+  background: linear-gradient(135deg, var(--am-maroon), var(--am-crimson));
+  color: var(--am-cream);
+  font: 700 13px/1 var(--t-mono, ui-monospace, monospace);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+.account-menu-avatar:hover {
+  border-color: rgba(var(--am-cream-rgb), 0.6);
+}
+.account-menu-avatar[aria-expanded='true'] {
+  transform: scale(0.94);
+}
+
+.account-menu-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--am-cream-rgb), 0.14);
+  background: rgba(8, 6, 7, 0.96);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+  box-shadow: 0 20px 48px -18px rgba(0, 0, 0, 0.8);
+}
+
+.account-menu-email {
+  padding: 12px 14px 4px;
+  font-size: 12.5px;
+  color: rgba(var(--am-cream-rgb), 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-menu-plan {
+  margin: 6px 14px 10px;
+  align-self: flex-start;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.account-menu-plan.plan-pro {
+  color: var(--am-cream);
+  background: rgba(193, 18, 31, 0.35);
+  border: 1px solid rgba(193, 18, 31, 0.6);
+}
+.account-menu-plan.plan-free {
+  color: rgba(var(--am-cream-rgb), 0.7);
+  background: rgba(var(--am-cream-rgb), 0.08);
+  border: 1px solid rgba(var(--am-cream-rgb), 0.16);
+}
+
+.account-menu-link {
+  appearance: none;
+  border: none;
+  background: none;
+  border-top: 1px solid rgba(var(--am-cream-rgb), 0.08);
+  padding: 11px 14px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: rgba(var(--am-cream-rgb), 0.9);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.account-menu-link:hover {
+  background: rgba(var(--am-cream-rgb), 0.08);
+}

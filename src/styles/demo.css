@@ -1,0 +1,196 @@
+/* /demo's minimal chrome — logo, free badge, audio-source picker. Sits over
+   the live Stage rather than blocking it behind a modal, so the scene is
+   what a visitor sees first. Brand tokens redeclared locally, matching
+   pricing.css's own reasoning (no global token layer in this repo, and
+   console.css's --maroon/--cream/--black are scoped to .console). */
+.demo-surface {
+  --cream: #fdf0d5;
+  --cream-rgb: 253, 240, 213;
+  --maroon: #780000;
+  --brick: #c1121f;
+}
+
+.demo-chrome {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 24px 28px;
+  /* The bar itself never blocks the scene underneath — only its own
+     children (logo, badge, button) are clickable. */
+  pointer-events: none;
+}
+
+.demo-logo {
+  pointer-events: auto;
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  color: rgba(var(--cream-rgb), 0.9);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+/* Centered prompt while nothing is connected — the scene renders but has
+   nothing driving it, and the only other cue is a small top-right button a
+   first-time visitor has no reason to look for. Also itself a shortcut into
+   the source picker. */
+.demo-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--cream-rgb), 0.18);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  color: rgba(var(--cream-rgb), 0.85);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  animation: demo-hint-pulse 2.6s ease-in-out infinite;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.demo-hint:hover {
+  background: rgba(0, 0, 0, 0.6);
+  border-color: rgba(var(--cream-rgb), 0.35);
+  animation-play-state: paused;
+}
+
+.demo-hint-arrow {
+  color: var(--brick);
+  font-size: 16px;
+}
+
+@keyframes demo-hint-pulse {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .demo-hint {
+    animation: none;
+  }
+}
+
+.demo-controls {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.demo-free-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(193, 18, 31, 0.5);
+  background: rgba(120, 0, 0, 0.35);
+  color: var(--cream);
+  font-family: var(--t-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+  backdrop-filter: blur(6px);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.demo-free-badge:hover {
+  background: rgba(193, 18, 31, 0.45);
+  border-color: rgba(193, 18, 31, 0.8);
+}
+
+.demo-source {
+  position: relative;
+}
+
+.demo-source-btn {
+  appearance: none;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--cream-rgb), 0.25);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  color: rgba(var(--cream-rgb), 0.9);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.demo-source-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.6);
+  border-color: rgba(var(--cream-rgb), 0.45);
+}
+.demo-source-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.demo-source-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--cream-rgb), 0.14);
+  background: rgba(10, 8, 9, 0.92);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+  box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.7);
+}
+
+.demo-source-panel button {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 11px 14px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: rgba(var(--cream-rgb), 0.9);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.demo-source-panel button:hover {
+  background: rgba(var(--cream-rgb), 0.08);
+}
+.demo-source-panel button + button {
+  border-top: 1px solid rgba(var(--cream-rgb), 0.08);
+}
+
+.demo-error {
+  position: absolute;
+  top: 68px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  max-width: 360px;
+  margin: 0;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(193, 18, 31, 0.4);
+  background: rgba(120, 0, 0, 0.25);
+  backdrop-filter: blur(8px);
+  color: #ffb4b4;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+}

@@ -2934,6 +2934,32 @@ export function commerciallyShippableScenes(): SceneDef[] {
 }
 
 /**
+ * The free/anonymous tier's scene pool — used by the public /demo route to
+ * restrict what its autopilot can pick (see setSceneWhitelist below). Drawn
+ * only from commerciallyShippableScenes(), never from DISABLED_SCENES: that
+ * list is a licensing gate, this is a business one, and the two must never be
+ * conflated. The first five in registration order, not a hand-curated "best
+ * of" pick — swap in explicit ids here if the demo should show something more
+ * deliberately chosen.
+ */
+export const FREE_TIER_SCENE_IDS: readonly string[] = commerciallyShippableScenes()
+  .slice(0, 5)
+  .map((s) => s.id)
+
+/**
+ * Restricts getScenesForMood()'s candidate pool to these ids, or lifts the
+ * restriction when passed null. The only consumer today is the /demo route
+ * (see routes/Visualizer.tsx's DemoSurface) — a signed-in-but-not-Pro visitor
+ * to /app never reaches this at all, since ControlSurface shows a paywall
+ * instead of mounting <Console/>/<Stage/> for them in the first place.
+ */
+export function setSceneWhitelist(ids: readonly string[] | null): void {
+  activeSceneWhitelist = ids
+}
+
+let activeSceneWhitelist: readonly string[] | null = null
+
+/**
  * Look up a scene by id, falling back to `SCENES[0]`.
  *
  * The fallback is deliberate and load-bearing: a persisted `sceneId`, a preset,
@@ -2977,9 +3003,16 @@ export function getResolvedManifest(id: string): SceneManifestExt {
  * has no role check of its own.
  */
 export function getScenesForMood(mood: MoodState, role?: SceneRole): SceneDef[] {
-  return SCENES.filter(
+  const pool = SCENES.filter(
     (s) => s.metadata.moods.includes(mood) && (!role || s.metadata.roles.includes(role)),
   ).sort((a, b) => (b.metadata.moodFit?.[mood] ?? 0.5) - (a.metadata.moodFit?.[mood] ?? 0.5))
+  if (!activeSceneWhitelist) return pool
+  // Falls back to the unfiltered pool rather than returning empty: a mood
+  // with no whitelisted fit must never stall the autopilot, which has no
+  // other way to signal "nothing to pick" back up to its caller.
+  const allowed = new Set(activeSceneWhitelist)
+  const restricted = pool.filter((s) => allowed.has(s.id))
+  return restricted.length > 0 ? restricted : pool
 }
 
 /** {@link getScenesForMood}, filtered to scenes actually eligible to be primary. */

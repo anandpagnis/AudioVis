@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { audioEngine, type ResponseTuning, type SourceKind } from './audio/AudioEngine'
-import { beginHandoff, endHandoff, handSource, isOutput } from './engine/outputLink'
+import { beginHandoff, endHandoff, handSource, isDemoWindow, isOutput } from './engine/outputLink'
 import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
@@ -875,7 +875,12 @@ export const useStore = create<AppState>()(
         // freshly opened window does not) and the output window analyses. The
         // stream crosses by direct reference because a MediaStream does not
         // survive a structured clone.
-        if (!isOutput()) {
+        //
+        // The public /demo window is neither of those windows — it is both at
+        // once, alone, with no pairing to wait for — so it takes the same
+        // self-acquire branch below as a real output window. See
+        // isDemoWindow's own doc in outputLink.ts.
+        if (!isOutput() && !isDemoWindow()) {
           const token = ++handoffToken
           // Holds telemetry off `status` for the length of the prompt; see
           // shouldAdoptStatus, which exists because of this exact window.
