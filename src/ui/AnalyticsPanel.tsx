@@ -332,10 +332,11 @@ export function AnalyticsPanel() {
       const ess = essentiaBridge.status
       if (ess.error) {
         ctx.fillStyle = 'rgba(255, 138, 101, 0.9)'
-        ctx.fillText(`essentia  ${ess.error.slice(0, 40)}`, 6, 212)
+        ctx.fillText(`intel  ${ess.error.slice(0, 40)}`, 6, 212)
       } else if (ess.keyRuns === 0 && ess.danceRuns === 0) {
         ctx.fillStyle = 'rgba(255,255,255,0.35)'
-        ctx.fillText('essentia  (awaiting first 12s window)', 6, 212)
+        // Also shown forever in commercial builds, where the intel provider is a no-op.
+        ctx.fillText('intel  (off, or awaiting first 12s window)', 6, 212)
       } else {
         const keyTxt = f.key ? `${f.key} ${f.scale}` : '—'
         // The bridge refuses to spend the worker during silence

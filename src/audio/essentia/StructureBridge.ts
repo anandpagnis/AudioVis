@@ -45,6 +45,8 @@ class StructureBridge {
   }
 
   private worker: Worker | null = null
+  /** Injected by `intel/EssentiaProvider` — see EssentiaBridge.workerFactory. */
+  private workerFactory: (() => Worker) | null = null
   private ring: Float32Array | null = null
   private ringWrite = 0
   private ringFilled = 0
@@ -57,6 +59,10 @@ class StructureBridge {
   private pending: StructureResult | null = null
   private window: Float32Array | null = null
   private disabled = false
+
+  setWorkerFactory(factory: (() => Worker) | null) {
+    this.workerFactory = factory
+  }
 
   /** Called by EssentiaBridge's AudioWorklet tap — one worklet feeds all bridges. */
   pushPcm(block: Float32Array, sampleRate: number) {
@@ -142,9 +148,8 @@ class StructureBridge {
     if (this.worker) return true
     if (this.disabled) return false
     try {
-      const worker = new Worker(new URL('./structure.worker.ts', import.meta.url), {
-        type: 'module',
-      })
+      if (!this.workerFactory) throw new Error('worker factory not registered')
+      const worker = this.workerFactory()
       worker.onmessage = (e: MessageEvent<StructureResponse>) => {
         this.busy = false
         const r = e.data

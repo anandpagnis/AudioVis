@@ -65,8 +65,11 @@ Confirmed before adding anything:
   written authorization from Jamendo S.A." Local testing of a personal,
   non-commercial tool sits inside that. Shipping these files in a product does
   not — contact hello@jamendo.com if that ever changes.
-- **Per-track**: four tracks are CC BY-SA, four are CC BY-NC-SA. Exact license
-  and URL per track are in `tracks.json`.
+- **Per-track**: five tracks are CC BY-NC-SA 3.0 and three are CC BY-SA (two
+  3.0, one 2.0). Exact license and URL per track are in `tracks.json`. Five of
+  the eight being NonCommercial is a further reason this corpus is for local
+  evaluation only and must never be bundled, redistributed or used to train
+  weights that ship - see `docs/LICENSES.md`.
 - **NoDerivatives excluded on purpose.** Several otherwise-good candidates were
   CC BY-NC-**ND**. Trimming a clip is an adaptation, which ND forbids — so
   selecting only BY-SA / BY-NC-SA keeps local trimming legitimate. If you add

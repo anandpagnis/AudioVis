@@ -190,6 +190,8 @@ export interface Telemetry {
   beatInBar: number
   phraseProgress: number
   mood: string
+  /** The character layer's held primary mood (one of 14), '' until its first valid read. Optional so an older output window still parses. */
+  character?: string
   scene: string
   palette: string
   tier: number
@@ -842,6 +844,7 @@ export function publishTelemetry(nowMs = performance.now()): void {
       beatInBar: f.beatInBar,
       phraseProgress: f.phraseProgress,
       mood: f.mood.state,
+      character: f.character.valid ? (f.character.primary ?? '') : '',
       scene: performanceState.activeScene,
       palette: performanceState.palette,
       tier: quality.tier,

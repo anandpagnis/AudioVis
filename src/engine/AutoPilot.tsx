@@ -12,7 +12,10 @@ import { keyPaletteTracker } from './keyPalette'
 import { deriveVAFromList } from './moodValenceArousal'
 import { PALETTES } from './palettes'
 import { vaDistance, type ValenceArousal } from './valenceArousal'
-import { getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
+import { getCharacterCandidates, getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
+import { characterPickEnabled, pickByCharacter, songSeedFor } from './characterPick'
+import { CharacterShiftTrigger } from './characterShift'
+import { pickPaletteByCharacter } from './paletteCharacter'
 import { performanceState } from './performanceState'
 import { useStore } from '../store'
 
@@ -266,12 +269,14 @@ export function pickPaletteWithRecall(
   repetitionLabel: string,
   recallMap: Map<string, string>,
   currentVA?: ValenceArousal,
+  /** Character-driven fresh pick (`paletteCharacter.ts`); when it returns null the original mood-pool pick runs. */
+  characterPick?: () => string | null,
 ): string | null {
   const recalled = repetitionLabel ? recallMap.get(repetitionLabel) : undefined
   const pick =
     recalled && recalled !== current && moodPalettes.includes(recalled)
       ? recalled
-      : pickPalette(moodPalettes, current, keyFamily, lastPick, rotation, currentVA)
+      : (characterPick?.() ?? pickPalette(moodPalettes, current, keyFamily, lastPick, rotation, currentVA))
   if (pick && repetitionLabel) recallMap.set(repetitionLabel, pick)
   return pick
 }
@@ -305,6 +310,8 @@ export function AutoPilot() {
   const lastAutoTriggerAt = useRef(-Infinity)
   /** Deterministic cycle position — not random, so a recorded set repeats. */
   const paletteRotation = useRef(0)
+  /** Most-recent-first palettes already shown, for the character picker's novelty term. */
+  const recentPalettes = useRef<string[]>([])
   /** The same idea for modes, on its own counter: sharing the palette's would
    *  couple a scene's look to how often the colours happened to change. */
   const modeRotation = useRef(0)
@@ -314,6 +321,8 @@ export function AutoPilot() {
    *  few bars the arm is abandoned. */
   const preArmed = useRef(false)
   const preArmBeat = useRef(-Infinity)
+  /** Latches a change of the music's character so it can request a scene — see {@link CharacterShiftTrigger}. */
+  const charShift = useRef(new CharacterShiftTrigger())
 
   useFrame(() => {
     const f = audioEngine.features
@@ -327,19 +336,27 @@ export function AutoPilot() {
     // the drop edge above: the tracker needs a settled opinion the moment
     // automation resumes, not to start counting from zero then.
     keyPaletteTracker.update(f.key, f.scale, f.time)
+    // Same reason: a character shift during a manual hold or cutaway must latch, not vanish.
+    // Off with the rest of the character path under `?scenepick=legacy`.
+    if (characterPickEnabled()) charShift.current.observe(f.character)
+    else charShift.current.reset()
     // A new source restarts the engine clock at 0, which would leave the
     // cooldown stamp in the future and freeze the palette for the whole of the
     // next track. These refs outlive a source change; the clock does not.
     if (f.time < lastPaletteAt.current) {
       lastPaletteAt.current = -Infinity
       lastPalettePick.current = ''
+      recentPalettes.current = []
       // A new source restarts SectionTracker too, so its A/B/C… labels are
       // free to be reused for structurally unrelated segments — a stale
       // mapping recorded against the previous track's "A" must not leak into
       // a recall for this one.
       repetitionPalette.current.clear()
     }
-    if (f.time < lastAutoTriggerAt.current) lastAutoTriggerAt.current = -Infinity
+    if (f.time < lastAutoTriggerAt.current) {
+      lastAutoTriggerAt.current = -Infinity
+      charShift.current.reset()
+    }
 
     if (!s.autoPilot || s.status !== 'running' || f.silence) return
     if (cueState.governed) return // authored cues own the journey
@@ -416,6 +433,13 @@ export function AutoPilot() {
         handledChange.current = pendingChange.current
         target = m.state
         prefetchedFor.current = null
+      } else if (charShift.current.take(f.time, lastAutoTriggerAt.current)) {
+        // The music's character moved (e.g. serene -> tense) without the 7-state
+        // mood flipping, which only tracks intensity. The picker below reads the
+        // live character, so aiming at the committed state is enough to ask for
+        // a fresh look that fits the new passage.
+        target = m.state
+        prefetchedFor.current = null
       } else if (f.time - lastAutoTriggerAt.current >= STALE_TARGET_SEC) {
         // F135: no edge has fired in a while even though playback is live and
         // unmuted. Aim at whatever is currently committed — not a guess, it's
@@ -425,7 +449,10 @@ export function AutoPilot() {
         prefetchedFor.current = null
       }
     }
-    if (target !== null) lastAutoTriggerAt.current = f.time
+    if (target !== null) {
+      lastAutoTriggerAt.current = f.time
+      charShift.current.consume()
+    }
     // --- Palette: a deliberately WIDER trigger than the scene switch below ---
     //
     // Colour is the cheapest way to mark structure, and section boundaries
@@ -451,20 +478,37 @@ export function AutoPilot() {
       // from the new mood's list, and the lists overlap heavily — `aurora`
       // alone sits in ambient, mellow, groove AND building, so a whole arc
       // could pass without a single switch.
+      // Character-driven when the character read is ready: choose among EVERY palette by fit to
+      // the music's valence/arousal/tension (the key is a nudge, not an override). Otherwise the
+      // original mood-pool pick runs unchanged (`?scenepick=legacy` also forces that).
+      const useCharacter = characterPickEnabled() && f.character.valid && f.character.primary !== null
+      const rotation = paletteRotation.current++
       const pick = pickPaletteWithRecall(
-        MOOD_PALETTES[paletteMood] ?? [],
+        useCharacter ? PALETTES.map((p) => p.id) : (MOOD_PALETTES[paletteMood] ?? []),
         s.paletteId,
         keyPaletteTracker.family,
         lastPalettePick.current,
-        paletteRotation.current++,
+        rotation,
         // Only a validated structure read carries a trustworthy label — same
         // gate `inSustain`/`structureRecolour` already apply to the rest of
         // `f.songSection` below.
         f.structureValid ? f.songSection.repetitionLabel : '',
         repetitionPalette.current,
         { valence: performanceState.valence, arousal: performanceState.arousal },
+        useCharacter
+          ? () =>
+              pickPaletteByCharacter({
+                character: f.character,
+                current: s.paletteId,
+                recentIds: recentPalettes.current,
+                keyFamily: keyPaletteTracker.family,
+                songSeed: songSeedFor(f.character, f.key, f.time),
+                rotation,
+              })
+          : undefined,
       )
       if (pick) {
+        recentPalettes.current = [pick, ...recentPalettes.current.filter((id) => id !== pick)].slice(0, 6)
         lastPalettePick.current = pick
         lastPaletteAt.current = f.time
         s.setPalette(pick, { auto: true })
@@ -523,7 +567,17 @@ export function AutoPilot() {
       // MOOD_VA.building's negative valence vs peak/aggressive's. Weighting
       // by the current read would bias the pre-arm pick toward the build's
       // own anticipatory character instead of the drop's.
-      const armPick = pickVariedScene(armCands, hypeMood, s.recentSceneIds)
+      // Character-driven when the character read is ready (arousal lifted to the drop's level);
+      // otherwise the original mood-label pick.
+      const armPick =
+        pickByCharacter(getCharacterCandidates(), {
+          character: f.character,
+          key: f.key,
+          now: f.time,
+          recentIds: s.recentSceneIds,
+          exclude: [s.sceneId],
+          minArousal: 0.85,
+        }) ?? pickVariedScene(armCands, hypeMood, s.recentSceneIds)
       if (armPick && s.requestScene(armPick.id, { auto: true, immediate: false })) {
         const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++)
         if (armMode) s.setSceneMode(armPick.id, armMode, { auto: true })
@@ -568,10 +622,24 @@ export function AutoPilot() {
     // the voice worker hasn't produced a read yet.
     const voiceBoost = (scene: (typeof candidates)[number]) =>
       f.moodsValid && f.vocalPresence > 0.5 && scene.metadata.bands.includes('vocal') ? 1.6 : 1
-    const pick = pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost, {
-      valence: performanceState.valence,
-      arousal: performanceState.arousal,
-    })
+    // Character-driven pick first: it chooses by where the music sits in
+    // valence/arousal/tension/pulse space over EVERY primary-capable scene, so two
+    // songs of different character no longer share the same mood-label pool. It
+    // returns null until the character read is ready (or under ?scenepick=legacy),
+    // and then the original mood-label pick below runs unchanged.
+    const pick =
+      pickByCharacter(getCharacterCandidates(), {
+        character: f.character,
+        key: f.key,
+        now: f.time,
+        recentIds: s.recentSceneIds,
+        exclude: [s.sceneId, s.pendingSceneId ?? ''],
+        boost: voiceBoost,
+      }) ??
+      pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost, {
+        valence: performanceState.valence,
+        arousal: performanceState.arousal,
+      })
     // A drop is the one trigger that must land on the moment rather than on the
     // next bar: SceneManager skips the downbeat wait and hard-cuts. Every other
     // trigger here (a mood change, a predicted transition) is a section-scale

@@ -7,6 +7,7 @@ import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
 import { startRecording, stopRecording, type ExportPreset } from './engine/recorder'
 import { canHoldPrimary, canHoldRole, getSceneContract, preloadScene, resolveSceneMode } from './scenes'
+import { RECENCY_DEPTH } from './scenes/character'
 import {
   resolveSceneParams,
   sanitizeSceneParams,
@@ -1275,7 +1276,7 @@ export const useStore = create<AppState>()(
         if (pending) {
           const recent = [pending, ...get().recentSceneIds.filter((id) => id !== pending)].slice(
             0,
-            4,
+            RECENCY_DEPTH,
           )
           set({
             sceneId: pending,

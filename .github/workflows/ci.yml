@@ -40,6 +40,10 @@ jobs:
           # Supabase anon key above, still a repo secret for consistency and
           # so it's not hand-typed into this file.
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+      # Licence gate: never deploy a bundle containing essentia.js (AGPL-3.0)
+      # or the non-commercial MusiCNN models. `check` already ran this after its
+      # own build; this re-checks the exact artefact that is about to ship.
+      - run: npm run check:licences
       - run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

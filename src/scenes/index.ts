@@ -3015,6 +3015,22 @@ export function getScenesForMood(mood: MoodState, role?: SceneRole): SceneDef[] 
   return restricted.length > 0 ? restricted : pool
 }
 
+/**
+ * Every scene that may be the PRIMARY, regardless of its mood tags, for the
+ * character-driven picker (`engine/characterPick.ts`). Deliberately NOT
+ * filtered by mood: that filter is what made the per-mood pools overlap ~90%
+ * and every song play the same scenes. Scenes with `moods: []` (limitless,
+ * djcam) stay excluded, as they always were. Same whitelist fallback as
+ * {@link getScenesForMood}.
+ */
+export function getCharacterCandidates(): SceneDef[] {
+  const pool = SCENES.filter((s) => s.metadata.moods.length > 0 && s.metadata.roles.includes('primary'))
+  if (!activeSceneWhitelist) return pool
+  const allowed = new Set(activeSceneWhitelist)
+  const restricted = pool.filter((s) => allowed.has(s.id))
+  return restricted.length > 0 ? restricted : pool
+}
+
 /** {@link getScenesForMood}, filtered to scenes actually eligible to be primary. */
 export function getPrimaryScenesForMood(mood: MoodState): SceneDef[] {
   return getScenesForMood(mood).filter((s) => s.metadata.roles.includes('primary'))
@@ -3101,7 +3117,9 @@ export function pickVariedScene(
     const recentIndex = recentIds.indexOf(scene.id)
     // Decaying penalty: the most recently shown scene is heavily
     // discounted, less so further back, gone after 4 picks.
-    const recencyPenalty = recentIndex === -1 ? 1 : [0.1, 0.3, 0.55, 0.8][recentIndex]
+    // recentIds can be deeper than this table (the store keeps 12 for the character picker), so
+    // anything past the table's end is "not recent" for this picker, never undefined/NaN.
+    const recencyPenalty = recentIndex === -1 ? 1 : ([0.1, 0.3, 0.55, 0.8][recentIndex] ?? 1)
     let vaFactor = 1
     if (currentVA && scene.metadata.moodFit) {
       const sceneVA = deriveVA(scene.metadata.moodFit)

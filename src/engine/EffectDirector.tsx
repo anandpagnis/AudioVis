@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
+import { lookOf } from '../audio/characterLook'
 import type { AudioFeatures } from '../audio/types'
 import { cueState } from './CueTimeline'
 import { performanceState, type ActiveEffect } from './performanceState'
@@ -211,7 +212,7 @@ export function EffectDirector() {
       committedMs: committedMs(),
       tier: quality.tier,
       lastFiredAt: lastFiredAt.current,
-      mood: f.mood.state,
+      mood: lookOf(f.mood),
       recentIds: s.recentSceneIds,
       internalMP: renderScale.internalMP(renderScale.applied),
       currentVA: { valence: performanceState.valence, arousal: performanceState.arousal },

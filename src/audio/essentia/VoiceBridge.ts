@@ -53,6 +53,8 @@ class VoiceBridge {
   }
 
   private worker: Worker | null = null
+  /** Injected by `intel/EssentiaProvider` — see EssentiaBridge.workerFactory. */
+  private workerFactory: (() => Worker) | null = null
   private ring: Float32Array | null = null
   private ringWrite = 0
   private ringFilled = 0
@@ -66,6 +68,10 @@ class VoiceBridge {
   /** Rolling per-patch p(voice); see PATCH_HISTORY. */
   private probs: number[] = []
   private disabled = false
+
+  setWorkerFactory(factory: (() => Worker) | null) {
+    this.workerFactory = factory
+  }
 
   /** Called by EssentiaBridge's tap — one AudioWorklet feeds both bridges. */
   pushPcm(block: Float32Array, sampleRate: number) {
@@ -139,7 +145,8 @@ class VoiceBridge {
     if (this.worker) return true
     if (this.disabled) return false
     try {
-      const worker = new Worker(new URL('./voice.worker.ts', import.meta.url), { type: 'module' })
+      if (!this.workerFactory) throw new Error('worker factory not registered')
+      const worker = this.workerFactory()
       worker.onmessage = (e: MessageEvent<VoiceResponse>) => {
         this.busy = false
         const r = e.data

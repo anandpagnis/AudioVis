@@ -38,7 +38,7 @@ export function getEffectiveParams(): VisualParams {
   const f = audioEngine.features
 
   if (moodDrive) {
-    const viz = f.mood.viz
+    const viz = f.mood.vizLook
     out.intensity = params.intensity * viz.intensity
     out.speed = params.speed * viz.speed
     out.reactivity = params.reactivity * viz.reactivity

@@ -535,8 +535,14 @@ absent from history **by design**; do not "fix" that by adding an LFS store.
 - Getting ML locally is a manual step (needs an Essentia + TensorFlow + Python env to run
   `tensorflowjs_converter`; see `scripts/convert-essentia-models.md`). There is no fetch
   script and, per the licence, there should not be a `postinstall` one.
-- A release build MUST assert `public/models/` holds nothing matching the known-NC weights.
-  That gate does not exist yet — same status as `commerciallyShippableScenes()` above.
+- **`essentia.js` itself is AGPL-3.0** (wrapper + WASM core), a separate problem from the weights:
+  it was bundled unconditionally with no notice. It is now behind the build flag
+  `VITE_ENABLE_ESSENTIA` (default off; `src/audio/intel/index.ts`) and must be excluded from any
+  distributed build together with `public/models/`. Full inventory and open decisions:
+  `docs/LICENSES.md`; generated dependency notices: `THIRD_PARTY_NOTICES.md`.
+- A release build MUST assert `dist/` holds no Essentia code and no known-NC weights. That gate is
+  `npm run check:licences` (`scripts/check-dist-licences.mjs`, also run by `npm run check` and
+  `npm run build:commercial`); `commerciallyShippableScenes()` above is still not a build step.
 - Shipping mood ML commercially requires a permissively-licensed or self-trained replacement.
   The consumption side is fully built and `moodsValid`-gated, so that swap is weights-only.
 

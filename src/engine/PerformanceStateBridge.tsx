@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
+import { lookOf } from '../audio/characterLook'
 import type { MoodState } from '../audio/types'
 import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
@@ -288,6 +289,8 @@ export function PerformanceStateBridge() {
     const params = getEffectiveParams()
     const p = performanceState
     const m = f.mood
+    // Effect systems below read the character-aware look; timing triggers and telemetry use m.state.
+    const look = lookOf(m)
 
     // --- What is on screen (currently owned by the store) ---
     p.scene = s.pendingSceneId ?? s.sceneId
@@ -366,7 +369,7 @@ export function PerformanceStateBridge() {
     // show stops steering itself, not that it freezes wherever the steer was.
     if (s.moodDrive) {
       advanceSteer(p.sceneParams, {
-        mood: m.state,
+        mood: look,
         tension: p.visualTension,
         delta: f.delta,
         drop: f.drop,
@@ -409,7 +412,7 @@ export function PerformanceStateBridge() {
       lastCameraBeat.current = f.beatIndex
       p.cameraMode = pickCameraMode(
         active.metadata.cameraModes,
-        m.state,
+        look,
         p.visualTension,
         f.beatIndex,
         p.voiceFocus,
@@ -448,7 +451,7 @@ export function PerformanceStateBridge() {
     // the creative decision belongs on this side of the seam.
     const fastVoice = Math.max(0, Math.min(1, f.vocal * (1 - Math.min(1, f.spectralFlatness))))
     const voiceLift = fastVoice * p.voiceFocus * 0.45 * params.reactivity
-    p.bloom = (BLOOM_BASE[m.state] + reactive + voiceLift) * params.intensity
+    p.bloom = (BLOOM_BASE[look] + reactive + voiceLift) * params.intensity
 
     // Threshold FALLS as pressure rises, so more of the frame becomes eligible
     // to bloom — the image opens up rather than merely getting brighter — on
@@ -499,7 +502,7 @@ export function PerformanceStateBridge() {
     const relaxedAir = f.moodsValid ? f.moods.relaxed * 0.2 : 0
     p.fog = approach(
       p.fog,
-      Math.min(1, sparse * 0.6 + (m.state === 'ambient' ? 0.25 : 0) + relaxedAir),
+      Math.min(1, sparse * 0.6 + (look === 'ambient' ? 0.25 : 0) + relaxedAir),
       0.6,
       f.delta,
     )
@@ -562,11 +565,11 @@ export function PerformanceStateBridge() {
     // indefinitely made five consecutive changes all run `dipToBlack` from a
     // single boundary long past.
     const nearSection = f.time - lastSectionAt.current < SECTION_DIP_WINDOW_SEC
-    if (m.state !== lastStyleMood.current || nearSection !== wasNearSection.current) {
-      lastStyleMood.current = m.state
+    if (look !== lastStyleMood.current || nearSection !== wasNearSection.current) {
+      lastStyleMood.current = look
       wasNearSection.current = nearSection
       p.transitionStyle = pickTransitionStyle(
-        m.state,
+        look,
         nearSection,
         styleRotation.current++,
         p.transitionStyle,
@@ -591,7 +594,7 @@ export function PerformanceStateBridge() {
     // MIRROR_ONLY_EXCLUDED_SCENES's own doc for why `djcam` belongs here and
     // not in `MIRROR_TRAILS_EXCLUDED_SCENES` itself.
     const mirrorSuppressed = rackSuppressed || MIRROR_ONLY_EXCLUDED_SCENES.has(p.activeScene)
-    p.trails = approach(p.trails, rackSuppressed ? 0 : trailsTarget(m.state, f.flux, m.level), 0.7, f.delta)
+    p.trails = approach(p.trails, rackSuppressed ? 0 : trailsTarget(look, f.flux, m.level), 0.7, f.delta)
     // NOT eased with approach() (F232) — `pulse` (computed above for bloom's
     // reactive term) is already `beatPulse()`'s own sharply-peaked,
     // per-beat-decaying curve, so it IS the envelope. Easing on top of a
@@ -603,7 +606,7 @@ export function PerformanceStateBridge() {
     // (kifs/maze/wingfold) are already kaleidoscopic geometry a MIRROR fold
     // or a persistent TRAIL would double up on, which has nothing to do with
     // three discrete repeats of whatever those scenes already draw.
-    p.echo = echoTarget(m.state, pulse)
+    p.echo = echoTarget(look, pulse)
     // Beat-locked, not scaled by `p.echo`'s own value (F232) — see
     // `resolveEchoTapSpacingSec`'s doc for why a wall-clock ramp was the
     // wrong instrument. Resolved every frame (cheap: one division, no
@@ -616,7 +619,7 @@ export function PerformanceStateBridge() {
     // below notes, so this is "the material currently shown," not stale.
     p.lens.amount = approach(
       p.lens.amount,
-      lensAmountTarget(m.state, p.visualTension, lensEngaged.current, p.lens.style),
+      lensAmountTarget(look, p.visualTension, lensEngaged.current, p.lens.style),
       0.5,
       f.delta,
     )
@@ -654,7 +657,7 @@ export function PerformanceStateBridge() {
       // fires there too and tears the engagement the drop just caused right
       // back down one phrase later.
       const tensionBucket = Math.round(p.visualTension * 5)
-      const moodMoved = m.state !== mirrorMoodAtPick.current
+      const moodMoved = look !== mirrorMoodAtPick.current
       const tensionMoved = tensionBucket !== mirrorTensionAtPick.current
       mirrorPhrasesHeld.current++
       const nothingToInterrupt = mirrorTarget.current.mode === 'off'
@@ -681,13 +684,13 @@ export function PerformanceStateBridge() {
         // `slice` were previously written by nothing but the debug panel, so
         // three of the mirror's five controls were dead in a running show.
         const mt = mirrorForSection(
-          m.state,
+          look,
           p.visualTension,
           mirrorSeed.current++,
           mirrorHabituation.current,
         )
         mirrorTarget.current = mt
-        mirrorMoodAtPick.current = m.state
+        mirrorMoodAtPick.current = look
         mirrorTensionAtPick.current = tensionBucket
         mirrorPhrasesHeld.current = 0
         if (mt.mode !== 'off') mirrorOffPhrases.current = 0
@@ -706,7 +709,7 @@ export function PerformanceStateBridge() {
       // repeat the exact same look as last time — `p.lens.style` keeps its
       // last value even while disengaged (see the comment below), so this is
       // "the last material shown," not just "the last material picked."
-      const style = lensForSection(m.state, seed, lensHabituation.current, p.lens.style)
+      const style = lensForSection(look, seed, lensHabituation.current, p.lens.style)
       lensEngaged.current = style >= 0
       lensHabituation.current = stepHabituation(lensHabituation.current, style >= 0)
       // Keep the previous material while a disengaged lens eases out. Swapping

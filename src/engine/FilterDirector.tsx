@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
+import { lookOf } from '../audio/characterLook'
 import type { MoodState } from '../audio/types'
 import { cueState } from './CueTimeline'
 import { performanceState } from './performanceState'
@@ -343,7 +344,7 @@ export function FilterDirector() {
       now: f.time,
       headroomMs: remainingMs(TIER_BUDGET_MS[quality.tier]),
       lastFiredAt: lastFiredAt.current,
-      mood: f.mood.state,
+      mood: lookOf(f.mood),
       lastId: lastId.current,
       rotation: rotation.current,
       manualId: onLimitless ? manualId : null,
