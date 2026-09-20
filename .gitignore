@@ -21,6 +21,7 @@ testfolder/*.flac
 corpus/audio/
 corpus/frames/
 corpus/refs/
+corpus/emotion/
 
 # Converted TF.js model weights (Essentia, CC BY-NC-SA). Binaries, and
 # reproducible from scripts/convert-essentia-models.md — same reasoning as the
@@ -45,3 +46,9 @@ public/tfjs/
 
 # Agent worktree checkouts — full copies of the repo, never redistributed.
 .claude/worktrees/
+
+# Gemini mood labels (scripts/mood-labels): derived from Jamendo audio + API output;
+# regenerable, so kept local. Force-add deliberately if you want to commit a set.
+corpus/labels/gemini/
+corpus/labels/overnight.log
+corpus/labels/.overnight.lock
