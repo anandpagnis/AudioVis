@@ -12086,3 +12086,119 @@ per-frame canvas heavy enough to distort the reading.
       far as this session's tools can verify directly.
 
       `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+- [x] **F252 · Mood engine v2: nearly every song read as `groove` or
+      `ambient`, so every song played the same scenes. Two-layer rebuild
+      (fast intensity + slow character), a licence firewall for the ML
+      stack, and scene/palette/effect selection driven by the new read** —
+      *2026-09-19/20, user request ("more moods with proper analysis"),
+      branch `feat/mood-engine-v2`* `src/audio/{characterTypes,
+      emotionDimensions,emotionQuantiles,characterPriors,moodTaxonomy,
+      CharacterClassifier,characterLook,chromaKey,harmonicTension}.ts`,
+      `src/audio/intel/`, `src/audio/AudioEngine.ts`, `src/engine/
+      {characterPick,characterShift,paletteCharacter,AutoPilot,
+      PerformanceDirector,PerformanceStateBridge,EffectDirector,
+      FilterDirector,moodParams}.ts`, `src/scenes/{character,index}.ts`,
+      `scripts/calibrate/emotion*.ts`, `scripts/mood-labels/`,
+      `scripts/check-dist-licences.mjs`, `docs/12_Character_Layer.md`,
+      `docs/LICENSES.md`, `THIRD_PARTY_NOTICES.md`
+
+      **Why it was weak.** One argmax over seven hand-tuned energy windows.
+      Measured on 400 human-rated clips (PMEmo) the old label explained ~7%
+      of the variance in human arousal and ~5% in valence; `building`/`peak`
+      were almost unreachable and `groove`/`ambient` absorbed the middle.
+      Downstream, the per-mood scene pools overlapped ~90%, so even a correct
+      label led to the same scenes, and palette was decided by key into ~6
+      families.
+
+      **What replaced it.** Intensity (existing `MoodEstimator`/
+      `SectionTracker`, unchanged, fast) and character (new, slow): a point
+      in valence/arousal/tension/pulse space, percentile-calibrated, plus a
+      distribution over 14 named moods with hysteresis. Weights come from
+      the literature, not from labelled data; the human-rated sets are only
+      used to check it (they are non-commercial). Scene choice scores every
+      primary-capable scene by Gaussian fit to the character point with
+      novelty and a per-song seed; palettes are chosen among all 30 by a
+      colour-derived character point; post-FX, camera, filters and bloom
+      read a "look" state (`characterLook.ts`) that takes flavour from
+      character and keeps intensity events from the old detector; a change of
+      the held character mood also requests a scene (`characterShift.ts`,
+      12 s floor). `?scenepick=legacy` turns the whole character path off.
+
+      **Licence firewall.** `essentia.js` is AGPL-3.0 and was bundled with no
+      notice; the MusiCNN weights are CC BY-NC-SA. Essentia is now behind
+      `VITE_ENABLE_ESSENTIA` (default off), key/mode and harmonic tension are
+      clean-room replacements, and `npm run check:licences` fails a build
+      whose `dist/` contains Essentia code, the NC weights, or non-allowlisted
+      audio. Not reviewed by counsel. `public/landing/fractures.mp3` still has
+      no recorded licence.
+
+      **Measured** (held-out fold scored once, after tuning on the other):
+      arousal Spearman vs listeners 0.51 -> 0.81, valence 0.61 -> 0.63 (a
+      wash, inside the noise). All 14 moods lead at least one clip, largest
+      single mood 19%, normalised entropy 0.89. On 184 real songs 29 of 30
+      palettes get used (most common 8%). **Named moods are not validated:**
+      against 98 Gemini pre-labels exact agreement is 14%; against the
+      Jamendo mood tags the engine is as tag-compatible as Gemini is (43% vs
+      45%, chance ~28%) and separates tagged-high from tagged-low arousal and
+      valence better (AUC 0.82 vs 0.67, 0.79 vs 0.56; small n). The Gemini
+      labels are noisy, mixed-model free-tier output that defaults to
+      `groove`/`driving`, so do not tune toward them. **Tension is
+      unvalidated.** The offline Gemini run was stopped at 59 tracks with
+      three samples and 39 with one; the label JSONs stay local (gitignored,
+      derived from NC audio). About 10% of clips now get peak-style effects
+      for a whole song, which may be too intense.
+
+      `npm run check` clean at commit time; see the tests under
+      `src/audio/__tests__`, `src/engine/__tests__`, `src/scenes/__tests__`.
+
+- [x] **F253 · The new mood engine never reached the live app: F252's
+      character read was detached from `AudioEngine.features` after the first
+      source started** — *2026-09-20, user report ("the pill shows the same,
+      I haven't seen any of the new moods")* `src/audio/AudioEngine.ts`,
+      `src/audio/__tests__/audioEngineNoIntel.test.ts`
+
+      `AudioEngine.resetAnalysis()` (called from `stop()` and on every new
+      source) does `Object.assign(this.features, createEmptyFeatures())`,
+      which replaces `features.character` with a fresh empty state. The
+      constructor links it to `characterClassifier.state` exactly once, so
+      after the first reset the classifier kept writing to an object nobody
+      read, and every consumer saw a never-valid character. Each one is built
+      to fall back to the old mood-label path in that case, so nothing
+      failed: scenes, palettes, effects, camera, filters and the scene-switch
+      trigger all silently ran the old engine, and the console pill showed the
+      old 7-state label.
+
+      The offline evaluation and every unit test go through the estimator
+      directly, not `AudioEngine`, which is why they looked fine. Fixed by
+      re-linking `features.character` after the classifier reset; the test
+      asserts the link after construction and after `stop()` and was checked
+      to fail without the fix. The console pill now shows the character mood
+      (telemetry gained an optional `character` field), colour still from the
+      old 7-state ramp via `LEGACY_MAP`, old intensity in the tooltip.
+      **Not yet watched running** — this session had no browser, so the live
+      result is still owed; both the console and output windows need a reload.
+
+- [x] **F254 · Fractal Rose Window bounced out of frame on every beat;
+      Transient Spark always drew the same three lights** — *2026-09-20, user
+      requests* `src/scenes/KifsRoseScene.tsx`, `src/scenes/
+      TransientSparkScene.tsx`, `src/scenes/transientSparkLayout.ts`,
+      `src/scenes/__tests__/transientSparkLayout.test.ts`
+
+      **Fractal Rose Window.** `BEAT_GROWTH` was 0.06, a beat-locked +-6%
+      zoom of the whole mandala that read as bouncing out of the screen (an
+      earlier round had turned that accident into a feature). Now 0.0; the
+      constant stays so a small pulse (~0.01) can be dialled back in. The bar
+      breath, per-bar petal count and kick line-width response are unchanged.
+      The file's header comments still describe the old swell.
+
+      **Transient Spark.** Each firing now gets 1 to 15 lights instead of
+      three. The count avoids the last four counts and differs from the
+      previous one by at least three, with a mild tilt toward bigger bursts on
+      harder transients; a lone light is a big soft bloom anywhere on screen,
+      a crowd is many small points, and the spread of a burst varies per
+      firing. Deterministic (seed = beat position + a firing counter, no
+      `Math.random()`). The 2.5 s cooldown is unchanged, so firing frequency
+      is unchanged. The layout is pure and unit-tested; the GLSL (a
+      15-element `vec4` uniform array, loop with an early `break`) has not
+      been compiled on a real GPU by this session.
