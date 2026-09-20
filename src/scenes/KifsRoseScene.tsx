@@ -298,14 +298,11 @@ export const FRAG = /* glsl */ `
 
   const int MAXI = 20;
   const float TAU = 6.28318530718;
-  // Round 2: the deliberate on-beat outward swell (see the uv scale line in
-  // main()) -- a real, controlled feature now, replacing what used to read as
-  // an uncontrolled "bumping out of the screen" side effect of the fold's own
-  // chaotic sensitivity to cfg (see the note above 'off'/'R' below). Shrinking
-  // uv zooms the whole mandala IN (visually larger, same convention as the
-  // uFill dial above); growing uv zooms it back out. 0.06 reads clearly as a
-  // swell at a glance without needing any change to uFill's own zoom range.
-  const float BEAT_GROWTH = 0.06;
+  // On-beat outward swell (see the uv scale line in main()). Set to 0: at 0.06
+  // the whole mandala visibly bounced in and out of frame on every beat, which
+  // read as "bouncing out of the screen". Kept as a named constant so the
+  // beat-locked zoom can be dialled back in (~0.01) without re-plumbing it.
+  const float BEAT_GROWTH = 0.0;
 
   mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
 
