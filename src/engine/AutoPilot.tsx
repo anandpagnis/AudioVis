@@ -13,11 +13,20 @@ import { deriveVAFromList } from './moodValenceArousal'
 import { PALETTES } from './palettes'
 import { vaDistance, type ValenceArousal } from './valenceArousal'
 import { getCharacterCandidates, getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
+import { getSceneTraits, sceneBoost, sceneLookActive } from '../scenes/sceneTraits'
+import {
+  BUILD_SWITCH,
+  buildSwitchRng,
+  createBuildSwitchState,
+  observeBuild,
+  pickAndRequest,
+  shouldSwitchOnBuild,
+} from './buildSwitch'
 import { characterPickEnabled, pickByCharacter, songSeedFor } from './characterPick'
 import { CharacterShiftTrigger } from './characterShift'
 import { pickPaletteByCharacter } from './paletteCharacter'
 import { performanceState } from './performanceState'
-import { useStore } from '../store'
+import { canAutoSwitch, useStore } from '../store'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
 /**
@@ -323,6 +332,8 @@ export function AutoPilot() {
   const preArmBeat = useRef(-Infinity)
   /** Latches a change of the music's character so it can request a scene — see {@link CharacterShiftTrigger}. */
   const charShift = useRef(new CharacterShiftTrigger())
+  /** Rising-edge + once-per-build latch for the confirmed-build one-shot scene switch — see `buildSwitch.ts`. */
+  const buildState = useRef(createBuildSwitchState())
 
   useFrame(() => {
     const f = audioEngine.features
@@ -332,6 +343,9 @@ export function AutoPilot() {
     // that lands during the manual hold doesn't fire the instant it lifts.
     const dropEdge = f.drop && !prevDrop.current
     prevDrop.current = f.drop
+    // The rising edge of a confirmed build, tracked here for the same reason: an edge that lands while
+    // automation is suppressed is consumed, not fired late (mid-build) when the hold lifts.
+    const buildEdge = observeBuild(buildState.current, f.structureValid && f.songSection.isSustain)
     // Accumulate key votes BEFORE the early returns, for the same reason as
     // the drop edge above: the tracker needs a settled opinion the moment
     // automation resumes, not to start counting from zero then.
@@ -396,6 +410,10 @@ export function AutoPilot() {
     // `structureValid && isBuild` check also existed at
     // PerformanceDirector.tsx:194 and got the identical swap.
     const inSustain = f.structureValid && f.songSection.isSustain
+
+    // The mood-driven look, but only when it is valid and its scene family is on. `undefined` means every
+    // scene decision below runs EXACTLY as it did before the look system existed (the legacy path).
+    const sceneLook = sceneLookActive(performanceState.look) ? performanceState.look : undefined
 
     // Abandon a stale pre-arm — the projected drop never arrived.
     if (preArmed.current && f.beatIndex - preArmBeat.current > 24) preArmed.current = false
@@ -539,10 +557,70 @@ export function AutoPilot() {
       (f.sectionChange || structureRecolour) &&
       f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC
     ) {
-      const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++)
+      const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++, sceneLook)
       if (mode) {
         lastModeVaryAt.current = f.time
         s.setSceneMode(s.sceneId, mode, { auto: true })
+      }
+    }
+
+    // --- Confirmed-build one-shot scene switch -------------------------------
+    // Builds ramp EFFECTS always (the look tracker does that); the SCENE changes only here, once, on the rising
+    // edge of a confirmed structural build, and only to a fast scene, because the hold below otherwise keeps a
+    // calm scene on screen for the whole riser. Every rule (dwell, drop not imminent, current scene a poor
+    // build scene, once per build, no pending switch) is `shouldSwitchOnBuild`; the pick is lifted to a fast,
+    // tense point (`minArousal` / `minTension`: a boost alone cannot flip a poor fit through affinity^3.5) and
+    // boosted by `sceneBoost(..., 'build')`, which favours `buildFit` (4D Beats, JavaZone, Web, Maze, Plasma).
+    //
+    // COST, accepted: `requestScene` stamps the 32-beat dwell when this commits, so the drop pre-arm below
+    // (non-immediate) is usually REFUSED afterwards. The drop's own request is `immediate`, which bypasses the
+    // dwell, so the hard cut on the drop still fires exactly as before and the build's scene is replaced on it.
+    //
+    // A refused request (dwell, `canHoldPrimary`, ...) excludes that id and re-picks a bounded number of times
+    // (`BUILD_SWITCH.maxRepicks`); it never loops. The whole block is skipped without a valid scene look.
+    if (
+      sceneLook !== undefined &&
+      shouldSwitchOnBuild({
+        lookActive: true,
+        risingEdge: buildEdge && !dropEdge,
+        fired: buildState.current.fired,
+        canSwitch: canAutoSwitch(s.lastCommitBeat, f.beatIndex),
+        beatsTillDrop: f.songSection.beatsTillDrop,
+        currentBuildFit: getSceneTraits(s.sceneId).buildFit,
+        hasPending: s.pendingSceneId !== null,
+      })
+    ) {
+      buildState.current.fired = true
+      const { scene: switched } = pickAndRequest(
+        [s.sceneId],
+        (exclude, attempt) =>
+          pickByCharacter(getCharacterCandidates(), {
+            character: f.character,
+            key: f.key,
+            now: f.time,
+            recentIds: s.recentSceneIds,
+            exclude,
+            minArousal: BUILD_SWITCH.minArousal,
+            minTension: BUILD_SWITCH.minTension,
+            liftSecondary: true,
+            boost: (scene) => sceneBoost(scene, sceneLook, 'build'),
+            rng: buildSwitchRng(f.beatIndex, attempt),
+          }),
+        (scene) => {
+          const accepted = s.requestScene(scene.id, { auto: true, immediate: false })
+          if (accepted) {
+            const nextMode = pickVariedMode(scene.id, s.sceneModes[scene.id], modeRotation.current++, sceneLook)
+            if (nextMode) s.setSceneMode(scene.id, nextMode, { auto: true })
+          }
+          return accepted
+        },
+      )
+      if (switched) {
+        // A scene request was made for this moment: the stale-target backstop and any latched character shift
+        // have been answered, same as when a `target` fires below.
+        lastAutoTriggerAt.current = f.time
+        charShift.current.consume()
+        return
       }
     }
 
@@ -577,9 +655,12 @@ export function AutoPilot() {
           recentIds: s.recentSceneIds,
           exclude: [s.sceneId],
           minArousal: 0.85,
+          // The look's trait bias, with the DROP flavour of the build/drop factor (`dropFit`): this pick is for
+          // the hot moment about to arrive, where a scene built for the riser is the wrong answer.
+          boost: sceneLook ? (scene) => sceneBoost(scene, sceneLook, 'drop') : undefined,
         }) ?? pickVariedScene(armCands, hypeMood, s.recentSceneIds)
       if (armPick && s.requestScene(armPick.id, { auto: true, immediate: false })) {
-        const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++)
+        const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++, sceneLook)
         if (armMode) s.setSceneMode(armPick.id, armMode, { auto: true })
         preArmed.current = true
         preArmBeat.current = f.beatIndex
@@ -627,6 +708,14 @@ export function AutoPilot() {
     // songs of different character no longer share the same mood-label pool. It
     // returns null until the character read is ready (or under ?scenepick=legacy),
     // and then the original mood-label pick below runs unchanged.
+    //
+    // With a valid scene look the character pick also gets the look's trait bias (`sceneBoost`), multiplied into
+    // the voice boost, in its DROP flavour on a drop (this pick then requests `immediate`). The mood-label
+    // fallback below keeps the voice boost alone.
+    const characterBoost = sceneLook
+      ? (scene: (typeof candidates)[number]) =>
+          voiceBoost(scene) * sceneBoost(scene, sceneLook, dropEdge ? 'drop' : 'auto')
+      : voiceBoost
     const pick =
       pickByCharacter(getCharacterCandidates(), {
         character: f.character,
@@ -634,7 +723,7 @@ export function AutoPilot() {
         now: f.time,
         recentIds: s.recentSceneIds,
         exclude: [s.sceneId, s.pendingSceneId ?? ''],
-        boost: voiceBoost,
+        boost: characterBoost,
       }) ??
       pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost, {
         valence: performanceState.valence,
@@ -655,7 +744,7 @@ export function AutoPilot() {
       // Only fires for a scene that declares more than one mode, which today is
       // one scene of eighteen — see pickVariedMode for why that ratio is the
       // actual problem rather than this code being speculative.
-      const nextMode = pickVariedMode(pick.id, s.sceneModes[pick.id], modeRotation.current++)
+      const nextMode = pickVariedMode(pick.id, s.sceneModes[pick.id], modeRotation.current++, sceneLook)
       if (nextMode) s.setSceneMode(pick.id, nextMode, { auto: true })
       s.requestScene(pick.id, { auto: true, immediate: dropEdge })
     }

@@ -6,6 +6,7 @@ import { analytics } from './analyticsMetrics'
 import { exposure } from './exposure'
 import { frameLoad } from './frameLoad'
 import { keyPaletteTracker } from './keyPalette'
+import { outputWindowUrl } from './look/lookUrl'
 import { MIRROR_MIX_DEFAULT } from './opticalRack'
 import { perf, frameTimeWindow } from './PerfMonitor'
 import { performanceState } from './performanceState'
@@ -630,7 +631,9 @@ export function openOutput(opts: { focus?: boolean } = {}): Window | null {
   // A window already open under this name is REUSED by `window.open`, so a
   // control window that lost its handle recovers it here rather than opening a
   // second output.
-  const url = `${window.location.pathname}?output`
+  // The look switches on THIS window's URL (`?lookforce=`, `?lookdebug`, `?look=`, `?scenepick=`) are copied
+  // onto the output window's, because the engine reads them there. See `look/lookUrl.ts`.
+  const url = outputWindowUrl(window.location.pathname, window.location.search)
   outputWindow = window.open(url, OUTPUT_WINDOW_NAME, 'popup=yes,width=1280,height=720')
   return outputWindow
 }

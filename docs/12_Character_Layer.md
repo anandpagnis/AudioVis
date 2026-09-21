@@ -160,6 +160,18 @@ Switched to the look: trails, echo, lens, mirror, bloom, camera-mode pick, scene
 aggressive 21 (%), look state 9 / 13 / 34 / 14 / 10 / 21; evenness over the six non-silent states
 0.79 -> 0.93. `?scenepick=legacy` turns the look off along with the scene and palette pickers.
 
+## The look system (mood -> scenes, colour, post-FX)
+
+The character read now drives the whole look, not just scene and palette. One `LookProfile` per frame
+(`performanceState.look`, `src/engine/look/`): an authored `LookRow` per mood (`moodRows.ts`, art-direction hypotheses,
+the ORDERING between moods is what matters), blended by `dist^(1+2*confidence)`, relaxed toward neutral when uncertain,
+shaped by build / drop-afterglow / breakdown modifiers and an intensity gate. Consumers gate on
+`look.valid && look.families.<family>` and otherwise run their legacy paths. Tuning: `?lookdebug` (overlay in the
+output window), `?lookforce=<mood>`, `?look=-grade,-post,-scene,-camera`, `?scenepick=legacy` (all off). Flags on the
+console URL are copied to the output window (`lookUrl.ts`); reopen the output window after changing them. Timbre
+descriptors (`f.timbre` harsh/busy/sparse, DSP only) modulate amounts by at most +-40%; `harsh` overlaps the
+unvalidated tension estimator (rho 0.85). See ISSUES.md F255.
+
 ## Still on the old 7-state mood
 
 The *timing* of scene switches is old-mood changes, the 25 s stale timer and now also a character shift

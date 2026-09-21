@@ -30,6 +30,8 @@
     "eval:replay": "node ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/emotion-replay.calib.ts",
     "calibrate:priors": "node ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/character-priors.calib.ts",
     "eval:gemini": "node ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/character-vs-gemini.calib.ts",
+    "calibrate:timbre": "node ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/timbre-quantiles.calib.ts",
+    "eval:descriptors": "node ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/descriptors.calib.ts",
     "eval:emotion": "node --max-old-space-size=3072 ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/emotion.calib.ts",
     "calibrate": "node --max-old-space-size=6144 ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts"
   },

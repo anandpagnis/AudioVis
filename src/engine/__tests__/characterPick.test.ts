@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createEmptyCharacterState, type CharacterState } from '../../audio/characterTypes'
 import { getCharacterCandidates, getScene, SCENES } from '../../scenes'
+import { SCENE_CHARACTER } from '../../scenes/character'
 import { pickByCharacter } from '../characterPick'
 
 function character(over: Partial<CharacterState> = {}): CharacterState {
@@ -147,5 +148,102 @@ describe('pickByCharacter', () => {
     const a = pickByCharacter(pool, { ...base, now: 10, character: character(), rng: r })
     const b = pickByCharacter(pool, { ...base, now: 40, character: character({ valence: 0.63, arousal: 0.52 }), rng: r })
     expect(a?.id).toBe(b?.id)
+  })
+})
+
+/**
+ * The lift: `minArousal` / `minTension` move the point the picker fits, so a build or a drop can reach scenes a
+ * boost alone never could (affinity is raised to ^3.5 before any boost is applied).
+ */
+describe('pickByCharacter: lift (minArousal / minTension move the pick point)', () => {
+  const picks = (o: Partial<Parameters<typeof pickByCharacter>[1]>, n = 400, seed = 21) => {
+    // A new source resets the per-song seed tracker so each call sees the same cast.
+    pickByCharacter(pool, { ...base, character: character({ valid: false }) })
+    const r = rng(seed)
+    const out: string[] = []
+    for (let i = 0; i < n; i++) {
+      const p = pickByCharacter(pool, { ...base, character: character(), rng: r, ...o })
+      if (p) out.push(p.id)
+    }
+    return out
+  }
+  const mean = (ids: readonly string[], f: (id: string) => number) => ids.reduce((s, id) => s + f(id), 0) / ids.length
+  const arousalOf = (id: string) => SCENE_CHARACTER[id].arousal
+  const tensionOf = (id: string) => SCENE_CHARACTER[id].tension
+  const calm = { primary: 'serene' as const, valence: 0.6, arousal: 0.1, tension: 0.1, pulse: 0.5 }
+  const relaxed = { primary: 'groove' as const, valence: 0.6, arousal: 0.55, tension: 0.05, pulse: 0.6 }
+
+  it('minArousal moves the point: a calm passage then picks high-arousal scenes', () => {
+    const plain = picks({ character: character(calm) })
+    const lifted = picks({ character: character(calm), minArousal: 0.9 })
+    expect(mean(lifted, arousalOf)).toBeGreaterThan(mean(plain, arousalOf) + 0.2)
+    // ...and the plain calm pick reaches essentially none of the frantic scenes.
+    expect(plain.filter((id) => arousalOf(id) >= 0.75).length).toBeLessThan(10)
+    expect(lifted.filter((id) => arousalOf(id) >= 0.75).length).toBeGreaterThan(100)
+  })
+
+  it('minTension moves the point: a relaxed passage then picks tense scenes', () => {
+    const plain = picks({ character: character(relaxed) })
+    const lifted = picks({ character: character(relaxed), minTension: 0.85 })
+    expect(mean(lifted, tensionOf)).toBeGreaterThan(mean(plain, tensionOf) + 0.12)
+    expect(lifted.filter((id) => tensionOf(id) >= 0.55).length).toBeGreaterThan(plain.filter((id) => tensionOf(id) >= 0.55).length + 60)
+  })
+
+  it('the two floors combine (a lifted point is both more aroused and more tense)', () => {
+    const plain = picks({ character: character(calm) })
+    const both = picks({ character: character(calm), minArousal: 0.8, minTension: 0.7 })
+    expect(mean(both, arousalOf)).toBeGreaterThan(mean(plain, arousalOf) + 0.15)
+    expect(mean(both, tensionOf)).toBeGreaterThan(mean(plain, tensionOf) + 0.1)
+  })
+
+  it('a floor at or below the actual value changes nothing (it only ever raises)', () => {
+    const c = character({ arousal: 0.6, tension: 0.5 })
+    const plain = picks({ character: c })
+    expect(picks({ character: c, minArousal: 0.6, minTension: 0.5 })).toEqual(plain)
+    expect(picks({ character: c, minArousal: 0.2, minTension: 0.1 })).toEqual(plain)
+    expect(picks({ character: c, minTension: 0 })).toEqual(plain)
+  })
+
+  it('without minTension / liftSecondary the pick is exactly what it was (legacy path unchanged)', () => {
+    // minArousal alone, the way the drop pre-arm uses it: identical draw for draw with an explicit undefined.
+    const a = picks({ character: character(calm), minArousal: 0.85 })
+    const b = picks({ character: character(calm), minArousal: 0.85, minTension: undefined, liftSecondary: undefined })
+    const c = picks({ character: character(calm), minArousal: 0.85, liftSecondary: false })
+    expect(b).toEqual(a)
+    expect(c).toEqual(a)
+  })
+
+  it('liftSecondary also lifts the runner-up mood, which otherwise keeps pulling calm scenes in', () => {
+    // Serene primary, a very calm runner-up carrying half the blend: unlifted it drags a lifted pick back to calm.
+    const cs = character({ ...calm, secondary: 'melancholic', secondaryWeight: 0.5 })
+    const primaryOnly = picks({ character: cs, minArousal: 0.85, minTension: 0.5 })
+    const both = picks({ character: cs, minArousal: 0.85, minTension: 0.5, liftSecondary: true })
+    expect(mean(both, arousalOf)).toBeGreaterThan(mean(primaryOnly, arousalOf) + 0.04)
+    // Nothing about the runner-up is touched without the flag.
+    expect(picks({ character: cs, minArousal: 0.85, minTension: 0.5, liftSecondary: false })).toEqual(primaryOnly)
+  })
+
+  it('still honours exclude and returns pool members under a lift', () => {
+    const ids = new Set(pool.map((s) => s.id))
+    pickByCharacter(pool, { ...base, character: character({ valid: false }) })
+    const r = rng(5)
+    for (let i = 0; i < 80; i++) {
+      const p = pickByCharacter(pool, {
+        ...base,
+        character: character(calm),
+        rng: r,
+        exclude: ['plasma', 'beats'],
+        minArousal: 0.9,
+        minTension: 0.6,
+        liftSecondary: true,
+      })
+      expect(p).not.toBeNull()
+      expect(ids.has(p!.id)).toBe(true)
+      expect(['plasma', 'beats']).not.toContain(p!.id)
+    }
+  })
+
+  it('returns null under a lift while the character read is not valid (the caller falls back)', () => {
+    expect(pickByCharacter(pool, { ...base, character: character({ valid: false }), minArousal: 0.9, minTension: 0.6 })).toBeNull()
   })
 })

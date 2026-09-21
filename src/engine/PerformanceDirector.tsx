@@ -20,6 +20,7 @@ import {
   type SceneDef,
   type ScenePerformanceCost,
 } from '../scenes'
+import { sceneBoost, sceneLookActive } from '../scenes/sceneTraits'
 import { LAYER_ROLES, useStore, type LayerRole } from '../store'
 import { pickByCharacter } from './characterPick'
 
@@ -313,6 +314,13 @@ export function PerformanceDirector() {
               : 'mid'
     const bandBoost = (scene: (typeof primaryCandidates)[number]) =>
       scene.metadata.bands.includes(band) ? 1.6 : 1
+    // With a valid mood-driven look whose scene family is on, the character pick also leans on the look's trait
+    // targets (`sceneBoost`, which already folds in `buildIntent`), multiplied into the band boost. Otherwise
+    // (and for the mood-label fallback below) the band boost alone, exactly as before.
+    const look = performanceState.look
+    const characterBoost = sceneLookActive(look)
+      ? (scene: (typeof primaryCandidates)[number]) => bandBoost(scene) * sceneBoost(scene, look)
+      : bandBoost
 
     // Only pick a new primary when one isn't already mid-commit; otherwise we'd
     // fight AutoPilot's in-flight switch. Either way we (re)compose the layers
@@ -332,7 +340,7 @@ export function PerformanceDirector() {
           now: f.time,
           recentIds: s.recentSceneIds,
           exclude: [s.sceneId],
-          boost: bandBoost,
+          boost: characterBoost,
         }) ??
         pickVariedScene(primaryCandidates, mood, s.recentSceneIds, bandBoost, {
           valence: performanceState.valence,

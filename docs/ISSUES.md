@@ -12202,3 +12202,91 @@ per-frame canvas heavy enough to distort the reading.
       is unchanged. The layout is pure and unit-tested; the GLSL (a
       15-element `vec4` uniform array, loop with an early `break`) has not
       been compiled on a real GPU by this session.
+
+- [x] **F255 · Mood-driven look system: every one of the 14 moods now drives
+      scene choice, scene dials, colour grade, post-FX, camera and
+      transitions, instead of collapsing to six looks** — *2026-09-21, user
+      request ("I want the scenes, colours, params and postfx to reflect the
+      mood properly"), branch `feat/mood-look-system`* `src/engine/look/`
+      (new: `lookRow`, `moodRows`, `lookProfile`, `lookModifiers`,
+      `lookFlags`, `lookPost`, `lookDebug`, `lookUrl`, `gradeResidual`),
+      `src/audio/TimbreDescriptors.ts`, `src/audio/timbreQuantiles.ts`,
+      `src/scenes/sceneTraits.ts`, `src/engine/buildSwitch.ts`,
+      `src/engine/PerformanceStateBridge.tsx`, `GradePass.ts`,
+      `PostFXChain.tsx`, `FeedbackPass.ts`, `feedbackParams.ts`,
+      `CameraDirector.tsx`, `transitions.ts`, `sceneSteer.ts`,
+      `EffectDirector.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`,
+      `characterPick.ts`, `outputLink.ts`, `src/ui/LookDebug.tsx`
+
+      **Why.** `lookState()` squeezed the character read into the old 7-value
+      `MoodState`, so serene/dreamy/mysterious all read `ambient`,
+      uplifting/tense both `building`, euphoric/driving/epic all `peak`, and
+      every hand-tuned table (bloom, trails, echo, lens pools, mirror gate,
+      steer, camera, transitions) was keyed on those. No scene and no post-FX
+      read the character axes, and roughness/dissonance/tonalness were used by
+      nothing visual. Nothing continuous existed for colour.
+
+      **What was built.** One `LookProfile` per frame (`performanceState.look`):
+      an authored `LookRow` for each of the 14 moods (`moodRows.ts`), blended by
+      `dist^(1+2*confidence)` (sharpened so a confident read stays legible),
+      relaxed toward a neutral row when the read is uncertain, smoothed per
+      family (grade 6 s, rest 3 s), then shaped by fast-layer modifiers (build
+      ramp, drop afterglow, breakdown) and an intensity gate. Continuous
+      fields blend; discrete ones (lens style, mirror mode/segments, camera
+      mode, transition style) are weight vectors sampled at the existing
+      decision edges, so nothing flips mid-hold. Consumers gate on
+      `look.valid && look.families.<family>` and otherwise run their original
+      code paths unchanged (the old functions and their tests are intact).
+      - **Colour grade** (new stage in `GradePass`): saturation as a
+        luma-preserving mix (capped per pixel so no channel goes negative),
+        temperature as a per-channel gain, contrast as a power curve about a
+        pivot. Multiplicative only, identity when off. Applies the RESIDUAL
+        between the mood's target and what the palette already carries.
+      - **Post-FX from the profile:** bloom, CA, vignette, fog, trails (plus
+        zoom/rotate/swirl/wobble multipliers), echo, lens (weighted pool with a
+        dip-and-swap so a style change never hard-swaps), mirror (weighted
+        mode/segments; harsh moods vortex-only and rare).
+      - **Camera** weights + speed/shake gains, **transition** weights,
+        **effect-scene** propensities (shock/flare/spark/strobe), **scene dial
+        steer** from the profile plus opt-in `shape`/`tilt` for scenes that
+        declare `directorSteers` (`beats` tilt, `kifs` shape).
+      - **Scene picking:** per-scene traits (`sceneTraits.ts`) feed the existing
+        `boost` hook; a `lift` (min arousal/tension) moves the pick point;
+        one scene switch on a CONFIRMED structural build only (rising edge,
+        dwell/beatsTillDrop/buildFit rules, bounded re-pick), everyday builds
+        only ramp effects. Mood-aware mode picking for wireframe.
+      - **Timbre descriptors** `harsh`/`busy`/`sparse` (`f.timbre`, DSP only)
+        modulate amounts within a mood by at most +-40%.
+      - **Tuning tools:** `?lookdebug` overlay (output window), `?lookforce=
+        <mood>`, `?look=-grade,-post,-scene,-camera`, `?scenepick=legacy`
+        turns everything off. These flags now propagate from the console URL
+        to the output window (previously only `?output` did, so
+        `?scenepick=legacy` on the console never reached the engine).
+
+      **Honest limits.** Nobody has watched this run and this session had no
+      browser or GPU: the grade shader and all 14 rows are art-direction
+      hypotheses to be tuned by eye with the overlay and `?lookforce`. The
+      descriptors passed their DSP gates but `harsh` correlates 0.85 with the
+      unvalidated `tension`, and `busy` has no external confirmation, so both
+      are modulators only. Effect-to-mood pairings (pixel sort on harsh audio,
+      mirrors on complex audio) are practitioner convention with no published
+      validation. The flash limiter was deferred at the user's request: new
+      effects add no new flash source (strobe keeps its own 3 Hz floor, kaleido
+      spin capped 0.7, build ramps add no strobe), but pixel-sort and mirror
+      are now weighted up on harsh moods, so a source-side limiter should be
+      revisited before wider release. A single-trigger effect (spark on
+      transients, flare on section changes) still fires at any non-zero
+      propensity; propensity only re-orders effects that compete for one
+      trigger. `kifs` `shape` is quantised (`round(3 + shape*9)`) with its
+      neutral on the 7.5 boundary, so a steer hovering near 0.5 can flip the
+      wedge count between 7 and 8 (slowly, eased over ~100 ms).
+
+      Also fixed: a steered `shape`/`tilt` could leak into any scene that
+      merely declares the dial (the steer block is shared, including the
+      outgoing scene during a crossfade); `resolveSteeredParams` now honours it
+      only for scenes that opt in. Fog for serene/dreamy/mysterious is the most
+      likely first tuning target (`fogBase` .38-.42 stacks on the unchanged
+      sparse/relaxed terms).
+
+      `npm run check` clean: typecheck, lint, 2402 tests (131 files), build,
+      licence gate.

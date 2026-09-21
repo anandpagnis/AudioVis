@@ -86,7 +86,31 @@ export interface CharacterPickOptions {
   boost?: (scene: SceneDef) => number
   /** Raise arousal to at least this (used to pre-arm the scene for an imminent drop). */
   minArousal?: number
+  /**
+   * Raise tension to at least this. With `minArousal` this is the "lift": it moves the point the picker fits,
+   * not just the weights. That matters because affinity is raised to ^3.5, so a `boost` alone cannot flip a
+   * poor fit (a calm-point pick never reaches a fast scene however hard it is favoured); a build or a drop
+   * that wants a fast, tense scene lifts the point toward it instead.
+   */
+  minTension?: number
+  /**
+   * Apply `minArousal` / `minTension` to the runner-up mood's point as well (default false: primary point only,
+   * as `minArousal` always was). The runner-up carries up to half the blended affinity, so an unlifted calm
+   * runner-up keeps pulling calm scenes into a lifted pick; the confirmed-build switch turns this on.
+   */
+  liftSecondary?: boolean
   rng?: () => number
+}
+
+/** The runner-up mood's point, with the lift applied only when the caller asked for it (`liftSecondary`). */
+function secondaryPoint(center: CharacterPoint, o: CharacterPickOptions): CharacterPoint {
+  if (!o.liftSecondary) return center
+  return {
+    valence: center.valence,
+    arousal: Math.max(o.minArousal ?? 0, center.arousal),
+    tension: Math.max(o.minTension ?? 0, center.tension),
+    pulse: center.pulse,
+  }
 }
 
 /** Pick one scene from `candidates` by character fit, or null to make the caller fall back. */
@@ -99,7 +123,7 @@ export function pickByCharacter(candidates: readonly SceneDef[], o: CharacterPic
   const point: CharacterPoint = {
     valence: cs.valence,
     arousal: Math.max(o.minArousal ?? 0, cs.arousal),
-    tension: cs.tension,
+    tension: Math.max(o.minTension ?? 0, cs.tension),
     pulse: cs.pulse,
   }
   const boost: Record<string, number> = {}
@@ -111,7 +135,7 @@ export function pickByCharacter(candidates: readonly SceneDef[], o: CharacterPic
   }
   const secondary =
     cs.secondary && cs.secondaryWeight > 0
-      ? { point: MOOD_PROTOTYPES[cs.secondary].center, weight: cs.secondaryWeight }
+      ? { point: secondaryPoint(MOOD_PROTOTYPES[cs.secondary].center, o), weight: cs.secondaryWeight }
       : null
   const id = pickSceneForCharacter({
     candidates: candidates.map((c) => c.id),

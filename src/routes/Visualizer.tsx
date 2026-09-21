@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router'
 import { Stage } from '../engine/Stage'
 import { Console } from '../ui/Console'
+import { LookDebug } from '../ui/LookDebug'
 import { audioEngine } from '../audio/AudioEngine'
 import { claimSource, isDemoWindow, isOutput } from '../engine/outputLink'
 import { djCamSource } from '../engine/djCamSource'
@@ -144,6 +145,8 @@ function OutputSurface() {
   return (
     <div className="app app-output">
       <Stage />
+      {/* `?lookdebug` only (renders nothing otherwise): the mood look profile and what it applied. */}
+      <LookDebug />
     </div>
   )
 }

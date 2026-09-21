@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
 import { lookOf } from '../audio/characterLook'
+import type { CharacterMood } from '../audio/characterTypes'
 import type { MoodState } from '../audio/types'
 import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
@@ -27,6 +28,25 @@ import {
   visualTensionFloor,
   type MirrorTarget,
 } from './opticalDirector'
+import {
+  bloomFromProfile,
+  createLookRuntime,
+  echoFromProfile,
+  fillLookInput,
+  fogFromProfile,
+  glitchFromProfile,
+  lensAmountFromProfile,
+  lensFromProfile,
+  mirrorFromProfile,
+  mirrorMixFromProfile,
+  postLookActive,
+  scaleMirrorSpin,
+  stepLensSwap,
+  trailsFromProfile,
+  vignetteFromProfile,
+  type LensSwapState,
+  type LookRuntime,
+} from './look/lookPost'
 import { quality } from './quality'
 import { useStore } from '../store'
 
@@ -282,6 +302,18 @@ export function PerformanceStateBridge() {
   /** Boundary type captured at the last section-change edge, held for the
    *  same dip window as `lastSectionAt` — see the pickTransitionStyle call. */
   const lastBoundaryType = useRef<TransitionBoundaryType>('generic')
+  /** The mood look's runtime: the profile tracker, its reusable input, and the URL flags, read ONCE (look/lookPost.ts). */
+  const lookRt = useRef<LookRuntime | null>(null)
+  /** The lens as RENDERED while the profile drives post-fx: material + amount, with the dip-and-swap (stepLensSwap). */
+  const lensShown = useRef<LensSwapState>({ style: 0, amount: 0 })
+  /** The material the director last CHOSE (the rendered one follows it through the dip). */
+  const lensDesired = useRef(0)
+  /** Whether the previous frame ran the profile-driven post path, to re-seed the two refs above when it (re)starts. */
+  const wasPostOn = useRef(false)
+  /** The profile's primary mood at the mirror's last pick: its `moodMoved` signal while the profile is valid. */
+  const mirrorPrimaryAtPick = useRef<CharacterMood | null>(null)
+  /** The profile's primary mood the transition style was last chosen for. */
+  const lastStylePrimary = useRef<CharacterMood | null>(null)
 
   useFrame(() => {
     const f = audioEngine.features
@@ -291,6 +323,13 @@ export function PerformanceStateBridge() {
     const m = f.mood
     // Effect systems below read the character-aware look; timing triggers and telemetry use m.state.
     const look = lookOf(m)
+    // The mood look profile: computed ONCE per frame, before anything below reads it, in place (no allocation).
+    // Every family reads `L` only when `L.valid && L.families.<family>` and otherwise runs its original code.
+    const rt = (lookRt.current ??= createLookRuntime())
+    rt.tracker.update(fillLookInput(rt.input, f, look), p.look)
+    const L = p.look
+    // Post-fx (bloom, CA, vignette, fog, trails, echo, lens, mirror): profile-driven, except in silence (see postLookActive).
+    const postOn = postLookActive(L, look)
 
     // --- What is on screen (currently owned by the store) ---
     p.scene = s.pendingSceneId ?? s.sceneId
@@ -373,6 +412,8 @@ export function PerformanceStateBridge() {
         tension: p.visualTension,
         delta: f.delta,
         drop: f.drop,
+        // The profile's continuous steer targets, only while the scene family is on and the read is valid.
+        look: L.valid && L.families.scene ? L : undefined,
       })
     } else if (p.sceneParams.speed !== undefined) {
       clearSteer(p.sceneParams)
@@ -428,6 +469,8 @@ export function PerformanceStateBridge() {
         // above are deliberately two separate knobs on either side of the
         // same "when does a re-pick happen" question.
         f.danceability,
+        // The mood profile's camera weights, only while the camera family is on and the read is valid.
+        L.valid && L.families.camera ? L : undefined,
       )
       lastCameraShot.current = CAMERA_MODE_SHOT[p.cameraMode]
       // A section boundary is the one moment a hard angle jump reads as
@@ -451,7 +494,11 @@ export function PerformanceStateBridge() {
     // the creative decision belongs on this side of the seam.
     const fastVoice = Math.max(0, Math.min(1, f.vocal * (1 - Math.min(1, f.spectralFlatness))))
     const voiceLift = fastVoice * p.voiceFocus * 0.45 * params.reactivity
-    p.bloom = (BLOOM_BASE[look] + reactive + voiceLift) * params.intensity
+    // Resting level from the mood profile (`postOn`), else the original 7-state table. The reactive and vocal
+    // terms are the same either way; the profile's `bloomReact` scales the reactive sum.
+    p.bloom = postOn
+      ? bloomFromProfile(L, reactive, voiceLift, params.intensity)
+      : (BLOOM_BASE[look] + reactive + voiceLift) * params.intensity
 
     // Threshold FALLS as pressure rises, so more of the frame becomes eligible
     // to bloom — the image opens up rather than merely getting brighter — on
@@ -475,7 +522,9 @@ export function PerformanceStateBridge() {
     // The frame tightens through a build and releases on the drop.
     p.vignette = approach(
       p.vignette,
-      Math.min(1, VIGNETTE_BASE + p.visualTension * 0.16 - (f.drop ? 0.2 : 0)),
+      postOn
+        ? vignetteFromProfile(L, p.visualTension, f.drop)
+        : Math.min(1, VIGNETTE_BASE + p.visualTension * 0.16 - (f.drop ? 0.2 : 0)),
       1.5,
       f.delta,
     )
@@ -488,11 +537,13 @@ export function PerformanceStateBridge() {
     p.glitch =
       s.quality === 'low'
         ? 0
-        : 0.0006 +
-          pulse * 0.0035 +
-          p.visualTension * 0.002 +
-          (f.drop ? 0.004 : 0) +
-          (f.moodsValid ? f.moods.aggressive * 0.0015 : 0)
+        : postOn
+          ? glitchFromProfile(L, pulse, p.visualTension, f.drop, f.moodsValid ? f.moods.aggressive : 0)
+          : 0.0006 +
+            pulse * 0.0035 +
+            p.visualTension * 0.002 +
+            (f.drop ? 0.004 : 0) +
+            (f.moodsValid ? f.moods.aggressive * 0.0015 : 0)
 
     // Fog deepens as the music thins out — an empty mix gets air around the
     // subject, a dense one stays close and flat. The `relaxed` head adds air
@@ -502,7 +553,9 @@ export function PerformanceStateBridge() {
     const relaxedAir = f.moodsValid ? f.moods.relaxed * 0.2 : 0
     p.fog = approach(
       p.fog,
-      Math.min(1, sparse * 0.6 + (look === 'ambient' ? 0.25 : 0) + relaxedAir),
+      postOn
+        ? fogFromProfile(L, sparse, relaxedAir)
+        : Math.min(1, sparse * 0.6 + (look === 'ambient' ? 0.25 : 0) + relaxedAir),
       0.6,
       f.delta,
     )
@@ -565,15 +618,25 @@ export function PerformanceStateBridge() {
     // indefinitely made five consecutive changes all run `dipToBlack` from a
     // single boundary long past.
     const nearSection = f.time - lastSectionAt.current < SECTION_DIP_WINDOW_SEC
-    if (look !== lastStyleMood.current || nearSection !== wasNearSection.current) {
+    // The mood profile's transition weights, only while the post family is on and the read is valid. A change
+    // of its primary mood is a musical change of the same kind a change of the 7-state look is, so it re-picks too.
+    const txLook = L.valid && L.families.post ? L : undefined
+    const stylePrimary = txLook ? txLook.primary : null
+    if (
+      look !== lastStyleMood.current ||
+      nearSection !== wasNearSection.current ||
+      stylePrimary !== lastStylePrimary.current
+    ) {
       lastStyleMood.current = look
       wasNearSection.current = nearSection
+      lastStylePrimary.current = stylePrimary
       p.transitionStyle = pickTransitionStyle(
         look,
         nearSection,
         styleRotation.current++,
         p.transitionStyle,
         nearSection ? lastBoundaryType.current : null,
+        txLook,
       )
     }
 
@@ -594,7 +657,12 @@ export function PerformanceStateBridge() {
     // MIRROR_ONLY_EXCLUDED_SCENES's own doc for why `djcam` belongs here and
     // not in `MIRROR_TRAILS_EXCLUDED_SCENES` itself.
     const mirrorSuppressed = rackSuppressed || MIRROR_ONLY_EXCLUDED_SCENES.has(p.activeScene)
-    p.trails = approach(p.trails, rackSuppressed ? 0 : trailsTarget(look, f.flux, m.level), 0.7, f.delta)
+    p.trails = approach(
+      p.trails,
+      rackSuppressed ? 0 : postOn ? trailsFromProfile(L, f.flux, m.level) : trailsTarget(look, f.flux, m.level),
+      0.7,
+      f.delta,
+    )
     // NOT eased with approach() (F232) — `pulse` (computed above for bloom's
     // reactive term) is already `beatPulse()`'s own sharply-peaked,
     // per-beat-decaying curve, so it IS the envelope. Easing on top of a
@@ -606,7 +674,7 @@ export function PerformanceStateBridge() {
     // (kifs/maze/wingfold) are already kaleidoscopic geometry a MIRROR fold
     // or a persistent TRAIL would double up on, which has nothing to do with
     // three discrete repeats of whatever those scenes already draw.
-    p.echo = echoTarget(look, pulse)
+    p.echo = postOn ? echoFromProfile(L, pulse) : echoTarget(look, pulse)
     // Beat-locked, not scaled by `p.echo`'s own value (F232) — see
     // `resolveEchoTapSpacingSec`'s doc for why a wall-clock ramp was the
     // wrong instrument. Resolved every frame (cheap: one division, no
@@ -617,12 +685,33 @@ export function PerformanceStateBridge() {
     // `pixels`-specific coarseness floor (see that function's doc) — it keeps
     // its last value even while disengaged, same as the style-pick comment
     // below notes, so this is "the material currently shown," not stale.
-    p.lens.amount = approach(
-      p.lens.amount,
-      lensAmountTarget(look, p.visualTension, lensEngaged.current, p.lens.style),
-      0.5,
-      f.delta,
-    )
+    if (postOn) {
+      // Profile path: the rendered lens lives in `lensShown` (not in `p.lens`, which the debug override below
+      // rewrites), and a change of material DIPS the amount to ~0, swaps, and eases back (stepLensSwap), so a
+      // visible lens never hard-swaps. Re-seeded from `p.lens` whenever this path (re)starts.
+      if (!wasPostOn.current) {
+        lensShown.current.style = p.lens.style
+        lensShown.current.amount = p.lens.amount
+        lensDesired.current = p.lens.style
+      }
+      stepLensSwap(
+        lensShown.current,
+        lensDesired.current,
+        lensAmountFromProfile(L, p.visualTension, lensEngaged.current, lensDesired.current),
+        lensEngaged.current,
+        f.delta,
+      )
+      p.lens.amount = lensShown.current.amount
+      p.lens.style = lensShown.current.style
+    } else {
+      p.lens.amount = approach(
+        p.lens.amount,
+        lensAmountTarget(look, p.visualTension, lensEngaged.current, p.lens.style),
+        0.5,
+        f.delta,
+      )
+    }
+    wasPostOn.current = postOn
     // The mirror re-decides on every PHRASE; the lens holds for a SECTION and
     // only reaches for a phrase-level check as a staleness backstop (F237),
     // not as its normal cadence.
@@ -657,7 +746,8 @@ export function PerformanceStateBridge() {
       // fires there too and tears the engagement the drop just caused right
       // back down one phrase later.
       const tensionBucket = Math.round(p.visualTension * 5)
-      const moodMoved = look !== mirrorMoodAtPick.current
+      // With a valid profile the "mood" that moved is its (hysteresis-held) primary of the 14, not the 7-state look.
+      const moodMoved = postOn ? L.primary !== mirrorPrimaryAtPick.current : look !== mirrorMoodAtPick.current
       const tensionMoved = tensionBucket !== mirrorTensionAtPick.current
       mirrorPhrasesHeld.current++
       const nothingToInterrupt = mirrorTarget.current.mode === 'off'
@@ -683,14 +773,15 @@ export function PerformanceStateBridge() {
         // The whole rack, not just the segment count. `tiles`, `twist` and
         // `slice` were previously written by nothing but the debug panel, so
         // three of the mirror's five controls were dead in a running show.
-        const mt = mirrorForSection(
-          look,
-          p.visualTension,
-          mirrorSeed.current++,
-          mirrorHabituation.current,
-        )
+        // Profile path: engage through the same habituated gate at the blended `mirrorEngage`, then sample
+        // mode / segments from the profile's weights (lookPost.mirrorFromProfile). Same hold / dwell / rest
+        // logic above either way; the scene exclusions below are unchanged.
+        const mt = postOn
+          ? mirrorFromProfile(L, p.visualTension, mirrorSeed.current++, mirrorHabituation.current)
+          : mirrorForSection(look, p.visualTension, mirrorSeed.current++, mirrorHabituation.current)
         mirrorTarget.current = mt
         mirrorMoodAtPick.current = look
+        mirrorPrimaryAtPick.current = postOn ? L.primary : null
         mirrorTensionAtPick.current = tensionBucket
         mirrorPhrasesHeld.current = 0
         if (mt.mode !== 'off') mirrorOffPhrases.current = 0
@@ -709,12 +800,21 @@ export function PerformanceStateBridge() {
       // repeat the exact same look as last time — `p.lens.style` keeps its
       // last value even while disengaged (see the comment below), so this is
       // "the last material shown," not just "the last material picked."
-      const style = lensForSection(look, seed, lensHabituation.current, p.lens.style)
+      // Profile path: engage through `habituatedGate` at `lensEngage`, sample the material from `lensWeights`
+      // (never flyEye, never the one last chosen), the same anti-repeat with the chosen rather than the shown one.
+      const style = postOn
+        ? lensFromProfile(L, seed, lensHabituation.current, lensDesired.current)
+        : lensForSection(look, seed, lensHabituation.current, p.lens.style)
       lensEngaged.current = style >= 0
       lensHabituation.current = stepHabituation(lensHabituation.current, style >= 0)
       // Keep the previous material while a disengaged lens eases out. Swapping
       // it on the way down would show a material the section never chose.
-      if (style >= 0) p.lens.style = style
+      // Profile path: only the director's CHOICE changes here; the rendered material follows it through the
+      // dip-and-swap above, never mid-amount.
+      if (style >= 0) {
+        if (postOn) lensDesired.current = style
+        else p.lens.style = style
+      }
       lensPhrasesHeld.current = 0
     }
     // The continuous half of the rack eases toward the section's target, while
@@ -762,14 +862,27 @@ export function PerformanceStateBridge() {
     // dissolves, and even if it kept turning, `mix` approaching 0 hides
     // whatever it would contribute — see MirrorPass's `mix(original,
     // mirrored, uMix)`.
-    p.mirror.spin = mirrorSuppressed ? 0 : mt.spin > 0 ? mt.spin * (0.6 + m.level * 0.7) : 0
+    // Profile path: the same breathing scale, but the result never exceeds 0.7 (scaleMirrorSpin).
+    p.mirror.spin = mirrorSuppressed
+      ? 0
+      : mt.spin > 0
+        ? postOn
+          ? scaleMirrorSpin(mt.spin, m.level)
+          : mt.spin * (0.6 + m.level * 0.7)
+        : 0
     // The fold's VISIBILITY, eased independently of the counts/magnitudes
     // above — see MIRROR_MIX_RATE's doc for the ~2.2s time constant this
     // gives a rise and a fall. `mirrorSuppressed` is instant here too, for
     // the same reason as `segments`/`tiles`.
+    // Profile path: the fold fades up to the profile's `mirrorMix` ceiling rather than always to 1.
     p.mirror.mix = mirrorSuppressed
       ? 0
-      : approach(p.mirror.mix ?? 0, mirrorVisible ? 1 : 0, MIRROR_MIX_RATE, f.delta)
+      : approach(
+          p.mirror.mix ?? 0,
+          mirrorVisible ? (postOn ? mirrorMixFromProfile(L) : 1) : 0,
+          MIRROR_MIX_RATE,
+          f.delta,
+        )
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human take manual control of ONE post-fx field at a

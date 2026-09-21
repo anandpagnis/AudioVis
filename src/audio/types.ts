@@ -471,6 +471,18 @@ export interface AudioFeatures {
    * object is mutated in place every frame (never replaced).
    */
   character: CharacterState
+
+  /**
+   * TIMBRE descriptors, each 0..1 and slowly smoothed (~4 s): how harsh (rough, noisy spectrum), busy
+   * (dense, changing texture) and sparse (quiet and steady) the sound is, independent of the mood label. DSP
+   * only, so they exist in every build; they say how much of a look's effects to show, never which family.
+   * 0.5 = neutral / not yet known (silence holds the last read). See `TimbreDescriptors.ts` for the limits
+   * (harsh is close to `character.tension`; busy is only loosely tied to listener ratings).
+   * `AudioEngine` copies the three numbers into this object each frame, and `resetAnalysis()` REPLACES it
+   * with a fresh one (`Object.assign` of `createEmptyFeatures()`), so read it through `features.timbre`
+   * every frame and never cache the object.
+   */
+  timbre: { harsh: number; busy: number; sparse: number }
 }
 
 /**
@@ -541,5 +553,6 @@ export function createEmptyFeatures(): AudioFeatures {
     silence: true,
     mood: createEmptyMood(),
     character: createEmptyCharacterState(),
+    timbre: { harsh: 0.5, busy: 0.5, sparse: 0.5 },
   }
 }

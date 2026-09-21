@@ -1,0 +1,115 @@
+import { CHARACTER_MOODS, type CharacterMood } from '../../audio/characterTypes'
+import { lensStyleName } from '../opticalRack'
+import type { LookProfile } from './lookRow'
+
+/**
+ * The look overlay's data and text (plan P0 "seams": the tuning workflow is to watch real footage, so the
+ * profile has to be visible while it plays). Pure and free of singletons, so it is tested without a window;
+ * `src/ui/LookDebug.tsx` gathers a snapshot from the live singletons at ~4 Hz and prints these lines.
+ *
+ * Enabled by `?lookdebug` (`lookFlags.lookDebugEnabled`), which the console forwards to the output window
+ * (`lookUrl.ts`). What it shows, top to bottom: where the profile came from and whether consumers are using
+ * it, the three strongest moods of the blend, the character confidence and the timbre descriptors, the fast
+ * layer (build, drop afterglow, breakdown, intensity gate), the values the post chain is APPLYING, the grade on
+ * the GradePass uniforms and the camera / transition picks. Applied values, not the profile's targets: the
+ * point of the overlay is to see what reached the screen and compare it with what the row asked for.
+ */
+
+/** How often the overlay refreshes. Text at 4 Hz is readable, and cheap enough not to matter to the frame. */
+export const LOOK_DEBUG_INTERVAL_MS = 250
+
+/**
+ * The grade currently on `GradePass`'s uniforms, published by `PostFXChain` each frame (three assignments)
+ * because the tracker that eases it lives inside that component. Identity until the chain first runs.
+ */
+export const lookDebugProbe = { sat: 1, temp: 0, contrast: 1 }
+
+/** The post-fx values as applied this moment (`performanceState`'s own fields). */
+export interface LookDebugApplied {
+  bloom: number
+  /** Chromatic aberration (the field is called `glitch`). */
+  glitch: number
+  vignette: number
+  fog: number
+  trails: number
+  echo: number
+  lensStyle: number
+  lensAmount: number
+  mirrorSegments: number
+  mirrorTwist: number
+  mirrorSpin: number
+  mirrorMix: number
+  cameraMode: string
+  transitionStyle: string
+}
+
+/** Everything one overlay refresh prints. */
+export interface LookDebugSnapshot {
+  look: LookProfile
+  character: { valid: boolean; confidence: number }
+  applied: LookDebugApplied
+  grade: { sat: number; temp: number; contrast: number }
+}
+
+/** A number to `d` places, or `-` when it is not finite (a NaN must show up as a dash, never crash the overlay). */
+function fmt(x: number, d: number): string {
+  return Number.isFinite(x) ? x.toFixed(d) : '-'
+}
+
+/** Signed to `d` places (`+0.10`), or `-`. */
+function fmtSigned(x: number, d: number): string {
+  return Number.isFinite(x) ? (x >= 0 ? '+' : '') + x.toFixed(d) : '-'
+}
+
+/** The `n` heaviest moods of a `CHARACTER_MOODS`-ordered weight vector, heaviest first; zero and non-finite weights are left out. */
+export function topMoodWeights(weights: ArrayLike<number>, n = 3): { mood: CharacterMood; weight: number }[] {
+  const all: { mood: CharacterMood; weight: number }[] = []
+  for (let i = 0; i < CHARACTER_MOODS.length && i < weights.length; i++) {
+    const w = weights[i]
+    if (Number.isFinite(w) && w > 0) all.push({ mood: CHARACTER_MOODS[i], weight: w })
+  }
+  all.sort((a, b) => b.weight - a.weight)
+  return all.slice(0, n)
+}
+
+/** `off`, `kaleido/8` or `vortex -1.02`, from the applied mirror rack (segments >= 3 is a fold, else a twist is a vortex). */
+export function mirrorSummary(segments: number, twist: number, mix: number): string {
+  if (!(mix > 0.01)) return 'off'
+  if (segments >= 2.5) return `kaleido/${Math.round(segments)}`
+  if (Math.abs(twist) > 0.01) return `vortex ${fmtSigned(twist, 2)}`
+  return 'off'
+}
+
+/** The overlay text, one string per line. Total: any snapshot field may be NaN. */
+export function formatLookDebug(s: LookDebugSnapshot): string[] {
+  const { look, character, applied: a, grade } = s
+  const lines: string[] = []
+
+  lines.push(
+    `LOOK  source=${look.source}  ${look.valid ? 'profile ON' : 'legacy paths'}  primary=${look.primary ?? '-'}  relax=${fmt(look.relax, 2)}`,
+  )
+  const top = topMoodWeights(look.weights, 3)
+  lines.push('moods ' + (top.length > 0 ? top.map((t) => `${fmt(t.weight, 2)} ${t.mood}`).join('   ') : '-'))
+  lines.push(
+    `read  conf=${fmt(character.confidence, 2)}${character.valid ? '' : ' (invalid)'}  harsh=${fmt(look.harsh, 2)} busy=${fmt(look.busy, 2)} sparse=${fmt(look.sparse, 2)}`,
+  )
+  lines.push(
+    `fast  build=${fmt(look.buildIntent, 2)} afterglow=${fmt(look.afterglow, 2)} breakdown=${fmt(look.breakdown, 2)} gate=${fmt(look.intensityGate, 2)}`,
+  )
+  lines.push(
+    `post  bloom=${fmt(a.bloom, 2)} ca=${fmt(a.glitch, 4)} vig=${fmt(a.vignette, 2)} fog=${fmt(a.fog, 2)}`,
+  )
+  lines.push(
+    `fb    trails=${fmt(a.trails, 2)} echo=${fmt(a.echo, 2)}  shape z${fmt(look.trailsZoom, 1)} r${fmt(look.trailsRotate, 1)} s${fmt(look.trailsSwirl, 1)} w${fmt(look.trailsWobble, 1)}`,
+  )
+  lines.push(
+    `lens  ${lensStyleName(a.lensStyle)} ${fmt(a.lensAmount, 2)}   mirror ${mirrorSummary(a.mirrorSegments, a.mirrorTwist, a.mirrorMix)} mix=${fmt(a.mirrorMix, 2)} spin=${fmt(a.mirrorSpin, 2)}`,
+  )
+  lines.push(`grade sat=${fmt(grade.sat, 3)} temp=${fmtSigned(grade.temp, 3)} contrast=${fmt(grade.contrast, 3)}`)
+  lines.push(`shot  camera=${a.cameraMode}  transition=${a.transitionStyle}`)
+  const f = look.families
+  lines.push(
+    `family ${f.grade ? 'grade' : '-grade'} ${f.post ? 'post' : '-post'} ${f.scene ? 'scene' : '-scene'} ${f.camera ? 'camera' : '-camera'}`,
+  )
+  return lines
+}

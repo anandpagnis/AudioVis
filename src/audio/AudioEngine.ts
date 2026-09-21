@@ -22,6 +22,7 @@ import { evictExpired, fftAdvanced, makeWaveProbe } from './frameGating'
 import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from './energyTarget'
 import { meanSquareToLufs } from './loudness'
 import { SectionTracker } from './SectionTracker'
+import { TimbreDescriptors } from './TimbreDescriptors'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 
 export type SourceKind = 'system' | 'mic' | 'file'
@@ -379,6 +380,8 @@ class AudioEngine {
    * then a soft 14-mood classification with a held primary. Runs in every build. */
   private readonly emotion = new EmotionDimensionEstimator()
   private readonly characterClassifier = new CharacterClassifier()
+  /** Timbre descriptors (harsh / busy / sparse, DSP-only). Copied into `features.timbre` each frame, never aliased. */
+  private readonly timbre = new TimbreDescriptors()
   private readonly lookViz = new LookVizTracker()
   /** `?scenepick=legacy` turns the character-aware look off (same switch as the scene/palette pickers). */
   private readonly characterLookOn = characterLookEnabled()
@@ -838,6 +841,7 @@ class AudioEngine {
     this.harmTension.reset()
     this.emotion.reset()
     this.characterClassifier.reset()
+    this.timbre.reset()
     // `Object.assign` above just replaced `features.character` with a fresh empty state, detaching it
     // from the classifier that writes it (the constructor links them once). Left detached, every
     // consumer saw a never-valid character read after the first source started and silently ran the
@@ -1071,6 +1075,13 @@ class AudioEngine {
     if (advanced) {
       this.emotion.update(f, delta)
       this.characterClassifier.update(this.emotion.read(), now)
+      // Timbre descriptors: copy the numbers, do NOT alias `f.timbre` to the instance's read object, because
+      // resetAnalysis() replaces `features.timbre` (Object.assign of createEmptyFeatures(), the F253 trap).
+      this.timbre.update(f, delta)
+      const tr = this.timbre.read()
+      f.timbre.harsh = tr.harsh
+      f.timbre.busy = tr.busy
+      f.timbre.sparse = tr.sparse
     }
     // Character-aware look for the effect systems (post-FX racks, camera, filters, bloom): character
     // supplies the flavour, the old detector keeps intensity events and quiet-moment ceilings.

@@ -38,6 +38,8 @@
  * trusting each curve's algebra by eye.
  */
 
+import { LOOK_TRANSITIONS, type LookProfile } from './look/lookRow'
+
 /**
  * Styles that exist but may not currently be CHOSEN.
  *
@@ -232,6 +234,92 @@ const DROP_STYLE: TransitionStyle = 'dipToBlack'
  */
 const BREAKDOWN_STYLE: TransitionStyle = 'smear'
 
+/** 1 / golden ratio: the step of a Weyl sequence, the most evenly spread additive sequence on [0, 1). */
+const WEYL_STEP = 0.6180339887498949
+
+/**
+ * A deterministic, well-spread position in [0, 1) for an integer counter.
+ *
+ * This is how the mood look profile's discrete weight vectors (camera mode, transition style) are SAMPLED
+ * without `Math.random()`: the caller's existing counter (`styleRotation`, the camera's rotation-window index)
+ * is the seed, so a recorded set replays identically, exactly as the rotation it replaces did. A Weyl sequence
+ * rather than a hash because consecutive counters land as far apart as possible, so over N picks each option
+ * is hit within ~1/N of its weight (a plain `% n` rotation cannot express unequal weights at all). Counter 0
+ * maps to 0, i.e. to the FIRST option of a weight-ordered list, like the rotation it replaces.
+ *
+ * Negative, fractional and non-finite counters are folded onto a non-negative integer (NaN / Infinity -> 0).
+ */
+export function rotationUnit(key: number): number {
+  const k = Number.isFinite(key) ? Math.abs(Math.trunc(key)) : 0
+  const x = k * WEYL_STEP
+  return x - Math.floor(x)
+}
+
+/**
+ * Index of the option a counter selects when options are chosen in proportion to `weights` (visited in the
+ * order given, so order the array best-first if counter 0 should mean "the top pick"). Weights need not sum to
+ * 1; a zero, negative or non-finite weight is never selected. Returns -1 when no weight is positive.
+ */
+export function pickIndexByWeight(weights: ArrayLike<number>, key: number): number {
+  let total = 0
+  let lastPositive = -1
+  for (let i = 0; i < weights.length; i++) {
+    const w = weights[i]
+    if (w > 0 && Number.isFinite(w)) {
+      total += w
+      lastPositive = i
+    }
+  }
+  if (lastPositive < 0) return -1
+  const target = rotationUnit(key) * total
+  let cum = 0
+  for (let i = 0; i < weights.length; i++) {
+    const w = weights[i]
+    if (!(w > 0) || !Number.isFinite(w)) continue
+    cum += w
+    if (target < cum) return i
+  }
+  return lastPositive
+}
+
+/**
+ * How much the previous style's weight is scaled when the mood look profile picks the next one.
+ *
+ * The legacy pick hard-refuses to repeat `last` (see {@link pickTransitionStyle}). With a weight vector that
+ * rule would be a bug: the row that reads as "mostly dissolve" (serene: 85% dissolve, 15% smear) would collapse
+ * to strict alternation, so the weights would be decoration and every calm mood would smear half the time. A
+ * damped repeat keeps the pressure toward variety (a repeat is half as likely as its weight says) while the
+ * long-run frequencies still follow the row: serene settles near 78 / 22, not 50 / 50.
+ */
+const LOOK_REPEAT_DAMPING = 0.5
+
+/**
+ * The look-profile pick: sample one of the SELECTABLE styles in proportion to the blended `transitionWeights`
+ * (`LOOK_TRANSITIONS` order), seeded by `rotation`. Best-weighted first, so rotation 0 is the mood's top style.
+ * Returns undefined when no selectable style carries weight (the caller then uses the legacy per-mood list).
+ */
+function pickLookStyle(
+  look: LookProfile,
+  rotation: number,
+  last: TransitionStyle | undefined,
+): TransitionStyle | undefined {
+  const cands: { style: TransitionStyle; base: number; w: number; order: number }[] = []
+  for (let i = 0; i < LOOK_TRANSITIONS.length; i++) {
+    const style: TransitionStyle = LOOK_TRANSITIONS[i]
+    const base = look.transitionWeights[i]
+    if (!isStyleSelectable(style) || !(base > 0) || !Number.isFinite(base)) continue
+    cands.push({ style, base, w: style === last ? base * LOOK_REPEAT_DAMPING : base, order: i })
+  }
+  if (cands.length === 0) return undefined
+  // Ranked by the row's own weight (not the damped one) so "first" is always the mood's top style.
+  cands.sort((a, b) => b.base - a.base || a.order - b.order)
+  const idx = pickIndexByWeight(
+    cands.map((c) => c.w),
+    rotation,
+  )
+  return idx < 0 ? undefined : cands[idx].style
+}
+
 /**
  * Choose the style for the next scene change.
  *
@@ -252,6 +340,19 @@ const BREAKDOWN_STYLE: TransitionStyle = 'smear'
  *
  * Anything disabled is filtered out, so disabling a style removes it from the
  * autonomy as well as from the picker rather than only from the UI.
+ *
+ * ## `look` — the mood look profile (optional)
+ *
+ * When given (the caller passes it only while the profile is valid and its `scene`/camera-style family is
+ * enabled), the MOOD half of the pick above is replaced by a weighted sample over the selectable styles using
+ * `look.transitionWeights` (the blend of the 14 authored rows, `LOOK_TRANSITIONS` order), seeded by `rotation`
+ * (see {@link rotationUnit}) and with a damped no-immediate-repeat rule (see {@link LOOK_REPEAT_DAMPING}).
+ * Everything ABOVE the mood pick is untouched: a classified drop / breakdown boundary still forces its own
+ * style (drop -> dipToBlack falls through while it is disabled, breakdown -> smear), and the caller's
+ * confidence gate on `boundaryType` is unchanged. Nothing disabled can be returned. `silence` still means the
+ * neutral dissolve (the legacy rule: the character read is slow and outlives the music, the fast mood does not).
+ * If the profile carries no usable weight the legacy per-mood list decides. Omitted, this function is
+ * byte-for-byte the original.
  */
 export function pickTransitionStyle(
   mood: string,
@@ -259,11 +360,18 @@ export function pickTransitionStyle(
   rotation: number,
   last: TransitionStyle | undefined,
   boundaryType?: TransitionBoundaryType | null,
+  look?: LookProfile,
 ): TransitionStyle {
   if (sectionChange) {
     if (boundaryType === 'drop' && isStyleSelectable(DROP_STYLE)) return DROP_STYLE
     if (boundaryType === 'breakdown' && isStyleSelectable(BREAKDOWN_STYLE)) return BREAKDOWN_STYLE
     if (isStyleSelectable('dipToBlack')) return 'dipToBlack'
+  }
+  // `silence` keeps its own rule (a quiet frame gets the neutral dissolve, never a rack effect) whatever the
+  // profile's slow character read says: that read outlives the music, the fast mood does not.
+  if (look && mood !== 'silence') {
+    const weighted = pickLookStyle(look, rotation, last)
+    if (weighted) return weighted
   }
   const preferred = (MOOD_STYLES[mood] ?? MOOD_STYLES.groove).filter(isStyleSelectable)
   if (preferred.length === 0) return 'dissolve'

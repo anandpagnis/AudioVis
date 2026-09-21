@@ -4,6 +4,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import { lookOf } from '../audio/characterLook'
 import type { AudioFeatures } from '../audio/types'
 import { cueState } from './CueTimeline'
+import type { LookProfile } from './look/lookRow'
 import { performanceState, type ActiveEffect } from './performanceState'
 import { quality } from './quality'
 import { renderScale } from './renderScale'
@@ -74,6 +75,33 @@ export class TriggerEdges {
 }
 
 /**
+ * How likely the mood look profile makes an effect scene: `fxShock` / `fxFlare` / `fxSpark` / `fxStrobe` for
+ * `shock` / `flare` / `spark` / `strobe` (0..1.5, and ALREADY scaled by the fast layer's intensity gate, so a
+ * calm passage of an epic song does not get peak effects). An effect the profile has no field for (a future scene, a
+ * test fixture) is unweighted (1); a non-finite value is unweighted too rather than an exclusion; a negative one is 0.
+ */
+export function effectPropensity(id: string, look: LookProfile): number {
+  let v: number
+  switch (id) {
+    case 'shock':
+      v = look.fxShock
+      break
+    case 'flare':
+      v = look.fxFlare
+      break
+    case 'spark':
+      v = look.fxSpark
+      break
+    case 'strobe':
+      v = look.fxStrobe
+      break
+    default:
+      return 1
+  }
+  return Number.isFinite(v) ? Math.max(0, v) : 1
+}
+
+/**
  * Advance the active list: retire what has expired, admit what just fired.
  *
  * Pure and exported for tests. `now` is `features.time`, which restarts at 0 on
@@ -105,6 +133,14 @@ export function advanceEffects(opts: {
   internalMP?: number
   /** Live valence/arousal read — forwarded to `pickVariedScene`. */
   currentVA?: ValenceArousal
+  /**
+   * The mood look profile, passed ONLY while it is valid and its `scene` family is on. When given, each
+   * eligible effect's odds in the weighted pick are multiplied by its propensity ({@link effectPropensity}),
+   * and an effect whose propensity is 0 is excluded outright. Everything else — which effects a trigger can
+   * fire, cooldowns, durations, the one-at-a-time cap, the budget check — is unchanged. Omitted, the pick is
+   * exactly the original.
+   */
+  look?: LookProfile
 }): ActiveEffect[] {
   const {
     active,
@@ -119,6 +155,7 @@ export function advanceEffects(opts: {
     recentIds,
     internalMP,
     currentVA,
+    look,
   } = opts
 
   // Retire: expired, or stranded by a source restart that rewound the clock.
@@ -140,7 +177,22 @@ export function advanceEffects(opts: {
   })
   if (eligible.length === 0) return kept as ActiveEffect[]
 
-  const pick = pickVariedScene(eligible, mood, recentIds, undefined, currentVA)
+  // Mood look weighting, applied through pickVariedScene's own `boost` hook (a per-candidate multiplier on its
+  // moodFit x recency x VA weight) so that function — which lives with the scene registry — is untouched. The
+  // hook alone cannot EXCLUDE: a lone candidate is returned without being weighed, an all-zero draw falls
+  // through to the first candidate, and a roll of exactly 0 lands on a leading zero-weight one. So
+  // zero-propensity effects are filtered out first. A lone remaining candidate therefore fires whatever its
+  // (non-zero) propensity: a weight can only reorder candidates against each other, not thin a trigger that
+  // has just one answer.
+  let candidatesForPick = eligible
+  let boost: ((scene: SceneDef) => number) | undefined
+  if (look) {
+    candidatesForPick = eligible.filter((scene) => effectPropensity(scene.id, look) > 0)
+    if (candidatesForPick.length === 0) return kept as ActiveEffect[]
+    boost = (scene) => effectPropensity(scene.id, look)
+  }
+
+  const pick = pickVariedScene(candidatesForPick, mood, recentIds, boost, currentVA)
   if (!pick) return kept as ActiveEffect[]
 
   // Effects are last in line for budget — the frame still reads without them.
@@ -216,6 +268,7 @@ export function EffectDirector() {
       recentIds: s.recentSceneIds,
       internalMP: renderScale.internalMP(renderScale.applied),
       currentVA: { valence: performanceState.valence, arousal: performanceState.arousal },
+      look: p.look.valid && p.look.families.scene ? p.look : undefined,
     })
   }, -86) // after CueTimeline (-88) settles governance, before PerformanceDirector (-85)
 

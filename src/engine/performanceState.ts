@@ -2,6 +2,7 @@ import type { MoodState } from '../audio/types'
 import type { LensRackState, MirrorRackState } from './opticalRack'
 import type { TransitionStyle } from './transitions'
 import type { SceneParams } from '../scenes/contract'
+import { createLookProfile, type LookProfile } from './look/lookRow'
 
 /** One live firing of an effect scene. Owned by EffectDirector. */
 export interface ActiveEffect {
@@ -100,6 +101,12 @@ export interface PerformanceState {
     accent: string | null
     overlay: string | null
   }
+  /**
+   * The mood-driven look (blended authored rows + fast modifiers), computed once per frame by
+   * `LookProfileTracker` in `PerformanceStateBridge`. `look.valid === false` means consumers must use their
+   * original (legacy) code paths. See `engine/look/lookRow.ts`.
+   */
+  look: LookProfile
   /** Palette id. */
   palette: string
   /** The mood this state was composed for — context for downstream easing. */
@@ -376,8 +383,9 @@ export interface PerformanceState {
    * The director's continuous hand on the picture, as opposed to `scene`, which
    * is its choice of picture. Sparse on purpose: a key is present only where the
    * director has an opinion, so `useSceneFrame` can tell "no opinion" from "an
-   * opinion that happens to be 0.5" — and `shape` and `tilt` are never present
-   * at all (see engine/sceneSteer.ts for why those two are declined).
+   * opinion that happens to be 0.5" — and `shape` and `tilt` are present only
+   * while the active scene opted in via `contract.directorSteers` (see engine/sceneSteer.ts for why those two are
+   * otherwise declined).
    *
    * Reader: `useSceneFrame`, which layers it under the user's own dials. A user
    * dial always wins, so this steers only what nobody has taken.
@@ -410,6 +418,7 @@ export const performanceState: PerformanceState = {
   activeScene: 'wireframe',
   layers: { background: null, accent: null, overlay: null, effects: [] },
   mountedLayers: { background: null, accent: null, overlay: null },
+  look: createLookProfile(),
   palette: 'aurora',
   mood: 'silence',
 

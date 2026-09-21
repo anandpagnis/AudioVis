@@ -5,6 +5,15 @@ import { renderScale } from './renderScale'
 import { exposure } from './exposure'
 import { approach, performanceState } from './performanceState'
 import { getPalette } from './palettes'
+import {
+  GRADE_LIMITS,
+  GRADE_LUMA,
+  GRADE_LUMA_EPS,
+  GRADE_PIVOT,
+  GRADE_SAT_EPS,
+  GRADE_SNAP,
+  GRADE_TEMP_G,
+} from './look/gradeResidual'
 import { useStore } from '../store'
 import { audioEngine } from '../audio/AudioEngine'
 
@@ -84,6 +93,52 @@ import { audioEngine } from '../audio/AudioEngine'
  * a full-frame wash even with every scene forced to zero. Exposure is a
  * multiply; anything else is a different operation wearing its name.
  *
+ * ## The mood grade: `uGradeSat`, `uGradeTemp`, `uGradeContrast`
+ *
+ * Three continuous colour controls driven by `performanceState.look` (the mood-driven look; what to apply
+ * is worked out in `look/gradeResidual.ts` as the mood's target minus what the palette already carries, and
+ * `PostFXChain` feeds it through {@link GradePass.setGrade}). The lesson above is the design constraint:
+ * nothing here may ever produce negative light. So each control is either strictly multiplicative or
+ * bounded so it cannot leave the gamut:
+ *
+ *  - **Temperature** is a per-channel GAIN, `(1 + t, 1 - 0.196 t, 1 - t)`, with |t| <= 0.15. Every gain is
+ *    positive, so a non-negative channel stays non-negative and black stays black. The green term is solved
+ *    so a neutral grey keeps its luma, so a warm cast is not also a brightness change.
+ *  - **Saturation** is a luma-preserving mix, `mix(vec3(luma), c, s)`. Pushing `s` above 1 on a channel that
+ *    is already near zero would go negative (a cyan pixel has a red of exactly 0), so `s` is capped PER PIXEL
+ *    at `luma / (luma - min(c))`, the most the least channel can take. A fully saturated pixel therefore
+ *    gets no boost (it cannot be more saturated inside the gamut) rather than a negative channel. The cost
+ *    is that a boost lands on the less-saturated pixels (glows, bloom, blends) and spares the palette's pure
+ *    slots, which is also what keeps it from hue-shifting them. Desaturation is a convex combination.
+ *  - **Contrast** is a power curve on LUMA about a mid-grey pivot (0.18 linear), applied as a ratio
+ *    `c *= f(luma) / luma`. RGB scales together, so hue and saturation are untouched: contrast never leaks
+ *    into the saturation control, and because saturation preserves luma the two are orthogonal. Black maps
+ *    to exactly 0 (a step guard, which also keeps the `pow` argument positive).
+ *
+ * ### Where it sits: sharpen, gain, GRADE, fog
+ *
+ *  - **After the sharpen.** CAS is derived for the raw composite (its clamp headroom is measured against the
+ *    frame as rendered), so it stays first, exactly as before.
+ *  - **After `uGain`.** Saturation and temperature are homogeneous (grading a scaled pixel is the same as
+ *    scaling a graded one), so their order against the gain does not matter. Contrast is NOT: it has a pivot.
+ *    Before the gain the pivot would sit at a different place in the image every time the servo moved, so
+ *    the servo would be shifting the contrast curve under its own feet. After it, the pivot is defined on the
+ *    level the servo has already normalised, and grade and servo are two independent stages in series.
+ *  - **Before the fog.** The fog lift and veil are what a director asked the atmosphere to be. Graded after,
+ *    contrast above 1 would crush the lifted blacks (fighting the fog) and below 1 would amplify them, and a
+ *    temperature tint would pull the haze off the palette's ground colour. Before, the haze simply sits on
+ *    top of the graded picture, which is also physically right: haze veils the subject.
+ *  - **The servo.** It is closed-loop on the FINAL frame with a wide dead zone (`exposure.ts`: mean
+ *    0.02..0.55). Saturation preserves luma exactly and temperature preserves it for greys; contrast within
+ *    +-15% moves a typical frame's mean by a few percent and changes the loop's gain by at most the exponent
+ *    (<= 1.15). None of that leaves the dead zone or destabilises a loop this slow, so the two never fight.
+ *
+ * At identity (1, 0, 1) the whole stage is skipped by a branch on uniforms, so every fragment takes the same
+ * path, the taps and maths are not paid for, and the output is bit-identical to a build without it. The JS
+ * side sanitises every value (clamped, NaN-guarded, near-identity snapped to exactly identity) before it
+ * reaches a uniform, see {@link sanitizeGradeSat} and friends, and `gradeMath` in `look/gradeResidual.ts`
+ * mirrors the shader operation for operation so the properties above are unit-tested rather than asserted.
+ *
  * ## It also owns the output colour-space conversion
  *
  * Being last carries a duty beyond presenting the frame: the composer works in
@@ -122,7 +177,14 @@ import { audioEngine } from '../audio/AudioEngine'
  * the actual gate.
  */
 
-const GRADE_FRAG = /* glsl */ `
+/** A JS number as a GLSL float literal (always carries a '.' or an exponent, so it is never an int). */
+const glf = (n: number): string => {
+  const s = String(n)
+  return /[.e]/i.test(s) ? s : `${s}.0`
+}
+
+/** Exported so the tests can pin the stage order (sharpen, gain, grade, fog) and the shared constants. */
+export const GRADE_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
   uniform float uGain;
@@ -132,6 +194,9 @@ const GRADE_FRAG = /* glsl */ `
   uniform vec3 uFogColor;
   uniform float uSharpen;
   uniform vec2 uTexel;
+  uniform float uGradeSat;
+  uniform float uGradeTemp;
+  uniform float uGradeContrast;
 
   /**
    * Contrast-adaptive sharpening, run on the frame before the browser stretches
@@ -196,6 +261,37 @@ const GRADE_FRAG = /* glsl */ `
     vec3 sum = centre + (up + down + left + right) * w;
     return clamp(sum / (1.0 + 4.0 * w), 0.0, 1.0e4);
   }
+
+  /**
+   * The mood grade. Why each operation is shaped the way it is, and why it sits between the gain and the
+   * fog, is in this file's header ("The mood grade"). Mirrored operation for operation by gradeMath() in
+   * look/gradeResidual.ts, which is where no-negatives / black-stays-black / luma-preserved are tested; the
+   * constants are interpolated from that file. Every stage is skipped on a uniform branch at identity.
+   */
+  const vec3 GRADE_LUMA = vec3(${glf(GRADE_LUMA[0])}, ${glf(GRADE_LUMA[1])}, ${glf(GRADE_LUMA[2])});
+
+  vec3 moodGrade(vec3 c) {
+    // Temperature: strictly positive per-channel gains, green solved so a neutral grey keeps its luma.
+    if (uGradeTemp != 0.0) {
+      c *= vec3(1.0 + uGradeTemp, 1.0 - ${glf(GRADE_TEMP_G)} * uGradeTemp, 1.0 - uGradeTemp);
+    }
+    // Saturation: a luma-preserving mix, capped per pixel at the strength that would zero the smallest
+    // channel, so it can dial a pixel toward grey freely but can never push a channel below black.
+    if (uGradeSat != 1.0) {
+      float l = dot(c, GRADE_LUMA);
+      float s = min(uGradeSat, l / max(l - min(c.r, min(c.g, c.b)), ${glf(GRADE_SAT_EPS)}));
+      c = mix(vec3(l), c, s);
+    }
+    // Contrast: a power curve on luma about mid grey, applied as a ratio so hue and saturation are
+    // untouched. The step makes black exactly black and keeps the pow argument positive.
+    if (uGradeContrast != 1.0) {
+      float l = dot(c, GRADE_LUMA);
+      float lc = max(l, ${glf(GRADE_LUMA_EPS)});
+      c *= (pow(lc / ${glf(GRADE_PIVOT)}, uGradeContrast) * ${glf(GRADE_PIVOT)} / lc) * step(${glf(GRADE_LUMA_EPS)}, l);
+    }
+    // A rounding guard, not the mechanism: the stages above cannot go negative on their own.
+    return max(c, vec3(0.0));
+  }
   varying vec2 vUv;
 
   void main() {
@@ -215,6 +311,11 @@ const GRADE_FRAG = /* glsl */ `
     // taps genuinely are not paid for at scale 1.
     if (uSharpen > 0.001) col = casSharpen(uv, col);
     col *= uGain;
+
+    // Mood grade: after the gain (contrast's pivot must sit on the level the servo has normalised) and
+    // before the fog (so the haze lies on top of the graded picture instead of being graded itself).
+    // The branch is on uniforms, so at identity no fragment pays for it and the output is unchanged.
+    if (uGradeSat != 1.0 || uGradeTemp != 0.0 || uGradeContrast != 1.0) col = moodGrade(col);
 
     // Atmosphere, as veiling glare rather than as distance fog.
     //
@@ -343,6 +444,38 @@ export function sharpenWithSparkle(scaleBase: number, easedSparkle01: number): n
   return Math.min(CAS_SHARPEN_CEILING, Math.max(0, baseIn) + sparkleTerm)
 }
 
+/**
+ * Sanitisers for the three mood-grade uniforms. Same discipline as `sharpenForScale` and
+ * `sharpenWithSparkle`: total against a non-finite or out-of-range input, because a NaN reaching a shader
+ * uniform is a permanently broken frame, not a one-frame glitch.
+ *
+ * Each one (1) treats a non-finite value as IDENTITY (a runaway upstream value must not slam the grade to
+ * a limit), (2) clamps to the design limits in `GRADE_LIMITS`, the same numbers `computeGradeResidual`
+ * clamps to, so the +-25% / +-15% / +-15% contract holds at the last stop before the GPU whoever the caller
+ * is, and (3) snaps a value within `GRADE_SNAP` of identity onto it EXACTLY. The snap matters: the eased
+ * residual approaches identity exponentially and never lands, and the shader's identity branch tests exact
+ * equality, so without it a stage would stay switched on to change 0.1% of the picture. Pure and exported.
+ */
+export function sanitizeGradeSat(v: number): number {
+  if (!Number.isFinite(v)) return 1
+  const c = Math.min(GRADE_LIMITS.satMax, Math.max(GRADE_LIMITS.satMin, v))
+  return Math.abs(c - 1) < GRADE_SNAP.sat ? 1 : c
+}
+
+/** See {@link sanitizeGradeSat}. `v` is the R-gain offset: + warm, - cool, identity 0. */
+export function sanitizeGradeTemp(v: number): number {
+  if (!Number.isFinite(v)) return 0
+  const c = Math.min(GRADE_LIMITS.tempMax, Math.max(-GRADE_LIMITS.tempMax, v))
+  return Math.abs(c) < GRADE_SNAP.temp ? 0 : c
+}
+
+/** See {@link sanitizeGradeSat}. `v` is the contrast exponent about the pivot, identity 1. */
+export function sanitizeGradeContrast(v: number): number {
+  if (!Number.isFinite(v)) return 1
+  const c = Math.min(GRADE_LIMITS.contrastMax, Math.max(GRADE_LIMITS.contrastMin, v))
+  return Math.abs(c - 1) < GRADE_SNAP.contrast ? 1 : c
+}
+
 export class GradePass extends Pass {
   private readonly material: THREE.ShaderMaterial
   private readonly fsScene: THREE.Scene
@@ -372,10 +505,38 @@ export class GradePass extends Pass {
         uFogColor: { value: new THREE.Color(0.05, 0.06, 0.09) },
         uSharpen: { value: 0 },
         uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+        uGradeSat: { value: 1 },
+        uGradeTemp: { value: 0 },
+        uGradeContrast: { value: 1 },
       },
     })
     this.fsScene = new THREE.Scene()
     this.fsScene.add(new THREE.Mesh(this.quadGeometry, this.material))
+  }
+
+  /**
+   * Set the mood grade (identity: 1, 0, 1). Sanitised here, so a caller cannot get a NaN or an out-of-range
+   * value onto a uniform; see {@link sanitizeGradeSat}. The values persist across frames until set again,
+   * so `PostFXChain` calls this once per frame with the eased residual from `GradeResidualTracker`, and
+   * feeds identity whenever the look is not valid or its grade family is off.
+   */
+  setGrade(sat: number, temp: number, contrast: number): void {
+    const u = this.material.uniforms
+    u.uGradeSat.value = sanitizeGradeSat(sat)
+    u.uGradeTemp.value = sanitizeGradeTemp(temp)
+    u.uGradeContrast.value = sanitizeGradeContrast(contrast)
+  }
+
+  /** The grade currently on the uniforms (after sanitising). For tests and the debug overlay; allocates. */
+  get grade(): { sat: number; temp: number; contrast: number } {
+    const u = this.material.uniforms
+    return { sat: u.uGradeSat.value, temp: u.uGradeTemp.value, contrast: u.uGradeContrast.value }
+  }
+
+  /** True when any grade stage is switched on in the shader (anything but exact identity). */
+  get gradeActive(): boolean {
+    const u = this.material.uniforms
+    return u.uGradeSat.value !== 1 || u.uGradeTemp.value !== 0 || u.uGradeContrast.value !== 1
   }
 
   render(
