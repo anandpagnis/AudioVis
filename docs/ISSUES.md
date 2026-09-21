@@ -12290,3 +12290,40 @@ per-frame canvas heavy enough to distort the reading.
 
       `npm run check` clean: typecheck, lint, 2402 tests (131 files), build,
       licence gate.
+
+- [ ] **F256 · Merged F252-F255 to `main` (2026-09-21); CI `check` has been red
+      since at least 2026-09-13, so the deploy job is gated and nothing has
+      shipped** — *2026-09-21, user request ("push to main and log")*
+      `.github/workflows/ci.yml`, `src/engine/sessionLog.ts`,
+      `src/engine/__tests__/sessionLog.test.ts`, `sessionLogTiles.test.ts`
+
+      **Merge.** `feat/mood-engine-v2` and `feat/mood-look-system` were
+      fast-forwarded into `main` (`d23218b..02770da`, four commits: labelling
+      tooling, scene fixes, the F252 mood engine + licence firewall, the F255
+      look system). `origin/main` had not moved, so there was no merge commit.
+      Pushed with the `AryanSivanandan` token, scoped to the one command (the
+      default `gh` account `4ryan-s` has no access to the private repo).
+
+      **The CI finding, which predates this work.** Every recent `main` and
+      `launch-prod` run in the Actions list is `failure`, the oldest inspected
+      being 2026-09-13. The failing step is `check` -> `npm run test`:
+      `ReferenceError: navigator is not defined` at `src/engine/sessionLog.ts:467`
+      (`ua: navigator.userAgent`), failing 8 tests each in `sessionLog.test.ts`
+      and `sessionLogTiles.test.ts`. `ci.yml` pins Node 20, which has no
+      `navigator` global; Node 21+ does, which is why the same tests pass on
+      the local Node 22.15. `deploy` declares `needs: check`, so **no
+      production deploy has run since the check went red**, and the F252-F255
+      push hit the same gate (run `35631093698` was still in progress when this
+      was logged; the failure cause is the pre-existing one, not new code).
+      `npm run check` is green locally on Node 22 (typecheck, lint, 2402 tests,
+      build, licence gate).
+
+      **Deliberately not fixed here.** The fix is one line (guard `navigator`
+      in `sessionLog.ts`, or set `node-version: 22` in `ci.yml`), but it would
+      turn the production auto-deploy back on for a look system nobody has yet
+      watched run, and its colour-grade and Transient Spark shaders have never
+      compiled on a real GPU (a GLSL error there would black the picture for
+      every visitor, and CI cannot catch that). Recommend: watch it locally
+      (`?lookdebug`, `?lookforce=<mood>`) first, then fix CI. Also open from
+      earlier entries: `public/landing/fractures.mp3` still has no recorded
+      licence, and a source-side flash limiter is still deferred.
