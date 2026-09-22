@@ -1,3 +1,4 @@
+import { createEmptyCharacterState, type CharacterState } from './characterTypes'
 import { createEmptyPercussion, type PercussionState } from './PercussionDetector'
 
 /**
@@ -91,6 +92,16 @@ export interface MoodMomentum {
 
   /** Smoothed visual multipliers derived from mood (applied over user params). */
   viz: { intensity: number; speed: number; reactivity: number }
+
+  /**
+   * The character-aware state the EFFECT systems (post-FX racks, camera, filters, bloom, scene
+   * steering) read instead of `state`. `null` until the engine has computed it; read via
+   * `lookOf(mood)` (`characterLook.ts`), which falls back to `state`. Timing triggers and
+   * telemetry stay on `state`.
+   */
+  look: MoodState | null
+  /** `viz` blended with the character-derived multipliers; what `getEffectiveParams` applies. */
+  vizLook: { intensity: number; speed: number; reactivity: number }
 }
 
 /** Neutral mood state for engine construction and reset between sources. */
@@ -122,6 +133,8 @@ export function createEmptyMood(): MoodMomentum {
     isDecaying: false,
     isMelting: false,
     viz: { intensity: 1, speed: 1, reactivity: 1 },
+    look: null,
+    vizLook: { intensity: 1, speed: 1, reactivity: 1 },
   }
 }
 
@@ -352,11 +365,11 @@ export interface AudioFeatures {
   structureValid: boolean
 
   /**
-   * Estimated tonic ('C', 'F#', …) and mode, from Essentia's KeyExtractor in
-   * the analysis worker. Empty string until the first read lands, and it holds
-   * its last value between reads (re-evaluated on section boundaries, not per
-   * frame). Nothing reads these yet — surfaced for the debug/analytics panels
-   * so accuracy can be judged before they drive anything.
+   * Estimated tonic ('C', 'F#', …) and mode. From the clean-room
+   * `ChromaKeyEstimator` (empty until `keyValid`, ~6-18 s in) or, when the
+   * Essentia provider is enabled, from Essentia's KeyExtractor in the analysis
+   * worker (empty until its first read lands, re-evaluated on section
+   * boundaries). Holds its last value between reads.
    */
   key: string
   scale: 'major' | 'minor' | ''
@@ -369,6 +382,26 @@ export interface AudioFeatures {
    * score.
    */
   keyConfidence: number
+  /**
+   * Clean-room key/mode + harmonic-tension read (`chromaKey.ts`,
+   * `harmonicTension.ts`), computed in every build from the 8192-point
+   * spectrum, so it works with Essentia excluded. `key`/`scale`/`keyConfidence`
+   * above come from this estimator too unless the Essentia provider is on, in
+   * which case Essentia owns those three. Everything here defaults to 0/false
+   * and only carries meaning while the matching `*Valid` flag is true.
+   */
+  /** -1 (minor) .. +1 (major); 0 = ambiguous. Meaningful only when `keyValid`. */
+  keyModeStrength: number
+  /** Enough tonal energy has accumulated for `key`/`scale`/`keyModeStrength`. */
+  keyValid: boolean
+  /** 12 pitch-class energies, max-normalised, index 0 = C. */
+  chroma: Float32Array
+  /** 0..1 each; judgement-call blends, not fitted. Meaningful when `harmonicTensionValid`. */
+  harmonicRoughness: number
+  harmonicDissonance: number
+  harmonicTonalness: number
+  harmonicTension: number
+  harmonicTensionValid: boolean
   /**
    * RAW Essentia Danceability (DFA-based). Deliberately not renormalized.
    *
@@ -429,6 +462,27 @@ export interface AudioFeatures {
 
   /** Live mood read — state, momentum, prediction. */
   mood: MoodMomentum
+
+  /**
+   * CHARACTER read: continuous valence/arousal/tension/pulse plus a probability
+   * distribution over 14 named moods (serene .. epic). Changes over seconds, not
+   * frames, and answers "what does this music FEEL like", where `mood` above
+   * answers "how intense is this moment". See `characterTypes.ts`. The same
+   * object is mutated in place every frame (never replaced).
+   */
+  character: CharacterState
+
+  /**
+   * TIMBRE descriptors, each 0..1 and slowly smoothed (~4 s): how harsh (rough, noisy spectrum), busy
+   * (dense, changing texture) and sparse (quiet and steady) the sound is, independent of the mood label. DSP
+   * only, so they exist in every build; they say how much of a look's effects to show, never which family.
+   * 0.5 = neutral / not yet known (silence holds the last read). See `TimbreDescriptors.ts` for the limits
+   * (harsh is close to `character.tension`; busy is only loosely tied to listener ratings).
+   * `AudioEngine` copies the three numbers into this object each frame, and `resetAnalysis()` REPLACES it
+   * with a fresh one (`Object.assign` of `createEmptyFeatures()`), so read it through `features.timbre`
+   * every frame and never cache the object.
+   */
+  timbre: { harsh: number; busy: number; sparse: number }
 }
 
 /**
@@ -482,6 +536,14 @@ export function createEmptyFeatures(): AudioFeatures {
     key: '',
     scale: '',
     keyConfidence: 0,
+    keyModeStrength: 0,
+    keyValid: false,
+    chroma: new Float32Array(12),
+    harmonicRoughness: 0,
+    harmonicDissonance: 0,
+    harmonicTonalness: 0,
+    harmonicTension: 0,
+    harmonicTensionValid: false,
     danceability: 0,
     vocalPresence: 0,
     moods: { happy: 0, aggressive: 0, party: 0, relaxed: 0 },
@@ -490,5 +552,7 @@ export function createEmptyFeatures(): AudioFeatures {
     buildUp: false,
     silence: true,
     mood: createEmptyMood(),
+    character: createEmptyCharacterState(),
+    timbre: { harsh: 0.5, busy: 0.5, sparse: 0.5 },
   }
 }

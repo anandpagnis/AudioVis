@@ -5,9 +5,11 @@ import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 import { effectEnvelope } from './effectEnvelope'
+import { layoutSparks, MAX_SPARKS, pickSparkCount, RECENT_WINDOW } from './transientSparkLayout'
 
 /**
- * Transient Spark — three small points of light popping in on a hit.
+ * Transient Spark — points of light popping in on a hit: anywhere from a single big soft bloom to a
+ * crowd of 15 small ones, with the count and spread changing every firing (`transientSparkLayout.ts`).
  *
  * `transient` fires far more often than `drop` or a section change (any
  * onset crossing the threshold in `TriggerEdges`), and a punctuation effect
@@ -26,13 +28,14 @@ import { effectEnvelope } from './effectEnvelope'
  *
  * Every selector in this engine is a pure function of a seed or a rotation
  * counter — no `Math.random()` — so a recorded show replays identically.
- * The three spark positions follow the same discipline: seeded from the
+ * The count and positions follow the same discipline: seeded from the
  * beat position (`beatIndex + beatProgress`) at the instant the effect
- * fires, spread by the golden angle (≈2.39996 rad), a standard closed-form
- * way to place a small deterministic set of points without them clustering.
+ * fires plus a per-firing counter, then laid out by the golden angle (≈2.39996 rad), a
+ * standard closed-form way to place a set of points without them clustering.
  * The seed is captured once per firing (an edge, exactly like
  * `TriggerEdges` tracks rising edges elsewhere) rather than read continuously,
- * so the three points hold still for the burst instead of drifting.
+ * so the points hold still for the burst instead of drifting. It used to be exactly three
+ * lights every time, which read as one repeated stamp.
  *
  * ## Falloff without a singularity
  *
@@ -50,10 +53,6 @@ import { effectEnvelope } from './effectEnvelope'
  * soft one, not just at a different spot.
  */
 
-const GOLDEN_ANGLE = 2.399963
-const SPARK_RADIUS = 0.34
-const FALLOFF_K = 110.0
-
 export const FRAG = /* glsl */ `
   precision highp float;
   varying vec2 vUv;
@@ -62,23 +61,30 @@ export const FRAG = /* glsl */ `
   uniform vec3 uCol1;
   uniform vec3 uCol2;
   uniform vec3 uCol3;
-  uniform vec2 uPos1;
-  uniform vec2 uPos2;
-  uniform vec2 uPos3;
+  /** Live light count, 1..MAX_SPARKS. */
+  uniform int uCount;
+  /** Per light: xy = position, z = falloff steepness, w = brightness. */
+  uniform vec4 uSpark[${MAX_SPARKS}];
   /** Transient strength (high+energy), captured once on the firing's rising edge. */
   uniform float uStrength;
   uniform float uFade;
 
-  vec3 spark(vec2 uv, vec2 pos, vec3 c){
-    float d2 = dot(uv - pos, uv - pos);
-    return c / (d2 * ${FALLOFF_K.toFixed(1)} + 1.0);
+  vec3 spark(vec2 uv, vec4 s, vec3 c){
+    vec2 d = uv - s.xy;
+    return c * s.w / (dot(d, d) * s.z + 1.0);
   }
 
   void main(){
     vec2 fragCoord = vUv * uRes;
     vec2 uv = (fragCoord - 0.5 * uRes) / min(uRes.x, uRes.y);
 
-    vec3 color = spark(uv, uPos1, uCol1) + spark(uv, uPos2, uCol2) + spark(uv, uPos3, uCol3);
+    vec3 color = vec3(0.0);
+    for (int i = 0; i < ${MAX_SPARKS}; i++) {
+      if (i >= uCount) break;
+      float slot = mod(float(i), 3.0);
+      vec3 c = slot < 0.5 ? uCol1 : (slot < 1.5 ? uCol2 : uCol3);
+      color += spark(uv, uSpark[i], c);
+    }
     gl_FragColor = vec4(color * uStrength * uFade, 1.0);
   }
 `
@@ -89,6 +95,10 @@ export function TransientSparkScene() {
   const wasEffect = useRef(false)
   /** Captured transient strength, held for the whole firing — see header. */
   const strength = useRef(1)
+  /** Firings so far, folded into the seed so two bursts on the same beat position still differ. */
+  const firings = useRef(0)
+  /** Recent light counts, so the next burst is a clearly different size. */
+  const recentCounts = useRef<number[]>([])
 
   const material = useMemo(
     () =>
@@ -104,9 +114,8 @@ export function TransientSparkScene() {
           uCol1: { value: new THREE.Color('#ffffff') },
           uCol2: { value: new THREE.Color('#ffffff') },
           uCol3: { value: new THREE.Color('#ffffff') },
-          uPos1: { value: new THREE.Vector2(0, 0) },
-          uPos2: { value: new THREE.Vector2(0, 0) },
-          uPos3: { value: new THREE.Vector2(0, 0) },
+          uCount: { value: 3 },
+          uSpark: { value: Array.from({ length: MAX_SPARKS }, () => new THREE.Vector4(0, 0, 100, 0)) },
           uStrength: { value: 1 },
           uFade: { value: 0 },
         },
@@ -125,24 +134,22 @@ export function TransientSparkScene() {
     const u = material.uniforms
 
     // Re-seed exactly once per firing — the rising edge into the effect
-    // role — so the three points hold still for the whole burst rather than
+    // role — so the points hold still for the whole burst rather than
     // drifting as beatProgress advances underneath them. Same edge also
     // captures how bright this pop reads: high + energy are the declared
     // bands, sampled once so the spark doesn't reshape mid-burst. 0.7..1.4,
     // neutral-ish at a moderate transient.
     const isEffect = role === 'effect'
     if (isEffect && !wasEffect.current) {
-      const seed = f.beatIndex + f.beatProgress
-      const set = (uni: THREE.Vector2, i: number) => {
-        const angle = seed * GOLDEN_ANGLE + i * ((2 * Math.PI) / 3)
-        uni.set(Math.cos(angle) * SPARK_RADIUS, Math.sin(angle) * SPARK_RADIUS)
-      }
-      set(u.uPos1.value, 0)
-      set(u.uPos2.value, 1)
-      set(u.uPos3.value, 2)
-
       const raw = Math.min(1, b.high * 0.6 + b.energy * 0.6)
       strength.current = 0.7 + raw * 0.7
+
+      const seed = f.beatIndex + f.beatProgress + firings.current++ * 7.31
+      const count = pickSparkCount(seed, raw, recentCounts.current)
+      recentCounts.current = [...recentCounts.current, count].slice(-RECENT_WINDOW)
+      const sparks = layoutSparks(count, seed, size.width / Math.max(1, size.height))
+      u.uCount.value = sparks.length
+      sparks.forEach((sp, i) => u.uSpark.value[i].set(sp.x, sp.y, sp.k, sp.amp))
     }
     wasEffect.current = isEffect
     u.uStrength.value = strength.current

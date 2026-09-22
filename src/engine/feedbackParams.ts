@@ -52,6 +52,29 @@ export interface FeedbackKnobs {
   wobble: number
 }
 
+/**
+ * Optional multipliers on the four motion ratios below (the SHAPE of the trail, as opposed to how long it
+ * lasts). The mood look sets these per mood (`look.trailsZoom` etc., 0..2): serene swirls and barely zooms,
+ * driving zooms hard and barely swirls. Each defaults to 1, which is the fixed ratio this mapping always had,
+ * so every caller that does not pass a shape (and every test written before it existed) is unchanged. A
+ * non-finite value is 1; the range is clamped to 0..{@link SHAPE_MAX}. `persist` is never scaled: that is
+ * the anti-washout ceiling, not a shape.
+ */
+export interface FeedbackShape {
+  zoom?: number
+  rotate?: number
+  swirl?: number
+  wobble?: number
+}
+
+/** Ceiling of a {@link FeedbackShape} multiplier. */
+const SHAPE_MAX = 2
+
+function shapeMult(v: number | undefined): number {
+  if (v === undefined || !Number.isFinite(v)) return 1
+  return v < 0 ? 0 : v > SHAPE_MAX ? SHAPE_MAX : v
+}
+
 /** `trails` at or below this reads as fully off — no accumulation, no drift. */
 const OFF_THRESHOLD = 0.02
 
@@ -91,17 +114,20 @@ export function isFeedbackActive(trails: number): boolean {
  * whole pass scales smoothly from "no trace of a loop" at 0 to "full tunnel"
  * at 1 with no discontinuity anywhere in between — a director easing `trails`
  * over a phrase gets a continuous transition for free.
+ *
+ * `shape` (optional, see {@link FeedbackShape}) scales the four motion knobs; omitted, or all 1, the result is
+ * bit-identical to the one-argument call.
  */
-export function resolveFeedbackKnobs(trails: number): FeedbackKnobs {
+export function resolveFeedbackKnobs(trails: number, shape?: FeedbackShape): FeedbackKnobs {
   const t = Number.isNaN(trails) ? 0 : trails < 0 ? 0 : trails > 1 ? 1 : trails
   if (t <= OFF_THRESHOLD) {
     return { persist: 0, zoomRatePerSec: 0, rotateRatePerSec: 0, swirl: 0, wobble: 0 }
   }
   return {
     persist: Math.min(MAX_PERSIST, t * MAX_PERSIST),
-    zoomRatePerSec: t * MAX_ZOOM_RATE,
-    rotateRatePerSec: t * MAX_ROTATE_RATE,
-    swirl: t * MAX_SWIRL,
-    wobble: t * MAX_WOBBLE,
+    zoomRatePerSec: t * MAX_ZOOM_RATE * shapeMult(shape?.zoom),
+    rotateRatePerSec: t * MAX_ROTATE_RATE * shapeMult(shape?.rotate),
+    swirl: t * MAX_SWIRL * shapeMult(shape?.swirl),
+    wobble: t * MAX_WOBBLE * shapeMult(shape?.wobble),
   }
 }

@@ -1,0 +1,1154 @@
+{
+  "purpose": "Mood evaluation subset (internal use only; MTG-Jamendo is non-commercial research data).",
+  "seed": 42,
+  "count": 90,
+  "tagCoverage": {
+    "dramatic": 2,
+    "hopeful": 2,
+    "retro": 2,
+    "nature": 2,
+    "horror": 2,
+    "powerful": 2,
+    "party": 2,
+    "fast": 2,
+    "deep": 5,
+    "mellow": 2,
+    "groovy": 2,
+    "summer": 2,
+    "calm": 2,
+    "heavy": 2,
+    "funny": 2,
+    "space": 2,
+    "ambiental": 2,
+    "cool": 3,
+    "ballad": 2,
+    "melancholic": 2,
+    "meditative": 2,
+    "drama": 2,
+    "soft": 2,
+    "sport": 2,
+    "fun": 2,
+    "romantic": 2,
+    "sexy": 2,
+    "slow": 2,
+    "action": 2,
+    "positive": 2,
+    "sad": 2,
+    "motivational": 2,
+    "upbeat": 2,
+    "uplifting": 3,
+    "adventure": 4,
+    "inspiring": 3,
+    "dream": 2,
+    "relaxing": 2,
+    "epic": 3,
+    "love": 2,
+    "emotional": 3,
+    "energetic": 2,
+    "dark": 2,
+    "happy": 4,
+    "melodic": 2
+  },
+  "terms": {
+    "datasetUse": "The MTG-Jamendo Dataset is made available solely for non-commercial research and academic use. Any other use requires prior written authorization from Jamendo S.A. (hello@jamendo.com).",
+    "perTrackLicense": "Per-track Creative Commons, NOT verified in this manifest. Unlike testfolder/tracks.json (8 hand-checked tracks), these ids were sampled programmatically. Verify licenses before any non-research use.",
+    "redistribution": "Audio, decoded frames and reference labels are gitignored. This manifest + corpus/fetch.mjs reproduce the set without redistributing audio."
+  },
+  "tracks": [
+    {
+      "file": "1419626.mp3",
+      "jamendoId": 1419626,
+      "durationSec": 264,
+      "genres": [
+        "jazz",
+        "latin"
+      ],
+      "moodTheme": [
+        "dramatic"
+      ]
+    },
+    {
+      "file": "1301746.mp3",
+      "jamendoId": 1301746,
+      "durationSec": 212,
+      "genres": [
+        "ethno",
+        "medieval",
+        "orchestral"
+      ],
+      "moodTheme": [
+        "hopeful"
+      ]
+    },
+    {
+      "file": "1163777.mp3",
+      "jamendoId": 1163777,
+      "durationSec": 282.1,
+      "genres": [
+        "80s",
+        "electronic"
+      ],
+      "moodTheme": [
+        "retro"
+      ]
+    },
+    {
+      "file": "1320475.mp3",
+      "jamendoId": 1320475,
+      "durationSec": 239.5,
+      "genres": [
+        "darkambient",
+        "electronic"
+      ],
+      "moodTheme": [
+        "nature"
+      ]
+    },
+    {
+      "file": "1219946.mp3",
+      "jamendoId": 1219946,
+      "durationSec": 216,
+      "genres": [
+        "minimal"
+      ],
+      "moodTheme": [
+        "horror"
+      ]
+    },
+    {
+      "file": "1292158.mp3",
+      "jamendoId": 1292158,
+      "durationSec": 176.6,
+      "genres": [
+        "synthpop"
+      ],
+      "moodTheme": [
+        "powerful"
+      ]
+    },
+    {
+      "file": "1234501.mp3",
+      "jamendoId": 1234501,
+      "durationSec": 510.5,
+      "genres": [
+        "club",
+        "dance",
+        "edm",
+        "house"
+      ],
+      "moodTheme": [
+        "party"
+      ]
+    },
+    {
+      "file": "1124319.mp3",
+      "jamendoId": 1124319,
+      "durationSec": 351.9,
+      "genres": [
+        "drumnbass",
+        "electronic"
+      ],
+      "moodTheme": [
+        "fast"
+      ]
+    },
+    {
+      "file": "29868.mp3",
+      "jamendoId": 29868,
+      "durationSec": 328.1,
+      "genres": [
+        "atmospheric",
+        "electronic"
+      ],
+      "moodTheme": [
+        "deep",
+        "mellow"
+      ]
+    },
+    {
+      "file": "1072571.mp3",
+      "jamendoId": 1072571,
+      "durationSec": 433,
+      "genres": [
+        "ethno",
+        "fusion",
+        "jazz"
+      ],
+      "moodTheme": [
+        "groovy"
+      ]
+    },
+    {
+      "file": "1420515.mp3",
+      "jamendoId": 1420515,
+      "durationSec": 195.1,
+      "genres": [
+        "dance",
+        "house"
+      ],
+      "moodTheme": [
+        "deep",
+        "summer"
+      ]
+    },
+    {
+      "file": "1173419.mp3",
+      "jamendoId": 1173419,
+      "durationSec": 51.2,
+      "genres": [
+        "popfolk",
+        "poprock",
+        "reggae"
+      ],
+      "moodTheme": [
+        "calm"
+      ]
+    },
+    {
+      "file": "1381313.mp3",
+      "jamendoId": 1381313,
+      "durationSec": 172.2,
+      "genres": [
+        "hard",
+        "heavymetal",
+        "metal"
+      ],
+      "moodTheme": [
+        "heavy"
+      ]
+    },
+    {
+      "file": "1021752.mp3",
+      "jamendoId": 1021752,
+      "durationSec": 55,
+      "genres": [
+        "funk"
+      ],
+      "moodTheme": [
+        "funny"
+      ]
+    },
+    {
+      "file": "1198260.mp3",
+      "jamendoId": 1198260,
+      "durationSec": 106.7,
+      "genres": [
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "space"
+      ]
+    },
+    {
+      "file": "1208034.mp3",
+      "jamendoId": 1208034,
+      "durationSec": 260,
+      "genres": [
+        "dance"
+      ],
+      "moodTheme": [
+        "ambiental"
+      ]
+    },
+    {
+      "file": "1372085.mp3",
+      "jamendoId": 1372085,
+      "durationSec": 117.5,
+      "genres": [
+        "hiphop",
+        "rap",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "cool"
+      ]
+    },
+    {
+      "file": "1163967.mp3",
+      "jamendoId": 1163967,
+      "durationSec": 279.1,
+      "genres": [
+        "folk"
+      ],
+      "moodTheme": [
+        "ballad"
+      ]
+    },
+    {
+      "file": "1187641.mp3",
+      "jamendoId": 1187641,
+      "durationSec": 187.9,
+      "genres": [
+        "pop",
+        "popfolk",
+        "singersongwriter"
+      ],
+      "moodTheme": [
+        "melancholic"
+      ]
+    },
+    {
+      "file": "915715.mp3",
+      "jamendoId": 915715,
+      "durationSec": 387.4,
+      "genres": [
+        "world"
+      ],
+      "moodTheme": [
+        "meditative"
+      ]
+    },
+    {
+      "file": "1398421.mp3",
+      "jamendoId": 1398421,
+      "durationSec": 227.1,
+      "genres": [
+        "hiphop",
+        "rap"
+      ],
+      "moodTheme": [
+        "drama"
+      ]
+    },
+    {
+      "file": "1044794.mp3",
+      "jamendoId": 1044794,
+      "durationSec": 236.8,
+      "genres": [
+        "rock",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "soft"
+      ]
+    },
+    {
+      "file": "73159.mp3",
+      "jamendoId": 73159,
+      "durationSec": 201.5,
+      "genres": [
+        "industrial",
+        "pop",
+        "rock"
+      ],
+      "moodTheme": [
+        "sport"
+      ]
+    },
+    {
+      "file": "1348665.mp3",
+      "jamendoId": 1348665,
+      "durationSec": 297,
+      "genres": [
+        "bossanova",
+        "jazzfusion",
+        "latin"
+      ],
+      "moodTheme": [
+        "fun"
+      ]
+    },
+    {
+      "file": "343243.mp3",
+      "jamendoId": 343243,
+      "durationSec": 237.8,
+      "genres": [
+        "chanson"
+      ],
+      "moodTheme": [
+        "romantic"
+      ]
+    },
+    {
+      "file": "1339600.mp3",
+      "jamendoId": 1339600,
+      "durationSec": 248.9,
+      "genres": [
+        "club",
+        "electronic",
+        "pop"
+      ],
+      "moodTheme": [
+        "sexy"
+      ]
+    },
+    {
+      "file": "1399542.mp3",
+      "jamendoId": 1399542,
+      "durationSec": 339.7,
+      "genres": [
+        "indie",
+        "newage",
+        "pop",
+        "rock"
+      ],
+      "moodTheme": [
+        "slow"
+      ]
+    },
+    {
+      "file": "1191321.mp3",
+      "jamendoId": 1191321,
+      "durationSec": 58,
+      "genres": [
+        "soundtrack",
+        "symphonic",
+        "world"
+      ],
+      "moodTheme": [
+        "action"
+      ]
+    },
+    {
+      "file": "1352581.mp3",
+      "jamendoId": 1352581,
+      "durationSec": 137.1,
+      "genres": [
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "positive"
+      ]
+    },
+    {
+      "file": "1340792.mp3",
+      "jamendoId": 1340792,
+      "durationSec": 286.3,
+      "genres": [
+        "dubstep"
+      ],
+      "moodTheme": [
+        "deep"
+      ]
+    },
+    {
+      "file": "1383746.mp3",
+      "jamendoId": 1383746,
+      "durationSec": 294.3,
+      "genres": [
+        "dance"
+      ],
+      "moodTheme": [
+        "sad"
+      ]
+    },
+    {
+      "file": "1349531.mp3",
+      "jamendoId": 1349531,
+      "durationSec": 46.8,
+      "genres": [
+        "orchestral"
+      ],
+      "moodTheme": [
+        "motivational"
+      ]
+    },
+    {
+      "file": "1372200.mp3",
+      "jamendoId": 1372200,
+      "durationSec": 226,
+      "genres": [
+        "electronica",
+        "electropop",
+        "indie",
+        "poprock"
+      ],
+      "moodTheme": [
+        "upbeat"
+      ]
+    },
+    {
+      "file": "264275.mp3",
+      "jamendoId": 264275,
+      "durationSec": 230.6,
+      "genres": [
+        "lounge"
+      ],
+      "moodTheme": [
+        "uplifting"
+      ]
+    },
+    {
+      "file": "1353449.mp3",
+      "jamendoId": 1353449,
+      "durationSec": 113.1,
+      "genres": [
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "adventure"
+      ]
+    },
+    {
+      "file": "1324916.mp3",
+      "jamendoId": 1324916,
+      "durationSec": 192.1,
+      "genres": [
+        "jazzfusion",
+        "pop"
+      ],
+      "moodTheme": [
+        "inspiring"
+      ]
+    },
+    {
+      "file": "1376447.mp3",
+      "jamendoId": 1376447,
+      "durationSec": 132.1,
+      "genres": [
+        "80s",
+        "synthpop"
+      ],
+      "moodTheme": [
+        "dream"
+      ]
+    },
+    {
+      "file": "1115677.mp3",
+      "jamendoId": 1115677,
+      "durationSec": 58.8,
+      "genres": [
+        "bossanova",
+        "latin"
+      ],
+      "moodTheme": [
+        "relaxing"
+      ]
+    },
+    {
+      "file": "999769.mp3",
+      "jamendoId": 999769,
+      "durationSec": 213,
+      "genres": [
+        "dubstep",
+        "electronic"
+      ],
+      "moodTheme": [
+        "epic"
+      ]
+    },
+    {
+      "file": "1078480.mp3",
+      "jamendoId": 1078480,
+      "durationSec": 141,
+      "genres": [
+        "progressive",
+        "rock"
+      ],
+      "moodTheme": [
+        "love"
+      ]
+    },
+    {
+      "file": "1169719.mp3",
+      "jamendoId": 1169719,
+      "durationSec": 271.2,
+      "genres": [
+        "classical"
+      ],
+      "moodTheme": [
+        "emotional"
+      ]
+    },
+    {
+      "file": "1335076.mp3",
+      "jamendoId": 1335076,
+      "durationSec": 340.5,
+      "genres": [
+        "drumnbass"
+      ],
+      "moodTheme": [
+        "energetic"
+      ]
+    },
+    {
+      "file": "949015.mp3",
+      "jamendoId": 949015,
+      "durationSec": 281.6,
+      "genres": [
+        "experimental",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "dark"
+      ]
+    },
+    {
+      "file": "1234390.mp3",
+      "jamendoId": 1234390,
+      "durationSec": 120.9,
+      "genres": [
+        "ethno",
+        "orchestral",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "happy"
+      ]
+    },
+    {
+      "file": "1410638.mp3",
+      "jamendoId": 1410638,
+      "durationSec": 184.3,
+      "genres": [
+        "psychedelic"
+      ],
+      "moodTheme": [
+        "melodic"
+      ]
+    },
+    {
+      "file": "1422055.mp3",
+      "jamendoId": 1422055,
+      "durationSec": 88.8,
+      "genres": [
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "dramatic",
+        "epic"
+      ]
+    },
+    {
+      "file": "1246342.mp3",
+      "jamendoId": 1246342,
+      "durationSec": 192,
+      "genres": [
+        "easylistening",
+        "minimal",
+        "newage"
+      ],
+      "moodTheme": [
+        "hopeful",
+        "uplifting"
+      ]
+    },
+    {
+      "file": "1420534.mp3",
+      "jamendoId": 1420534,
+      "durationSec": 152.8,
+      "genres": [
+        "drumnbass"
+      ],
+      "moodTheme": [
+        "retro"
+      ]
+    },
+    {
+      "file": "1069870.mp3",
+      "jamendoId": 1069870,
+      "durationSec": 208,
+      "genres": [
+        "african"
+      ],
+      "moodTheme": [
+        "adventure",
+        "nature"
+      ]
+    },
+    {
+      "file": "1291120.mp3",
+      "jamendoId": 1291120,
+      "durationSec": 287.7,
+      "genres": [
+        "70s"
+      ],
+      "moodTheme": [
+        "horror"
+      ]
+    },
+    {
+      "file": "968976.mp3",
+      "jamendoId": 968976,
+      "durationSec": 162.3,
+      "genres": [
+        "hardrock",
+        "progressive",
+        "rock"
+      ],
+      "moodTheme": [
+        "powerful"
+      ]
+    },
+    {
+      "file": "26321.mp3",
+      "jamendoId": 26321,
+      "durationSec": 405.3,
+      "genres": [
+        "70s",
+        "disco",
+        "pop"
+      ],
+      "moodTheme": [
+        "happy",
+        "party"
+      ]
+    },
+    {
+      "file": "260447.mp3",
+      "jamendoId": 260447,
+      "durationSec": 186.6,
+      "genres": [
+        "fusion"
+      ],
+      "moodTheme": [
+        "fast"
+      ]
+    },
+    {
+      "file": "1361472.mp3",
+      "jamendoId": 1361472,
+      "durationSec": 191.7,
+      "genres": [
+        "alternativerock",
+        "hiphop",
+        "rock"
+      ],
+      "moodTheme": [
+        "cool",
+        "mellow"
+      ]
+    },
+    {
+      "file": "1349705.mp3",
+      "jamendoId": 1349705,
+      "durationSec": 230.4,
+      "genres": [
+        "minimal",
+        "techno"
+      ],
+      "moodTheme": [
+        "groovy"
+      ]
+    },
+    {
+      "file": "1353339.mp3",
+      "jamendoId": 1353339,
+      "durationSec": 243.8,
+      "genres": [
+        "house"
+      ],
+      "moodTheme": [
+        "deep",
+        "happy",
+        "summer"
+      ]
+    },
+    {
+      "file": "260307.mp3",
+      "jamendoId": 260307,
+      "durationSec": 211.3,
+      "genres": [
+        "fusion"
+      ],
+      "moodTheme": [
+        "calm"
+      ]
+    },
+    {
+      "file": "21856.mp3",
+      "jamendoId": 21856,
+      "durationSec": 249.7,
+      "genres": [
+        "hard",
+        "metal",
+        "punkrock",
+        "rock"
+      ],
+      "moodTheme": [
+        "heavy"
+      ]
+    },
+    {
+      "file": "1124726.mp3",
+      "jamendoId": 1124726,
+      "durationSec": 128.6,
+      "genres": [
+        "tribal",
+        "world"
+      ],
+      "moodTheme": [
+        "funny"
+      ]
+    },
+    {
+      "file": "1255877.mp3",
+      "jamendoId": 1255877,
+      "durationSec": 190.9,
+      "genres": [
+        "70s"
+      ],
+      "moodTheme": [
+        "space"
+      ]
+    },
+    {
+      "file": "1321244.mp3",
+      "jamendoId": 1321244,
+      "durationSec": 230.5,
+      "genres": [
+        "chillout"
+      ],
+      "moodTheme": [
+        "ambiental"
+      ]
+    },
+    {
+      "file": "1189941.mp3",
+      "jamendoId": 1189941,
+      "durationSec": 199.6,
+      "genres": [
+        "groove",
+        "indie",
+        "rock"
+      ],
+      "moodTheme": [
+        "cool",
+        "inspiring"
+      ]
+    },
+    {
+      "file": "1373036.mp3",
+      "jamendoId": 1373036,
+      "durationSec": 498.6,
+      "genres": [
+        "jazz",
+        "jazzfusion"
+      ],
+      "moodTheme": [
+        "ballad"
+      ]
+    },
+    {
+      "file": "1032911.mp3",
+      "jamendoId": 1032911,
+      "durationSec": 234.8,
+      "genres": [
+        "reggae",
+        "rock"
+      ],
+      "moodTheme": [
+        "melancholic"
+      ]
+    },
+    {
+      "file": "1171150.mp3",
+      "jamendoId": 1171150,
+      "durationSec": 186.5,
+      "genres": [
+        "ambient",
+        "classical",
+        "experimental",
+        "orchestral",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "meditative"
+      ]
+    },
+    {
+      "file": "417581.mp3",
+      "jamendoId": 417581,
+      "durationSec": 124.6,
+      "genres": [
+        "folk"
+      ],
+      "moodTheme": [
+        "drama",
+        "emotional"
+      ]
+    },
+    {
+      "file": "1367185.mp3",
+      "jamendoId": 1367185,
+      "durationSec": 345.2,
+      "genres": [
+        "idm",
+        "psychedelic",
+        "triphop"
+      ],
+      "moodTheme": [
+        "soft"
+      ]
+    },
+    {
+      "file": "1409046.mp3",
+      "jamendoId": 1409046,
+      "durationSec": 208,
+      "genres": [
+        "jazzfusion"
+      ],
+      "moodTheme": [
+        "sport"
+      ]
+    },
+    {
+      "file": "1305136.mp3",
+      "jamendoId": 1305136,
+      "durationSec": 295.3,
+      "genres": [
+        "synthpop"
+      ],
+      "moodTheme": [
+        "fun"
+      ]
+    },
+    {
+      "file": "1122161.mp3",
+      "jamendoId": 1122161,
+      "durationSec": 296.1,
+      "genres": [
+        "rnb"
+      ],
+      "moodTheme": [
+        "romantic"
+      ]
+    },
+    {
+      "file": "1284350.mp3",
+      "jamendoId": 1284350,
+      "durationSec": 254,
+      "genres": [
+        "pop",
+        "popfolk",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "sexy"
+      ]
+    },
+    {
+      "file": "1230780.mp3",
+      "jamendoId": 1230780,
+      "durationSec": 325.7,
+      "genres": [
+        "experimental"
+      ],
+      "moodTheme": [
+        "slow"
+      ]
+    },
+    {
+      "file": "1198187.mp3",
+      "jamendoId": 1198187,
+      "durationSec": 56.5,
+      "genres": [
+        "80s",
+        "electronic",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "action",
+        "adventure"
+      ]
+    },
+    {
+      "file": "1324890.mp3",
+      "jamendoId": 1324890,
+      "durationSec": 190.9,
+      "genres": [
+        "jazzfunk",
+        "pop"
+      ],
+      "moodTheme": [
+        "positive"
+      ]
+    },
+    {
+      "file": "990314.mp3",
+      "jamendoId": 990314,
+      "durationSec": 217.1,
+      "genres": [
+        "darkwave",
+        "triphop"
+      ],
+      "moodTheme": [
+        "deep"
+      ]
+    },
+    {
+      "file": "1205392.mp3",
+      "jamendoId": 1205392,
+      "durationSec": 231.8,
+      "genres": [
+        "tribal",
+        "world"
+      ],
+      "moodTheme": [
+        "sad"
+      ]
+    },
+    {
+      "file": "1022283.mp3",
+      "jamendoId": 1022283,
+      "durationSec": 315,
+      "genres": [
+        "triphop"
+      ],
+      "moodTheme": [
+        "motivational"
+      ]
+    },
+    {
+      "file": "1227239.mp3",
+      "jamendoId": 1227239,
+      "durationSec": 219.1,
+      "genres": [
+        "60s",
+        "poprock"
+      ],
+      "moodTheme": [
+        "upbeat"
+      ]
+    },
+    {
+      "file": "1285509.mp3",
+      "jamendoId": 1285509,
+      "durationSec": 471.5,
+      "genres": [
+        "edm",
+        "electronic",
+        "trance"
+      ],
+      "moodTheme": [
+        "uplifting"
+      ]
+    },
+    {
+      "file": "1119936.mp3",
+      "jamendoId": 1119936,
+      "durationSec": 187.2,
+      "genres": [
+        "orchestral",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "adventure"
+      ]
+    },
+    {
+      "file": "1389294.mp3",
+      "jamendoId": 1389294,
+      "durationSec": 55.2,
+      "genres": [
+        "electronica",
+        "electropop",
+        "pop"
+      ],
+      "moodTheme": [
+        "inspiring"
+      ]
+    },
+    {
+      "file": "1291388.mp3",
+      "jamendoId": 1291388,
+      "durationSec": 240,
+      "genres": [
+        "acidjazz",
+        "downtempo",
+        "triphop"
+      ],
+      "moodTheme": [
+        "dream"
+      ]
+    },
+    {
+      "file": "7361.mp3",
+      "jamendoId": 7361,
+      "durationSec": 168.4,
+      "genres": [
+        "groove",
+        "pop"
+      ],
+      "moodTheme": [
+        "relaxing"
+      ]
+    },
+    {
+      "file": "768910.mp3",
+      "jamendoId": 768910,
+      "durationSec": 467.5,
+      "genres": [
+        "postrock",
+        "rock"
+      ],
+      "moodTheme": [
+        "epic"
+      ]
+    },
+    {
+      "file": "1139448.mp3",
+      "jamendoId": 1139448,
+      "durationSec": 378.3,
+      "genres": [
+        "eurodance",
+        "pop"
+      ],
+      "moodTheme": [
+        "love"
+      ]
+    },
+    {
+      "file": "1048750.mp3",
+      "jamendoId": 1048750,
+      "durationSec": 252.2,
+      "genres": [
+        "ambient",
+        "classical",
+        "soundtrack"
+      ],
+      "moodTheme": [
+        "emotional"
+      ]
+    },
+    {
+      "file": "1270232.mp3",
+      "jamendoId": 1270232,
+      "durationSec": 153.7,
+      "genres": [
+        "african",
+        "ethno",
+        "latin"
+      ],
+      "moodTheme": [
+        "energetic"
+      ]
+    },
+    {
+      "file": "178641.mp3",
+      "jamendoId": 178641,
+      "durationSec": 261.8,
+      "genres": [
+        "gothic"
+      ],
+      "moodTheme": [
+        "dark"
+      ]
+    },
+    {
+      "file": "1248728.mp3",
+      "jamendoId": 1248728,
+      "durationSec": 229.5,
+      "genres": [
+        "alternativerock"
+      ],
+      "moodTheme": [
+        "happy"
+      ]
+    },
+    {
+      "file": "693478.mp3",
+      "jamendoId": 693478,
+      "durationSec": 245.4,
+      "genres": [
+        "90s",
+        "dance",
+        "electronic",
+        "eurodance"
+      ],
+      "moodTheme": [
+        "melodic"
+      ]
+    }
+  ]
+}

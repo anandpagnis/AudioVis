@@ -268,9 +268,14 @@ export class MoodEstimator {
         : Math.max(now, this.committedAt + this.dwellFor(m.state))
     }
     const viaDrop = f.drop && (best === 'peak' || best === 'aggressive')
+    // `f.silence` is already latched (0.6 s) and level-relative, so it is the
+    // authority for leaving `silence`: no extra hold. Without this, a near-tie
+    // between two states restarts the hold clock every flip and the mood sits
+    // on its initial `silence` for a minute or more after a track starts.
+    const leavingSilence = m.state === 'silence' && !f.silence
     if (
       this.candidate !== m.state &&
-      now - this.candidateSince >= this.holdFor(this.candidate, viaDrop)
+      (leavingSilence || now - this.candidateSince >= this.holdFor(this.candidate, viaDrop))
     ) {
       m.state = this.candidate
       m.changed = true

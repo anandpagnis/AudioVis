@@ -19,6 +19,8 @@
  */
 import { BandNormalizer, ProgramLevel, type SilenceConfig } from '../../src/audio/bandNormalizer'
 import { BpmEstimator } from '../../src/audio/BpmEstimator'
+import { ChromaKeyEstimator } from '../../src/audio/chromaKey'
+import { HarmonicTensionEstimator } from '../../src/audio/harmonicTension'
 import { MoodEstimator } from '../../src/audio/MoodEstimator'
 import { PercussionDetector } from '../../src/audio/PercussionDetector'
 import { PhraseDetector } from '../../src/audio/PhraseDetector'
@@ -102,6 +104,16 @@ export interface FrameSample {
   moodChanged: boolean
   moodLevel: number
   energyVel: number
+  /** Clean-room key/mode + harmonic tension (same estimators AudioEngine runs). */
+  key: string
+  scale: string
+  keyValid: boolean
+  keyModeStrength: number
+  keyConfidence: number
+  harmonicTensionValid: boolean
+  harmonicTension: number
+  harmonicTonalness: number
+  harmonicRoughness: number
 }
 
 /**
@@ -142,6 +154,8 @@ export function runTrack(
   const phraseDetector = new PhraseDetector()
   const moodEstimator = new MoodEstimator()
   const percussionDetector = new PercussionDetector()
+  const chromaKey = new ChromaKeyEstimator()
+  const harmTension = new HarmonicTensionEstimator()
 
   const freqDb = new Float32Array(FFT_SIZE / 2)
   const prevMag = new Float32Array(FFT_SIZE / 2)
@@ -258,6 +272,24 @@ export function runTrack(
           : broadbandEnergyTerm(f.rms, f.loudness)
     f.energy = stepEnergy(f.energy, energyTargetOf(f.bass, f.mid, f.high, loudTerm), delta)
 
+    // --- Key / mode / harmonic tension (AudioEngine.ts: same gate, same 8192 input) ---
+    if (advanced && !f.silence) {
+      chromaKey.update(lowFreqDb, sampleRate, delta)
+      harmTension.update(lowFreqDb, sampleRate, delta)
+    }
+    const keyRead = chromaKey.read()
+    f.keyValid = keyRead.valid
+    f.keyModeStrength = keyRead.valid ? keyRead.modeStrength : 0
+    f.key = keyRead.valid ? keyRead.tonic : ''
+    f.scale = keyRead.valid ? keyRead.scale : ''
+    f.keyConfidence = keyRead.valid ? keyRead.keyConfidence : 0
+    const tensionRead = harmTension.read()
+    f.harmonicTensionValid = tensionRead.valid
+    f.harmonicRoughness = tensionRead.roughness
+    f.harmonicTonalness = tensionRead.tonalness
+    f.harmonicTension = tensionRead.tension
+    if (f.sectionChange) chromaKey.soften(0.35)
+
     // --- Percussion + broadband onset (AudioEngine.ts: gated on fftAdvanced) ---
     if (advanced) {
       percussionDetector.update(f.percussion, spectral, now, delta, f.silence)
@@ -343,8 +375,8 @@ export function runTrack(
     }
 
     // --- Phrase + mood (AudioEngine.ts phraseDetector + moodEstimator) ---
-    // NOTE: no Essentia worker runs here, so f.danceability / f.key / f.moods*
-    // stay at their defaults. MoodEstimator's `danceBonus` term (F168) and
+    // NOTE: no Essentia worker runs here, so f.danceability / f.moods* stay at
+    // their defaults (key/scale now come from the clean-room ChromaKeyEstimator above). MoodEstimator's `danceBonus` term (F168) and
     // `partyBonus` are both therefore identically 0 in every calibrate frame —
     // intentional, not a bug. Those two only have effect in the live app.
     phraseDetector.update(now, f)
@@ -386,6 +418,15 @@ export function runTrack(
       moodChanged: f.mood.changed,
       moodLevel: f.mood.level,
       energyVel: f.mood.energyVel,
+      key: f.key,
+      scale: f.scale,
+      keyValid: f.keyValid,
+      keyModeStrength: f.keyModeStrength,
+      keyConfidence: f.keyConfidence,
+      harmonicTensionValid: f.harmonicTensionValid,
+      harmonicTension: f.harmonicTension,
+      harmonicTonalness: f.harmonicTonalness,
+      harmonicRoughness: f.harmonicRoughness,
     })
   }
 

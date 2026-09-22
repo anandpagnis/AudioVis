@@ -11,6 +11,7 @@ import { renderScale } from './renderScale'
 import type { ValenceArousal } from './valenceArousal'
 import { admitSlots, slotCostMs, type SlotRequest } from './slotBudget'
 import {
+  getCharacterCandidates,
   getCompatibleScenes,
   getPrimaryScenesForMood,
   getScene,
@@ -19,7 +20,9 @@ import {
   type SceneDef,
   type ScenePerformanceCost,
 } from '../scenes'
+import { sceneBoost, sceneLookActive } from '../scenes/sceneTraits'
 import { LAYER_ROLES, useStore, type LayerRole } from '../store'
+import { pickByCharacter } from './characterPick'
 
 const MANUAL_HOLD_SEC = 45
 const PHRASE_HOLD_BEATS = 16 // fallback recompose cadence when no section fires
@@ -85,8 +88,10 @@ export function composeLayers(opts: {
   /** Live valence/arousal read — forwarded to `pickVariedScene`; see its own
    *  doc on why this sharpens the discrete `mood` fit rather than replacing it. */
   currentVA?: ValenceArousal
+  /** Character-driven pick for one layer pool; return null to use the mood-label pick. */
+  pickLayer?: (pool: readonly SceneDef[]) => SceneDef | null
 }): Record<LayerRole, string | null> {
-  const { primaryId, primaryCost, budget, tier, pools, mood, recentIds, priority, internalMP, currentVA } =
+  const { primaryId, primaryCost, budget, tier, pools, mood, recentIds, priority, internalMP, currentVA, pickLayer } =
     opts
   const picks: Partial<Record<LayerRole, SceneDef>> = {}
   const requests: SlotRequest[] = []
@@ -106,7 +111,7 @@ export function composeLayers(opts: {
   for (const role of LAYER_ROLES) {
     const pool = pools[role]?.filter((s) => !taken.has(s.id))
     if (!pool || pool.length === 0) continue
-    const pick = pickVariedScene(pool, mood, recentIds, undefined, currentVA)
+    const pick = pickLayer?.(pool) ?? pickVariedScene(pool, mood, recentIds, undefined, currentVA)
     if (!pick) continue
     taken.add(pick.id)
     picks[role] = pick
@@ -309,16 +314,38 @@ export function PerformanceDirector() {
               : 'mid'
     const bandBoost = (scene: (typeof primaryCandidates)[number]) =>
       scene.metadata.bands.includes(band) ? 1.6 : 1
+    // With a valid mood-driven look whose scene family is on, the character pick also leans on the look's trait
+    // targets (`sceneBoost`, which already folds in `buildIntent`), multiplied into the band boost. Otherwise
+    // (and for the mood-label fallback below) the band boost alone, exactly as before.
+    const look = performanceState.look
+    const characterBoost = sceneLookActive(look)
+      ? (scene: (typeof primaryCandidates)[number]) => bandBoost(scene) * sceneBoost(scene, look)
+      : bandBoost
 
     // Only pick a new primary when one isn't already mid-commit; otherwise we'd
     // fight AutoPilot's in-flight switch. Either way we (re)compose the layers
     // against whichever primary is landing.
     let primaryId = s.pendingSceneId ?? s.sceneId
     if (!s.pendingSceneId && primaryCandidates.length > 0) {
-      const pick = pickVariedScene(primaryCandidates, mood, s.recentSceneIds, bandBoost, {
-        valence: performanceState.valence,
-        arousal: performanceState.arousal,
-      })
+      // Character-driven pick over every primary-capable scene (not just this mood label's pool,
+      // which overlaps the others ~90%); null until the character read is ready, then the
+      // original mood-label pick runs unchanged.
+      const characterPool = getCharacterCandidates().filter(
+        (sc) => sc.id !== s.sceneId && (!inBreakdown || notHeavy(sc)),
+      )
+      const pick =
+        pickByCharacter(characterPool, {
+          character: f.character,
+          key: f.key,
+          now: f.time,
+          recentIds: s.recentSceneIds,
+          exclude: [s.sceneId],
+          boost: characterBoost,
+        }) ??
+        pickVariedScene(primaryCandidates, mood, s.recentSceneIds, bandBoost, {
+          valence: performanceState.valence,
+          arousal: performanceState.arousal,
+        })
       // Only aim the layers at the new subject if the request was actually
       // ACCEPTED. `requestScene` refuses silently when the subject dwell floor
       // (MIN_SUBJECT_DWELL_BEATS) has not elapsed, and this used to assume it
@@ -358,6 +385,13 @@ export function PerformanceDirector() {
       // Sharpens the layer pools' discrete mood fit the same way it does for
       // the primary above — see pickVariedScene's own doc.
       currentVA: { valence: performanceState.valence, arousal: performanceState.arousal },
+      pickLayer: (pool) =>
+        pickByCharacter(pool, {
+          character: f.character,
+          key: f.key,
+          now: f.time,
+          recentIds: s.recentSceneIds,
+        }),
       // The tier's budget LESS the costs that are present in every frame and
       // were previously invisible to it: the post chain and the feedback pass
       // overlay when enabled. Composing against the raw tier budget meant the

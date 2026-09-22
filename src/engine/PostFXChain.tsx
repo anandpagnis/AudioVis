@@ -13,6 +13,9 @@ import { FeedbackPass } from './FeedbackPass'
 import { GradePass } from './GradePass'
 import { IsfFilterPass } from './IsfFilterPass'
 import { ISF_FILTERS } from './isfFilterRoster'
+import { GradeResidualTracker } from './look/gradeResidual'
+import { lookDebugProbe } from './look/lookDebug'
+import { stepTrailsShape, type TrailsShape } from './look/lookPost'
 import type { LensRackState, MirrorRackState } from './opticalRack'
 import { LensPass } from './LensPass'
 import { MirrorPass } from './MirrorPass'
@@ -101,7 +104,11 @@ export function PostFXChain() {
    */
   const isfFilterPass = useMemo(() => new IsfFilterPass(), [])
   const gradePass = useMemo(() => new GradePass(), [])
+  /** Eased mood-grade residual (mood target minus what the palette carries), fed to `gradePass` each frame. */
+  const gradeTracker = useMemo(() => new GradeResidualTracker(), [])
   const feedbackTint = useRef(new Color(1, 1, 1))
+  /** Eased zoom / rotate / swirl / wobble multipliers of the feedback trail's shape (the mood look's, or 1s), fed to `feedbackPass` each frame. */
+  const trailsShape = useRef<TrailsShape>({ zoom: 1, rotate: 1, swirl: 1, wobble: 1 })
   /** Render scale the composer's buffers were last sized for. */
   const appliedScale = useRef(-1)
   /** Scratch rack states for a transition in flight — reused, never allocated
@@ -237,6 +244,10 @@ export function PostFXChain() {
     mirrorPass.advance(rack ? txMirror.current : p.mirror, delta, p.rackAudio.mids)
     lensPass.advance(rack ? txLens.current : p.lens, delta, p.rackAudio, p.djCam.active)
     feedbackPass.setTrails(Math.min(1, p.trails + (rack?.trails ?? 0)))
+    // The trail's SHAPE (how it zooms, turns, swirls and wobbles) follows the mood look: multipliers on the
+    // fixed ratios, eased, and 1s whenever the post family is off or the look is not valid (see `look/lookPost.ts`).
+    stepTrailsShape(trailsShape.current, p.look, delta)
+    feedbackPass.setShape(trailsShape.current)
     // `mid` is the body colour, which is what a trail should be tinted toward
     // — glow would make every trail read as a highlight, and shadow would make
     // them vanish into the ground.
@@ -273,6 +284,18 @@ export function PostFXChain() {
     const selectedFilter = p.filter.id ? (ISF_FILTERS.find((f) => f.id === p.filter.id) ?? null) : null
     isfFilterPass.setFilter(selectedFilter)
     isfFilterPass.setMix(p.filter.mix)
+
+    // Mood colour grade. The tracker only lets the look through when `look.valid && look.families.grade`
+    // (otherwise it eases to identity, so a kill switch or an invalid character read does not pop), takes
+    // the residual against what THIS palette already carries so nothing is counted twice, and eases over
+    // ~2 s so a palette switch does not step the grade. `setGrade` clamps and NaN-guards on the way in.
+    // See GradePass's header ("The mood grade") and look/gradeResidual.ts.
+    gradeTracker.update(p.look, palette.id, delta)
+    gradePass.setGrade(gradeTracker.sat, gradeTracker.temp, gradeTracker.contrast)
+    // For the `?lookdebug` overlay: the grade the tracker is applying (the eased residual, before sanitising).
+    lookDebugProbe.sat = gradeTracker.sat
+    lookDebugProbe.temp = gradeTracker.temp
+    lookDebugProbe.contrast = gradeTracker.contrast
 
     // Atmospheric depth. Tinted toward the palette's background rather than
     // pure black so it reads as air, not as the subject being clipped away.

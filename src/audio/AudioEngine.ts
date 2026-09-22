@@ -1,7 +1,11 @@
 import { BpmEstimator } from './BpmEstimator'
-import { essentiaBridge } from './essentia/EssentiaBridge'
-import { structureBridge } from './essentia/StructureBridge'
-import { voiceBridge } from './essentia/VoiceBridge'
+import { CharacterClassifier } from './CharacterClassifier'
+import { LookVizTracker, characterLookEnabled, lookState } from './characterLook'
+import { ChromaKeyEstimator } from './chromaKey'
+import { EmotionDimensionEstimator } from './emotionDimensions'
+import { HarmonicTensionEstimator } from './harmonicTension'
+import { createMusicIntelProvider } from './intel'
+import { NullProvider, type MusicIntelProvider } from './intel/MusicIntelProvider'
 import { MoodEstimator } from './MoodEstimator'
 import { PercussionDetector } from './PercussionDetector'
 import { PhraseDetector } from './PhraseDetector'
@@ -18,6 +22,7 @@ import { evictExpired, fftAdvanced, makeWaveProbe } from './frameGating'
 import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from './energyTarget'
 import { meanSquareToLufs } from './loudness'
 import { SectionTracker } from './SectionTracker'
+import { TimbreDescriptors } from './TimbreDescriptors'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 
 export type SourceKind = 'system' | 'mic' | 'file'
@@ -239,6 +244,29 @@ export interface ResponseTuning {
 class AudioEngine {
   readonly features: AudioFeatures = createEmptyFeatures()
 
+  /**
+   * Model tempo / key / structure / voice+mood analysers, behind the build-flag
+   * factory in `./intel`. Starts as a no-op provider and is swapped once the
+   * factory resolves (immediately for a Null build; after a chunk load when
+   * `VITE_ENABLE_ESSENTIA=1`). The no-Essentia degrade is the supported path:
+   * `f.moodsValid === false`, `f.structureValid === false`; key/scale still
+   * come from the clean-room `ChromaKeyEstimator` below.
+   */
+  private intel: MusicIntelProvider = new NullProvider()
+  /** The live graph the provider taps, kept so a provider that finishes loading
+   * AFTER the graph was built can still attach. Cleared on stop(). */
+  private intelGraph: { ctx: AudioContext; source: AudioNode } | null = null
+
+  constructor() {
+    // The classifier owns the CharacterState object; features expose the same one (mutated in place).
+    this.features.character = this.characterClassifier.state
+    void createMusicIntelProvider().then((provider) => {
+      if (!provider.enabled) return // stay on the built-in NullProvider
+      this.intel = provider
+      if (this.intelGraph) void provider.attach(this.intelGraph.ctx, this.intelGraph.source)
+    })
+  }
+
   readonly tuning: ResponseTuning = { attack: 1, release: 1, subdivision: 1 }
 
   private ctx: AudioContext | null = null
@@ -343,6 +371,20 @@ class AudioEngine {
   readonly moodEstimator = new MoodEstimator()
   readonly percussionDetector = new PercussionDetector()
   readonly sectionTracker = new SectionTracker()
+  /** Clean-room key/mode + harmonic tension, fed from the 8192-point `lowFreqDb`
+   * (a semitone spans several bins there; at 2048 points chords are unresolved
+   * below ~250 Hz). Runs in every build, with or without the Essentia provider. */
+  private readonly chromaKey = new ChromaKeyEstimator()
+  private readonly harmTension = new HarmonicTensionEstimator()
+  /** CHARACTER layer: valence/arousal/tension/pulse from audio features (percentile-calibrated),
+   * then a soft 14-mood classification with a held primary. Runs in every build. */
+  private readonly emotion = new EmotionDimensionEstimator()
+  private readonly characterClassifier = new CharacterClassifier()
+  /** Timbre descriptors (harsh / busy / sparse, DSP-only). Copied into `features.timbre` each frame, never aliased. */
+  private readonly timbre = new TimbreDescriptors()
+  private readonly lookViz = new LookVizTracker()
+  /** `?scenepick=legacy` turns the character-aware look off (same switch as the scene/palette pickers). */
+  private readonly characterLookOn = characterLookEnabled()
 
   onEnded: (() => void) | null = null
 
@@ -627,10 +669,11 @@ class AudioEngine {
     this.lowAnalyser = lowAnalyser
 
     // Both graph-building paths route through here, so this is also where the
-    // Essentia PCM tap attaches. Fire-and-forget: it resolves after the
+    // music-intel PCM tap attaches. Fire-and-forget: it resolves after the
     // worklet module loads, never throws, and a failure just leaves the
-    // built-in estimators in charge.
-    void essentiaBridge.attach(ctx, source)
+    // built-in estimators in charge (a Null provider does nothing at all).
+    this.intelGraph = { ctx, source }
+    void this.intel.attach(ctx, source)
 
     // K-weighting loudness worklet (issue 12). Same fire-and-forget contract —
     // its own worklet module, never throws; a failure just leaves f.loudness /
@@ -768,6 +811,7 @@ class AudioEngine {
     this.mediaEl = null
     this.objectUrl = null
     this.recDest = null
+    this.intelGraph = null
     this.resetAnalysis()
   }
 
@@ -793,9 +837,20 @@ class AudioEngine {
     this.moodEstimator.reset()
     this.percussionDetector.reset()
     this.sectionTracker.reset()
+    this.chromaKey.reset()
+    this.harmTension.reset()
+    this.emotion.reset()
+    this.characterClassifier.reset()
+    this.timbre.reset()
+    // `Object.assign` above just replaced `features.character` with a fresh empty state, detaching it
+    // from the classifier that writes it (the constructor links them once). Left detached, every
+    // consumer saw a never-valid character read after the first source started and silently ran the
+    // old mood-label paths, so none of the new moods ever reached the scenes, palettes or effects.
+    this.features.character = this.characterClassifier.state
+    this.lookViz.reset()
     // Drops the PCM ring and any pending job so a second track can't inherit
     // the first one's tempo read. The worker (and its loaded WASM) persists.
-    essentiaBridge.detach()
+    this.intel.detach()
     for (const band of Object.values(this.bands)) band.reset()
     this.programLevel.reset()
     this.waveRef = 0
@@ -921,6 +976,32 @@ class AudioEngine {
       delta,
     )
 
+    // --- Key / mode / harmonic tension (clean-room, licence-free) ---
+    // Only fed on a frame where the analyser advanced and the program isn't
+    // silent: both estimators accumulate over seconds and silence or a
+    // duplicate frame would only dilute them. They coalesce to ~20 Hz inside.
+    if (this.lowAnalyser && advanced && !f.silence) {
+      this.chromaKey.update(this.lowFreqDb, ctx.sampleRate, delta)
+      this.harmTension.update(this.lowFreqDb, ctx.sampleRate, delta)
+    }
+    const keyRead = this.chromaKey.read()
+    f.keyValid = keyRead.valid
+    f.keyModeStrength = keyRead.valid ? keyRead.modeStrength : 0
+    f.chroma.set(keyRead.chroma)
+    // With the Essentia provider on it owns key/scale/keyConfidence (it writes
+    // them in `updateRhythm` below); otherwise this estimator does.
+    if (!this.intel.enabled) {
+      f.key = keyRead.valid ? keyRead.tonic : ''
+      f.scale = keyRead.valid ? keyRead.scale : ''
+      f.keyConfidence = keyRead.valid ? keyRead.keyConfidence : 0
+    }
+    const tensionRead = this.harmTension.read()
+    f.harmonicTensionValid = tensionRead.valid
+    f.harmonicRoughness = tensionRead.roughness
+    f.harmonicDissonance = tensionRead.dissonance
+    f.harmonicTonalness = tensionRead.tonalness
+    f.harmonicTension = tensionRead.tension
+
     // --- Independent drum hits + broadband onset ---
     // Both are flux-diff detectors, so they only make sense on a frame where the
     // FFT actually advanced. On a duplicate frame (render loop outrunning the
@@ -964,9 +1045,9 @@ class AudioEngine {
     // Drain any completed worker read first (async, arrives whenever it's
     // ready) so this frame's grid already reflects it, then schedule the next
     // job. Both are cheap; the analysis itself happens off-thread.
-    essentiaBridge.update(f, this.bpmEstimator)
+    this.intel.updateRhythm(f, this.bpmEstimator)
     // Independent worker, independent cadence — see VoiceBridge's header.
-    voiceBridge.update(f)
+    this.intel.updateVoice(f)
     this.bpmEstimator.update(now)
     this.advanceGrid(now, f)
 
@@ -980,15 +1061,44 @@ class AudioEngine {
     // Key is stable within a section, so a boundary — not a timer — is the
     // natural moment to re-read it. Requested here, run on the worker's next
     // free slot (rhythm has priority).
-    if (f.sectionChange) essentiaBridge.requestKey()
+    if (f.sectionChange) {
+      this.intel.requestKey()
+      // Partial forget so a real key change is picked up in a few seconds
+      // instead of the ~10 s accumulation time constant.
+      this.chromaKey.soften(0.35)
+    }
 
     // --- Mood: state, momentum, prediction (reads everything above) ---
     this.moodEstimator.update(f)
 
-    // --- Song structure: latched section read. `structureBridge.update` drains
+    // --- Character: what the music FEELS like (valence/arousal/tension/pulse + 14 named moods) ---
+    if (advanced) {
+      this.emotion.update(f, delta)
+      this.characterClassifier.update(this.emotion.read(), now)
+      // Timbre descriptors: copy the numbers, do NOT alias `f.timbre` to the instance's read object, because
+      // resetAnalysis() replaces `features.timbre` (Object.assign of createEmptyFeatures(), the F253 trap).
+      this.timbre.update(f, delta)
+      const tr = this.timbre.read()
+      f.timbre.harsh = tr.harsh
+      f.timbre.busy = tr.busy
+      f.timbre.sparse = tr.sparse
+    }
+    // Character-aware look for the effect systems (post-FX racks, camera, filters, bloom): character
+    // supplies the flavour, the old detector keeps intensity events and quiet-moment ceilings.
+    if (this.characterLookOn) {
+      f.mood.look = lookState(f.mood.state, f.character)
+      this.lookViz.update(f.character, f.mood.viz, delta, f.mood.vizLook)
+    } else {
+      f.mood.look = f.mood.state
+      f.mood.vizLook.intensity = f.mood.viz.intensity
+      f.mood.vizLook.speed = f.mood.viz.speed
+      f.mood.vizLook.reactivity = f.mood.viz.reactivity
+    }
+
+    // --- Song structure: latched section read. `intel.updateStructure` drains
     // any completed worker segmentation (usually null) and schedules the next
     // job; the tracker fuses it with the synchronous drop/build flags. ---
-    this.sectionTracker.update(f, structureBridge.update(f))
+    this.sectionTracker.update(f, this.intel.updateStructure(f))
   }
 
   /**

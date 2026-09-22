@@ -12087,7 +12087,248 @@ per-frame canvas heavy enough to distort the reading.
 
       `npm run check` clean: typecheck, lint, 1726 tests, build.
 
-- [x] **F252 · /demo could still freeze on one scene forever — F251 fixed
+- [x] **F252 · Mood engine v2: nearly every song read as `groove` or
+      `ambient`, so every song played the same scenes. Two-layer rebuild
+      (fast intensity + slow character), a licence firewall for the ML
+      stack, and scene/palette/effect selection driven by the new read** —
+      *2026-09-19/20, user request ("more moods with proper analysis"),
+      branch `feat/mood-engine-v2`* `src/audio/{characterTypes,
+      emotionDimensions,emotionQuantiles,characterPriors,moodTaxonomy,
+      CharacterClassifier,characterLook,chromaKey,harmonicTension}.ts`,
+      `src/audio/intel/`, `src/audio/AudioEngine.ts`, `src/engine/
+      {characterPick,characterShift,paletteCharacter,AutoPilot,
+      PerformanceDirector,PerformanceStateBridge,EffectDirector,
+      FilterDirector,moodParams}.ts`, `src/scenes/{character,index}.ts`,
+      `scripts/calibrate/emotion*.ts`, `scripts/mood-labels/`,
+      `scripts/check-dist-licences.mjs`, `docs/12_Character_Layer.md`,
+      `docs/LICENSES.md`, `THIRD_PARTY_NOTICES.md`
+
+      **Why it was weak.** One argmax over seven hand-tuned energy windows.
+      Measured on 400 human-rated clips (PMEmo) the old label explained ~7%
+      of the variance in human arousal and ~5% in valence; `building`/`peak`
+      were almost unreachable and `groove`/`ambient` absorbed the middle.
+      Downstream, the per-mood scene pools overlapped ~90%, so even a correct
+      label led to the same scenes, and palette was decided by key into ~6
+      families.
+
+      **What replaced it.** Intensity (existing `MoodEstimator`/
+      `SectionTracker`, unchanged, fast) and character (new, slow): a point
+      in valence/arousal/tension/pulse space, percentile-calibrated, plus a
+      distribution over 14 named moods with hysteresis. Weights come from
+      the literature, not from labelled data; the human-rated sets are only
+      used to check it (they are non-commercial). Scene choice scores every
+      primary-capable scene by Gaussian fit to the character point with
+      novelty and a per-song seed; palettes are chosen among all 30 by a
+      colour-derived character point; post-FX, camera, filters and bloom
+      read a "look" state (`characterLook.ts`) that takes flavour from
+      character and keeps intensity events from the old detector; a change of
+      the held character mood also requests a scene (`characterShift.ts`,
+      12 s floor). `?scenepick=legacy` turns the whole character path off.
+
+      **Licence firewall.** `essentia.js` is AGPL-3.0 and was bundled with no
+      notice; the MusiCNN weights are CC BY-NC-SA. Essentia is now behind
+      `VITE_ENABLE_ESSENTIA` (default off), key/mode and harmonic tension are
+      clean-room replacements, and `npm run check:licences` fails a build
+      whose `dist/` contains Essentia code, the NC weights, or non-allowlisted
+      audio. Not reviewed by counsel. `public/landing/fractures.mp3` still has
+      no recorded licence.
+
+      **Measured** (held-out fold scored once, after tuning on the other):
+      arousal Spearman vs listeners 0.51 -> 0.81, valence 0.61 -> 0.63 (a
+      wash, inside the noise). All 14 moods lead at least one clip, largest
+      single mood 19%, normalised entropy 0.89. On 184 real songs 29 of 30
+      palettes get used (most common 8%). **Named moods are not validated:**
+      against 98 Gemini pre-labels exact agreement is 14%; against the
+      Jamendo mood tags the engine is as tag-compatible as Gemini is (43% vs
+      45%, chance ~28%) and separates tagged-high from tagged-low arousal and
+      valence better (AUC 0.82 vs 0.67, 0.79 vs 0.56; small n). The Gemini
+      labels are noisy, mixed-model free-tier output that defaults to
+      `groove`/`driving`, so do not tune toward them. **Tension is
+      unvalidated.** The offline Gemini run was stopped at 59 tracks with
+      three samples and 39 with one; the label JSONs stay local (gitignored,
+      derived from NC audio). About 10% of clips now get peak-style effects
+      for a whole song, which may be too intense.
+
+      `npm run check` clean at commit time; see the tests under
+      `src/audio/__tests__`, `src/engine/__tests__`, `src/scenes/__tests__`.
+
+- [x] **F253 · The new mood engine never reached the live app: F252's
+      character read was detached from `AudioEngine.features` after the first
+      source started** — *2026-09-20, user report ("the pill shows the same,
+      I haven't seen any of the new moods")* `src/audio/AudioEngine.ts`,
+      `src/audio/__tests__/audioEngineNoIntel.test.ts`
+
+      `AudioEngine.resetAnalysis()` (called from `stop()` and on every new
+      source) does `Object.assign(this.features, createEmptyFeatures())`,
+      which replaces `features.character` with a fresh empty state. The
+      constructor links it to `characterClassifier.state` exactly once, so
+      after the first reset the classifier kept writing to an object nobody
+      read, and every consumer saw a never-valid character. Each one is built
+      to fall back to the old mood-label path in that case, so nothing
+      failed: scenes, palettes, effects, camera, filters and the scene-switch
+      trigger all silently ran the old engine, and the console pill showed the
+      old 7-state label.
+
+      The offline evaluation and every unit test go through the estimator
+      directly, not `AudioEngine`, which is why they looked fine. Fixed by
+      re-linking `features.character` after the classifier reset; the test
+      asserts the link after construction and after `stop()` and was checked
+      to fail without the fix. The console pill now shows the character mood
+      (telemetry gained an optional `character` field), colour still from the
+      old 7-state ramp via `LEGACY_MAP`, old intensity in the tooltip.
+      **Not yet watched running** — this session had no browser, so the live
+      result is still owed; both the console and output windows need a reload.
+
+- [x] **F254 · Fractal Rose Window bounced out of frame on every beat;
+      Transient Spark always drew the same three lights** — *2026-09-20, user
+      requests* `src/scenes/KifsRoseScene.tsx`, `src/scenes/
+      TransientSparkScene.tsx`, `src/scenes/transientSparkLayout.ts`,
+      `src/scenes/__tests__/transientSparkLayout.test.ts`
+
+      **Fractal Rose Window.** `BEAT_GROWTH` was 0.06, a beat-locked +-6%
+      zoom of the whole mandala that read as bouncing out of the screen (an
+      earlier round had turned that accident into a feature). Now 0.0; the
+      constant stays so a small pulse (~0.01) can be dialled back in. The bar
+      breath, per-bar petal count and kick line-width response are unchanged.
+      The file's header comments still describe the old swell.
+
+      **Transient Spark.** Each firing now gets 1 to 15 lights instead of
+      three. The count avoids the last four counts and differs from the
+      previous one by at least three, with a mild tilt toward bigger bursts on
+      harder transients; a lone light is a big soft bloom anywhere on screen,
+      a crowd is many small points, and the spread of a burst varies per
+      firing. Deterministic (seed = beat position + a firing counter, no
+      `Math.random()`). The 2.5 s cooldown is unchanged, so firing frequency
+      is unchanged. The layout is pure and unit-tested; the GLSL (a
+      15-element `vec4` uniform array, loop with an early `break`) has not
+      been compiled on a real GPU by this session.
+
+- [x] **F255 · Mood-driven look system: every one of the 14 moods now drives
+      scene choice, scene dials, colour grade, post-FX, camera and
+      transitions, instead of collapsing to six looks** — *2026-09-21, user
+      request ("I want the scenes, colours, params and postfx to reflect the
+      mood properly"), branch `feat/mood-look-system`* `src/engine/look/`
+      (new: `lookRow`, `moodRows`, `lookProfile`, `lookModifiers`,
+      `lookFlags`, `lookPost`, `lookDebug`, `lookUrl`, `gradeResidual`),
+      `src/audio/TimbreDescriptors.ts`, `src/audio/timbreQuantiles.ts`,
+      `src/scenes/sceneTraits.ts`, `src/engine/buildSwitch.ts`,
+      `src/engine/PerformanceStateBridge.tsx`, `GradePass.ts`,
+      `PostFXChain.tsx`, `FeedbackPass.ts`, `feedbackParams.ts`,
+      `CameraDirector.tsx`, `transitions.ts`, `sceneSteer.ts`,
+      `EffectDirector.tsx`, `AutoPilot.tsx`, `PerformanceDirector.tsx`,
+      `characterPick.ts`, `outputLink.ts`, `src/ui/LookDebug.tsx`
+
+      **Why.** `lookState()` squeezed the character read into the old 7-value
+      `MoodState`, so serene/dreamy/mysterious all read `ambient`,
+      uplifting/tense both `building`, euphoric/driving/epic all `peak`, and
+      every hand-tuned table (bloom, trails, echo, lens pools, mirror gate,
+      steer, camera, transitions) was keyed on those. No scene and no post-FX
+      read the character axes, and roughness/dissonance/tonalness were used by
+      nothing visual. Nothing continuous existed for colour.
+
+      **What was built.** One `LookProfile` per frame (`performanceState.look`):
+      an authored `LookRow` for each of the 14 moods (`moodRows.ts`), blended by
+      `dist^(1+2*confidence)` (sharpened so a confident read stays legible),
+      relaxed toward a neutral row when the read is uncertain, smoothed per
+      family (grade 6 s, rest 3 s), then shaped by fast-layer modifiers (build
+      ramp, drop afterglow, breakdown) and an intensity gate. Continuous
+      fields blend; discrete ones (lens style, mirror mode/segments, camera
+      mode, transition style) are weight vectors sampled at the existing
+      decision edges, so nothing flips mid-hold. Consumers gate on
+      `look.valid && look.families.<family>` and otherwise run their original
+      code paths unchanged (the old functions and their tests are intact).
+      - **Colour grade** (new stage in `GradePass`): saturation as a
+        luma-preserving mix (capped per pixel so no channel goes negative),
+        temperature as a per-channel gain, contrast as a power curve about a
+        pivot. Multiplicative only, identity when off. Applies the RESIDUAL
+        between the mood's target and what the palette already carries.
+      - **Post-FX from the profile:** bloom, CA, vignette, fog, trails (plus
+        zoom/rotate/swirl/wobble multipliers), echo, lens (weighted pool with a
+        dip-and-swap so a style change never hard-swaps), mirror (weighted
+        mode/segments; harsh moods vortex-only and rare).
+      - **Camera** weights + speed/shake gains, **transition** weights,
+        **effect-scene** propensities (shock/flare/spark/strobe), **scene dial
+        steer** from the profile plus opt-in `shape`/`tilt` for scenes that
+        declare `directorSteers` (`beats` tilt, `kifs` shape).
+      - **Scene picking:** per-scene traits (`sceneTraits.ts`) feed the existing
+        `boost` hook; a `lift` (min arousal/tension) moves the pick point;
+        one scene switch on a CONFIRMED structural build only (rising edge,
+        dwell/beatsTillDrop/buildFit rules, bounded re-pick), everyday builds
+        only ramp effects. Mood-aware mode picking for wireframe.
+      - **Timbre descriptors** `harsh`/`busy`/`sparse` (`f.timbre`, DSP only)
+        modulate amounts within a mood by at most +-40%.
+      - **Tuning tools:** `?lookdebug` overlay (output window), `?lookforce=
+        <mood>`, `?look=-grade,-post,-scene,-camera`, `?scenepick=legacy`
+        turns everything off. These flags now propagate from the console URL
+        to the output window (previously only `?output` did, so
+        `?scenepick=legacy` on the console never reached the engine).
+
+      **Honest limits.** Nobody has watched this run and this session had no
+      browser or GPU: the grade shader and all 14 rows are art-direction
+      hypotheses to be tuned by eye with the overlay and `?lookforce`. The
+      descriptors passed their DSP gates but `harsh` correlates 0.85 with the
+      unvalidated `tension`, and `busy` has no external confirmation, so both
+      are modulators only. Effect-to-mood pairings (pixel sort on harsh audio,
+      mirrors on complex audio) are practitioner convention with no published
+      validation. The flash limiter was deferred at the user's request: new
+      effects add no new flash source (strobe keeps its own 3 Hz floor, kaleido
+      spin capped 0.7, build ramps add no strobe), but pixel-sort and mirror
+      are now weighted up on harsh moods, so a source-side limiter should be
+      revisited before wider release. A single-trigger effect (spark on
+      transients, flare on section changes) still fires at any non-zero
+      propensity; propensity only re-orders effects that compete for one
+      trigger. `kifs` `shape` is quantised (`round(3 + shape*9)`) with its
+      neutral on the 7.5 boundary, so a steer hovering near 0.5 can flip the
+      wedge count between 7 and 8 (slowly, eased over ~100 ms).
+
+      Also fixed: a steered `shape`/`tilt` could leak into any scene that
+      merely declares the dial (the steer block is shared, including the
+      outgoing scene during a crossfade); `resolveSteeredParams` now honours it
+      only for scenes that opt in. Fog for serene/dreamy/mysterious is the most
+      likely first tuning target (`fogBase` .38-.42 stacks on the unchanged
+      sparse/relaxed terms).
+
+      `npm run check` clean: typecheck, lint, 2402 tests (131 files), build,
+      licence gate.
+
+- [ ] **F256 · Merged F252-F255 to `main` (2026-09-21); CI `check` has been red
+      since at least 2026-09-13, so the deploy job is gated and nothing has
+      shipped** — *2026-09-21, user request ("push to main and log")*
+      `.github/workflows/ci.yml`, `src/engine/sessionLog.ts`,
+      `src/engine/__tests__/sessionLog.test.ts`, `sessionLogTiles.test.ts`
+
+      **Merge.** `feat/mood-engine-v2` and `feat/mood-look-system` were
+      fast-forwarded into `main` (`d23218b..02770da`, four commits: labelling
+      tooling, scene fixes, the F252 mood engine + licence firewall, the F255
+      look system). `origin/main` had not moved, so there was no merge commit.
+      Pushed with the `AryanSivanandan` token, scoped to the one command (the
+      default `gh` account `4ryan-s` has no access to the private repo).
+
+      **The CI finding, which predates this work.** Every recent `main` and
+      `launch-prod` run in the Actions list is `failure`, the oldest inspected
+      being 2026-09-13. The failing step is `check` -> `npm run test`:
+      `ReferenceError: navigator is not defined` at `src/engine/sessionLog.ts:467`
+      (`ua: navigator.userAgent`), failing 8 tests each in `sessionLog.test.ts`
+      and `sessionLogTiles.test.ts`. `ci.yml` pins Node 20, which has no
+      `navigator` global; Node 21+ does, which is why the same tests pass on
+      the local Node 22.15. `deploy` declares `needs: check`, so **no
+      production deploy has run since the check went red**, and the F252-F255
+      push hit the same gate (run `35631093698` was still in progress when this
+      was logged; the failure cause is the pre-existing one, not new code).
+      `npm run check` is green locally on Node 22 (typecheck, lint, 2402 tests,
+      build, licence gate).
+
+      **Deliberately not fixed here.** The fix is one line (guard `navigator`
+      in `sessionLog.ts`, or set `node-version: 22` in `ci.yml`), but it would
+      turn the production auto-deploy back on for a look system nobody has yet
+      watched run, and its colour-grade and Transient Spark shaders have never
+      compiled on a real GPU (a GLSL error there would black the picture for
+      every visitor, and CI cannot catch that). Recommend: watch it locally
+      (`?lookdebug`, `?lookforce=<mood>`) first, then fix CI. Also open from
+      earlier entries: `public/landing/fractures.mp3` still has no recorded
+      licence, and a source-side flash limiter is still deferred.
+
+- [x] **F257 · /demo could still freeze on one scene forever — F251 fixed
       `sceneId` leaking from a prior Console session, but `autoPilot` leaks
       through the exact same allowlist and wasn't touched** — *2026-09-18,
       user report while testing F251 live: the scene correctly landed on

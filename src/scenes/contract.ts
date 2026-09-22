@@ -137,6 +137,14 @@ export interface SceneContract {
 
   /** The scene's own word for each parameter, per mode. See {@link SceneParamLabels}. */
   paramLabels?: SceneParamLabels
+
+  /**
+   * Dials the mood director MAY steer in addition to the five it always steers (`sceneSteer.ts`
+   * STEERED_KEYS). `shape` and `tilt` are declined globally because they are camera-relative for most scenes;
+   * a scene that ignores the camera (a full-screen raymarcher) and gives one of them a meaning a director
+   * can safely drive (e.g. 4D angle, symmetry) opts in here. The dial must also be declared in `params`.
+   */
+  directorSteers?: readonly ('shape' | 'tilt')[]
 }
 
 /** Neutral position for every parameter: natural rate, no offset, mid range. */
@@ -298,7 +306,11 @@ export function resolveSteeredParams(
     const declared = c.params[k]
     let v = declared ?? NEUTRAL
     if (declared !== undefined && isParamLive(c, mode, k)) {
-      const s = steer?.[k]
+      // `shape` / `tilt` are steered only for scenes that opted in (`directorSteers`). The steer block is one
+      // object shared by every scene, including the outgoing one during a crossfade, so a value steered for an
+      // opted-in scene must not leak into a scene that merely declares the same dial.
+      const steerable = (k !== 'shape' && k !== 'tilt') || (c.directorSteers?.includes(k) ?? false)
+      const s = steerable ? steer?.[k] : undefined
       if (typeof s === 'number' && isFinite(s)) v = s
       const u = user?.[k]
       if (typeof u === 'number' && isFinite(u)) v = u

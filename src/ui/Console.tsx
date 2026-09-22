@@ -3,6 +3,8 @@ import { Link } from 'react-router'
 import { SCENES, canHoldRole, getEffectScenes, HIDDEN_PICKER_IDS, type SceneDef } from '../scenes'
 import { LAYER_ROLES, type LayerRole } from '../store'
 import { AccountMenu } from './AccountMenu'
+import { LEGACY_MAP } from '../audio/moodTaxonomy'
+import type { CharacterMood } from '../audio/characterTypes'
 
 /**
  * The scenes a user may pick as the SUBJECT, background, accent, overlay, or
@@ -277,7 +279,14 @@ function TopBar({
         {outputOpen && tele ? 'output live' : 'output down'}
       </span>
       <AudioHealth tele={tele} />
-      <span className={`mood-pill mood-${tele?.mood ?? 'silence'}`}>{tele?.mood ?? 'idle'}</span>
+      {/* The character mood (14 names) once it has a read; the pill's colour is the old 7-state ramp it maps to.
+          Silence stays silence, and the old intensity label is kept in the tooltip. */}
+      <span
+        className={`mood-pill mood-${tele?.mood === 'silence' || !tele?.character ? (tele?.mood ?? 'silence') : LEGACY_MAP[tele.character as CharacterMood]}`}
+        title={tele?.character ? `intensity: ${tele.mood}` : undefined}
+      >
+        {tele?.mood === 'silence' ? 'silence' : tele?.character || (tele?.mood ?? 'idle')}
+      </span>
 
       <div className="bpm-chip">
         <b>{bpm || '--'}</b>

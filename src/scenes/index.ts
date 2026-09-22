@@ -5,6 +5,7 @@ import type { CameraAnchor } from '../engine/CameraDirector'
 import type { CameraMode } from '../engine/performanceState'
 import { deriveVA } from '../engine/moodValenceArousal'
 import { MAX_PIXEL_BUDGET, MIN_PIXEL_BUDGET, resolvePixelBudget } from '../engine/renderScale'
+import type { LookProfile } from '../engine/look/lookRow'
 import { vaDistance, type ValenceArousal } from '../engine/valenceArousal'
 import { resolveManifest, type SceneManifestExt } from '../engine/streaming/sceneManifest'
 import {
@@ -14,6 +15,7 @@ import {
   type SceneContract,
   type SceneContractSummary,
 } from './contract'
+import { preferredModes, sceneLookActive } from './sceneTraits'
 
 /**
  * Built-in scenes are code-split: each import() below becomes its own chunk,
@@ -830,6 +832,11 @@ export const SCENES: SceneDef[] = [
           contrast: 'glow',
         },
         },
+        // The mood director may drive `shape` (symmetry: the wedge count, 3..12 via `Math.round(3 + shape*9)`).
+        // Flat 2D fractal, no camera; the count is eased by `slew` at FOLD_STEP_RATE (~100 ms), so each integer
+        // step morphs rather than pops. The steer must move it slowly (it is an integer under a round, so a
+        // value wobbling across a .5 boundary would flicker between two wedge counts).
+        directorSteers: ['shape'],
       },
       roles: ['primary'],
       // `kaleido`'s range (groove/building/peak) plus `aggressive`: the
@@ -1071,6 +1078,10 @@ export const SCENES: SceneDef[] = [
         paramLabels: {
           '*': { complexity: 'depth', density: 'inversion', tilt: '4D angle', contrast: 'clip' },
         },
+        // The mood director may sweep the 4D angle (`tilt` -> `uRoll`, added to the rotation phase inside the
+        // shader): a flat screen-space raymarcher that ignores the engine camera, so the dial is not
+        // camera-relative, and it is a continuous phase offset, so a slow steer reads as the lattice turning.
+        directorSteers: ['tilt'],
       },
       // Subject only — a full-frame 4D lattice flythrough that owns the whole
       // frame, same as `kifs` / `wingfold` / `truchet`.
@@ -3015,6 +3026,22 @@ export function getScenesForMood(mood: MoodState, role?: SceneRole): SceneDef[] 
   return restricted.length > 0 ? restricted : pool
 }
 
+/**
+ * Every scene that may be the PRIMARY, regardless of its mood tags, for the
+ * character-driven picker (`engine/characterPick.ts`). Deliberately NOT
+ * filtered by mood: that filter is what made the per-mood pools overlap ~90%
+ * and every song play the same scenes. Scenes with `moods: []` (limitless,
+ * djcam) stay excluded, as they always were. Same whitelist fallback as
+ * {@link getScenesForMood}.
+ */
+export function getCharacterCandidates(): SceneDef[] {
+  const pool = SCENES.filter((s) => s.metadata.moods.length > 0 && s.metadata.roles.includes('primary'))
+  if (!activeSceneWhitelist) return pool
+  const allowed = new Set(activeSceneWhitelist)
+  const restricted = pool.filter((s) => allowed.has(s.id))
+  return restricted.length > 0 ? restricted : pool
+}
+
 /** {@link getScenesForMood}, filtered to scenes actually eligible to be primary. */
 export function getPrimaryScenesForMood(mood: MoodState): SceneDef[] {
   return getScenesForMood(mood).filter((s) => s.metadata.roles.includes('primary'))
@@ -3101,7 +3128,9 @@ export function pickVariedScene(
     const recentIndex = recentIds.indexOf(scene.id)
     // Decaying penalty: the most recently shown scene is heavily
     // discounted, less so further back, gone after 4 picks.
-    const recencyPenalty = recentIndex === -1 ? 1 : [0.1, 0.3, 0.55, 0.8][recentIndex]
+    // recentIds can be deeper than this table (the store keeps 12 for the character picker), so
+    // anything past the table's end is "not recent" for this picker, never undefined/NaN.
+    const recencyPenalty = recentIndex === -1 ? 1 : ([0.1, 0.3, 0.55, 0.8][recentIndex] ?? 1)
     let vaFactor = 1
     if (currentVA && scene.metadata.moodFit) {
       const sceneVA = deriveVA(scene.metadata.moodFit)
@@ -3140,11 +3169,24 @@ export function pickVariedScene(
  * recorded set has to replay identically — and it refuses to return the current
  * mode so a "change" is always visible. Returns undefined when the scene has no
  * modes or only one, which is most of the roster today.
+ *
+ * ## `look` — mood-aware, still deterministic
+ *
+ * Passed a valid mood-driven `LookProfile` whose scene family is on, the choice
+ * among the NON-current modes is narrowed to the ones whose meaning best matches
+ * the profile (`sceneTraits.preferredModes`: angular / harsh -> `shard`, busy ->
+ * `cage`, calm / soft -> `crystal` for `wireframe`), and `rotation` then indexes
+ * that narrowed list exactly as it indexed the full one, so a near-tie still
+ * alternates and a recorded set still replays. A scene or mode with no authored
+ * meaning (`limitless`) is left on the plain rotation. Omitted, or with a profile
+ * that is not valid / has the scene family off, this is byte-for-byte the
+ * original behaviour.
  */
 export function pickVariedMode(
   sceneId: string,
   current: string | undefined,
   rotation: number,
+  look?: LookProfile,
 ): string | undefined {
   // Deliberately NOT via getSceneContract, which falls back to SCENES[0] for an
   // unknown id. That fallback is right for rendering — a stale persisted id
@@ -3157,7 +3199,8 @@ export function pickVariedMode(
   if (!modes || modes.length < 2) return undefined
   const choices = modes.filter((m) => m !== current)
   if (choices.length === 0) return undefined
-  return choices[Math.abs(rotation) % choices.length]
+  const pool = sceneLookActive(look) ? preferredModes(sceneId, choices, look) : choices
+  return pool[Math.abs(rotation) % pool.length]
 }
 
 /**

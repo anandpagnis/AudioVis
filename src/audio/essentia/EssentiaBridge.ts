@@ -112,6 +112,15 @@ class EssentiaBridge {
   }
 
   private worker: Worker | null = null
+  /**
+   * Builds the analysis worker. Injected by `intel/EssentiaProvider` rather
+   * than constructed here so that this module (which the debug/analytics
+   * panels import statically) carries no `new Worker(new URL(...))` — that call
+   * is what makes Vite bundle the worker and, through it, the AGPL essentia.js
+   * WASM core. With `VITE_ENABLE_ESSENTIA` off nothing registers a factory, the
+   * worker chunks are never emitted, and this bridge stays inert.
+   */
+  private workerFactory: (() => Worker) | null = null
   private tap: AudioWorkletNode | null = null
   private ring: Float32Array | null = null
   private ringWrite = 0
@@ -127,6 +136,10 @@ class EssentiaBridge {
   private window: Float32Array | null = null
   /** All job-scheduling + result-merge state — pure logic in ./scheduling.ts. */
   private readonly sched = makeSchedState()
+
+  setWorkerFactory(factory: (() => Worker) | null) {
+    this.workerFactory = factory
+  }
 
   /** Wire the PCM tap into a freshly built audio graph. Never throws — any
    * failure just leaves the built-in estimator in charge. */
@@ -238,9 +251,8 @@ class EssentiaBridge {
       return
     }
     try {
-      const worker = new Worker(new URL('./essentia.worker.ts', import.meta.url), {
-        type: 'module',
-      })
+      if (!this.workerFactory) throw new Error('worker factory not registered')
+      const worker = this.workerFactory()
       worker.onmessage = (e: MessageEvent<EssentiaResponse>) => {
         this.busy = false // the worker is free regardless
         const r = e.data

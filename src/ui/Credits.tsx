@@ -53,6 +53,68 @@ const ATTRIBUTED_SCENES = SCENES.filter(
   (s) => s.metadata.license !== undefined && s.metadata.license !== 'original',
 )
 
+/** Anchors get no styling from the panel's stylesheet; keep them legible on the glass. */
+const LINK_STYLE = { color: 'inherit', textDecoration: 'underline' } as const
+
+interface SoftwareCredit {
+  name: string
+  licence: string
+  url: string
+  /** Precise text is in THIRD_PARTY_NOTICES.md; this is the one-line credit. */
+  note?: string
+}
+
+/**
+ * Open-source libraries this build's client bundle is built on, with licence
+ * and project link. The complete, generated list with full licence texts is
+ * `THIRD_PARTY_NOTICES.md` (`npm run licences:notices`); this is the
+ * human-facing summary of the main ones. Policy: `docs/LICENSES.md`.
+ *
+ * Deliberately NOT listed: `@dimforge/rapier3d-compat` (Apache-2.0) — it is
+ * only reachable through `@types/three` and nothing in `src/` imports it, so
+ * it is not in the bundle; and TensorFlow.js, which only the Essentia voice
+ * worker imports and so belongs to {@link ESSENTIA_ENABLED}'s block below.
+ * Credit what ships, not what merely appears in the lockfile.
+ *
+ * TODO(owner): once a public URL for THIRD_PARTY_NOTICES.md exists (e.g. served
+ * from /public or the marketing site), link it from this section.
+ */
+const SOFTWARE_CREDITS: SoftwareCredit[] = [
+  { name: 'three.js', licence: 'MIT', url: 'https://threejs.org' },
+  { name: 'React', licence: 'MIT', url: 'https://react.dev' },
+  {
+    name: 'React Three Fiber',
+    licence: 'MIT',
+    url: 'https://github.com/pmndrs/react-three-fiber',
+    note: 'with @react-three/postprocessing',
+  },
+  {
+    name: 'postprocessing',
+    licence: 'Zlib',
+    url: 'https://github.com/pmndrs/postprocessing',
+  },
+  { name: 'Zustand', licence: 'MIT', url: 'https://github.com/pmndrs/zustand' },
+  { name: 'React Router', licence: 'MIT', url: 'https://reactrouter.com' },
+]
+
+/**
+ * Build-time flag for the Essentia music-intelligence path. `'1'` builds ship
+ * Essentia (AGPL-3.0) and, if present, the MusiCNN weights (CC BY-NC-SA 4.0) —
+ * internal / non-commercial builds only. Anything else, including unset (the
+ * default and the commercial configuration), ships neither, and the notice
+ * block below is not rendered. Vite inlines `import.meta.env.X` as a literal,
+ * so with the flag off this is a constant `false` and the block is dropped.
+ */
+const ESSENTIA_ENABLED = import.meta.env.VITE_ENABLE_ESSENTIA === '1'
+
+// TODO(owner): landing audio. `public/landing/fractures.mp3` (ID3 title
+// "Fractures", artist "Anderholm, Alexandra Pride"), used by
+// `src/landing/tunnelAudio.ts`, has NO licence or attribution recorded
+// anywhere in this repo. Its licence is to be confirmed (or the track replaced)
+// before a commercial release; only then add a credit line here. Deliberately
+// NOT rendered until verified — an unverified licence claim must not appear in
+// the UI. Tracked in docs/LICENSES.md (open items).
+
 /**
  * Third-party attribution — the UI surface F178 (see `docs/ISSUES.md`) was
  * blocked on.
@@ -87,11 +149,10 @@ export function Credits() {
       <div className="credits-section">
         <h3>ISF post-processing filters</h3>
         <p className="param-note">
-          Five ISF filters are vendored, unmodified, from the Vidvox ISF-Files
-          collection (github.com/Vidvox/ISF-Files) under the MIT licence
-          below. Listed here whether or not the current build's filter picker
-          offers each one — attribution travels with everything shipped in
-          the bundle, not only with what is currently selectable.
+          Five ISF filters are vendored, unmodified, from the Vidvox ISF-Files collection
+          (github.com/Vidvox/ISF-Files) under the MIT licence below. Listed here whether or not the
+          current build's filter picker offers each one — attribution travels with everything
+          shipped in the bundle, not only with what is currently selectable.
         </p>
         <ul className="credits-list">
           {ISF_FILTERS.map((f) => {
@@ -114,6 +175,81 @@ export function Credits() {
           <pre className="credits-license">{ISF_NOTICE}</pre>
         </details>
       </div>
+
+      <div className="credits-section">
+        <h3>Software</h3>
+        <p className="param-note">
+          Built with open-source software. Licences and full texts are reproduced in the project's
+          third-party notices.
+        </p>
+        <ul className="credits-list">
+          {SOFTWARE_CREDITS.map((c) => (
+            <li key={c.name}>
+              <strong>{c.name}</strong>
+              <span className="credit-line">
+                {c.licence} ·{' '}
+                <a href={c.url} target="_blank" rel="noreferrer noopener" style={LINK_STYLE}>
+                  {c.url.replace(/^https?:\/\//, '')}
+                </a>
+              </span>
+              {c.note && <span className="credit-desc">{c.note}</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {ESSENTIA_ENABLED && (
+        <div className="credits-section">
+          <h3>Music analysis (Essentia)</h3>
+          <p className="param-note">
+            This build includes Essentia, developed by the Music Technology Group, Universitat
+            Pompeu Fabra (MTG-UPF).
+          </p>
+          <ul className="credits-list">
+            <li>
+              <strong>essentia.js</strong>
+              <span className="credit-line">
+                AGPL-3.0 ·{' '}
+                <a
+                  href="https://essentia.upf.edu"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  style={LINK_STYLE}
+                >
+                  essentia.upf.edu
+                </a>
+              </span>
+              <span className="credit-desc">
+                Licensed under the GNU Affero General Public Licence v3.0 — the corresponding source
+                and licence terms are available from the project site.
+              </span>
+            </li>
+            <li>
+              <strong>MusiCNN models (Essentia model zoo)</strong>
+              <span className="credit-line">CC BY-NC-SA 4.0</span>
+              <span className="credit-desc">
+                Mood and voice models by MTG-UPF, licensed under Creative Commons
+                Attribution-NonCommercial-ShareAlike 4.0 — non-commercial use only.
+              </span>
+            </li>
+            <li>
+              <strong>TensorFlow.js</strong>
+              <span className="credit-line">
+                Apache-2.0 ·{' '}
+                <a
+                  href="https://github.com/tensorflow/tfjs"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  style={LINK_STYLE}
+                >
+                  github.com/tensorflow/tfjs
+                </a>
+              </span>
+              <span className="credit-desc">Runs the models above.</span>
+            </li>
+          </ul>
+        </div>
+      )}
 
       {ATTRIBUTED_SCENES.length > 0 && (
         <div className="credits-section">

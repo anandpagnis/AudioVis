@@ -12,9 +12,21 @@ import { keyPaletteTracker } from './keyPalette'
 import { deriveVAFromList } from './moodValenceArousal'
 import { PALETTES } from './palettes'
 import { vaDistance, type ValenceArousal } from './valenceArousal'
-import { getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
+import { getCharacterCandidates, getPrimaryScenesForMood, pickVariedMode, pickVariedScene } from '../scenes'
+import { getSceneTraits, sceneBoost, sceneLookActive } from '../scenes/sceneTraits'
+import {
+  BUILD_SWITCH,
+  buildSwitchRng,
+  createBuildSwitchState,
+  observeBuild,
+  pickAndRequest,
+  shouldSwitchOnBuild,
+} from './buildSwitch'
+import { characterPickEnabled, pickByCharacter, songSeedFor } from './characterPick'
+import { CharacterShiftTrigger } from './characterShift'
+import { pickPaletteByCharacter } from './paletteCharacter'
 import { performanceState } from './performanceState'
-import { useStore } from '../store'
+import { canAutoSwitch, useStore } from '../store'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
 /**
@@ -266,12 +278,14 @@ export function pickPaletteWithRecall(
   repetitionLabel: string,
   recallMap: Map<string, string>,
   currentVA?: ValenceArousal,
+  /** Character-driven fresh pick (`paletteCharacter.ts`); when it returns null the original mood-pool pick runs. */
+  characterPick?: () => string | null,
 ): string | null {
   const recalled = repetitionLabel ? recallMap.get(repetitionLabel) : undefined
   const pick =
     recalled && recalled !== current && moodPalettes.includes(recalled)
       ? recalled
-      : pickPalette(moodPalettes, current, keyFamily, lastPick, rotation, currentVA)
+      : (characterPick?.() ?? pickPalette(moodPalettes, current, keyFamily, lastPick, rotation, currentVA))
   if (pick && repetitionLabel) recallMap.set(repetitionLabel, pick)
   return pick
 }
@@ -305,6 +319,8 @@ export function AutoPilot() {
   const lastAutoTriggerAt = useRef(-Infinity)
   /** Deterministic cycle position — not random, so a recorded set repeats. */
   const paletteRotation = useRef(0)
+  /** Most-recent-first palettes already shown, for the character picker's novelty term. */
+  const recentPalettes = useRef<string[]>([])
   /** The same idea for modes, on its own counter: sharing the palette's would
    *  couple a scene's look to how often the colours happened to change. */
   const modeRotation = useRef(0)
@@ -314,6 +330,10 @@ export function AutoPilot() {
    *  few bars the arm is abandoned. */
   const preArmed = useRef(false)
   const preArmBeat = useRef(-Infinity)
+  /** Latches a change of the music's character so it can request a scene — see {@link CharacterShiftTrigger}. */
+  const charShift = useRef(new CharacterShiftTrigger())
+  /** Rising-edge + once-per-build latch for the confirmed-build one-shot scene switch — see `buildSwitch.ts`. */
+  const buildState = useRef(createBuildSwitchState())
 
   useFrame(() => {
     const f = audioEngine.features
@@ -323,23 +343,34 @@ export function AutoPilot() {
     // that lands during the manual hold doesn't fire the instant it lifts.
     const dropEdge = f.drop && !prevDrop.current
     prevDrop.current = f.drop
+    // The rising edge of a confirmed build, tracked here for the same reason: an edge that lands while
+    // automation is suppressed is consumed, not fired late (mid-build) when the hold lifts.
+    const buildEdge = observeBuild(buildState.current, f.structureValid && f.songSection.isSustain)
     // Accumulate key votes BEFORE the early returns, for the same reason as
     // the drop edge above: the tracker needs a settled opinion the moment
     // automation resumes, not to start counting from zero then.
     keyPaletteTracker.update(f.key, f.scale, f.time)
+    // Same reason: a character shift during a manual hold or cutaway must latch, not vanish.
+    // Off with the rest of the character path under `?scenepick=legacy`.
+    if (characterPickEnabled()) charShift.current.observe(f.character)
+    else charShift.current.reset()
     // A new source restarts the engine clock at 0, which would leave the
     // cooldown stamp in the future and freeze the palette for the whole of the
     // next track. These refs outlive a source change; the clock does not.
     if (f.time < lastPaletteAt.current) {
       lastPaletteAt.current = -Infinity
       lastPalettePick.current = ''
+      recentPalettes.current = []
       // A new source restarts SectionTracker too, so its A/B/C… labels are
       // free to be reused for structurally unrelated segments — a stale
       // mapping recorded against the previous track's "A" must not leak into
       // a recall for this one.
       repetitionPalette.current.clear()
     }
-    if (f.time < lastAutoTriggerAt.current) lastAutoTriggerAt.current = -Infinity
+    if (f.time < lastAutoTriggerAt.current) {
+      lastAutoTriggerAt.current = -Infinity
+      charShift.current.reset()
+    }
 
     if (!s.autoPilot || s.status !== 'running' || f.silence) return
     if (cueState.governed) return // authored cues own the journey
@@ -380,6 +411,10 @@ export function AutoPilot() {
     // PerformanceDirector.tsx:194 and got the identical swap.
     const inSustain = f.structureValid && f.songSection.isSustain
 
+    // The mood-driven look, but only when it is valid and its scene family is on. `undefined` means every
+    // scene decision below runs EXACTLY as it did before the look system existed (the legacy path).
+    const sceneLook = sceneLookActive(performanceState.look) ? performanceState.look : undefined
+
     // Abandon a stale pre-arm — the projected drop never arrived.
     if (preArmed.current && f.beatIndex - preArmBeat.current > 24) preArmed.current = false
 
@@ -416,6 +451,13 @@ export function AutoPilot() {
         handledChange.current = pendingChange.current
         target = m.state
         prefetchedFor.current = null
+      } else if (charShift.current.take(f.time, lastAutoTriggerAt.current)) {
+        // The music's character moved (e.g. serene -> tense) without the 7-state
+        // mood flipping, which only tracks intensity. The picker below reads the
+        // live character, so aiming at the committed state is enough to ask for
+        // a fresh look that fits the new passage.
+        target = m.state
+        prefetchedFor.current = null
       } else if (f.time - lastAutoTriggerAt.current >= STALE_TARGET_SEC) {
         // F135: no edge has fired in a while even though playback is live and
         // unmuted. Aim at whatever is currently committed — not a guess, it's
@@ -425,7 +467,10 @@ export function AutoPilot() {
         prefetchedFor.current = null
       }
     }
-    if (target !== null) lastAutoTriggerAt.current = f.time
+    if (target !== null) {
+      lastAutoTriggerAt.current = f.time
+      charShift.current.consume()
+    }
     // --- Palette: a deliberately WIDER trigger than the scene switch below ---
     //
     // Colour is the cheapest way to mark structure, and section boundaries
@@ -451,20 +496,37 @@ export function AutoPilot() {
       // from the new mood's list, and the lists overlap heavily — `aurora`
       // alone sits in ambient, mellow, groove AND building, so a whole arc
       // could pass without a single switch.
+      // Character-driven when the character read is ready: choose among EVERY palette by fit to
+      // the music's valence/arousal/tension (the key is a nudge, not an override). Otherwise the
+      // original mood-pool pick runs unchanged (`?scenepick=legacy` also forces that).
+      const useCharacter = characterPickEnabled() && f.character.valid && f.character.primary !== null
+      const rotation = paletteRotation.current++
       const pick = pickPaletteWithRecall(
-        MOOD_PALETTES[paletteMood] ?? [],
+        useCharacter ? PALETTES.map((p) => p.id) : (MOOD_PALETTES[paletteMood] ?? []),
         s.paletteId,
         keyPaletteTracker.family,
         lastPalettePick.current,
-        paletteRotation.current++,
+        rotation,
         // Only a validated structure read carries a trustworthy label — same
         // gate `inSustain`/`structureRecolour` already apply to the rest of
         // `f.songSection` below.
         f.structureValid ? f.songSection.repetitionLabel : '',
         repetitionPalette.current,
         { valence: performanceState.valence, arousal: performanceState.arousal },
+        useCharacter
+          ? () =>
+              pickPaletteByCharacter({
+                character: f.character,
+                current: s.paletteId,
+                recentIds: recentPalettes.current,
+                keyFamily: keyPaletteTracker.family,
+                songSeed: songSeedFor(f.character, f.key, f.time),
+                rotation,
+              })
+          : undefined,
       )
       if (pick) {
+        recentPalettes.current = [pick, ...recentPalettes.current.filter((id) => id !== pick)].slice(0, 6)
         lastPalettePick.current = pick
         lastPaletteAt.current = f.time
         s.setPalette(pick, { auto: true })
@@ -495,10 +557,70 @@ export function AutoPilot() {
       (f.sectionChange || structureRecolour) &&
       f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC
     ) {
-      const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++)
+      const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++, sceneLook)
       if (mode) {
         lastModeVaryAt.current = f.time
         s.setSceneMode(s.sceneId, mode, { auto: true })
+      }
+    }
+
+    // --- Confirmed-build one-shot scene switch -------------------------------
+    // Builds ramp EFFECTS always (the look tracker does that); the SCENE changes only here, once, on the rising
+    // edge of a confirmed structural build, and only to a fast scene, because the hold below otherwise keeps a
+    // calm scene on screen for the whole riser. Every rule (dwell, drop not imminent, current scene a poor
+    // build scene, once per build, no pending switch) is `shouldSwitchOnBuild`; the pick is lifted to a fast,
+    // tense point (`minArousal` / `minTension`: a boost alone cannot flip a poor fit through affinity^3.5) and
+    // boosted by `sceneBoost(..., 'build')`, which favours `buildFit` (4D Beats, JavaZone, Web, Maze, Plasma).
+    //
+    // COST, accepted: `requestScene` stamps the 32-beat dwell when this commits, so the drop pre-arm below
+    // (non-immediate) is usually REFUSED afterwards. The drop's own request is `immediate`, which bypasses the
+    // dwell, so the hard cut on the drop still fires exactly as before and the build's scene is replaced on it.
+    //
+    // A refused request (dwell, `canHoldPrimary`, ...) excludes that id and re-picks a bounded number of times
+    // (`BUILD_SWITCH.maxRepicks`); it never loops. The whole block is skipped without a valid scene look.
+    if (
+      sceneLook !== undefined &&
+      shouldSwitchOnBuild({
+        lookActive: true,
+        risingEdge: buildEdge && !dropEdge,
+        fired: buildState.current.fired,
+        canSwitch: canAutoSwitch(s.lastCommitBeat, f.beatIndex),
+        beatsTillDrop: f.songSection.beatsTillDrop,
+        currentBuildFit: getSceneTraits(s.sceneId).buildFit,
+        hasPending: s.pendingSceneId !== null,
+      })
+    ) {
+      buildState.current.fired = true
+      const { scene: switched } = pickAndRequest(
+        [s.sceneId],
+        (exclude, attempt) =>
+          pickByCharacter(getCharacterCandidates(), {
+            character: f.character,
+            key: f.key,
+            now: f.time,
+            recentIds: s.recentSceneIds,
+            exclude,
+            minArousal: BUILD_SWITCH.minArousal,
+            minTension: BUILD_SWITCH.minTension,
+            liftSecondary: true,
+            boost: (scene) => sceneBoost(scene, sceneLook, 'build'),
+            rng: buildSwitchRng(f.beatIndex, attempt),
+          }),
+        (scene) => {
+          const accepted = s.requestScene(scene.id, { auto: true, immediate: false })
+          if (accepted) {
+            const nextMode = pickVariedMode(scene.id, s.sceneModes[scene.id], modeRotation.current++, sceneLook)
+            if (nextMode) s.setSceneMode(scene.id, nextMode, { auto: true })
+          }
+          return accepted
+        },
+      )
+      if (switched) {
+        // A scene request was made for this moment: the stale-target backstop and any latched character shift
+        // have been answered, same as when a `target` fires below.
+        lastAutoTriggerAt.current = f.time
+        charShift.current.consume()
+        return
       }
     }
 
@@ -523,9 +645,22 @@ export function AutoPilot() {
       // MOOD_VA.building's negative valence vs peak/aggressive's. Weighting
       // by the current read would bias the pre-arm pick toward the build's
       // own anticipatory character instead of the drop's.
-      const armPick = pickVariedScene(armCands, hypeMood, s.recentSceneIds)
+      // Character-driven when the character read is ready (arousal lifted to the drop's level);
+      // otherwise the original mood-label pick.
+      const armPick =
+        pickByCharacter(getCharacterCandidates(), {
+          character: f.character,
+          key: f.key,
+          now: f.time,
+          recentIds: s.recentSceneIds,
+          exclude: [s.sceneId],
+          minArousal: 0.85,
+          // The look's trait bias, with the DROP flavour of the build/drop factor (`dropFit`): this pick is for
+          // the hot moment about to arrive, where a scene built for the riser is the wrong answer.
+          boost: sceneLook ? (scene) => sceneBoost(scene, sceneLook, 'drop') : undefined,
+        }) ?? pickVariedScene(armCands, hypeMood, s.recentSceneIds)
       if (armPick && s.requestScene(armPick.id, { auto: true, immediate: false })) {
-        const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++)
+        const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++, sceneLook)
         if (armMode) s.setSceneMode(armPick.id, armMode, { auto: true })
         preArmed.current = true
         preArmBeat.current = f.beatIndex
@@ -568,10 +703,32 @@ export function AutoPilot() {
     // the voice worker hasn't produced a read yet.
     const voiceBoost = (scene: (typeof candidates)[number]) =>
       f.moodsValid && f.vocalPresence > 0.5 && scene.metadata.bands.includes('vocal') ? 1.6 : 1
-    const pick = pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost, {
-      valence: performanceState.valence,
-      arousal: performanceState.arousal,
-    })
+    // Character-driven pick first: it chooses by where the music sits in
+    // valence/arousal/tension/pulse space over EVERY primary-capable scene, so two
+    // songs of different character no longer share the same mood-label pool. It
+    // returns null until the character read is ready (or under ?scenepick=legacy),
+    // and then the original mood-label pick below runs unchanged.
+    //
+    // With a valid scene look the character pick also gets the look's trait bias (`sceneBoost`), multiplied into
+    // the voice boost, in its DROP flavour on a drop (this pick then requests `immediate`). The mood-label
+    // fallback below keeps the voice boost alone.
+    const characterBoost = sceneLook
+      ? (scene: (typeof candidates)[number]) =>
+          voiceBoost(scene) * sceneBoost(scene, sceneLook, dropEdge ? 'drop' : 'auto')
+      : voiceBoost
+    const pick =
+      pickByCharacter(getCharacterCandidates(), {
+        character: f.character,
+        key: f.key,
+        now: f.time,
+        recentIds: s.recentSceneIds,
+        exclude: [s.sceneId, s.pendingSceneId ?? ''],
+        boost: characterBoost,
+      }) ??
+      pickVariedScene(candidates, target, s.recentSceneIds, voiceBoost, {
+        valence: performanceState.valence,
+        arousal: performanceState.arousal,
+      })
     // A drop is the one trigger that must land on the moment rather than on the
     // next bar: SceneManager skips the downbeat wait and hard-cuts. Every other
     // trigger here (a mood change, a predicted transition) is a section-scale
@@ -587,7 +744,7 @@ export function AutoPilot() {
       // Only fires for a scene that declares more than one mode, which today is
       // one scene of eighteen — see pickVariedMode for why that ratio is the
       // actual problem rather than this code being speculative.
-      const nextMode = pickVariedMode(pick.id, s.sceneModes[pick.id], modeRotation.current++)
+      const nextMode = pickVariedMode(pick.id, s.sceneModes[pick.id], modeRotation.current++, sceneLook)
       if (nextMode) s.setSceneMode(pick.id, nextMode, { auto: true })
       s.requestScene(pick.id, { auto: true, immediate: dropEdge })
     }

@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
 import { FULLSCREEN_VERT } from './glsl'
-import { isFeedbackActive, resolveFeedbackKnobs } from './feedbackParams'
+import { isFeedbackActive, resolveFeedbackKnobs, type FeedbackShape } from './feedbackParams'
 
 /**
  * Image feedback: a ping-ponged history buffer resampled through zoom,
@@ -134,6 +134,8 @@ export class FeedbackPass extends Pass {
   private time = 0
   /** Current external dial, 0..1. See {@link setTrails}. */
   private trails = 0
+  /** Multipliers on the zoom / rotate / swirl / wobble ratios (1 = the fixed look). See {@link setShape}. */
+  private readonly shape: Required<FeedbackShape> = { zoom: 1, rotate: 1, swirl: 1, wobble: 1 }
   /**
    * History holds a frame from before the pass was last switched off, so the
    * first frame after re-enabling must not blend against it — see
@@ -212,6 +214,18 @@ export class FeedbackPass extends Pass {
     this.enabled = active
   }
 
+  /**
+   * The SHAPE of the trail: multipliers on the zoom / rotate / swirl / wobble ratios `feedbackParams` derives
+   * from `trails` (the mood look sets them per mood; see `FeedbackShape`). Copied, not retained, so the caller
+   * may keep mutating its own object. Never calling this leaves every ratio at its fixed value (1, 1, 1, 1).
+   */
+  setShape(shape: Required<FeedbackShape>): void {
+    this.shape.zoom = shape.zoom
+    this.shape.rotate = shape.rotate
+    this.shape.swirl = shape.swirl
+    this.shape.wobble = shape.wobble
+  }
+
   /** Tint the decaying history toward a colour (the palette's mid tone, by
    *  convention) rather than pure white, so trails pick up the show's colour
    *  instead of just brightening toward grey. Copies into the owned uniform
@@ -246,7 +260,7 @@ export class FeedbackPass extends Pass {
       renderer.setRenderTarget(prevTarget)
     }
 
-    const knobs = resolveFeedbackKnobs(this.trails)
+    const knobs = resolveFeedbackKnobs(this.trails, this.shape)
     const u = this.blendMaterial.uniforms
     u.tDiffuse.value = inputBuffer.texture
     u.tHistory.value = this.history.texture

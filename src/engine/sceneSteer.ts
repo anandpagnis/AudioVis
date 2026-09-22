@@ -1,6 +1,8 @@
 import type { MoodState } from '../audio/types'
+import { getSceneContract } from '../scenes'
 import { NEUTRAL, clamp01, type SceneParams } from '../scenes/contract'
-import { approach } from './performanceState'
+import type { LookProfile } from './look/lookRow'
+import { approach, performanceState } from './performanceState'
 
 /**
  * The AI Performance Director's continuous hand on the scene dials.
@@ -35,6 +37,15 @@ import { approach } from './performanceState'
  * Declining them is the point rather than an omission. A director that writes
  * every field it CAN write is how the seam in performanceState.ts acquired four
  * inert fields; a dial nobody is fighting over is a dial a human can still own.
+ *
+ * ## The one exception: a scene that opts in
+ *
+ * Both reasons above are about scenes whose `shape` / `tilt` are camera-relative or arbitrary. A scene that
+ * ignores the camera (a full-screen raymarcher) and gives one of them a meaning a director can safely drive — a
+ * 4D rotation angle, a symmetry count — says so with `contract.directorSteers`, and ONLY then, and ONLY while the
+ * mood look profile is in charge (`advanceSteer`'s `look`), does the director write it: `shape` follows the
+ * profile's complexity (more complex, more symmetry / segments) and `tilt` follows the build (a sweep that
+ * winds up as a build rises). A scene that did not opt in never has either key in the steer block.
  *
  * ## Why it eases rather than sets
  *
@@ -147,20 +158,90 @@ export function steerTargets(mood: MoodState, tension: number): SteerTarget {
   return out
 }
 
+/** Which profile field is the resting position of each steered dial. */
+const LOOK_STEER_FIELDS = {
+  speed: 'steerSpeed',
+  complexity: 'steerComplexity',
+  density: 'steerDensity',
+  fill: 'steerFill',
+  contrast: 'steerContrast',
+} as const satisfies Record<(typeof STEERED_KEYS)[number], keyof LookProfile>
+
+/**
+ * {@link steerTargets}, from the mood look profile instead of the 7-row table: the resting position of each dial is
+ * the profile's blended `steer*` (already carrying the descriptor and build / breakdown modifiers) and the
+ * SAME tension terms are added on top, so the bar before a drop still hardens the picture.
+ */
+export function steerTargetsFromLook(look: LookProfile, tension: number): SteerTarget {
+  const t = clamp01(tension)
+  const out = {} as SteerTarget
+  for (const k of STEERED_KEYS) out[k] = clamp01(look[LOOK_STEER_FIELDS[k]] + TENSION_GAIN[k] * t)
+  return out
+}
+
+/**
+ * Where a director-steered `shape` should sit for this profile (only ever applied to a scene that opted in):
+ * 0.35 at the simplest look, 0.85 at the most complex — more complex reads as more symmetry / segments.
+ */
+export function shapeTarget(look: LookProfile): number {
+  return clamp01(0.35 + 0.5 * look.steerComplexity)
+}
+
+/**
+ * Where a director-steered `tilt` should sit for this profile (only ever applied to a scene that opted in):
+ * level (0.5) at rest, wound up by the build (+0.4 at full build intent) with a small lean with the speed dial
+ * (+-0.075), so it sweeps as a build rises and relaxes with it.
+ */
+export function tiltTarget(look: LookProfile): number {
+  return clamp01(0.5 + 0.4 * look.buildIntent + 0.15 * (look.steerSpeed - 0.5))
+}
+
+type DirectorSteer = 'shape' | 'tilt'
+const DIRECTOR_STEER_KEYS: readonly DirectorSteer[] = ['shape', 'tilt']
+const NO_STEERS: readonly DirectorSteer[] = []
+
+/** The dials a scene has opted into steering beyond the five; none for a scene without the flag or a contract. */
+function directorSteersOf(sceneId: string): readonly DirectorSteer[] {
+  return getSceneContract(sceneId)?.directorSteers ?? NO_STEERS
+}
+
 /**
  * Ease `state` one frame toward the steer target for this mood.
  *
  * Mutates in place — `state` is `performanceState.sceneParams`, and the render
  * loop allocates nothing. Sparse by construction: only {@link STEERED_KEYS} are
- * ever written, so `shape` and `tilt` are absent rather than present-and-neutral
- * and the resolver can tell "the director has no opinion" from "the director
- * wants 0.5".
+ * ever written — plus `shape` / `tilt` for a scene that opted in, see below — so
+ * they are absent rather than present-and-neutral and the resolver can tell "the
+ * director has no opinion" from "the director wants 0.5".
+ *
+ * ## `look` — the mood look profile (optional)
+ *
+ * When given (the caller passes it only while the profile is valid and its `scene` family is on), the five
+ * resting targets come from the profile's `steer*` fields ({@link steerTargetsFromLook}) instead of `mood`'s row;
+ * the tension terms, the {@link STEER_RATE} easing and the {@link DROP_RATE} drop rate are unchanged.
+ *
+ * It also steers `shape` and `tilt` ({@link shapeTarget}, {@link tiltTarget}) — but only for the ACTIVE scene, and only if its
+ * contract lists the dial in `directorSteers`. `state` is one block shared by every mounted scene and the
+ * resolver hands a steered value to any scene that declares that dial, so the opt-in is enforced here too: a
+ * `shape` / `tilt` left in `state` by a scene that opted in is REMOVED as soon as the active scene has not
+ * (otherwise the next scene would inherit its symmetry). `directorSteers` overrides which dials the active scene
+ * has opted into (default: read from `performanceState.activeScene`'s contract; a test seam).
+ *
+ * Omitted, this is the original behaviour: the five dials from `mood`, and `shape` / `tilt` never written.
  */
 export function advanceSteer(
   state: SceneParams,
-  opts: { mood: MoodState; tension: number; delta: number; drop?: boolean },
+  opts: {
+    mood: MoodState
+    tension: number
+    delta: number
+    drop?: boolean
+    look?: LookProfile
+    directorSteers?: readonly DirectorSteer[]
+  },
 ): void {
-  const targets = steerTargets(opts.mood, opts.tension)
+  const look = opts.look
+  const targets = look ? steerTargetsFromLook(look, opts.tension) : steerTargets(opts.mood, opts.tension)
   const rate = opts.drop ? DROP_RATE : STEER_RATE
   for (const k of STEERED_KEYS) {
     // First frame starts from the target rather than easing up from a
@@ -169,6 +250,21 @@ export function advanceSteer(
     // after the first note.
     const from = state[k]
     state[k] = from === undefined ? targets[k] : approach(from, targets[k], rate, opts.delta)
+  }
+
+  // shape / tilt: only ever present while the active scene has opted in. The contract is looked up only when
+  // there is something to steer or to clean up, so the ordinary legacy frame does no lookup at all.
+  if (look || state.shape !== undefined || state.tilt !== undefined) {
+    const optedIn = opts.directorSteers ?? directorSteersOf(performanceState.activeScene)
+    for (const k of DIRECTOR_STEER_KEYS) {
+      if (!optedIn.includes(k)) {
+        if (state[k] !== undefined) delete state[k]
+      } else if (look) {
+        const goal = k === 'shape' ? shapeTarget(look) : tiltTarget(look)
+        const from = state[k]
+        state[k] = from === undefined ? goal : approach(from, goal, rate, opts.delta)
+      }
+    }
   }
 }
 
@@ -181,6 +277,8 @@ export function advanceSteer(
  */
 export function clearSteer(state: SceneParams): void {
   for (const k of STEERED_KEYS) delete state[k]
+  // Also the two an opted-in scene may have had steered (see advanceSteer): "no opinion" means no key at all.
+  for (const k of DIRECTOR_STEER_KEYS) delete state[k]
 }
 
 /** Neutral steer, for tests and for a first frame with no mood yet. */
