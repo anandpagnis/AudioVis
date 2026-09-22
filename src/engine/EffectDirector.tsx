@@ -101,6 +101,46 @@ export function effectPropensity(id: string, look: LookProfile): number {
   return Number.isFinite(v) ? Math.max(0, v) : 1
 }
 
+function clampScale(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v))
+}
+
+/**
+ * Bounded, monotonic scale on a firing's DURATION, driven by the same `propensity` (0..1.5, see
+ * {@link effectPropensity}) that already decided this effect's odds of being picked at all.
+ *
+ * Propensity is "how much the mood wants THIS effect". An effect that still fired despite the mood
+ * barely wanting it (propensity near 0 — it won because nothing else was eligible, or the draw favoured
+ * it anyway) reads truest if it is brief; one the mood genuinely favours (propensity >= 1) keeps its
+ * full authored length. Deliberately capped at the TOP (1, i.e. unscaled) rather than centred on 1: mood
+ * may only ever shorten a firing, never lengthen it past what its designer authored — a duration that
+ * could grow arbitrarily large from an unbounded-above propensity would be exactly the "absurdly long"
+ * failure this mapping exists to rule out. 0.75 is the floor for the same reason in the other direction:
+ * short enough to read as "this one mattered less", never so short it reads as a dropped frame (the
+ * effect roster's own `durationSec` floor is documented at "under about a second" in
+ * `effectLifecycle.test.ts` — 0.75x of the shortest authored duration, strobe's 1.5s, is 1.125s, still
+ * comfortably clear of that).
+ */
+export function effectDurationScale(propensity: number): number {
+  const p = Number.isFinite(propensity) ? Math.max(0, propensity) : 1
+  return clampScale(0.75 + 0.25 * Math.min(1, p), 0.75, 1)
+}
+
+/**
+ * Bounded, monotonic scale on a firing's BRIGHTNESS/size — same `propensity`, same reasoning as
+ * {@link effectDurationScale}, centred differently: a firing the mood wanted gets to read a little
+ * brighter/bigger (up to 1.1x), one it barely wanted still reads clearly (never below 0.8x). An effect
+ * scene multiplies its own existing per-firing "how hard did this hit" strength by this value, so the
+ * floor keeps that result well clear of "near-invisible" and the ceiling well clear of anything that
+ * could blow out additive blending or read as a strobe — deliberately a much narrower band than
+ * `effectPropensity`'s own 0..1.5, since this is a garnish on top of the audio-driven strength each
+ * scene already computes, not a second independent driver of it.
+ */
+export function effectIntensityScale(propensity: number): number {
+  const p = Number.isFinite(propensity) ? Math.max(0, propensity) : 1
+  return clampScale(0.8 + 0.3 * Math.min(1, p), 0.8, 1.1)
+}
+
 /**
  * Advance the active list: retire what has expired, admit what just fired.
  *
@@ -213,13 +253,26 @@ export function advanceEffects(opts: {
   }
 
   lastFiredAt.set(pick.id, now)
+
+  // Duration/brightness scale by mood, captured ONCE here at fire time and held for the whole firing —
+  // never recomputed mid-burst, exactly like `startedAt`/`durationSec` already are. Only while `look` is
+  // valid: the omitted/invalid path below must reproduce today's exact `durationSec` and leave
+  // `intensity` undefined, so every consumer that does not know about mood scaling still sees exactly
+  // what it always has.
+  const baseDurationSec = pick.metadata.effect!.durationSec
+  const durationSec = look
+    ? baseDurationSec * effectDurationScale(effectPropensity(pick.id, look))
+    : baseDurationSec
+  const intensity = look ? effectIntensityScale(effectPropensity(pick.id, look)) : undefined
+
   return [
     ...kept,
     {
       id: pick.id,
       startedAt: now,
-      durationSec: pick.metadata.effect!.durationSec,
+      durationSec,
       key: fireKey++,
+      ...(intensity !== undefined ? { intensity } : {}),
     },
   ]
 }

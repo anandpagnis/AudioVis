@@ -119,6 +119,87 @@ describe('pickPaletteByCharacter', () => {
     expect(firsts.size).toBeGreaterThanOrEqual(4)
   })
 
+  describe('moodTarget (colour-target bonus)', () => {
+    const c = { valence: 0.5, arousal: 0.5, tension: 0.5 }
+    const warm = { sat: 1.3, temp: 1, contrast: 1 }
+    const cool = { sat: 0.75, temp: -1, contrast: 1 }
+    /** Isolates the bonus itself: dividing out the (unaffected) V/A/T base fit. */
+    const bonusRatio = (id: string, target: Parameters<typeof paletteAffinity>[2]) =>
+      paletteAffinity(id, c, target) / paletteAffinity(id, c)
+
+    it('omitted, paletteAffinity and pickPaletteByCharacter are unchanged (regression guard)', () => {
+      for (const id of ids()) {
+        expect(paletteAffinity(id, c, undefined)).toBe(paletteAffinity(id, c))
+      }
+      for (let rot = 0; rot < 40; rot++) {
+        const o = { character: c, current: 'aurora', recentIds: [], keyFamily: '', songSeed: rot * 13, rotation: rot }
+        expect(pickPaletteByCharacter({ ...o, moodTarget: undefined })).toBe(pickPaletteByCharacter(o))
+      }
+    })
+
+    it('a palette whose intrinsic colour matches the target gets a bigger bonus than a mismatched one', () => {
+      // ember: the roster's most saturated-and-warm palette (by construction, hot orange/red/gold lit slots).
+      // glacial / mono: cool, low-warmth palettes at the other end.
+      expect(bonusRatio('ember', warm)).toBeGreaterThan(bonusRatio('glacial', warm))
+      expect(bonusRatio('ember', warm)).toBeGreaterThan(bonusRatio('mono', warm))
+      expect(bonusRatio('glacial', cool)).toBeGreaterThan(bonusRatio('ember', cool))
+      expect(bonusRatio('mono', cool)).toBeGreaterThan(bonusRatio('ember', cool))
+    })
+
+    it('is a bonus only (never below 1) and bounded (never above the documented ceiling)', () => {
+      const targets = [warm, cool, { sat: 1, temp: 0, contrast: 1 }, { sat: 0.9, temp: 0.4, contrast: 1.1 }]
+      for (const id of ids()) {
+        for (const target of targets) {
+          const r = bonusRatio(id, target)
+          expect(r).toBeGreaterThanOrEqual(1 - 1e-9)
+          // MOOD_BONUS_MAX (1.15): see paletteCharacter.ts's own doc for why this magnitude was chosen
+          // against KEY_FAMILY_BONUS (1.3).
+          expect(r).toBeLessThanOrEqual(1.15 + 1e-9)
+        }
+      }
+    })
+
+    it('cannot override a decisive V/A/T mismatch: a poor-fit palette with a perfectly matching target still loses to a good-fit palette with a mismatched one', () => {
+      // A character point squarely at ember's own derived position: ember is a ~perfect V/A/T fit there,
+      // glacial/mono are decisively poor fits (orders of magnitude below, per the roster-coverage test above).
+      const eChar = paletteCharacters().get('ember')!
+      const cEmber = { valence: eChar.valence, arousal: eChar.arousal, tension: eChar.tension }
+      // ember gets the WRONG (cool) colour target; glacial/mono get the matching one at max bonus.
+      expect(paletteAffinity('ember', cEmber, cool)).toBeGreaterThan(paletteAffinity('glacial', cEmber, cool))
+      expect(paletteAffinity('ember', cEmber, cool)).toBeGreaterThan(paletteAffinity('mono', cEmber, cool))
+    })
+
+    it("nudges pickPaletteByCharacter's distribution toward the top fit's own colour without excluding the rest", () => {
+      // A moodTarget built to EXACTLY match the top-fit palette's own intrinsic colour (converting its
+      // rank-normalised sat/warmth back into moodTarget units) gives it the maximum possible bonus, while its
+      // rivals in the pool — which have their own, different colours — get a smaller one on average. The pick
+      // is a deterministic function of (songSeed, rotation), so this is a fixed, reproducible comparison, not
+      // a statistical one that could flip between runs.
+      const bestFit = palettePool(c, 1)[0]
+      const ch = paletteCharacters().get(bestFit)!
+      const exact = { sat: 0.75 + ch.intrinsicSat * 0.55, temp: ch.intrinsicWarmth * 2 - 1, contrast: 1 }
+      const rate = (target: typeof warm | undefined) => {
+        let n = 0
+        const N = 3000
+        for (let rot = 0; rot < N; rot++) {
+          const pick = pickPaletteByCharacter({ character: c, current: '', recentIds: [], keyFamily: '', songSeed: rot * 31, rotation: rot, moodTarget: target })
+          if (pick === bestFit) n++
+        }
+        return n / N
+      }
+      const withoutTarget = rate(undefined)
+      const withTarget = rate(exact)
+      expect(withTarget).toBeGreaterThan(withoutTarget)
+      // Still a NUDGE, not an override: the rest of the pool is not excluded from the rotation.
+      const seen = new Set<string>()
+      for (let rot = 0; rot < 200; rot++) {
+        const pick = pickPaletteByCharacter({ character: c, current: '', recentIds: [], keyFamily: '', songSeed: rot * 31, rotation: rot, moodTarget: exact })
+        if (pick) seen.add(pick)
+      }
+      expect(seen.size).toBeGreaterThan(1)
+    })
+  })
+
   it('the key family is a nudge: it helps a close call but cannot force a poor fit', () => {
     const c = { valence: 0.5, arousal: 0.5, tension: 0.5 }
     const bestFit = palettePool(c, 1)[0]

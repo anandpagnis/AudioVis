@@ -48,6 +48,19 @@ import { effectEnvelope } from './effectEnvelope'
  * mid-expansion; a one-shot capture instead answers "how hard was the hit
  * that fired this" and scales the ring's brightness and band width by it —
  * loud stays loud and quiet stays quiet for the ring's whole 4s lifetime.
+ *
+ * ## Mood scale, folded into the same capture
+ *
+ * `EffectDirector` captures a bounded mood `intensity` (0.8..1.1, see
+ * `effectIntensityScale`) onto this firing's `ActiveEffect` at fire time, only
+ * while a valid mood look was driving the pick; `state.layers.effects` is the
+ * live `performanceState` singleton, so reading it here on the SAME rising
+ * edge that already captures `strength` sees that firing's own value (or
+ * `undefined` — a look-less firing — treated as neutral 1). It multiplies
+ * straight into `raw` BEFORE the existing 0.7..1.4 strength mapping, then the
+ * whole thing is clamped back into that same range — so mood can bias how hard
+ * a given hit reads without ever pushing the ring dimmer or brighter than this
+ * scene already allowed itself to go.
  */
 
 const MAX_RADIUS = 1.55
@@ -120,7 +133,7 @@ export function ShockRingScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ b, col, vis, role, slotProgress }) => {
+  useSceneFrame(({ b, col, vis, role, slotProgress, state }) => {
     const u = material.uniforms
 
     // Colour: the glow slot in the palette reads brightest against a busy
@@ -136,7 +149,11 @@ export function ShockRingScene() {
     // it. 0.7..1.4, neutral-ish at a moderate hit.
     const isEffect = role === 'effect'
     if (isEffect && !wasEffect.current) {
-      const raw = Math.min(1, b.bass * 0.6 + b.energy * 0.6)
+      // Mood intensity for THIS firing — captured by EffectDirector at fire
+      // time, held on the live ActiveEffect record; undefined (no mood look
+      // driving the pick) reads as neutral. See header.
+      const moodIntensity = state.layers.effects.find((e) => e.id === 'shock')?.intensity ?? 1
+      const raw = Math.min(1, Math.max(0, Math.min(1, b.bass * 0.6 + b.energy * 0.6) * moodIntensity))
       strength.current = 0.7 + raw * 0.7
     }
     wasEffect.current = isEffect

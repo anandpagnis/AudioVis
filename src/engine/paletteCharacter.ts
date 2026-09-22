@@ -33,12 +33,33 @@ import { PALETTES, type Palette } from './palettes'
  * call. Each axis is then RANK-normalised across the roster, so the palettes spread
  * over the full 0..1 range instead of bunching (they are all near-black grounds with
  * bright lit slots, so raw values sit in a narrow band).
+ *
+ * ## Optional: a gentle bonus toward the mood's own colour target
+ * `PaletteFitOptions.moodTarget`, when given, adds a SECOND, much gentler term to `paletteAffinity`: how
+ * closely this same intrinsic-colour derivation (mean lit-slot saturation, signed warmth along the same
+ * orange/azure axis the arousal term above uses) matches the mood row's own authored `gradeSat`/`gradeTemp`
+ * (see `lookRow.ts`). The palette this nudges toward is then a better colour match BEFORE the grade residual
+ * (`gradeResidual.ts`) ever runs, so the residual — which reacts to whichever palette is live — has less work
+ * left to do; nothing about the residual's own math needs to change for that to be true. See `moodColourBonus`
+ * below for the formula and why its magnitude is sized against `KEY_FAMILY_BONUS`.
  */
 
 export interface PaletteCharacter {
   valence: number
   arousal: number
   tension: number
+  /**
+   * Rank-normalised 0..1 (same treatment as valence/arousal/tension above, for the same reason — the raw HSV
+   * values bunch in a narrow band). Mean lit-slot saturation. Read only by the optional `moodTarget` bonus in
+   * `paletteAffinity`; never by the primary V/A/T fit.
+   */
+  intrinsicSat: number
+  /**
+   * Rank-normalised 0..1. The palette's own lean along the warm(1)/cool(0) axis (pre-rank it is signed, chroma-
+   * weighted `cos(hue-25°)` — the same axis `arousal`'s `warm` term above uses, unsigned there; here the sign
+   * survives into the raw value and only the FINAL rank is 0..1). Read only by the `moodTarget` bonus.
+   */
+  intrinsicWarmth: number
 }
 
 // --- colour helpers ---------------------------------------------------------
@@ -72,6 +93,10 @@ interface RawPalette {
   pleasure: number
   arousal: number
   tension: number
+  /** Pre-rank mean lit-slot saturation (`paletteCharacters()` rank-normalises this into `intrinsicSat`). */
+  sat: number
+  /** Pre-rank, SIGNED warm(+)/cool(-) lean — unlike `warm` below, no `+1)/2` offset. Rank-normalised into `intrinsicWarmth`. */
+  warmth: number
 }
 
 function rawCharacter(p: Palette): RawPalette {
@@ -79,6 +104,7 @@ function rawCharacter(p: Palette): RawPalette {
   let B = 0
   let S = 0
   let warm = 0
+  let warmSigned = 0
   let red = 0
   let vx = 0
   let vy = 0
@@ -89,6 +115,8 @@ function rawCharacter(p: Palette): RawPalette {
     S += w * c.s
     // Warmth peaks around orange (25 degrees), coolest at cyan-blue.
     warm += w * c.s * ((Math.cos(rad(c.h - 25)) + 1) / 2)
+    // Same axis, signed (no 0..1 offset) — feeds `intrinsicWarmth`, not the arousal term above.
+    warmSigned += w * c.s * Math.cos(rad(c.h - 25))
     red += w * c.s * Math.max(0, Math.cos(rad(c.h - 10)))
     // Chroma-weighted hue vector: a desaturated slot has no hue to clash.
     vx += w * c.s * Math.cos(rad(c.h))
@@ -100,6 +128,8 @@ function rawCharacter(p: Palette): RawPalette {
     pleasure: 0.69 * B + 0.22 * S - 0.2 * red,
     arousal: -0.31 * B + 0.35 * S + 0.4 * warm,
     tension: 0.6 * discord + 0.4 * red,
+    sat: S,
+    warmth: warmSigned,
   }
 }
 
@@ -129,8 +159,12 @@ export function paletteCharacters(): Map<string, PaletteCharacter> {
   const v = rank01(raws.map((r) => r.pleasure))
   const a = rank01(raws.map((r) => r.arousal))
   const t = rank01(raws.map((r) => r.tension))
+  const satRank = rank01(raws.map((r) => r.sat))
+  const warmRank = rank01(raws.map((r) => r.warmth))
   const map = new Map<string, PaletteCharacter>()
-  PALETTES.forEach((p, i) => map.set(p.id, { valence: v[i], arousal: a[i], tension: t[i] }))
+  PALETTES.forEach((p, i) =>
+    map.set(p.id, { valence: v[i], arousal: a[i], tension: t[i], intrinsicSat: satRank[i], intrinsicWarmth: warmRank[i] }),
+  )
   cache = { size: PALETTES.length, map }
   return map
 }
@@ -171,6 +205,20 @@ function mulberry32(seed: number): () => number {
   }
 }
 
+/**
+ * A mood row's own authored colour target, in the EXACT units `LookRow.gradeSat`/`gradeTemp`/`gradeContrast`
+ * use (see `lookRow.ts`): `sat` 0.75..1.3 (1 = neutral), `temp` -1..1 (cool..warm), `contrast` 0.95..1.3
+ * (1 = neutral) — so a caller can pass a `LookProfile`'s three grade fields straight through. `contrast` is
+ * accepted for that shape parity but is NOT read by `moodColourBonus` below: this file derives no intrinsic
+ * contrast / luminance-range axis of its own, and recomputing one here (duplicating `gradeResidual.ts`'s
+ * `range` trait and its calibration) is exactly the kind of independent re-derivation this feature must avoid.
+ */
+export interface PaletteMoodTarget {
+  sat: number
+  temp: number
+  contrast: number
+}
+
 export interface PaletteFitOptions {
   character: Pick<CharacterPoint, 'valence' | 'arousal' | 'tension'>
   /** Palette currently showing: never returned. */
@@ -183,16 +231,70 @@ export interface PaletteFitOptions {
   songSeed: number
   /** Monotonic counter so successive picks on the same input differ deterministically. */
   rotation: number
+  /**
+   * OPTIONAL. The mood row's own colour target, so palette selection can lean toward the mood's implied
+   * warmth/saturation directly rather than only through the grade residual applied after the fact (see the
+   * file header's "Optional: a gentle bonus" section and `moodColourBonus` below). Omitted — the default —
+   * `paletteAffinity`/`pickPaletteByCharacter` are byte-identical to how they behaved before this field
+   * existed; this is the ONLY behaviour under `?scenepick=legacy` or an invalid look.
+   */
+  moodTarget?: PaletteMoodTarget
 }
 
-/** Affinity of each candidate, for tests and diagnostics (higher is a better fit; ignores recency/seed). */
-export function paletteAffinity(id: string, c: PaletteFitOptions['character']): number {
+/**
+ * Width (sigma) of the `moodTarget` bonus, on the same 0..1 scale `intrinsicSat`/`intrinsicWarmth` and the
+ * mapped `moodTarget` both live in. Comparable to (a little looser than) `SIGMA_V`/`SIGMA_A` (0.3): this is a
+ * secondary signal layered on the primary fit, not a fourth axis of it, so it is allowed to be a bit more
+ * forgiving without needing `SIGMA_T`'s "least-trusted axis" excuse for going all the way to 0.45.
+ */
+const SIGMA_MOOD = 0.35
+/**
+ * Ceiling on the `moodTarget` bonus at PERFECT colour match, sized against `KEY_FAMILY_BONUS` (1.3) below —
+ * the existing precedent for "how much should a secondary signal nudge without overriding". This bonus is
+ * multiplied into `paletteAffinity`'s result, which `pickPaletteByCharacter` then raises to `SHARPNESS`
+ * (1.6) along with the rest of the fit, so its EFFECTIVE ceiling on a pick's final weight is
+ * `MOOD_BONUS_MAX ^ SHARPNESS` = 1.15^1.6 ~= 1.25 — comparably sized to, and a little under, the key bonus's
+ * own un-exponentiated 1.3x. A maximally-matched colour target and a matched key family are therefore
+ * comparable-strength nudges, and neither alone can outweigh a poor primary V/A/T fit (a 3-axis Gaussian,
+ * which routinely swings the base fit by one or two orders of magnitude for a genuinely bad match).
+ */
+const MOOD_BONUS_MAX = 1.15
+/** `LookRow.gradeSat`'s documented range (1 = neutral). Duplicated as a literal rather than imported, so this
+ *  file keeps no dependency on `look/lookRow.ts` or `look/gradeResidual.ts` — see `PaletteMoodTarget`'s doc. */
+const MOOD_SAT_MIN = 0.75
+const MOOD_SAT_MAX = 1.3
+
+const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
+const finiteOr = (x: number, fallback: number) => (Number.isFinite(x) ? x : fallback)
+
+/**
+ * The `moodTarget` bonus itself: a Gaussian of width {@link SIGMA_MOOD} between this palette's own intrinsic
+ * colour and the mood's target, mapped onto the same 0..1 space. Deliberately a BONUS ONLY (always >= 1,
+ * never < 1): a palette whose colour fights the mood's ask is not penalised beyond simply not being helped —
+ * the same one-sided shape `gradeResidual.ts`'s credit uses, and for the same reason (see this file's header).
+ */
+function moodColourBonus(p: PaletteCharacter, target: PaletteMoodTarget): number {
+  const satNorm = clamp01((finiteOr(target.sat, 1) - MOOD_SAT_MIN) / (MOOD_SAT_MAX - MOOD_SAT_MIN))
+  const warmNorm = clamp01((finiteOr(target.temp, 0) + 1) / 2)
+  const dSat = (p.intrinsicSat - satNorm) / SIGMA_MOOD
+  const dWarm = (p.intrinsicWarmth - warmNorm) / SIGMA_MOOD
+  return 1 + (MOOD_BONUS_MAX - 1) * Math.exp(-0.5 * (dSat * dSat + dWarm * dWarm))
+}
+
+/**
+ * Affinity of each candidate, for tests and diagnostics (higher is a better fit; ignores recency/seed). The
+ * primary term is the V/A/T Gaussian fit, unchanged. `moodTarget`, when given, multiplies in
+ * {@link moodColourBonus} as a gentle secondary nudge; omitted, the result is bit-for-bit what this function
+ * has always returned.
+ */
+export function paletteAffinity(id: string, c: PaletteFitOptions['character'], moodTarget?: PaletteMoodTarget): number {
   const p = paletteCharacters().get(id)
   if (!p) return 0
   const dv = (c.valence - p.valence) / SIGMA_V
   const da = (c.arousal - p.arousal) / SIGMA_A
   const dt = (c.tension - p.tension) / SIGMA_T
-  return Math.exp(-0.5 * (dv * dv + da * da + dt * dt))
+  const base = Math.exp(-0.5 * (dv * dv + da * da + dt * dt))
+  return moodTarget ? base * moodColourBonus(p, moodTarget) : base
 }
 
 /** The top `n` palette ids by pure fit (for diagnostics/tests). */
@@ -216,7 +318,7 @@ export function pickPaletteByCharacter(o: PaletteFitOptions): string | null {
     const recency = recentIndex === -1 ? 1 : (RECENCY[recentIndex] ?? 1)
     const seed = SEED_BIAS_LO + (SEED_BIAS_HI - SEED_BIAS_LO) * (hash32(o.songSeed, p.id) / 4294967296)
     const key = o.keyFamily && p.id === o.keyFamily ? KEY_FAMILY_BONUS : 1
-    return Math.pow(paletteAffinity(p.id, o.character), SHARPNESS) * recency * seed * key
+    return Math.pow(paletteAffinity(p.id, o.character, o.moodTarget), SHARPNESS) * recency * seed * key
   })
   const total = weights.reduce((s, w) => s + w, 0)
   if (!(total > 1e-12)) return candidates[Math.abs(o.rotation) % candidates.length].id

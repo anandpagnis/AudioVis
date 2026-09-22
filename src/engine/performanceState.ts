@@ -10,10 +10,26 @@ export interface ActiveEffect {
   id: string
   /** Engine time (`features.time`) the firing began. */
   startedAt: number
-  /** Lifetime, copied from the scene's `effect.durationSec` at fire time. */
+  /**
+   * Lifetime. Copied from the scene's `effect.durationSec` at fire time, then — only while
+   * `EffectDirector.advanceEffects` was given a valid mood look — scaled down (never up) by
+   * `effectDurationScale(propensity)`, `propensity` being the same `effectPropensity` value that
+   * already decided this effect's odds of being picked. See `EffectDirector.tsx` for the mapping.
+   */
   durationSec: number
   /** Distinguishes successive firings of the SAME scene, so a re-fire remounts. */
   key: number
+  /**
+   * Mood-driven brightness/scale multiplier for this firing, captured ONCE at fire time (same
+   * `effectPropensity` read that scaled `durationSec` above) and held for the whole firing — never
+   * recomputed mid-burst. `undefined` when the firing was not mood-weighted (`look` omitted/invalid
+   * at fire time), which every consumer should treat exactly like `1` (no scaling). Bounded — see
+   * `effectIntensityScale` in `EffectDirector.tsx`. Consumers: the four effect scenes, which fold this
+   * into whatever per-firing "how hard did this hit" strength they already capture on their own
+   * rising edge, so a mood-favoured firing reads a little brighter/bigger and a barely-wanted one
+   * still reads clearly rather than vanishing.
+   */
+  intensity?: number
 }
 
 /**

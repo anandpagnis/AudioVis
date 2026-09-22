@@ -522,6 +522,17 @@ export function AutoPilot() {
                 keyFamily: keyPaletteTracker.family,
                 songSeed: songSeedFor(f.character, f.key, f.time),
                 rotation,
+                // The mood row's own colour target, so the palette leans toward the mood's flavour directly
+                // rather than only through the grade residual applied after the fact (paletteCharacter.ts's
+                // moodTarget doc). Gated on `sceneLook` above — the SAME `valid && families.scene` read this
+                // file already uses for scene-selection decisions (mode variation, just above). `families.scene`,
+                // not `families.grade`: this is a SELECTION decision (which of the 30 palettes), the same kind
+                // sceneLook already governs elsewhere in this file, not the grade PASS gradeResidual.ts owns.
+                // Omitted whenever sceneLook is undefined (look invalid, `?look=-scene`, or `?scenepick=legacy`),
+                // so pickPaletteByCharacter behaves exactly as it did before this field existed on that path.
+                moodTarget: sceneLook
+                  ? { sat: sceneLook.gradeSat, temp: sceneLook.gradeTemp, contrast: sceneLook.gradeContrast }
+                  : undefined,
               })
           : undefined,
       )

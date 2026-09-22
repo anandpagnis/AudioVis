@@ -51,6 +51,17 @@ import { layoutSparks, MAX_SPARKS, pickSparkCount, RECENT_WINDOW } from './trans
  * alongside the existing read of `f.beatIndex`/`f.beatProgress`, held for the
  * whole 1.2s firing. A sharp, loud transient now pops visibly brighter than a
  * soft one, not just at a different spot.
+ *
+ * ## Mood scale, folded into the same `raw` this already feeds `pickSparkCount`
+ *
+ * `EffectDirector` captures a bounded mood `intensity` (0.8..1.1) onto this
+ * firing's `ActiveEffect` at fire time, only while a valid mood look drove the
+ * pick. Read once, on the same rising edge, off the live `state.layers.effects`
+ * singleton, and folded straight into `raw` (the 0..1 value already driving
+ * BOTH `strength` and `pickSparkCount`) before either consumes it — so a
+ * mood-favoured transient reads a little brighter AND tends toward a bigger
+ * burst, through the exact same lever the audio-driven strength already uses,
+ * with no change to `pickSparkCount`'s own signature or contract.
  */
 
 export const FRAG = /* glsl */ `
@@ -130,7 +141,7 @@ export function TransientSparkScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ f, b, col, vis, role, slotProgress }) => {
+  useSceneFrame(({ f, b, col, vis, role, slotProgress, state }) => {
     const u = material.uniforms
 
     // Re-seed exactly once per firing — the rising edge into the effect
@@ -141,7 +152,10 @@ export function TransientSparkScene() {
     // neutral-ish at a moderate transient.
     const isEffect = role === 'effect'
     if (isEffect && !wasEffect.current) {
-      const raw = Math.min(1, b.high * 0.6 + b.energy * 0.6)
+      // Mood intensity for THIS firing — see header. undefined (no mood look
+      // driving the pick) reads as neutral.
+      const moodIntensity = state.layers.effects.find((e) => e.id === 'spark')?.intensity ?? 1
+      const raw = Math.min(1, Math.max(0, Math.min(1, b.high * 0.6 + b.energy * 0.6) * moodIntensity))
       strength.current = 0.7 + raw * 0.7
 
       const seed = f.beatIndex + f.beatProgress + firings.current++ * 7.31

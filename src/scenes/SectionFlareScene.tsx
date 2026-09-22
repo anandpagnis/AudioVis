@@ -35,6 +35,16 @@ import { effectEnvelope } from './effectEnvelope'
  * capture in `TransientSparkScene` — and held for the whole 1.8s firing so it
  * doesn't reshape as the mix moves underneath it mid-flare. A section change
  * during a loud passage flares harder than one during a quiet one.
+ *
+ * ## Mood scale, folded into the same capture
+ *
+ * Same mechanism as `ShockRingScene`: `EffectDirector` captures a bounded mood
+ * `intensity` (0.8..1.1) onto this firing's `ActiveEffect` at fire time, only
+ * while a valid mood look drove the pick. Read once, on the same rising edge
+ * that already captures `strength`, off the live `state.layers.effects`
+ * singleton, and folded into `energy` BEFORE the existing 0.7..1.4 mapping —
+ * so a mood-favoured section change flares a little harder without this scene
+ * ever exceeding the brightness range it already allowed itself.
  */
 
 const CORE_SHARPNESS = 9.0
@@ -101,7 +111,7 @@ export function SectionFlareScene() {
     material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
   }, [material, size, dpr])
 
-  useSceneFrame(({ b, col, vis, role, slotProgress }) => {
+  useSceneFrame(({ b, col, vis, role, slotProgress, state }) => {
     const u = material.uniforms
     u.uColor.value.copy(col.accent)
 
@@ -111,7 +121,11 @@ export function SectionFlareScene() {
     // reads. 0.7..1.4, neutral-ish at a moderate level.
     const isEffect = role === 'effect'
     if (isEffect && !wasEffect.current) {
-      strength.current = 0.7 + Math.min(1, b.energy) * 0.7
+      // Mood intensity for THIS firing — see header. undefined (no mood look
+      // driving the pick) reads as neutral.
+      const moodIntensity = state.layers.effects.find((e) => e.id === 'flare')?.intensity ?? 1
+      const raw = Math.min(1, Math.max(0, Math.min(1, b.energy) * moodIntensity))
+      strength.current = 0.7 + raw * 0.7
     }
     wasEffect.current = isEffect
     u.uStrength.value = strength.current

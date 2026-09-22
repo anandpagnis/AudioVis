@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { advanceEffects, effectPropensity } from '../EffectDirector'
+import { advanceEffects, effectDurationScale, effectIntensityScale, effectPropensity } from '../EffectDirector'
 import { createLookProfile, type LookProfile } from '../look/lookRow'
 import type { ActiveEffect } from '../performanceState'
 import { TIER_BUDGET_MS, slotCostMs } from '../slotBudget'
@@ -22,6 +22,26 @@ function lookWith(fx: { shock?: number; flare?: number; spark?: number; strobe?:
 }
 
 const ALL_ONE = lookWith({ shock: 1, flare: 1, spark: 1, strobe: 1 })
+
+/** A synthetic effect-scene fixture — same shape as `effectLifecycle.test.ts`'s own `fx()`. Named `fxScene`
+ *  here to avoid shadowing `lookWith`'s `fx` parameter. An id not among the four look-registered ones (see
+ *  `effectPropensity`'s default case), so its propensity is always 1 regardless of `look`. */
+const fxScene = (id: string, over: Partial<SceneDef['metadata']> = {}): SceneDef =>
+  ({
+    id,
+    name: id,
+    component: (() => null) as unknown as SceneDef['component'],
+    metadata: {
+      roles: ['effect'],
+      moods: ['groove', 'peak'],
+      bands: ['energy'],
+      intensity: 'high',
+      performanceCost: 'low',
+      compatibleWith: [],
+      effect: { triggers: ['drop'], durationSec: 2 },
+      ...over,
+    },
+  }) as SceneDef
 
 const advance = (over: Partial<Parameters<typeof advanceEffects>[0]>) =>
   advanceEffects({
@@ -206,5 +226,139 @@ describe('advanceEffects with a look profile', () => {
     expect(out[0].id).toBe('shock')
     expect(lastFiredAt.get('shock')).toBe(100)
     expect(lastFiredAt.has('strobe')).toBe(false)
+  })
+})
+
+/**
+ * Duration/brightness scaling by mood (Part 2 item 1 of the wiring plan): a firing's `durationSec` and
+ * `intensity` are derived ONCE, at fire time, from the same `effectPropensity` that already decided the
+ * pick — never recomputed mid-firing. Both mappings are pure and exported so their bounds and monotonicity
+ * are pinned independently of `advanceEffects`'s own randomness.
+ */
+describe('effectDurationScale', () => {
+  it('is bounded to 0.75..1 — mood may only ever shorten a firing, never lengthen it', () => {
+    for (const p of [0, 0.25, 0.5, 0.7, 1, 1.2, 1.5, 3, 100]) {
+      const s = effectDurationScale(p)
+      expect(s, `propensity ${p}`).toBeGreaterThanOrEqual(0.75)
+      expect(s, `propensity ${p}`).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('is monotonically non-decreasing in propensity', () => {
+    const ps = [0, 0.1, 0.3, 0.5, 0.7, 0.9, 1, 1.2, 1.5]
+    let prev = -Infinity
+    for (const p of ps) {
+      const s = effectDurationScale(p)
+      expect(s).toBeGreaterThanOrEqual(prev)
+      prev = s
+    }
+  })
+
+  it('saturates at exactly 1 (unscaled) once propensity reaches 1, and stays there above it', () => {
+    expect(effectDurationScale(1)).toBe(1)
+    expect(effectDurationScale(1.5)).toBe(1)
+    expect(effectDurationScale(100)).toBe(1)
+  })
+
+  it('is exactly 0.75 at propensity 0', () => {
+    expect(effectDurationScale(0)).toBe(0.75)
+  })
+
+  it('treats a non-finite propensity (including -Infinity) as 1 (unscaled), never as an exclusion or a crash', () => {
+    // Same discipline as effectPropensity's own doc: a non-finite value is unweighted (1), not an
+    // exclusion — Number.isFinite rejects -Infinity same as +Infinity/NaN, so it never reaches the
+    // negative-clamps-to-0 branch below.
+    expect(effectDurationScale(NaN)).toBe(1)
+    expect(effectDurationScale(Infinity)).toBe(1)
+    expect(effectDurationScale(-Infinity)).toBe(1)
+  })
+
+  it('clamps a negative propensity to the same floor as 0', () => {
+    expect(effectDurationScale(-5)).toBe(effectDurationScale(0))
+  })
+})
+
+describe('effectIntensityScale', () => {
+  it('is bounded to 0.8..1.1', () => {
+    for (const p of [0, 0.25, 0.5, 0.7, 1, 1.2, 1.5, 3, 100]) {
+      const s = effectIntensityScale(p)
+      expect(s, `propensity ${p}`).toBeGreaterThanOrEqual(0.8)
+      expect(s, `propensity ${p}`).toBeLessThanOrEqual(1.1)
+    }
+  })
+
+  it('is monotonically non-decreasing in propensity', () => {
+    const ps = [0, 0.1, 0.3, 0.5, 0.7, 0.9, 1, 1.2, 1.5]
+    let prev = -Infinity
+    for (const p of ps) {
+      const s = effectIntensityScale(p)
+      expect(s).toBeGreaterThanOrEqual(prev)
+      prev = s
+    }
+  })
+
+  it('saturates at exactly 1.1 once propensity reaches 1', () => {
+    expect(effectIntensityScale(1)).toBe(1.1)
+    expect(effectIntensityScale(1.5)).toBe(1.1)
+  })
+
+  it('is exactly 0.8 at propensity 0', () => {
+    expect(effectIntensityScale(0)).toBe(0.8)
+  })
+
+  it('treats a non-finite propensity as 1 (unscaled), never as an exclusion or a crash', () => {
+    expect(effectIntensityScale(NaN)).toBe(1.1)
+    expect(effectIntensityScale(Infinity)).toBe(1.1)
+  })
+})
+
+describe('advanceEffects — duration/intensity scale wired to the pick', () => {
+  it('omitted look: durationSec is EXACTLY the scene spec, and intensity is left undefined', () => {
+    const scenes = [fxScene('burst', { effect: { triggers: ['drop'], durationSec: 3 } })]
+    const out = advance({ fired: ['drop'], candidates: scenes, look: undefined })
+    expect(out).toHaveLength(1)
+    expect(out[0].durationSec).toBe(3)
+    expect(out[0].intensity).toBeUndefined()
+  })
+
+  it('a valid look scales durationSec down by exactly effectDurationScale(propensity) and sets intensity to effectIntensityScale(propensity)', () => {
+    // `fx('burst', ...)` synthetic ids are not among the four look-registered ones, so their propensity is
+    // always 1 regardless of `look` — exercise the real roster instead so propensity actually varies.
+    const lowLook = lookWith({ shock: 0.2, strobe: 1 })
+    const out = advance({ fired: ['drop'], candidates: getEffectScenes(), look: lowLook, lastFiredAt: new Map() })
+    expect(out).toHaveLength(1)
+    const picked = out[0]
+    const spec = getEffectScenes().find((s) => s.id === picked.id)!.metadata.effect!
+    const propensity = effectPropensity(picked.id, lowLook)
+    expect(picked.durationSec).toBeCloseTo(spec.durationSec * effectDurationScale(propensity), 10)
+    expect(picked.intensity).toBeCloseTo(effectIntensityScale(propensity), 10)
+  })
+
+  it('captures the scale ONCE at fire time — a kept (already-active) effect is never rescaled on later frames', () => {
+    const scenes = [fxScene('burst', { effect: { triggers: ['drop'], durationSec: 4 } })]
+    const look = lookWith({ shock: 1, flare: 1, spark: 1, strobe: 1 })
+    const started = advance({ fired: ['drop'], candidates: scenes, look, now: 10 })
+    expect(started).toHaveLength(1)
+    const firstIntensity = started[0].intensity
+    const firstDuration = started[0].durationSec
+
+    // Advance a frame with a DIFFERENT look (as if the mood changed underneath it) while the effect is
+    // still active and nothing new fires — the kept entry must come back byte-for-byte unchanged, proving
+    // the retire/keep path never recomputes the scale.
+    const changedLook = lookWith({ shock: 0.01, flare: 0.01, spark: 0.01, strobe: 0.01 })
+    const kept = advance({ active: started, candidates: scenes, look: changedLook, now: 11 })
+    expect(kept).toHaveLength(1)
+    expect(kept[0].intensity).toBe(firstIntensity)
+    expect(kept[0].durationSec).toBe(firstDuration)
+  })
+
+  it('a low-propensity pick is shorter and no brighter than a high-propensity pick of the same scene', () => {
+    // Exercise via the real roster's 'shock', whose propensity IS driven by the look profile —
+    // a synthetic `fx()` id would always read propensity 1, giving nothing to compare.
+    const shockOnly = [getEffectScenes().find((s) => s.id === 'shock')!]
+    const lowPropensity = advance({ fired: ['drop'], candidates: shockOnly, look: lookWith({ shock: 0 + 1e-6 }) })[0]
+    const highPropensity = advance({ fired: ['drop'], candidates: shockOnly, look: lookWith({ shock: 1.5 }) })[0]
+    expect(lowPropensity.durationSec).toBeLessThan(highPropensity.durationSec)
+    expect(lowPropensity.intensity!).toBeLessThan(highPropensity.intensity!)
   })
 })

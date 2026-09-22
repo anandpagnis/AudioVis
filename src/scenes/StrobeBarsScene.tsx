@@ -88,6 +88,25 @@ import { effectEnvelope } from './effectEnvelope'
  * gates a hard flash (that is kick/snare edges, see below — a fundamentally
  * different question: "how loud" vs "is a flash allowed right now").
  *
+ * ## Mood scale — brightness of the bar cascade ONLY, nothing else
+ *
+ * `EffectDirector` captures a bounded mood `intensity` (0.8..1.1) onto this
+ * firing's `ActiveEffect` at fire time, same mechanism as the other three
+ * effect scenes. Here it is folded into `uStrength` alone — the bar cascade's
+ * brightness, on the SAME rising edge that already captures it, clamped back
+ * into the existing 0.7..1.4 range exactly as the other scenes do — because
+ * the bar cascade is this scene's own documented flicker-free term ("This
+ * spatial wipe carries no flicker risk at all: it is monotonic across the
+ * firing's own timeline, never toggles on/off"). It is deliberately NOT
+ * folded into anything on the hard-flash path: not `flashPeak`/
+ * `FLASH_PEAK_CAP` (the capped flash amount), not the kick/snare edge
+ * thresholds, and above all not `FLASH_MIN_GAP_SEC` (the flash-RATE floor).
+ * Scaling the flash-rate floor by anything, mood included, would be exactly
+ * the "raise the ceiling" move the WCAG 2.3.1 ~3Hz safe-harbour comment on
+ * `FLASH_MIN_GAP_SEC` below exists to rule out — so mood simply never reaches
+ * that code path. Brightness-within-the-existing-cap only; safety over
+ * completeness, per this scene's own header above.
+ *
  * ## Performance
  *
  * No `uRes`/aspect correction (unlike the other three effect scenes) — bar
@@ -238,7 +257,7 @@ export function StrobeBarsScene() {
   const geometry = useMemo(() => new THREE.PlaneGeometry(2, 2), [])
   useDispose(material, geometry)
 
-  useSceneFrame(({ f, b, col, vis, role, slotProgress }) => {
+  useSceneFrame(({ f, b, col, vis, role, slotProgress, state }) => {
     const u = material.uniforms
     u.uColorBright.value.copy(col.glow)
 
@@ -265,7 +284,13 @@ export function StrobeBarsScene() {
       // move (slotProgress-driven) or when a hard flash is allowed (kick/
       // snare edges, below) — three different questions answered three
       // different ways on purpose.
-      const raw = Math.min(1, b.bass * 0.6 + b.energy * 0.6)
+      //
+      // Mood intensity for THIS firing folds in here too — see header for why
+      // this (the bar cascade's brightness) is the ONLY thing mood is allowed
+      // to touch on this scene. undefined (no mood look driving the pick)
+      // reads as neutral.
+      const moodIntensity = state.layers.effects.find((e) => e.id === 'strobe')?.intensity ?? 1
+      const raw = Math.min(1, Math.max(0, Math.min(1, b.bass * 0.6 + b.energy * 0.6) * moodIntensity))
       strength.current = 0.7 + raw * 0.7
     }
     wasEffect.current = isEffect
