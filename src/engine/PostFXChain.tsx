@@ -274,6 +274,10 @@ export function PostFXChain() {
     // `wipeCompositorPass.enabled = false` skips it in the composer, and
     // `TransitionCapture.ensureTargets`/`.render` are simply never called, so
     // no capture target is even allocated until the first wipe actually runs.
+    // This whole component's `useFrame` runs at the default priority (0), which is why the per-entry layer
+    // assignment in `SceneManager.tsx` was given an EXPLICIT -1 — it must be seen already applied for THIS
+    // frame before `transitionCapture.render` below reads the scene graph, or the first frames of a wipe
+    // capture stale/empty textures. See that hook's own comment for the full reasoning.
     const wipeActive = shouldCapture(tx)
     wipeCompositorPass.enabled = wipeActive
     // `usesWipe(tx.style)` re-checked (not just `wipeActive`, which already implies it) purely so TypeScript

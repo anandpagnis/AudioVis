@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
 import { performanceState } from '../engine/performanceState'
+import { quality } from '../engine/quality'
+import { WIPE_MAX_TIER } from '../engine/transitionWipe'
 import { lookDebugEnabled } from '../engine/look/lookFlags'
 import {
   formatLookDebug,
@@ -59,6 +61,11 @@ function snapshot(): LookDebugSnapshot {
       mirrorMix: p.mirror.mix ?? 1,
       cameraMode: p.cameraMode,
       transitionStyle: p.transitionStyle,
+      committedTransitionStyle: p.transition.style,
+      transitionActive: p.transition.active,
+      transitionProgress: p.transition.progress,
+      qualityTier: quality.tier,
+      wipeMaxTier: WIPE_MAX_TIER,
     },
     grade: lookDebugProbe,
   }

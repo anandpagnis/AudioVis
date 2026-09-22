@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import SCENE_MANAGER_SRC from '../SceneManager.tsx?raw'
 import { TRANSITION_STYLES, usesRack, type TransitionStyle } from '../transitions'
 import {
   DATAMOSH_CHANNEL_OFFSET_MAX,
@@ -300,5 +301,23 @@ describe('datamoshChannelOffset', () => {
     for (const t of [0.1, 0.3, 0.5, 0.7, 0.9]) {
       expect(datamoshChannelOffset(true, t)).toBeCloseTo(-datamoshChannelOffset(false, t), 9)
     }
+  })
+})
+
+describe('capture ordering (source pin)', () => {
+  // The layer assignment in SceneManager.tsx and the capture read in PostFXChain.tsx are two DEFAULT-priority
+  // useFrame hooks with no other ordering relationship: R3F gives no guarantee about execution order between
+  // equal-priority hooks beyond registration order, which today happens to work only because <SceneManager>
+  // mounts before <PostFXChain> (Stage.tsx) -- fragile, and silently breakable by an unrelated JSX reorder.
+  // SceneManager's hook was given an explicit -1 so it is GUARANTEED to run before PostFXChain's capture
+  // (default 0) regardless of mount order. This test pins that the priority argument is still there, so a
+  // future edit that drops it (even accidentally, e.g. a refactor that reformats the useFrame call) is caught
+  // here rather than silently reintroducing a one-frame-stale-capture bug that no visual test can catch.
+  it('the wipe-layer assignment useFrame in SceneManager.tsx has an explicit priority before PostFXChain default', () => {
+    const layerBlock = SCENE_MANAGER_SRC.indexOf('WIPE_LAYER_OUT : entry.dir === 1 ? WIPE_LAYER_IN : 0')
+    expect(layerBlock, 'the wipe-layer targetLayer computation').toBeGreaterThan(-1)
+    // From that point, the enclosing useFrame's close must carry a priority below PostFXChain's default (0).
+    const closeIdx = SCENE_MANAGER_SRC.indexOf('}, -1)', layerBlock)
+    expect(closeIdx, 'useFrame(..., -1) after the layer-assignment block').toBeGreaterThan(layerBlock)
   })
 })

@@ -40,7 +40,20 @@ export interface LookDebugApplied {
   mirrorSpin: number
   mirrorMix: number
   cameraMode: string
+  /**
+   * What `pickTransitionStyle` most recently chose for the NEXT scene change — not necessarily what actually
+   * rendered. `SceneManager`'s commit block can silently downgrade a rack style to `dissolve` when the frame
+   * budget can't fund the overlap, and a wipe style the same way when the quality tier is worse than
+   * `WIPE_MAX_TIER` — see `committedTransitionStyle` below, which is what the viewer actually saw.
+   */
   transitionStyle: string
+  /** The style actually committed for the transition in flight (or last one), post any budget/tier downgrade. */
+  committedTransitionStyle: string
+  transitionActive: boolean
+  transitionProgress: number
+  /** Live quality tier (0 = richest). Wipe styles need `tier <= wipeMaxTier` — see the `shot` line. */
+  qualityTier: number
+  wipeMaxTier: number
 }
 
 /** Everything one overlay refresh prints. */
@@ -106,7 +119,12 @@ export function formatLookDebug(s: LookDebugSnapshot): string[] {
     `lens  ${lensStyleName(a.lensStyle)} ${fmt(a.lensAmount, 2)}   mirror ${mirrorSummary(a.mirrorSegments, a.mirrorTwist, a.mirrorMix)} mix=${fmt(a.mirrorMix, 2)} spin=${fmt(a.mirrorSpin, 2)}`,
   )
   lines.push(`grade sat=${fmt(grade.sat, 3)} temp=${fmtSigned(grade.temp, 3)} contrast=${fmt(grade.contrast, 3)}`)
-  lines.push(`shot  camera=${a.cameraMode}  transition=${a.transitionStyle}`)
+  const downgraded = a.transitionStyle !== a.committedTransitionStyle
+  lines.push(
+    `shot  camera=${a.cameraMode}  transition: requested=${a.transitionStyle} applied=${a.committedTransitionStyle}` +
+      `${downgraded ? ' (DOWNGRADED)' : ''}  active=${a.transitionActive} t=${fmt(a.transitionProgress, 2)}`,
+  )
+  lines.push(`quality tier=${a.qualityTier} (wipe needs <= ${a.wipeMaxTier})`)
   const f = look.families
   lines.push(
     `family ${f.grade ? 'grade' : '-grade'} ${f.post ? 'post' : '-post'} ${f.scene ? 'scene' : '-scene'} ${f.camera ? 'camera' : '-camera'}`,

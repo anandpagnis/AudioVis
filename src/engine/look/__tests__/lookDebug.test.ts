@@ -47,6 +47,11 @@ function snap(over: Partial<LookDebugSnapshot> = {}): LookDebugSnapshot {
       mirrorMix: 0.8,
       cameraMode: 'spiral',
       transitionStyle: 'collapse',
+      committedTransitionStyle: 'collapse',
+      transitionActive: true,
+      transitionProgress: 0.4,
+      qualityTier: 1,
+      wipeMaxTier: 1,
     },
     grade: { sat: 1.06, temp: 0.04, contrast: 1.02 },
     ...over,
@@ -103,7 +108,20 @@ describe('formatLookDebug', () => {
     expect(text).toMatch(/lens\s+anamorphic 0\.24/)
     expect(text).toMatch(/mirror kaleido\/8 mix=0\.80/)
     expect(text).toMatch(/grade sat=1\.060 temp=\+0\.040 contrast=1\.020/)
-    expect(text).toMatch(/camera=spiral\s+transition=collapse/)
+    expect(text).toMatch(/camera=spiral\s+transition: requested=collapse applied=collapse/)
+    expect(text).not.toMatch(/DOWNGRADED/)
+    expect(text).toMatch(/active=true t=0\.40/)
+    expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\)/)
+  })
+
+  it('flags a silent downgrade — the requested style did not actually reach the screen', () => {
+    const s = snap()
+    s.applied.transitionStyle = 'inkDissolve'
+    s.applied.committedTransitionStyle = 'dissolve'
+    s.applied.qualityTier = 3
+    const text = formatLookDebug(s).join('\n')
+    expect(text).toMatch(/requested=inkDissolve applied=dissolve \(DOWNGRADED\)/)
+    expect(text).toMatch(/quality tier=3 \(wipe needs <= 1\)/)
   })
 
   it('says so when consumers are on their legacy paths, and which families are switched off', () => {

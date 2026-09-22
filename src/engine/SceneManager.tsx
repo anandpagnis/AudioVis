@@ -519,6 +519,14 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
    */
   const appliedLayer = useRef(0)
 
+  // Priority -1, not the default 0: `PostFXChain`'s capture step (also default priority, since it does no
+  // audio/state work of its own) MUST see this frame's layer assignment, not last frame's, or a wipe transition
+  // captures stale/empty textures for its very first frames. Two default-priority hooks race on registration
+  // order otherwise (R3F documents no ordering guarantee between equal priorities beyond "the order they
+  // subscribed"), which today happens to work only because `<SceneManager>` mounts before `<PostFXChain>`
+  // (`Stage.tsx`) — fragile, silently breakable by an unrelated JSX reorder, and exactly the kind of ordering
+  // this codebase otherwise states explicitly everywhere else (-100, -95, -90). -1 guarantees this runs before
+  // any default-priority hook, with no dependency on mount order.
   useFrame(() => {
     const node = group.current
     if (!node) return
@@ -577,7 +585,7 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
         appliedLayer.current = targetLayer
       }
     }
-  })
+  }, -1)
 
   // Only meaningful for non-additive layer blends, which composite against
   // whatever is already in the buffer — see SLOT_RENDER_ORDER.
