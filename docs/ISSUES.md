@@ -12407,8 +12407,8 @@ per-frame canvas heavy enough to distort the reading.
       cannot select `inkDissolve`/`irisWipe`/`datamosh` yet. Real, coherent
       per-mood weights were authored and verified against the full test
       suite (all green, including every pre-existing ordering/legibility
-      assertion) before being reverted. **Recorded here for a one-edit
-      follow-up once watched live:**
+      assertion) before being reverted. **Applied 2026-09-22, after being watched running live and confirmed good** —
+      the withheld table below is now live in `moodRows.ts`, not just recorded here:
 
       | Mood | inkDissolve | irisWipe | datamosh |
       |---|---|---|---|

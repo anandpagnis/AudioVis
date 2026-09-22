@@ -363,25 +363,31 @@ describe('MOOD_ROWS: ordering between moods', () => {
   })
 
   /**
-   * The plan's staged-rollout safety rule (Phasing item 3): the two-texture wipe machinery
-   * (`transitionWipe.ts`/`TransitionCapture`/`WipeCompositorPass`) is built, wired and tested
-   * end-to-end, but every mood row's `inkDissolve`/`irisWipe`/`datamosh` weight stays at an
-   * implicit 0 — exactly like `mosaic`/`sortSlice` were left at an implicit 0 for the 4 calmest
-   * moods by the prior phase — so the weighted picker (`pickTransitionStyle` in transitions.ts)
-   * cannot select any of the 3 new wipe styles yet. This is a DELIBERATE gate, not an oversight:
-   * nobody has watched the capture/composite path run on a real GPU. Real, well-reasoned per-mood
-   * weights were authored and verified (every assertion in this file, including a temporary
-   * ordering block mirroring the one above for mosaic/sortSlice, passed with them in place) and
-   * then reverted — see the session's final report for the withheld numbers as a table, ready to
-   * apply in one follow-up edit once this has been watched running live.
+   * The staged-rollout safety gate (plan's Phasing item 3) has been lifted: the two-texture wipe
+   * machinery (`transitionWipe.ts`/`TransitionCapture`/`WipeCompositorPass`) was watched running
+   * live and confirmed good, so the real per-mood weights recorded in ISSUES.md F257 are now
+   * authored below, the same way `mosaic`/`sortSlice` were turned on in the prior phase.
    */
-  it('the 3 wipe-tier styles are pinned at 0 for every mood — the staged-rollout safety gate', () => {
+  it('transitions: inkDissolve favours the calm moods, irisWipe the grand ones, datamosh the harsh ones', () => {
     const t = (m: CharacterMood, name: (typeof LOOK_TRANSITIONS)[number]): number =>
       share(row(m).transitionWeights, LOOK_TRANSITIONS.indexOf(name))
-    for (const m of MOODS) {
-      for (const wipe of ['inkDissolve', 'irisWipe', 'datamosh'] as const) {
-        expect(t(m, wipe), `${m}.${wipe}`).toBe(0)
-      }
+    // inkDissolve (soft noise-threshold reveal): the stillest moods lead, and it now co-dominates
+    // with plain dissolve on serene/tender/melancholic rather than being a rare accent.
+    expect(t('serene', 'inkDissolve')).toBeGreaterThan(t('aggressive', 'inkDissolve'))
+    expect(t('melancholic', 'inkDissolve')).toBeGreaterThan(t('driving', 'inkDissolve'))
+    for (const harsh of ['aggressive', 'tense', 'driving'] as const) {
+      expect(t(harsh, 'inkDissolve'), harsh).toBe(0)
+    }
+    // irisWipe (radial circle, grand/cinematic): epic leads, dreamy/mysterious/uplifting/euphoric carry it too.
+    expect(t('epic', 'irisWipe')).toBeGreaterThan(t('serene', 'irisWipe'))
+    expect(t('epic', 'irisWipe')).toBeGreaterThan(t('aggressive', 'irisWipe'))
+    expect(t('mysterious', 'irisWipe')).toBeGreaterThan(t('groove', 'irisWipe'))
+    // datamosh (spatial block-glitch): the harsh/dark moods lead, never the calm ones.
+    expect(t('aggressive', 'datamosh')).toBeGreaterThan(t('serene', 'datamosh'))
+    expect(t('driving', 'datamosh')).toBeGreaterThan(t('dreamy', 'datamosh'))
+    expect(t('tense', 'datamosh')).toBeGreaterThan(t('playful', 'datamosh'))
+    for (const calm of ['serene', 'tender', 'dreamy', 'melancholic', 'mysterious'] as const) {
+      expect(t(calm, 'datamosh'), calm).toBe(0)
     }
   })
 
