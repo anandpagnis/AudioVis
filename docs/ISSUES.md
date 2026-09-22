@@ -12515,3 +12515,83 @@ per-frame canvas heavy enough to distort the reading.
       the old 6-state mood. The last three especially were deliberately held
       back this round pending explicit direction, since they need a more
       dedicated design pass or are safety-critical.
+
+- [x] **F259 · The new wipe transitions were rendering nothing: a real
+      ordering bug plus a debug overlay that hid the true cause; the quality
+      gate was then tuned live against the user's own machine** — *2026-09-23,
+      user report ("the transitions look the same, I can't see any diff, all
+      the new ones just fade into the next scene")* `src/engine/SceneManager.tsx`,
+      `src/engine/PostFXChain.tsx`, `src/engine/transitionWipe.ts`,
+      `src/engine/TransitionCapture.ts`, `src/engine/look/lookDebug.ts`,
+      `src/ui/LookDebug.tsx`
+
+      **Two bugs found by tracing the code (no browser available this
+      session).**
+      1. **A real race.** The per-entry `THREE.Layers` assignment that
+         excludes a primary from the merged frame during a wipe
+         (`SceneManager.tsx`) and the capture step that reads the scene graph
+         (`PostFXChain.tsx`) were both on React Three Fiber's *default*
+         `useFrame` priority (0) — R3F gives no ordering guarantee between
+         equal-priority hooks beyond registration order, and the two only
+         happened to run correctly because `<SceneManager>` mounts before
+         `<PostFXChain>` in `Stage.tsx`. Silently breakable by an unrelated
+         JSX reorder, and out of step with how explicit this codebase is
+         about ordering everywhere else (-100, -95, -90). Fixed: the layer
+         assignment now runs at an explicit priority -1, guaranteed before
+         the capture regardless of mount order. Source-pinned by a new test.
+      2. **The debug overlay was lying.** `?lookdebug` showed
+         `performanceState.transitionStyle` — the style *requested* by
+         `pickTransitionStyle` — not `performanceState.transition.style`,
+         the style actually *committed* after `SceneManager`'s quality-tier/
+         budget downgrade. A silently downgraded wipe showed as e.g.
+         `transition=inkDissolve` in the overlay while a plain dissolve
+         rendered, with no visible sign of the mismatch. The overlay now
+         prints both, flags a mismatch as `(DOWNGRADED)`, and shows the live
+         `quality.tier` against the wipe ceiling.
+
+      **The debug fix immediately found the actual cause: bug 2, not bug 1.**
+      Every wipe was reporting `(DOWNGRADED)`. `quality`'s `auto` mode starts
+      every session at tier 1 and only climbs on measured overbudget frames,
+      so a session settling above `WIPE_MAX_TIER` (originally 1, admitting
+      only the two richest of `quality.ts`'s 5 tiers) turned out to be
+      common, not a rare edge case — gating the whole feature off for
+      ordinary hardware, not just genuinely constrained machines. Bug 1's
+      fix is real and correct regardless, but was not what the user was
+      hitting.
+
+      **The gate was raised twice, live, against the user's own readings —
+      each step a deliberate tradeoff, not a default:**
+      - `WIPE_MAX_TIER` 1 -> 2, `WIPE_CAPTURE_SCALE` (`TransitionCapture.ts`)
+        0.75 -> 0.5 (~44% of the previous capture area). Still downgraded.
+      - User's machine measured tier 3-4 even so — their own words, "my
+        system is quite strong" — confounded by this session's dev server
+        (unminified, HMR-watched, meaningfully heavier than a production
+        build) and by repeated system-wide low-memory process kills logged
+        earlier in this same session, unrelated to the app. Asked the user
+        explicitly whether to push further, accepting the tradeoff, test a
+        production build instead, or leave it; they chose to push further.
+        `WIPE_MAX_TIER` 2 -> 3, `WIPE_CAPTURE_SCALE` 0.5 -> 0.35. Tier 4
+        ("survival") stays excluded on principle: the base show is already
+        visibly reduced there and cannot spare two extra full-scene
+        captures at any resolution — noted in `TransitionCapture.ts` that
+        shrinking the capture further has diminishing returns past a point,
+        since the FIXED per-pass overhead (state changes, draw calls,
+        shader binds of a second full scene traversal) does not shrink with
+        resolution, unlike pixel count.
+      - **Not yet confirmed rendering correctly** — the user had not
+        reported back on the tier-3 result when this was logged. A
+        production-build check (`npm run build` + preview) was offered as a
+        way to separate real hardware ceiling from dev-session noise; not
+        taken up yet.
+      - **How weaker hardware behaves, for the record (asked by the user):**
+        this is the tier system working as designed, not a risk. A weaker
+        session simply settles at a higher tier via the exact same automatic
+        mechanism and never attempts a wipe, falling back to the ramp-tier
+        transitions (dissolve/smear/melt/collapse/mosaic/sortSlice) with
+        zero cost — no session's frame rate is put at risk by this feature
+        existing.
+
+      **Verification.** `npm run check`: typecheck, lint, build and the
+      licence gate all pass at every step. Tests: 2488/2489 pass throughout;
+      the one failure is the pre-existing, unrelated `checkDistLicences.test.ts`
+      flake first confirmed in F257.
