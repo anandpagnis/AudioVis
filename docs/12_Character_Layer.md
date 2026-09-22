@@ -172,6 +172,16 @@ console URL are copied to the output window (`lookUrl.ts`); reopen the output wi
 descriptors (`f.timbre` harsh/busy/sparse, DSP only) modulate amounts by at most +-40%; `harsh` overlaps the
 unvalidated tension estimator (rho 0.85). See ISSUES.md F255.
 
+## Transitions (mood-driven, F257)
+
+9 transition styles now, in two tiers: ramp (dissolve/smear/melt/collapse/mosaic/sortSlice -- cheap, no new render
+targets) and wipe (inkDissolve/irisWipe/datamosh -- a real two-texture capture via `TransitionCapture`/
+`WipeCompositorPass`, gated to the two richest quality tiers, costs nothing at rest). Duration
+(`transitionDurationBias`) and curve sharpness (`transitionSharpness`, the symmetric family
+`S_k(t)=t^k/(t^k+(1-t)^k)`) are per-mood too. **The wipe tier ships with every mood's weight at 0** --
+built and tested end to end, but unwatched on a real GPU; see ISSUES.md F257 for the withheld real
+weights and how to apply them once you've watched it run.
+
 ## Still on the old 7-state mood
 
 The *timing* of scene switches is old-mood changes, the 25 s stale timer and now also a character shift

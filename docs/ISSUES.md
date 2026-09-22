@@ -12327,3 +12327,132 @@ per-frame canvas heavy enough to distort the reading.
       (`?lookdebug`, `?lookforce=<mood>`) first, then fix CI. Also open from
       earlier entries: `public/landing/fractures.mp3` still has no recorded
       licence, and a source-side flash limiter is still deferred.
+
+- [x] **F257 · Mood-driven transitions: the 4-style pool grows to 9, timing and
+      curve sharpness now follow the mood, and a real two-texture wipe
+      capability exists (3 new styles built, weights withheld pending a live
+      watch); plus a small dead-code fix on the camera** — *2026-09-21/22,
+      user request ("I want the moods to manipulate things differently... the
+      current transitions... I want them done according to mood"), branch
+      `feat/mood-transitions`* `src/engine/transitions.ts`,
+      `src/engine/SceneManager.tsx`, `src/engine/PostFXChain.tsx`,
+      `src/engine/CameraDirector.tsx`, `src/engine/PerformanceStateBridge.tsx`,
+      `src/engine/performanceState.ts`, `src/engine/look/{lookRow,moodRows}.ts`,
+      new: `src/engine/{transitionWipe,TransitionCapture,WipeCompositorPass}.ts`
+
+      **Why.** Only 4 transition styles existed (`dissolve`, `smear`, `melt`,
+      `collapse`), and mechanically none was a real wipe: `SceneManager.tsx`
+      mounts both scenes as live component trees drawing into one shared
+      frame every frame; `smear`/`melt`/`collapse` are a shared triangular
+      ramp added on top of that plain crossfade, riding the feedback-trail,
+      lens-melt, or mirror-fold post-FX (the mirror fold — a 2x2 tile plus a
+      twist — is the "splits into 4 and recombines" effect the user named). A
+      real wipe needs each scene captured to its own image first, which
+      nothing did.
+
+      **`TRANSITION_STYLES`/`LOOK_TRANSITIONS` grow from 4 to 9**, in two
+      tiers. Ramp-tier (cheap, no new render targets, same mechanism as
+      today's 4): `mosaic` (rides the existing `pixels` lens material, for
+      groove/playful/uplifting/euphoric) and `sortSlice` (rides `pixel-sort`,
+      amount driven purely by transition progress, never re-seeded, for
+      aggressive/tense/driving). Wipe-tier (new, a real two-texture cross-
+      blend): `inkDissolve` (soft noise-threshold reveal, feather widens for
+      calmer moods — the new gentler default for serene/tender/dreamy/
+      melancholic), `irisWipe` (radial circle wipe, grand/cinematic, for
+      epic/uplifting/euphoric), `datamosh` (a block grid settling into
+      alignment as progress completes, hard per-block reveal, a small
+      boundary-local chromatic offset — harsh by *spatial* means, never
+      temporal: no re-seeding, no frame-wide flicker, for aggressive/tense/
+      driving/brooding). All 9 verified against the existing `out+in≈1`
+      energy invariant (per-channel for datamosh, whose hard boolean reveal
+      keeps the invariant with no shared scalar mask).
+
+      **Duration and curve sharpness now follow the mood too.**
+      `LookRow.transitionDurationBias` (0.6x-1.6x) scales the tempo-derived
+      crossfade before the existing frame-budget shortening runs (aggressive/
+      driving snappier, serene/dreamy slower) — a `suspendFrameSampling` call
+      that was still reading the unbiased duration was caught and fixed in
+      the same pass, since it would otherwise have resumed frame sampling
+      mid-fade on a lengthened transition. `transitionMix` gained an optional
+      third parameter, the symmetric curve family `S_k(t) = t^k/(t^k+(1-t)^k)`
+      (`LookRow.transitionSharpness`, k=1..8): this identity holds for any
+      k>0, so sharpness varies per mood (k~1 linear/mechanical for aggressive,
+      k~3 matches the old smoothstep feel, k~5-8 holds near both ends and
+      snaps through the middle for the sharpest moods) without touching the
+      pinned invariant at all. No overshoot/elastic curve for playful —
+      rejected outright, since most scenes blend additively and any curve
+      exceeding 1 would read as a brightness flash.
+
+      **The wipe capability is real but ships inert.** `TransitionCapture`
+      (modelled on `FeedbackPass`'s lazy render target) renders the outgoing
+      and incoming primaries to two separate half-float targets, selected via
+      a dedicated `THREE.Layers` bit each (30/31 — confirmed free, nothing
+      else in the codebase touches any layer bit) only while a wipe
+      transition is active, restored to layer 0 defensively every other
+      frame. `WipeCompositorPass` mounts first in the post-FX chain (before
+      mirror), so the existing chain still runs once over the result — no
+      doubled bloom. Costs nothing at rest (capture only runs mid-wipe) and
+      is further gated to the two richest quality tiers, extending the exact
+      pattern that already downgrades rack styles under budget pressure. A
+      real bug was caught before shipping: `.layers` does not propagate from
+      a Three.js parent to its children, so setting only the wrapping group's
+      layer would have silently left every mesh inside still on layer 0 —
+      fixed with a subtree traversal.
+
+      **Per the plan's staged-rollout safety rule, every mood row's weight
+      for the 3 wipe styles ships at literal 0** — `moodRows.ts` has zero
+      diff on this file despite the feature being fully built and tested.
+      Nobody has watched a real-time two-texture capture/composite run on a
+      GPU in this session (no browser available), so the picker structurally
+      cannot select `inkDissolve`/`irisWipe`/`datamosh` yet. Real, coherent
+      per-mood weights were authored and verified against the full test
+      suite (all green, including every pre-existing ordering/legibility
+      assertion) before being reverted. **Recorded here for a one-edit
+      follow-up once watched live:**
+
+      | Mood | inkDissolve | irisWipe | datamosh |
+      |---|---|---|---|
+      | serene | .45 | – | – |
+      | tender | .40 | – | – |
+      | dreamy | .25 | .15 | – |
+      | melancholic | .45 | – | – |
+      | brooding | – | – | .20 |
+      | mysterious | – | .25 | – |
+      | groove / playful | – | – | – |
+      | uplifting | – | .20 | – |
+      | euphoric | – | .17 | – |
+      | driving | – | – | .20 |
+      | tense | – | – | .20 |
+      | aggressive | – | – | .10 |
+      | epic | – | .35 | – |
+
+      To apply: paste these into each mood's `transitionWeights: transitions({...})`
+      call in `src/engine/look/moodRows.ts` alongside the existing keys (the
+      helper renormalises automatically), then watch a few very different
+      songs with `?lookdebug` and `?lookforce=<mood>` before deciding they're
+      right.
+
+      **Camera cut-rate fix (folded in, small).** `LookRow.cameraCutRate` was
+      authored in every mood row since F255 but read by nothing —
+      `CameraDirector.tsx` had `cutCamera()` (an instant re-aim) and shot-
+      repeat avoidance, but only `f.sectionChange` ever called it. Now a
+      `shouldHardCut(cutRate, phraseCount)` check, reusing the same
+      deterministic sampler the transition picker uses, can also fire it —
+      bounded to at most once per 16-beat phrase even at `cutRate=1`,
+      inheriting the existing anti-repeat. Legacy path (`look` invalid)
+      unchanged.
+
+      **Verification.** `npm run check`: typecheck, lint, build and the
+      licence gate all pass. 2466 of 2467 tests pass; the one failure
+      (`checkDistLicences.test.ts`, a `SyntaxError` on import) is confirmed
+      pre-existing and unrelated to this work — reproduced identically with
+      every change in this branch stashed away.
+
+      **Not done here (see `docs/12_Character_Layer.md`'s transitions
+      section and the plan file for the full ranked list):** effect scenes
+      (shock/flare/spark/strobe) still don't scale duration/intensity by
+      mood; palette choice still never reads `look`; `chroma[12]`/
+      `harmonicDissonance` are still computed and read by nothing; camera
+      distance/FOV/orbit-radius still aren't mood-aware; the global
+      photosensitivity flash limiter is still deferred; `intensityGate` still
+      keys off the old 6-state mood, deliberately left alone this round.
