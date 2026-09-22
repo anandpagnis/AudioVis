@@ -961,13 +961,14 @@ export function SceneManager() {
         // above — same "a cost problem gets less spend, not a changed edit"
         // reasoning, extended with one more condition. A wipe costs the
         // overlap PLUS two extra full-scene captures, so it is only offered
-        // when the overlap is affordable AND the tier is one of the two
+        // when the overlap is affordable AND the tier is one of the three
         // richest (`WIPE_MAX_TIER`, `transitionWipe.ts` — quality.ts's tier
         // ladder runs richest-to-survival, 0 to 4, confirmed by reading its
-        // own doc comment before picking this constant). Every tier below
-        // that falls back to `dissolve` exactly like an unaffordable rack
-        // style does, never to a rack style specifically — there is no
-        // reason a wipe's fallback should differ from a rack's.
+        // own doc comment before picking this constant; see that constant's
+        // own doc for why it moved from 1 to 2 after the first live check).
+        // Every tier below that falls back to `dissolve` exactly like an
+        // unaffordable rack style does, never to a rack style specifically —
+        // there is no reason a wipe's fallback should differ from a rack's.
         if (!hardCut && (!fundsOverlap || tier > WIPE_MAX_TIER) && usesWipe(style as TransitionStyle)) {
           style = 'dissolve'
         }

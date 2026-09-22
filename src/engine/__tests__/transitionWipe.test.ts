@@ -79,9 +79,9 @@ describe('shouldCapture', () => {
 })
 
 describe('WIPE_MAX_TIER', () => {
-  it('restricts wipe styles to the two richest tiers (0 and 1) of quality.ts\'s 0..4 ladder', () => {
+  it("restricts wipe styles to the three richest tiers (0, 1 and 2) of quality.ts's 0..4 ladder", () => {
     expect(WIPE_MAX_TIER).toBeGreaterThanOrEqual(0)
-    expect(WIPE_MAX_TIER).toBeLessThan(2)
+    expect(WIPE_MAX_TIER).toBeLessThan(3)
   })
 })
 
