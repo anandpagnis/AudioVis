@@ -93,6 +93,26 @@ export const TRANSITION_STYLES = [
   /** Dissolve while the mirror rack twists and multiplies, so the outgoing
    *  scene collapses into a kaleidoscope and the incoming one unfolds out. */
   'collapse',
+  /** Dissolve while the lens rack quantizes both scenes into an LED-style mosaic — a ramp style, same
+   *  mechanism as `melt`/`collapse`, riding the `pixels` lens material. Rhythmic, beat-locked read. */
+  'mosaic',
+  /** Dissolve while the lens rack drags a directional pixel-sort streak across the frame, amount driven
+   *  purely by transition progress (never re-seeded per frame) — a ramp style riding the `pixel-sort`
+   *  lens material. Harsh but spatial, not temporal: no flicker risk. */
+  'sortSlice',
+  /** A true two-texture wipe (see `TransitionCapture`/`WipeCompositorPass`): a soft, feathered noise
+   *  threshold reveals the incoming scene through the outgoing one. The gentler, organic alternative to
+   *  a plain `dissolve` — feather widens for calmer moods. */
+  'inkDissolve',
+  /** A true two-texture wipe: a circle grows from centre, revealing the incoming scene inside it. Grand,
+   *  cinematic. */
+  'irisWipe',
+  /** A true two-texture wipe: a block grid where each block has a persistent random offset that settles
+   *  into alignment as the transition completes, with a small boundary-local RGB-channel offset for a
+   *  chromatic-smear read. Harsh by SPATIAL means (hard block edges, local colour smear) rather than
+   *  temporal ones (no re-seeding, no frame-wide flicker) — see the header's energy invariant and
+   *  `docs/12_Character_Layer.md`'s transitions section for why that distinction matters here. */
+  'datamosh',
 ] as const
 
 export type TransitionStyle = (typeof TRANSITION_STYLES)[number]

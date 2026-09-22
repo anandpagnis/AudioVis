@@ -26,8 +26,32 @@ export const MIRROR_MODES = ['kaleido', 'vortex'] as const
 export const SEGMENT_CHOICES = [4, 6, 8] as const
 /** Camera modes, SAME order as `CAMERA_MODES` in `performanceState.ts` (a test pins the equality; not imported to avoid a cycle). */
 export const LOOK_CAMERA_MODES = ['orbit', 'hover', 'push', 'pull', 'spiral', 'handheld', 'locked', 'topdown', 'cinematic'] as const
-/** Transition styles a mood may weight. `cut` / `dipToBlack` stay owned by the section logic. */
-export const LOOK_TRANSITIONS = ['dissolve', 'smear', 'melt', 'collapse'] as const
+/**
+ * Transition styles a mood may weight. `cut` / `dipToBlack` stay owned by the section logic.
+ *
+ * The first 4 are the original "ramp" styles: a plain crossfade with a triangular arc of extra amount
+ * added into an existing post-FX rack (feedback for `smear`, lens melt for `melt`, mirror tile+twist for
+ * `collapse`) — cheap, no new render targets, always available.
+ *
+ * `mosaic` and `sortSlice` are also ramp styles (same triangular-arc mechanism, riding the `pixels` and
+ * `pixel-sort` lens materials respectively) — cheap, no new render targets.
+ *
+ * `inkDissolve`, `irisWipe` and `datamosh` are "wipe" styles: a real two-texture cross-blend between the
+ * outgoing and incoming scene, captured to their own render targets (`TransitionCapture`/
+ * `WipeCompositorPass`). Only selectable at a quality tier that can afford the extra render pass; the
+ * picker falls back to a ramp style otherwise. See `docs/12_Character_Layer.md`'s transitions section.
+ */
+export const LOOK_TRANSITIONS = [
+  'dissolve',
+  'smear',
+  'melt',
+  'collapse',
+  'mosaic',
+  'sortSlice',
+  'inkDissolve',
+  'irisWipe',
+  'datamosh',
+] as const
 
 /** An authored look. Every field is finite. Ranges are the design ranges, not hard clamps except where noted. */
 export interface LookRow {
@@ -96,12 +120,24 @@ export interface LookRow {
   cameraSpeed: number
   /** Multiplier on handheld shake / jitter, 0..1.5. */
   cameraShake: number
-  /** 0..1: how readily the camera cuts (feeds the existing cut-rate logic). */
+  /** 0..1: probability of a hard camera re-cut at a phrase boundary (`CameraDirector.shouldHardCut`). */
   cameraCutRate: number
 
   // --- transitions ----------------------------------------------------------------------------------
   /** Weights over `LOOK_TRANSITIONS`. */
   transitionWeights: number[]
+  /** Multiplier on the tempo-derived primary crossfade duration, 0.6..1.6 (1 = unchanged). */
+  transitionDurationBias: number
+  /**
+   * The transition curve's symmetric-family exponent `k` in `S_k(t) = t^k / (t^k + (1-t)^k)`, which
+   * satisfies `S_k(1-t) = 1-S_k(t)` for any `k>0` — so the `out+in≈1` energy invariant holds for every
+   * value, and sharpness is free to vary per mood without touching that pinned property. 1..8:
+   * `k=1` is linear (mechanical/aggressive), `k≈3` matches the original `smoothstep` feel (the neutral
+   * default), `k≈5-8` holds near both ends and snaps through the middle (sharp, but still continuous —
+   * never an overshoot: most scenes are additive, so any curve exceeding 1 would read as a brightness
+   * flash, which is why this family was chosen over an elastic/bounce one).
+   */
+  transitionSharpness: number
 
   // --- colour grade (multiplicative only; see GradePass) -----------------------------------------------
   /** Saturation multiplier, 0.75..1.3 (1 = unchanged). */
@@ -135,6 +171,7 @@ export const ROW_SCALAR_KEYS = [
   'mirrorEngage', 'mirrorSpinMin', 'mirrorSpinMax', 'mirrorTwistMax', 'mirrorMix', 'mirrorBusyGain',
   'steerSpeed', 'steerComplexity', 'steerDensity', 'steerFill', 'steerContrast',
   'cameraSpeed', 'cameraShake', 'cameraCutRate',
+  'transitionDurationBias', 'transitionSharpness',
   'gradeSat', 'gradeTemp', 'gradeContrast',
   'traitTempo', 'traitAngular', 'traitBusy', 'traitRadial', 'traitStrength',
   'fxShock', 'fxFlare', 'fxSpark', 'fxStrobe',
@@ -198,7 +235,9 @@ export function createNeutralRow(): LookRow {
     mirrorSpinMin: 0.2, mirrorSpinMax: 0.4, mirrorTwistMax: 1, mirrorMix: 1, mirrorBusyGain: 0.5,
     steerSpeed: 0.52, steerComplexity: 0.52, steerDensity: 0.52, steerFill: 0.52, steerContrast: 0.55,
     cameraWeights: [0.3, 0.2, 0.1, 0.05, 0.15, 0.05, 0.02, 0.05, 0.08], cameraSpeed: 1, cameraShake: 0.3, cameraCutRate: 0.5,
-    transitionWeights: [0.5, 0.25, 0.2, 0.05],
+    // dissolve, smear, melt, collapse, mosaic, sortSlice, inkDissolve, irisWipe, datamosh (LOOK_TRANSITIONS order).
+    transitionWeights: [0.28, 0.16, 0.14, 0.12, 0.1, 0.08, 0.06, 0.04, 0.02],
+    transitionDurationBias: 1, transitionSharpness: 3,
     gradeSat: 1, gradeTemp: 0.1, gradeContrast: 1.05,
     traitTempo: 0.5, traitAngular: 0.4, traitBusy: 0.5, traitRadial: 0.3, traitStrength: 0.5,
     fxShock: 0.7, fxFlare: 0.6, fxSpark: 0.8, fxStrobe: 0,

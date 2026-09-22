@@ -33,6 +33,7 @@ const RANGES: Record<ScalarKey, readonly [number, number]> = {
   mirrorEngage: [0, 0.9], mirrorSpinMin: [0, 0.7], mirrorSpinMax: [0, 0.7], mirrorTwistMax: [0, 1.3], mirrorMix: [0, 1], mirrorBusyGain: [0, 1],
   steerSpeed: [0, 1], steerComplexity: [0, 1], steerDensity: [0, 1], steerFill: [0, 1], steerContrast: [0, 1],
   cameraSpeed: [0.6, 1.6], cameraShake: [0, 1.5], cameraCutRate: [0, 1],
+  transitionDurationBias: [0.6, 1.6], transitionSharpness: [1, 8],
   gradeSat: [0.75, 1.3], gradeTemp: [-1, 1], gradeContrast: [0.95, 1.3],
   traitTempo: [0, 1], traitAngular: [0, 1], traitBusy: [0, 1], traitRadial: [0, 1], traitStrength: [0, 1],
   fxShock: [0, 1.5], fxFlare: [0, 1.5], fxSpark: [0, 1.5], fxStrobe: [0, 1.5],
@@ -443,7 +444,10 @@ const FAMILIES: Record<string, readonly Component[]> = {
   lens: ['lensEngage', 'lensAmountFloor', 'lensAmountCeil', 'lensWeights'],
   mirror: ['mirrorEngage', 'mirrorMode', 'mirrorSegments', 'mirrorSpinMin', 'mirrorSpinMax', 'mirrorTwistMax', 'mirrorMix'],
   steer: ['steerSpeed', 'steerComplexity', 'steerDensity', 'steerFill', 'steerContrast'],
-  camera: ['cameraWeights', 'cameraSpeed', 'cameraShake', 'cameraCutRate', 'transitionWeights'],
+  camera: [
+    'cameraWeights', 'cameraSpeed', 'cameraShake', 'cameraCutRate',
+    'transitionWeights', 'transitionDurationBias', 'transitionSharpness',
+  ],
   grade: ['gradeSat', 'gradeTemp', 'gradeContrast'],
   traits: ['traitTempo', 'traitAngular', 'traitBusy', 'traitRadial'],
 }
