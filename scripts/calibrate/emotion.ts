@@ -152,7 +152,7 @@ export interface FeatureCache {
 }
 const CACHE_COLS = [
   'loudness', 'centroid', 'spectralFlatness', 'spectralRolloff', 'flux', 'energy', 'keyValid', 'keyModeStrength',
-  'harmonicTensionValid', 'harmonicRoughness', 'harmonicTonalness', 'confidence', 'silence',
+  'harmonicTensionValid', 'harmonicRoughness', 'harmonicDissonance', 'harmonicTonalness', 'confidence', 'silence',
 ] as const
 export function toFeatureCache(frames: readonly FrameSample[]): FeatureCache {
   const t: number[] = []
@@ -181,6 +181,7 @@ export function framesFromCache(c: FeatureCache): FrameSample[] {
       keyModeStrength: c.cols.keyModeStrength[i],
       harmonicTensionValid: c.cols.harmonicTensionValid[i] === 1,
       harmonicRoughness: c.cols.harmonicRoughness[i],
+      harmonicDissonance: c.cols.harmonicDissonance[i],
       harmonicTonalness: c.cols.harmonicTonalness[i],
       confidence: c.cols.confidence[i],
       silence: c.cols.silence[i] === 1,

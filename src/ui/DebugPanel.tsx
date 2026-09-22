@@ -11,14 +11,15 @@ const W = 280
  * Panel height. Rows sit on a 12px grid starting at y=14:
  *
  *   14 bpm · 26 phrase strip · 36 fps/tier/dpr · 48 render scale ·
- *   60 exposure · 72 GPU telemetry · 84 mood · 96 key · 108 voice · 120 structure
+ *   60 exposure · 72 GPU telemetry · 84 mood · 96 key · 108 voice · 120 structure ·
+ *   132 harmonic tension
  *
  * Written down because the rows are drawn by separate blocks in this file and
  * two of them silently shared y=48 for a while — the later draw simply painted
  * over the earlier one, which looks like a missing readout rather than a
  * collision. Add a row here before adding one below.
  */
-const H = 154
+const H = 166
 
 /** Spectrum + band meters + beat markers, drawn straight to a canvas. */
 export function DebugPanel() {
@@ -214,6 +215,19 @@ export function DebugPanel() {
           120,
         )
       }
+
+      // Harmonic tension (harmonicTension.ts): the blended composite plus its
+      // three inputs. Was computed every frame and read by nothing outside the
+      // character-tension axis (which only reads roughness/tonalness); this row
+      // is what makes the composite and dissonance actually observable.
+      ctx.fillStyle = f.harmonicTensionValid ? 'rgba(255, 183, 77, 0.85)' : 'rgba(255,255,255,0.35)'
+      ctx.fillText(
+        f.harmonicTensionValid
+          ? `tension ${f.harmonicTension.toFixed(2)}  rough ${f.harmonicRoughness.toFixed(2)}  diss ${f.harmonicDissonance.toFixed(2)}  tonal ${f.harmonicTonalness.toFixed(2)}`
+          : 'tension --',
+        6,
+        132,
+      )
 
       raf = requestAnimationFrame(draw)
     }
