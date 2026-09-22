@@ -375,6 +375,15 @@ export interface PerformanceState {
      * viewer is watching it.
      */
     durationSec: number
+    /**
+     * The transition curve's `S_k` exponent for this fade (`LookRow.transitionSharpness`), captured once
+     * at commit alongside `style`/`durationSec` for the same reason — a curve that changed shape mid-fade
+     * would read as a glitch. `undefined` when the mood look profile isn't driving transitions right now
+     * (invalid read, or the `post` family disabled — same gate `transitionStyle`'s own weighted pick
+     * uses): `transitionMix` then falls back to its default `smoothstep` curve, exactly as it does when
+     * this argument is omitted entirely.
+     */
+    sharpness?: number
   }
 
   /**
@@ -446,7 +455,7 @@ export const performanceState: PerformanceState = {
   limitless: { active: false, since: 0, manual: false },
   rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0, beat: false },
   transitionStyle: 'dissolve',
-  transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1 },
+  transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1, sharpness: undefined },
 
   // Empty, not neutral: at boot the director has formed no opinion yet, and
   // every scene's own authored defaults are the right thing to show until it

@@ -170,6 +170,33 @@ export function fadeDurationFor(musical: number, constrained: boolean): number {
   return constrained ? Math.min(base, CONSTRAINED_FADE_SEC) : base
 }
 
+/** Clamp bounds for `LookRow.transitionDurationBias` — see its doc comment in `look/lookRow.ts`. */
+export const TRANSITION_DURATION_BIAS_MIN = 0.6
+export const TRANSITION_DURATION_BIAS_MAX = 1.6
+
+/**
+ * Scales a tempo-derived crossfade duration by the mood's
+ * `LookRow.transitionDurationBias` — applied BEFORE {@link fadeDurationFor}'s
+ * own frame-budget shortening runs, so a lengthened serene transition can
+ * still be cut short under load, but a shortened aggressive one is never
+ * lengthened back up by the budget path afterwards.
+ *
+ * `bias` is clamped to [{@link TRANSITION_DURATION_BIAS_MIN},
+ * {@link TRANSITION_DURATION_BIAS_MAX}]; non-finite (an invalid look read, a
+ * NaN from a bad blend) folds to `1` — no change — the same "safe default"
+ * convention {@link fadeDurationFor} already uses for a bad `musical` value.
+ * `baseDurationSec` passes through unscaled when it is itself non-finite or
+ * `<= 0`, leaving `fadeDurationFor` to apply its own fallback rather than this
+ * function guessing one.
+ */
+export function applyTransitionDurationBias(baseDurationSec: number, bias: number): number {
+  if (!isFinite(baseDurationSec) || baseDurationSec <= 0) return baseDurationSec
+  const b = isFinite(bias)
+    ? Math.min(TRANSITION_DURATION_BIAS_MAX, Math.max(TRANSITION_DURATION_BIAS_MIN, bias))
+    : 1
+  return baseDurationSec * b
+}
+
 /**
  * Transition styles each mood prefers, best first.
  *
@@ -446,6 +473,32 @@ export function smoothstep(t: number): number {
 }
 
 /**
+ * The symmetric-family curve `S_k(t) = t^k / (t^k + (1-t)^k)` — see
+ * `LookRow.transitionSharpness`'s doc comment for why this family was chosen.
+ * Satisfies `S_k(1-t) === 1 - S_k(t)` for any `k > 0` algebraically (the same
+ * identity `smoothstep` satisfies), which is what lets {@link transitionMix}
+ * swap one curve for the other without touching the energy invariant. `k=1` is
+ * linear; increasing `k` holds closer to 0/1 near the ends and snaps faster
+ * through the middle. Endpoints are exact: `symmetricCurve(0, k) === 0` and
+ * `symmetricCurve(1, k) === 1` for every finite `k > 0`, since one of the two
+ * powers is exactly 0 there.
+ *
+ * `k <= 0` or non-finite is the caller's job to guard against (see
+ * {@link transitionMix}) — this function assumes a sane `k` and does not
+ * re-validate it, so it stays a plain, independently testable curve.
+ */
+export function symmetricCurve(t: number, k: number): number {
+  const x = clamp01(t)
+  const tk = Math.pow(x, k)
+  const ik = Math.pow(1 - x, k)
+  const sum = tk + ik
+  // Only reachable for a pathological k (e.g. large enough that both powers
+  // underflow to 0 near the midpoint) — not a case `transitionSharpness`'s
+  // authored 1..8 range hits, but a divide-by-zero must never produce NaN.
+  return sum > 0 ? tk / sum : x < 0.5 ? 0 : 1
+}
+
+/**
  * A curve that reaches zero before the midpoint and stays there, for the
  * outgoing half of a dip. `hold` is the share of the transition spent fully
  * dark, centred on the midpoint.
@@ -464,8 +517,16 @@ const DIP_HOLD = 0.25
  *
  * `t` is the LINEAR clock, not an eased value — every curve here does its own
  * easing, so handing it a pre-eased input would apply the curve twice.
+ *
+ * `sharpness` is the optional `k` for {@link symmetricCurve} (see
+ * `LookRow.transitionSharpness`), used in place of `smoothstep` in the
+ * `default` case ONLY — `cut` and `dipToBlack` keep their own special-cased
+ * curves untouched, since neither is the plain crossfade this parameter
+ * shapes. Omitted, `undefined`, non-finite, or `<= 0` all fall back to exactly
+ * today's `smoothstep` behaviour, so every existing call site (which passes
+ * only two arguments) is byte-for-byte unaffected.
  */
-export function transitionMix(style: TransitionStyle, t: number): TransitionMix {
+export function transitionMix(style: TransitionStyle, t: number, sharpness?: number): TransitionMix {
   const x = clamp01(t)
   switch (style) {
     case 'cut':
@@ -484,9 +545,16 @@ export function transitionMix(style: TransitionStyle, t: number): TransitionMix 
     // Everything else is an eased crossfade; the style's character comes from
     // the rack ramp, not from a different mix. Keeping the mix identical is
     // what makes them composable and what keeps the energy invariant holding
-    // for all of them at once.
-    default:
-      return { out: 1 - smoothstep(x), in: smoothstep(x) }
+    // for all of them at once. `symmetricCurve` is just a sharper (or
+    // blunter) member of the same symmetric family `smoothstep` belongs to,
+    // so swapping curves here never touches that invariant.
+    default: {
+      const s =
+        sharpness !== undefined && isFinite(sharpness) && sharpness > 0
+          ? symmetricCurve(x, sharpness)
+          : smoothstep(x)
+      return { out: 1 - s, in: s }
+    }
   }
 }
 

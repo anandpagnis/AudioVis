@@ -6,7 +6,7 @@ import type { CharacterMood } from '../audio/characterTypes'
 import type { MoodState } from '../audio/types'
 import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
-import { CAMERA_MODE_SHOT, cutCamera, pickCameraMode, type CameraShotTag } from './CameraDirector'
+import { CAMERA_MODE_SHOT, cutCamera, pickCameraMode, shouldHardCut, type CameraShotTag } from './CameraDirector'
 import { computeValenceArousal } from './valenceArousal'
 import { advanceBandClocks } from './bandClocks'
 import { exposure, GAIN_MIN } from './exposure'
@@ -262,6 +262,12 @@ export function PerformanceStateBridge() {
   /** Beat index the camera was last (re-)picked on, so the arousal-driven
    *  phrase re-pick below fires once per phrase rather than once per frame. */
   const lastCameraBeat = useRef(-1)
+  /** Phrases seen, for the `shouldHardCut` probability check below (the camera
+   *  cut-rate fix) — its own counter, separate from `styleRotation`/`sectionCount`/
+   *  `mirrorSeed`, since a recorded set has to replay this pick independently of
+   *  theirs. Incremented once per phrase boundary regardless of whether that
+   *  phrase ends up cutting, so consecutive phrases are the counter's natural unit. */
+  const cutPhraseCount = useRef(0)
   /** Previous frame's beat state, so `rackAudio.onKick` can be an edge. */
   const wasOnKick = useRef(false)
   /** Mood the transition style was last chosen for — see the pick below. */
@@ -448,7 +454,22 @@ export function PerformanceStateBridge() {
     const arousalDue =
       p.arousal > AROUSAL_CUT_THRESHOLD && phraseBoundary && f.beatIndex !== lastCameraBeat.current
     const sceneChanged = active.id !== lastCameraScene.current
-    if (f.sectionChange || sceneChanged || arousalDue) {
+    // Camera cut-rate fix: `look.cameraCutRate` is authored per mood (LookRow's own doc) and otherwise has no
+    // consumer. On the SAME phrase-boundary clock `arousalDue` above already uses, a mood-authored probability
+    // check (`shouldHardCut`, CameraDirector.tsx — the same deterministic Weyl-sequence sampler the transition
+    // picker uses) also earns a re-pick, gated exactly like the `look` argument passed to `pickCameraMode` below
+    // (`L.valid && L.families.camera`) so the legacy / `?scenepick=legacy` path (look invalid or the camera
+    // family off) can never trigger it — zero behaviour change there. Bounded to at most once per 16-beat phrase
+    // even at cutRate=1, since it rides `phraseBoundary` itself, so it can never read as strobing.
+    const cutDue =
+      phraseBoundary &&
+      f.beatIndex !== lastCameraBeat.current &&
+      L.valid &&
+      L.families.camera &&
+      shouldHardCut(L.cameraCutRate, cutPhraseCount.current)
+    // Once per phrase, whether or not this particular phrase ends up cutting — see `cutPhraseCount`'s own doc.
+    if (phraseBoundary) cutPhraseCount.current++
+    if (f.sectionChange || sceneChanged || arousalDue || cutDue) {
       lastCameraScene.current = active.id
       lastCameraBeat.current = f.beatIndex
       p.cameraMode = pickCameraMode(
@@ -474,11 +495,13 @@ export function PerformanceStateBridge() {
       )
       lastCameraShot.current = CAMERA_MODE_SHOT[p.cameraMode]
       // A section boundary is the one moment a hard angle jump reads as
-      // deliberate rather than as a glitch — this is the VJ cut. An
-      // arousal-driven phrase re-pick is not a structural boundary, so it
-      // eases into its new framing the way an ordinary mode change already
-      // does, rather than snapping.
-      if (f.sectionChange) cutCamera()
+      // deliberate rather than as a glitch — this is the VJ cut. `cutDue` earns
+      // the same treatment: it's a mood-authored hard cut BY DESIGN, not an
+      // ordinary re-pick that should ease. An arousal-driven phrase re-pick
+      // (`arousalDue`) alone is not a structural boundary, so it still eases
+      // into its new framing the way an ordinary mode change already does,
+      // rather than snapping — that documented behaviour is unchanged.
+      if (f.sectionChange || cutDue) cutCamera()
     }
 
     // --- Post / effects ---

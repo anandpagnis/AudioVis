@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   CONSTRAINED_FADE_SEC,
+  TRANSITION_DURATION_BIAS_MAX,
+  TRANSITION_DURATION_BIAS_MIN,
   TRANSITION_STYLES,
+  applyTransitionDurationBias,
   fadeDurationFor,
   pickTransitionStyle,
   mixEnergy,
   resolveTransitionStyle,
   smoothstep,
+  symmetricCurve,
   transitionMix,
   isStyleSelectable,
   selectableStyles,
@@ -374,5 +378,170 @@ describe('smoothstep', () => {
   it('has zero slope at both ends', () => {
     expect(smoothstep(0.001)).toBeLessThan(0.001)
     expect(1 - smoothstep(0.999)).toBeLessThan(0.001)
+  })
+})
+
+/** A spread of `k` covering the authored 1..8 range from `LookRow.transitionSharpness`. */
+const K_SAMPLES = [1, 1.5, 2, 3, 4, 5, 6, 7, 8]
+
+describe('symmetricCurve', () => {
+  it('reaches exactly 0 and 1 at the endpoints for every k', () => {
+    for (const k of K_SAMPLES) {
+      expect(symmetricCurve(0, k)).toBe(0)
+      expect(symmetricCurve(1, k)).toBe(1)
+    }
+  })
+
+  it('is monotonically increasing for every k', () => {
+    for (const k of K_SAMPLES) {
+      let prev = -Infinity
+      for (const t of SAMPLES) {
+        const v = symmetricCurve(t, k)
+        expect(v, `k=${k} t=${t} went backwards`).toBeGreaterThanOrEqual(prev - 1e-12)
+        prev = v
+      }
+    }
+  })
+
+  it('satisfies the symmetric identity S_k(1-t) === 1 - S_k(t) across a spread of t and k', () => {
+    // The whole reason this family is safe to swap in for smoothstep: the
+    // energy invariant only needs this identity, and it holds algebraically
+    // for any k > 0 — not just k=3 (smoothstep's rough equivalent).
+    for (const k of K_SAMPLES) {
+      for (const t of SAMPLES) {
+        expect(symmetricCurve(1 - t, k), `k=${k} t=${t}`).toBeCloseTo(1 - symmetricCurve(t, k), 9)
+      }
+    }
+  })
+
+  it('clamps out-of-range and non-finite progress like the rest of the module', () => {
+    expect(symmetricCurve(-1, 3)).toBe(symmetricCurve(0, 3))
+    expect(symmetricCurve(2, 3)).toBe(symmetricCurve(1, 3))
+    expect(symmetricCurve(NaN, 3)).toBe(symmetricCurve(0, 3))
+  })
+})
+
+describe('transitionMix — optional sharpness', () => {
+  it('is byte-identical to the 2-arg call for every style, including cut/dipToBlack', () => {
+    // The regression guard the plan calls for: adding a third, optional
+    // parameter must not change a single existing call site's output.
+    for (const style of TRANSITION_STYLES) {
+      for (const t of SAMPLES) {
+        const twoArg = transitionMix(style, t)
+        expect(transitionMix(style, t, undefined), `${style} at t=${t}`).toEqual(twoArg)
+      }
+    }
+  })
+
+  it('applies symmetricCurve instead of smoothstep for non-cut/dipToBlack styles when k is given', () => {
+    for (const style of TRANSITION_STYLES) {
+      if (style === 'cut' || style === 'dipToBlack') continue
+      for (const k of K_SAMPLES) {
+        for (const t of SAMPLES) {
+          const s = symmetricCurve(t, k)
+          const m = transitionMix(style, t, k)
+          expect(m.in, `${style} k=${k} t=${t}`).toBeCloseTo(s, 9)
+          expect(m.out, `${style} k=${k} t=${t}`).toBeCloseTo(1 - s, 9)
+        }
+      }
+    }
+  })
+
+  it('holds the energy invariant for every k, on the styles that already hold it at k=default', () => {
+    for (const style of TRANSITION_STYLES) {
+      if (style === 'dipToBlack') continue // the one deliberate exception, unaffected by k
+      for (const k of K_SAMPLES) {
+        for (const t of SAMPLES) {
+          const m = transitionMix(style, t, k)
+          expect(m.out + m.in, `${style} k=${k} t=${t}`).toBeCloseTo(1, 6)
+        }
+      }
+    }
+  })
+
+  it('leaves cut and dipToBlack untouched by k — they keep their own special-cased curves', () => {
+    for (const style of ['cut', 'dipToBlack'] as TransitionStyle[]) {
+      for (const t of SAMPLES) {
+        const baseline = transitionMix(style, t)
+        for (const k of K_SAMPLES) {
+          expect(transitionMix(style, t, k), `${style} k=${k} t=${t}`).toEqual(baseline)
+        }
+      }
+    }
+  })
+
+  it('falls back to smoothstep for a non-finite or non-positive k', () => {
+    for (const style of TRANSITION_STYLES) {
+      if (style === 'cut' || style === 'dipToBlack') continue
+      const baseline = transitionMix(style, 0.37)
+      for (const badK of [0, -1, -0.001, NaN, Infinity, -Infinity]) {
+        expect(transitionMix(style, 0.37, badK), `${style} k=${badK}`).toEqual(baseline)
+      }
+    }
+  })
+})
+
+describe('applyTransitionDurationBias', () => {
+  it('leaves the duration unchanged at bias 1', () => {
+    expect(applyTransitionDurationBias(0.92, 1)).toBeCloseTo(0.92, 9)
+  })
+
+  it('scales the duration within the authored bounds', () => {
+    expect(applyTransitionDurationBias(1, TRANSITION_DURATION_BIAS_MIN)).toBeCloseTo(
+      TRANSITION_DURATION_BIAS_MIN,
+      9,
+    )
+    expect(applyTransitionDurationBias(1, TRANSITION_DURATION_BIAS_MAX)).toBeCloseTo(
+      TRANSITION_DURATION_BIAS_MAX,
+      9,
+    )
+    expect(applyTransitionDurationBias(1, 1.2)).toBeCloseTo(1.2, 9)
+  })
+
+  it('clamps a bias outside 0.6..1.6', () => {
+    expect(applyTransitionDurationBias(1, 5)).toBeCloseTo(TRANSITION_DURATION_BIAS_MAX, 9)
+    expect(applyTransitionDurationBias(1, 0)).toBeCloseTo(TRANSITION_DURATION_BIAS_MIN, 9)
+    expect(applyTransitionDurationBias(1, -3)).toBeCloseTo(TRANSITION_DURATION_BIAS_MIN, 9)
+  })
+
+  it('is NaN-safe: any non-finite bias behaves like 1 (no change)', () => {
+    // Not clamped — a non-finite bias is not "an extreme in-range value", it's
+    // a bad read (an invalid look, a broken blend), and the safe answer is the
+    // neutral multiplier, same as `fadeDurationFor`'s own fallback for a bad
+    // `musical` duration.
+    expect(applyTransitionDurationBias(0.8, NaN)).toBeCloseTo(0.8, 9)
+    expect(applyTransitionDurationBias(0.8, Infinity)).toBeCloseTo(0.8, 9)
+    expect(applyTransitionDurationBias(0.8, -Infinity)).toBeCloseTo(0.8, 9)
+  })
+
+  it('passes a non-finite or non-positive base duration through unscaled, leaving fadeDurationFor to fall back', () => {
+    expect(applyTransitionDurationBias(NaN, 1.2)).toBeNaN()
+    expect(applyTransitionDurationBias(0, 1.2)).toBe(0)
+    expect(applyTransitionDurationBias(-1, 1.2)).toBe(-1)
+  })
+
+  it('composes with fadeDurationFor: a lengthened fade can still be shortened under budget, never re-lengthened', () => {
+    const musicalLong = 0.92
+    const lengthened = applyTransitionDurationBias(musicalLong, TRANSITION_DURATION_BIAS_MAX) // serene-like
+
+    // Unconstrained: the bias passes straight through.
+    expect(fadeDurationFor(lengthened, false)).toBeCloseTo(musicalLong * TRANSITION_DURATION_BIAS_MAX, 9)
+
+    // Constrained: the lengthened one gets cut down to the same ceiling as an
+    // unbiased fade would be — never lengthened back up past it.
+    expect(fadeDurationFor(lengthened, true)).toBe(CONSTRAINED_FADE_SEC)
+    expect(fadeDurationFor(lengthened, true)).toBeLessThan(lengthened)
+
+    // A short musical duration whose biased-down fade already sits BELOW the
+    // constrained ceiling — the case that actually exercises "never
+    // lengthened back up": an unbiased 0.3 s fade would be cut to the 0.2 s
+    // ceiling under constraint, but the aggressive-mood-shortened 0.18 s fade
+    // must stay at 0.18 s, not get pulled back UP to 0.2 s.
+    const musicalShort = 0.3
+    const shortened = applyTransitionDurationBias(musicalShort, TRANSITION_DURATION_BIAS_MIN) // aggressive-like
+    expect(shortened).toBeLessThan(CONSTRAINED_FADE_SEC)
+    expect(fadeDurationFor(musicalShort, true)).toBe(CONSTRAINED_FADE_SEC) // the unbiased fade DOES get cut to the ceiling
+    expect(fadeDurationFor(shortened, true)).toBe(shortened) // the biased one is already under it and is left alone
+    expect(fadeDurationFor(shortened, true)).toBeLessThan(CONSTRAINED_FADE_SEC)
   })
 })

@@ -58,6 +58,30 @@ export function cutCamera(delta = Math.PI / 2) {
 }
 
 /**
+ * Whether a mood-authored `look.cameraCutRate` (see its doc on `LookRow`) earns an extra hard cut this counter.
+ *
+ * Sampled with the SAME deterministic Weyl-sequence sampler {@link rotationUnit} that `pickLookCameraMode` below
+ * already uses to turn a blended weight into a statistical frequency, imported from `transitions.ts` (which
+ * imports only from `./look/lookRow`, so this file importing FROM it — already done, for the same function, a
+ * few lines up — is one-way and cycle-free) rather than a second, invented sampler or `Math.random()`: a
+ * recorded set has to replay identically, and this reuses the exact guarantee the mode rotation already relies
+ * on rather than adding a second statistical mechanism to reason about.
+ *
+ * `cutRate` is clamped to 0..1; non-finite (including NaN) is treated as 0 — "never cut" is the safe default for
+ * a corrupt profile, matching {@link lookGain}'s own "never freeze or fling" reasoning even though the clamp
+ * target differs (there the identity is 1, here it is "off"). `rotationUnit(counter) < cutRate` means the hit
+ * rate converges to `cutRate` itself as `counter` advances: 0 never fires, 1 always fires, 0.5 fires close to
+ * half the time — the same guarantee {@link pickLookCameraMode}'s own weighted rotation already provides.
+ *
+ * Exported for `PerformanceStateBridge`'s phrase-boundary hard-cut check (the camera cut-rate fix) and for direct
+ * unit testing. Pure: no per-frame reseed, so the same counter always returns the same answer.
+ */
+export function shouldHardCut(cutRate: number, counter: number): boolean {
+  const rate = !Number.isFinite(cutRate) ? 0 : cutRate < 0 ? 0 : cutRate > 1 ? 1 : cutRate
+  return rotationUnit(counter) < rate
+}
+
+/**
  * Camera behaviour each mood wants, best fit first.
  *
  * Only modes a scene actually declares are eligible, so this is a *preference*

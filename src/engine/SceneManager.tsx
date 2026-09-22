@@ -14,6 +14,7 @@ import {
 import { getSharedEnvMap } from './envMap'
 import { approach, performanceState, type ActiveEffect } from './performanceState'
 import {
+  applyTransitionDurationBias,
   fadeDurationFor,
   resolveTransitionStyle,
   transitionMix,
@@ -789,6 +790,20 @@ export function SceneManager() {
         // scene has actually been seen holding before the frame starts paying
         // for it — the governor climbs back out on its own evidence.
         quality.enterScene(pendingSceneId, clock.elapsedTime)
+        // The mood look profile's duration/sharpness bias for THIS commit, read
+        // once here and reused everywhere below that needs the primary's actual
+        // (post-bias) crossfade length — including `suspendFrameSampling` just
+        // below, which used to measure the unbiased tempo length and so could
+        // resume sampling mid-fade on a mood-lengthened transition. Same gate
+        // every other post-FX consumer of `look` already uses (see `txLook` in
+        // PerformanceStateBridge.tsx); invalid or the `post` family off leaves
+        // both at their neutral, pre-mood-system values.
+        const commitLook = performanceState.look
+        const useTransitionLook = commitLook.valid && commitLook.families.post
+        const biasedCrossfade = applyTransitionDurationBias(
+          crossfadeDuration(f.bpm),
+          useTransitionLook ? commitLook.transitionDurationBias : 1,
+        )
         // A commit is the most expensive moment in the app: a shader compile
         // that prewarming did not manage to confirm, plus two primaries
         // rendering at once for the length of the crossfade. All of that is
@@ -796,7 +811,7 @@ export function SceneManager() {
         // once-per-scene event, not steady-state load, and letting the quality
         // governor treat it as evidence permanently downgraded the show every
         // time the music changed section. See frameSampler.ts.
-        suspendFrameSampling(Math.ceil(crossfadeDuration(f.bpm) * 60) + 30)
+        suspendFrameSampling(Math.ceil(biasedCrossfade * 60) + 30)
         // Only replace the primary scene. Composition layers have their own
         // lifetime and must survive a primary crossfade unchanged. (Invariant:
         // at most one primary is fading in at a time.)
@@ -893,9 +908,22 @@ export function SceneManager() {
           style = 'dissolve'
         }
         performanceState.transition.style = style as TransitionStyle
-        // Committed once, here, so a fade cannot change speed while it runs.
-        const fadeSec = hardCut ? 0 : fadeDurationFor(crossfadeDuration(f.bpm), !fundsOverlap)
+        // Committed once, here, so a fade cannot change speed while it runs. The
+        // mood's duration bias (computed above, alongside `suspendFrameSampling`)
+        // scales the tempo length BEFORE `fadeDurationFor`'s frame-budget
+        // shortening runs, so a lengthened serene fade can still be cut short
+        // under load, but a shortened aggressive one is never lengthened back up
+        // by the budget path.
+        const fadeSec = hardCut ? 0 : fadeDurationFor(biasedCrossfade, !fundsOverlap)
         performanceState.transition.durationSec = Math.max(1e-3, fadeSec)
+        // Same commit-once reasoning, and the same look gate, as `style`/
+        // `durationSec` just above — a curve that changed shape mid-fade would
+        // read as a glitch. `undefined` (profile invalid, or `post` disabled)
+        // makes `transitionMix` fall back to its default `smoothstep`, exactly
+        // as omitting this argument does.
+        performanceState.transition.sharpness = useTransitionLook
+          ? commitLook.transitionSharpness
+          : undefined
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1
@@ -1209,7 +1237,11 @@ export function SceneManager() {
     const tx = performanceState.transition
     tx.progress = incomingPrimary ? Math.max(0, Math.min(1, incomingPrimary.fade.value)) : 1
     tx.active = outgoingPrimary !== undefined && tx.progress < 1
-    const mix = transitionMix(tx.style, tx.progress)
+    // `tx.sharpness` was captured once at commit, alongside `tx.style` and
+    // `tx.durationSec` — see there. `undefined` (no mood look driving
+    // transitions right now) falls through to `transitionMix`'s own default
+    // `smoothstep` curve, same as any other call site that omits it.
+    const mix = transitionMix(tx.style, tx.progress, tx.sharpness)
 
     for (const e of entriesRef.current) {
       if (e.dir === 0) continue
