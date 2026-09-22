@@ -42,8 +42,14 @@ import { EMOTION_CALIBRATION, type EmotionCalibration } from './emotionQuantiles
  *            is kept for tension only. Valence is the least reliable axis in the
  *            literature (r about 0.65 for trained models);
  *            `valenceConfidence` tells the classifier so.
- *  Tension:  roughness, non-tonalness, minor mode. Not validated against human
+ *  Tension:  dissonance, non-tonalness, minor mode. Not validated against human
  *            ratings (none exist in PMEmo); treat as a plausible, unproven axis.
+ *            Dissonance (not plain roughness) is the harmonic-clash term: both
+ *            are the identical Sethares pairwise-beating sigmoid on the
+ *            identical normalisation (`harmonicTension.ts`), but dissonance
+ *            weights each pair by how PITCHED its partials are, so it stays
+ *            near zero on noise/distortion/drum wash that plain roughness
+ *            scores high — closer to what "tension" should mean musically.
  *  Pulse:    beat-lock confidence, mapped to its percentile like every other input.
  *            Raw confidence has a median of 0.19 and reaches 0.5 in only ~4% of
  *            frames, so a fixed "groove needs pulse 0.85" threshold was
@@ -62,6 +68,7 @@ export interface EmotionFeatureFrame {
   keyModeStrength: number
   harmonicTensionValid: boolean
   harmonicRoughness: number
+  harmonicDissonance: number
   harmonicTonalness: number
   confidence: number
   silence: boolean
@@ -156,7 +163,12 @@ export class EmotionDimensionEstimator {
       6
 
     const bright = this.p('centroid', f.centroid)
-    const roughness = f.harmonicTensionValid ? this.p('roughness', f.harmonicRoughness) : 0.5
+    // Dissonance reuses the 'roughness' percentile table: both are the same sigmoid on the same
+    // normalisation in harmonicTension.ts (dissonance additionally gates each pair by how pitched it
+    // is, so it is pointwise <= roughness for the same audio), so 'roughness' is the correct scale for
+    // it. A dedicated 'dissonance' calibration table would need its own `npm run calibrate:quantiles`
+    // pass — not done here.
+    const dissonance = f.harmonicTensionValid ? this.p('roughness', f.harmonicDissonance) : 0.5
     const tonal = f.harmonicTensionValid ? this.p('tonalness', f.harmonicTonalness) : 0.5
 
     // Mode: smoothed only over frames where the key read is valid; 0.5 when unknown.
@@ -176,7 +188,7 @@ export class EmotionDimensionEstimator {
     const kw = clamp01(this.keyWeight)
     const modeBlend = this.modeSeeded ? this.modeEma * kw + bright * (1 - kw) : bright
     const valenceNow = 0.55 * bright + 0.45 * modeBlend
-    const tensionNow = 0.4 * roughness + 0.3 * (1 - tonal) + 0.3 * (1 - mode)
+    const tensionNow = 0.4 * dissonance + 0.3 * (1 - tonal) + 0.3 * (1 - mode)
     const pulseNow = this.p('beat', f.confidence)
 
     // --- slow smoothing (seed on the first non-silent frame so warm-up is not a slow ramp from 0) ---

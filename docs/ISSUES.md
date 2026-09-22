@@ -12291,7 +12291,7 @@ per-frame canvas heavy enough to distort the reading.
       `npm run check` clean: typecheck, lint, 2402 tests (131 files), build,
       licence gate.
 
-- [ ] **F256 · Merged F252-F255 to `main` (2026-09-21); CI `check` has been red
+- [x] **F256 · Merged F252-F255 to `main` (2026-09-21); CI `check` has been red
       since at least 2026-09-13, so the deploy job is gated and nothing has
       shipped** — *2026-09-21, user request ("push to main and log")*
       `.github/workflows/ci.yml`, `src/engine/sessionLog.ts`,
@@ -12328,7 +12328,56 @@ per-frame canvas heavy enough to distort the reading.
       earlier entries: `public/landing/fractures.mp3` still has no recorded
       licence, and a source-side flash limiter is still deferred.
 
-- [x] **F257 · Mood-driven transitions: the 4-style pool grows to 9, timing and
+      **Fixed** by a separate concurrent session/commit (`52636e7`, "guard
+      `navigator.userAgent` in `sessionLog.ts` for CI"), merged into this
+      history below along with `3d19400` bumping the deploy job to Node 22.
+      Production auto-deploy is live again as of that merge.
+
+- [x] **F257 · /demo could still freeze on one scene forever — F251 fixed
+      `sceneId` leaking from a prior Console session, but `autoPilot` leaks
+      through the exact same allowlist and wasn't touched** — *2026-09-18,
+      user report while testing F251 live: the scene correctly landed on
+      `wireframe`, postfx/lens kept reacting to audio, but the scene itself
+      never changed again* `src/routes/Visualizer.tsx`
+
+      Root cause: `autoPilot` sits in the same `partialize` allowlist as
+      `sceneId`, under the same origin-wide `audiovis-settings` key — a
+      visitor on the same browser as a prior Console session that had
+      flipped the "picking scenes for you" toggle to manual inherits
+      `autoPilot: false` in `/demo` too. `AutoPilot.tsx`'s tick and
+      `PerformanceDirector.tsx`'s both bail at `!s.autoPilot` before ever
+      looking at the scene whitelist, while `PerformanceStateBridge`
+      (bloom/vignette/mirror/lens) has no such gate — so postfx kept
+      reacting to audio while the scene sat wherever F251's correction had
+      just landed it, with no error anywhere.
+
+      Fixed the same way as F251: the same mount effect now also forces
+      `autoPilot` on via `toggleAutoPilot()` when it reads false, right
+      after the existing `sceneId`/`layerSceneIds` correction.
+
+      Verified end-to-end, past the ceiling F251 hit: seeded
+      `localStorage['audiovis-settings']` with `{sceneId: 'kifs', autoPilot:
+      false}` on a throwaway port and loaded `/demo` against it — the
+      persisted state read back `autoPilot: true`. `sceneId` itself still
+      read back as the seeded `'kifs'`, unchanged; that's expected, not a
+      regression, since `requestScene` only ever writes the transient
+      `pendingSceneId` synchronously; the persisted `sceneId` only catches up
+      once `SceneManager`'s `useFrame` commit runs, which needs rAF, which
+      needs the page visible — the same documented ceiling F251 hit in this
+      pane. `toggleAutoPilot()` has no such two-phase pending/commit split —
+      it writes straight to persisted state — so this fix, unlike F251's, is
+      confirmed all the way through rather than only up to the request.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+      Also on `main` from this same concurrent session, no separate log
+      entry given: `ca2f4e7` wires `harmonicDissonance`/`harmonicTension`
+      into the character tension axis (previously computed every frame and
+      read by nothing — the exact item flagged in F258's ranked list below)
+      and adds a `DebugPanel` readout for it; the `/marketplace` route and
+      account-page changes in `ff85ed8`.
+
+- [x] **F258 · Mood-driven transitions: the 4-style pool grows to 9, timing and
       curve sharpness now follow the mood, and a real two-texture wipe
       capability exists (3 new styles built, weights withheld pending a live
       watch); plus a small dead-code fix on the camera** — *2026-09-21/22,
@@ -12457,7 +12506,7 @@ per-frame canvas heavy enough to distort the reading.
       photosensitivity flash limiter is still deferred; `intensityGate` still
       keys off the old 6-state mood, deliberately left alone this round.
 
-- [x] **F258 · Turned on the withheld wipe transitions; effect scenes and
+- [x] **F259 · Turned on the withheld wipe transitions; effect scenes and
       palette choice now read mood too** — *2026-09-22, user request ("add
       the other transitions you were gonna add, and whatever else too")*
       `src/engine/look/moodRows.ts`, `src/engine/EffectDirector.tsx`,
@@ -12465,10 +12514,10 @@ per-frame canvas heavy enough to distort the reading.
       TransientSpark,StrobeBars}Scene.tsx`, `src/engine/paletteCharacter.ts`,
       `src/engine/AutoPilot.tsx`
 
-      **Wipe transitions live.** `inkDissolve`/`irisWipe`/`datamosh` (F257)
+      **Wipe transitions live.** `inkDissolve`/`irisWipe`/`datamosh` (F258)
       shipped with every mood's weight at 0, pending a live watch. That
       watch happened and was confirmed good, so the exact withheld table
-      from F257 is now applied: `inkDissolve` co-dominates with `dissolve`
+      from F258 is now applied: `inkDissolve` co-dominates with `dissolve`
       on serene/tender/melancholic, `irisWipe` leads on epic and features on
       dreamy/mysterious/uplifting/euphoric, `datamosh` joins `collapse`/
       `sortSlice` on aggressive/tense/driving/brooding. All 9 styles are now
@@ -12503,10 +12552,10 @@ per-frame canvas heavy enough to distort the reading.
       **Verification.** `npm run check`: typecheck, lint, build and the
       licence gate all pass. 2486 of 2487 tests pass; the one failure
       (`checkDistLicences.test.ts`, a `SyntaxError` on import) remains the
-      pre-existing, unrelated flake first confirmed in F257 — reproduces
+      pre-existing, unrelated flake first confirmed in F258 — reproduces
       identically with every change on this branch removed.
 
-      **Still open (unchanged from F257's list, ordered):** `chroma[12]`/
+      **Still open (unchanged from F258's list, ordered):** `chroma[12]`/
       `harmonicDissonance` computed and read by nothing; camera distance/
       FOV/orbit-radius not mood-aware (mode/speed/shake only); a
       `docs/FUTURE_IDEAS.md` housekeeping pass; the global photosensitivity
@@ -12516,7 +12565,7 @@ per-frame canvas heavy enough to distort the reading.
       back this round pending explicit direction, since they need a more
       dedicated design pass or are safety-critical.
 
-- [x] **F259 · The new wipe transitions were rendering nothing: a real
+- [x] **F260 · The new wipe transitions were rendering nothing: a real
       ordering bug plus a debug overlay that hid the true cause; the quality
       gate was then tuned live against the user's own machine** — *2026-09-23,
       user report ("the transitions look the same, I can't see any diff, all
@@ -12578,11 +12627,13 @@ per-frame canvas heavy enough to distort the reading.
         since the FIXED per-pass overhead (state changes, draw calls,
         shader binds of a second full scene traversal) does not shrink with
         resolution, unlike pixel count.
-      - **Not yet confirmed rendering correctly** — the user had not
-        reported back on the tier-3 result when this was logged. A
+      - **Still not confirmed rendering correctly at tier 3, as of this push.**
+        The user had not reported back on the tier-3 result yet. A
         production-build check (`npm run build` + preview) was offered as a
         way to separate real hardware ceiling from dev-session noise; not
-        taken up yet.
+        taken up yet. Whoever picks this up next: check `?lookdebug` for
+        `(DOWNGRADED)` first — if the tier is still above 3, that is the
+        cause, not a rendering bug.
       - **How weaker hardware behaves, for the record (asked by the user):**
         this is the tier system working as designed, not a risk. A weaker
         session simply settles at a higher tier via the exact same automatic
@@ -12594,4 +12645,4 @@ per-frame canvas heavy enough to distort the reading.
       **Verification.** `npm run check`: typecheck, lint, build and the
       licence gate all pass at every step. Tests: 2488/2489 pass throughout;
       the one failure is the pre-existing, unrelated `checkDistLicences.test.ts`
-      flake first confirmed in F257.
+      flake first confirmed in F258.

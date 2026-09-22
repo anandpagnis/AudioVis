@@ -67,6 +67,16 @@ export function AccountMenu() {
         <div className="account-menu-panel">
           <div className="account-menu-email">{user.email}</div>
           <span className={`account-menu-plan plan-${plan}`}>{plan === 'pro' ? 'Pro' : 'Free'}</span>
+          {plan === 'pro' && (
+            <>
+              <Link className="account-menu-link" to="/home#features" onClick={() => setOpen(false)}>
+                Features
+              </Link>
+              <Link className="account-menu-link" to="/home#pricing" onClick={() => setOpen(false)}>
+                Pricing
+              </Link>
+            </>
+          )}
           <Link className="account-menu-link" to="/home" onClick={() => setOpen(false)}>
             Home
           </Link>

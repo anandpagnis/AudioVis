@@ -114,6 +114,7 @@ export interface FrameSample {
   harmonicTension: number
   harmonicTonalness: number
   harmonicRoughness: number
+  harmonicDissonance: number
 }
 
 /**
@@ -286,6 +287,7 @@ export function runTrack(
     const tensionRead = harmTension.read()
     f.harmonicTensionValid = tensionRead.valid
     f.harmonicRoughness = tensionRead.roughness
+    f.harmonicDissonance = tensionRead.dissonance
     f.harmonicTonalness = tensionRead.tonalness
     f.harmonicTension = tensionRead.tension
     if (f.sectionChange) chromaKey.soften(0.35)
@@ -427,6 +429,7 @@ export function runTrack(
       harmonicTension: f.harmonicTension,
       harmonicTonalness: f.harmonicTonalness,
       harmonicRoughness: f.harmonicRoughness,
+      harmonicDissonance: f.harmonicDissonance,
     })
   }
 

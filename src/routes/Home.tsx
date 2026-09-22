@@ -35,7 +35,7 @@ const FEATURES: { title: string; body: string }[] = [
   },
 ]
 
-const MARKETPLACE_CATEGORIES: { title: string; body: string }[] = [
+export const MARKETPLACE_CATEGORIES: { title: string; body: string }[] = [
   {
     title: 'Scene packs',
     body: 'Themed bundles of generative scenes beyond the core library, built for specific genres and rooms.',
@@ -160,13 +160,10 @@ function ProDashboard() {
           LILIM
         </Link>
         <div className="home-nav-links">
-          <Link className="home-navlink" to="/home#features">
-            Features
+          <Link className="home-navlink" to="/home">
+            Home
           </Link>
-          <Link className="home-navlink" to="/home#pricing">
-            Pricing
-          </Link>
-          <Link className="home-navlink" to="/home#marketplace">
+          <Link className="home-navlink" to="/marketplace">
             Marketplace
           </Link>
           <AccountMenu />

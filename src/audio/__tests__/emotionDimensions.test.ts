@@ -36,6 +36,7 @@ function frame(over: Partial<EmotionFeatureFrame> = {}): EmotionFeatureFrame {
     keyModeStrength: 0,
     harmonicTensionValid: false,
     harmonicRoughness: 0.5,
+    harmonicDissonance: 0.5,
     harmonicTonalness: 0.5,
     confidence: 0,
     silence: false,
@@ -128,10 +129,16 @@ describe('EmotionDimensionEstimator', () => {
     expect(haveKey.valenceConfidence ?? 0).toBeGreaterThan(0.9)
   })
 
-  it('tension: rough, atonal, minor input reads higher than smooth, tonal, major input', () => {
-    const tense = run(new EmotionDimensionEstimator(CAL), frame({ harmonicTensionValid: true, harmonicRoughness: 0.9, harmonicTonalness: 0.1, keyValid: true, keyModeStrength: -0.9 }), 30)
-    const relaxed = run(new EmotionDimensionEstimator(CAL), frame({ harmonicTensionValid: true, harmonicRoughness: 0.1, harmonicTonalness: 0.9, keyValid: true, keyModeStrength: 0.9 }), 30)
+  it('tension: dissonant, atonal, minor input reads higher than consonant, tonal, major input', () => {
+    const tense = run(new EmotionDimensionEstimator(CAL), frame({ harmonicTensionValid: true, harmonicDissonance: 0.9, harmonicTonalness: 0.1, keyValid: true, keyModeStrength: -0.9 }), 30)
+    const relaxed = run(new EmotionDimensionEstimator(CAL), frame({ harmonicTensionValid: true, harmonicDissonance: 0.1, harmonicTonalness: 0.9, keyValid: true, keyModeStrength: 0.9 }), 30)
     expect(tense.tension).toBeGreaterThan(relaxed.tension + 0.3)
+  })
+
+  it('tension ignores plain roughness (noise/distortion) when dissonance is unchanged', () => {
+    const noisy = run(new EmotionDimensionEstimator(CAL), frame({ harmonicTensionValid: true, harmonicRoughness: 0.9, harmonicDissonance: 0.4, harmonicTonalness: 0.4 }), 30)
+    const clean = run(new EmotionDimensionEstimator(CAL), frame({ harmonicTensionValid: true, harmonicRoughness: 0.1, harmonicDissonance: 0.4, harmonicTonalness: 0.4 }), 30)
+    expect(noisy.tension).toBeCloseTo(clean.tension, 5)
   })
 
   it('pulse follows beat-lock confidence', () => {

@@ -74,6 +74,13 @@ function DemoSurface() {
         s.setLayer(role, null)
       }
     }
+    // Same leak as sceneId above, different field: `autoPilot` is also in
+    // partialize, so a visitor on the same browser as a prior Console session
+    // that had flipped the "picking scenes for you" toggle to manual inherits
+    // that here too — the corrected scene above would land once and then
+    // never advance again, with no error anywhere (AutoPilot.tsx's tick bails
+    // at `!s.autoPilot` before it ever looks at the whitelist).
+    if (!s.autoPilot) s.toggleAutoPilot()
     return () => setSceneWhitelist(null)
   }, [])
 
