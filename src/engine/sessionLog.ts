@@ -464,7 +464,9 @@ class SessionLog {
     const c = stageCanvas()
     this.env = {
       gpu: gpuName(),
-      ua: navigator.userAgent,
+      // Node has no `navigator` global before v21 (CI pins Node 20); this class is constructed by
+      // the test suite too, off the real browser, so this can't assume one exists.
+      ua: typeof navigator === 'undefined' ? '' : navigator.userAgent,
       display: c ? `${c.clientWidth}x${c.clientHeight} css, buffer ${c.width}x${c.height}` : 'no canvas',
       baseDpr: renderScale.baseDpr,
       startedISO: new Date().toISOString(),
