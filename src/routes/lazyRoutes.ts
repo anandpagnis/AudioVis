@@ -61,6 +61,11 @@ export const Home = lazy(() => import('./Home').then((m) => ({ default: m.Home }
 /** `/account` — same lazy treatment as `Home`, reached from AccountMenu. */
 export const Account = lazy(() => import('./Account').then((m) => ({ default: m.Account })))
 
+/** `/marketplace` — same lazy treatment; Pro's top-nav Marketplace destination. */
+export const Marketplace = lazy(() =>
+  import('./Marketplace').then((m) => ({ default: m.Marketplace })),
+)
+
 /** `/help` — same lazy treatment as `Account`, reached from AccountMenu. */
 export const Help = lazy(() => import('./Help').then((m) => ({ default: m.Help })))
 

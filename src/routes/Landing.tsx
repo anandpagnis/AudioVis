@@ -6,6 +6,7 @@ import { tunnelAudio } from '../landing/tunnelAudio'
 import { pageTransition } from '../landing/pageTransition'
 import { CHAPTERS } from '../landing/chapters'
 import { AccountMenu } from '../ui/AccountMenu'
+import { useEntitlement } from '../auth/authStore'
 import { preloadVisualizer } from './lazyRoutes'
 
 const REDUCED = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -30,6 +31,7 @@ const REDUCED = typeof window !== 'undefined' && window.matchMedia('(prefers-red
  */
 export function Landing() {
   const navigate = useNavigate()
+  const plan = useEntitlement()
   const [ready, setReady] = useState(false)
   const [entered, setEntered] = useState(false)
   const [muted, setMuted] = useState(false)
@@ -242,15 +244,28 @@ export function Landing() {
         </header>
 
         <nav className="tnav">
-          <Link className="tnavlink" to="/home#features">
-            Features
-          </Link>
-          <Link className="tnavlink" to="/home#pricing">
-            Pricing
-          </Link>
-          <Link className="tnavlink" to="/home#marketplace">
-            Marketplace
-          </Link>
+          {plan === 'pro' ? (
+            <>
+              <Link className="tnavlink" to="/home">
+                Home
+              </Link>
+              <Link className="tnavlink" to="/marketplace">
+                Marketplace
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link className="tnavlink" to="/home#features">
+                Features
+              </Link>
+              <Link className="tnavlink" to="/home#pricing">
+                Pricing
+              </Link>
+              <Link className="tnavlink" to="/home#marketplace">
+                Marketplace
+              </Link>
+            </>
+          )}
           <AccountMenu />
         </nav>
 

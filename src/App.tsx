@@ -3,7 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { isMobileDevice, supportsWebGL2 } from './audio/capabilities'
 import { PageTransitionOverlay } from './landing/PageTransitionOverlay'
 import { Landing } from './routes/Landing'
-import { Account, Bench, Help, Home, SignIn, Visualizer } from './routes/lazyRoutes'
+import { Account, Bench, Help, Home, Marketplace, SignIn, Visualizer } from './routes/lazyRoutes'
 import { UnsupportedScreen } from './ui/UnsupportedScreen'
 import { trackPageview } from './lib/posthogClient'
 
@@ -63,6 +63,7 @@ export default function App() {
           <Route path="/demo" element={<Visualizer />} />
           <Route path="/home" element={<Home />} />
           <Route path="/account" element={<Account />} />
+          <Route path="/marketplace" element={<Marketplace />} />
           <Route path="/sign-in" element={<SignIn />} />
           <Route path="/help" element={<Help />} />
           {/* Developer tool. `Bench` is null in production builds — the guard

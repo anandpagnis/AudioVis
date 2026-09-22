@@ -38,6 +38,29 @@
   padding: 28px 32px 0;
 }
 
+.account-nav-start {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.account-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(var(--cream-rgb), 0.55);
+  transition:
+    color 0.2s ease,
+    transform 0.2s ease;
+}
+.account-back:hover {
+  color: var(--cream);
+  transform: translateX(-2px);
+}
+.account-back svg {
+  display: block;
+}
+
 .account-mark {
   font-family: var(--t-mono, ui-monospace, monospace);
   font-size: 15px;
@@ -100,6 +123,21 @@
   line-height: 1.1;
   letter-spacing: -0.02em;
   color: var(--cream);
+}
+
+.account-hero-copy {
+  margin-top: 16px;
+  max-width: 560px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(var(--cream-rgb), 0.72);
+}
+
+.account-card-body {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(var(--cream-rgb), 0.7);
 }
 
 .account-signin-card,

@@ -21,19 +21,45 @@ export function Account() {
   return (
     <div className="account">
       <header className="account-nav">
-        <Link className="account-mark" to="/" title="Back to Lilim">
-          LILIM
-        </Link>
+        <div className="account-nav-start">
+          <Link className="account-back" to="/home" title="Back to Lilim home" aria-label="Back to Lilim home">
+            <svg width="16" height="8" viewBox="0 0 22 10" fill="none" aria-hidden="true">
+              <path
+                d="M22 5H2M7 1 2 5l5 4"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </Link>
+          <Link className="account-mark" to="/" title="Back to Lilim">
+            LILIM
+          </Link>
+        </div>
         <div className="account-nav-links">
-          <Link className="account-navlink" to="/home#features">
-            Features
-          </Link>
-          <Link className="account-navlink" to="/home#pricing">
-            Pricing
-          </Link>
-          <Link className="account-navlink" to="/home#marketplace">
-            Marketplace
-          </Link>
+          {plan === 'pro' ? (
+            <>
+              <Link className="account-navlink" to="/home">
+                Home
+              </Link>
+              <Link className="account-navlink" to="/marketplace">
+                Marketplace
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link className="account-navlink" to="/home#features">
+                Features
+              </Link>
+              <Link className="account-navlink" to="/home#pricing">
+                Pricing
+              </Link>
+              <Link className="account-navlink" to="/home#marketplace">
+                Marketplace
+              </Link>
+            </>
+          )}
         </div>
       </header>
 

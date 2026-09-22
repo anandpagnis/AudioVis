@@ -12086,3 +12086,40 @@ per-frame canvas heavy enough to distort the reading.
       far as this session's tools can verify directly.
 
       `npm run check` clean: typecheck, lint, 1726 tests, build.
+
+- [x] **F252 · /demo could still freeze on one scene forever — F251 fixed
+      `sceneId` leaking from a prior Console session, but `autoPilot` leaks
+      through the exact same allowlist and wasn't touched** — *2026-09-18,
+      user report while testing F251 live: the scene correctly landed on
+      `wireframe`, postfx/lens kept reacting to audio, but the scene itself
+      never changed again* `src/routes/Visualizer.tsx`
+
+      Root cause: `autoPilot` sits in the same `partialize` allowlist as
+      `sceneId`, under the same origin-wide `audiovis-settings` key — a
+      visitor on the same browser as a prior Console session that had
+      flipped the "picking scenes for you" toggle to manual inherits
+      `autoPilot: false` in `/demo` too. `AutoPilot.tsx`'s tick and
+      `PerformanceDirector.tsx`'s both bail at `!s.autoPilot` before ever
+      looking at the scene whitelist, while `PerformanceStateBridge`
+      (bloom/vignette/mirror/lens) has no such gate — so postfx kept
+      reacting to audio while the scene sat wherever F251's correction had
+      just landed it, with no error anywhere.
+
+      Fixed the same way as F251: the same mount effect now also forces
+      `autoPilot` on via `toggleAutoPilot()` when it reads false, right
+      after the existing `sceneId`/`layerSceneIds` correction.
+
+      Verified end-to-end, past the ceiling F251 hit: seeded
+      `localStorage['audiovis-settings']` with `{sceneId: 'kifs', autoPilot:
+      false}` on a throwaway port and loaded `/demo` against it — the
+      persisted state read back `autoPilot: true`. `sceneId` itself still
+      read back as the seeded `'kifs'`, unchanged; that's expected, not a
+      regression, since `requestScene` only ever writes the transient
+      `pendingSceneId` synchronously; the persisted `sceneId` only catches up
+      once `SceneManager`'s `useFrame` commit runs, which needs rAF, which
+      needs the page visible — the same documented ceiling F251 hit in this
+      pane. `toggleAutoPilot()` has no such two-phase pending/commit split —
+      it writes straight to persisted state — so this fix, unlike F251's, is
+      confirmed all the way through rather than only up to the request.
+
+      `npm run check` clean: typecheck, lint, 1726 tests, build.
