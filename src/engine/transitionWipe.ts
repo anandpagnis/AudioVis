@@ -65,27 +65,30 @@ export const WIPE_LAYER_IN = 31
  * that is already paying for both primaries at once (`fundsOverlap` already
  * has to be true before a wipe style is even considered — see
  * `SceneManager.tsx`'s commit block). That is real cost stacked on top of
- * real cost, so it is restricted to the three richest rungs (0, 1 and 2)
- * rather than "any tier that can afford the plain overlap" — tiers 3-4 exist
+ * real cost, so it is restricted to the four richest rungs (0-3) rather than
+ * "any tier that can afford the plain overlap" — tier 4 ("survival") exists
  * specifically because the machine cannot comfortably carry full-cost scene
- * work, and a wipe asks for MORE of exactly that, not less.
+ * work at all, and a wipe asks for MORE of exactly that, not less.
  *
- * Originally 1 (the two richest rungs only). Raised to 2 (2026-09-23, first
- * real-world check): `quality`'s `auto` mode starts every session at tier 1
- * and only climbs from there on MEASURED overbudget frames, so a session
- * that settles at tier 2 is not a rare edge case — the `?lookdebug` overlay
- * showed every wipe silently downgrading to a plain `dissolve` on ordinary
- * hardware, i.e. this ceiling was gating the whole feature off for most
- * viewers, not just the constrained ones it was meant to protect.
- * `TransitionCapture`'s own `WIPE_CAPTURE_SCALE` was lowered in the same
- * change (0.75 -> 0.5, roughly 44% of the previous capture area) to keep the
- * actual per-transition cost down while this ceiling grows. Tier 2 is still
- * short of `TIERS`' bottom two rungs (3, "already trimming raymarch/noise/
- * particles hard", 4 "survival") — a wipe is not offered there, where the
- * base show is already visibly reduced and cannot spare the two extra
- * captures even at the smaller size.
+ * History: originally 1 (the two richest rungs), then 2 (2026-09-23) after
+ * `?lookdebug` showed `auto` quality settling above 1 on ordinary hardware —
+ * `quality`'s `auto` mode starts every session at tier 1 and only climbs on
+ * MEASURED overbudget frames, so a session that settles at 2 is common, not
+ * a rare edge case. Raised again to 3 the same day, at the user's explicit
+ * request, after their own machine (described as "quite strong") measured
+ * tier 3-4 in THIS session specifically — alongside repeated background-
+ * process low-memory kills all session and the fact this was measured under
+ * `vite`'s unminified dev server, not a production build, so the reading
+ * may reflect session/dev-mode load rather than the hardware's real ceiling.
+ * Accepted as an explicit tradeoff (a real chance of a dropped frame or two
+ * during a transition on a session already this constrained), not a claim
+ * that tier 3 is actually free. `TransitionCapture`'s `WIPE_CAPTURE_SCALE`
+ * was lowered again in the same change to keep the marginal cost down as
+ * this reaches further into the ladder. Tier 4 remains excluded: the base
+ * show is already visibly reduced there and cannot spare the two extra
+ * captures at any resolution.
  */
-export const WIPE_MAX_TIER = 2
+export const WIPE_MAX_TIER = 3
 
 /** The three wipe-tier style names, as a standalone type — used where a
  *  signature wants to say "one of the wipe styles specifically" rather than

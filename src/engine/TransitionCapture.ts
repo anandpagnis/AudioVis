@@ -55,13 +55,16 @@ import { WIPE_LAYER_IN, WIPE_LAYER_OUT } from './transitionWipe'
  */
 /**
  * Linear scale of the renderer's current size the two capture targets are allocated at (so the AREA cost is
- * this squared — 0.25 of the main render's pixel count). A wipe reads and downstream-blurs/blooms/composites
- * a small texture over sub-2-second transitions, so full resolution buys nothing visible; keeping this low is
- * the direct lever on the capture's actual cost, alongside `WIPE_MAX_TIER`'s gate on which sessions attempt it
- * at all. Lowered from 0.75 (roughly 44% of the previous capture area) alongside raising `WIPE_MAX_TIER` — see
- * that constant's doc for why both moved together.
+ * this squared). A wipe reads and downstream-blurs/blooms/composites a small texture over sub-2-second
+ * transitions, so full resolution buys nothing visible; keeping this low is the direct lever on the capture's
+ * actual cost, alongside `WIPE_MAX_TIER`'s gate on which sessions attempt it at all. This does NOT touch the
+ * fixed per-pass overhead of a second full scene traversal (state changes, draw calls, shader binds) — on the
+ * weakest admitted tier that overhead, not pixel count, is most of the real cost, so shrinking this further has
+ * diminishing returns past a point. History: 0.75 originally, then 0.5 (2026-09-23) alongside `WIPE_MAX_TIER`
+ * 1->2, then 0.35 (same day) alongside 2->3 — see that constant's doc for the full reasoning; both move
+ * together deliberately.
  */
-export const WIPE_CAPTURE_SCALE = 0.5
+export const WIPE_CAPTURE_SCALE = 0.35
 
 function makeCaptureTarget(width: number, height: number, name: string): THREE.WebGLRenderTarget {
   const target = new THREE.WebGLRenderTarget(width, height, {
