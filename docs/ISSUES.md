@@ -12456,3 +12456,62 @@ per-frame canvas heavy enough to distort the reading.
       distance/FOV/orbit-radius still aren't mood-aware; the global
       photosensitivity flash limiter is still deferred; `intensityGate` still
       keys off the old 6-state mood, deliberately left alone this round.
+
+- [x] **F258 · Turned on the withheld wipe transitions; effect scenes and
+      palette choice now read mood too** — *2026-09-22, user request ("add
+      the other transitions you were gonna add, and whatever else too")*
+      `src/engine/look/moodRows.ts`, `src/engine/EffectDirector.tsx`,
+      `src/engine/performanceState.ts`, `src/scenes/{ShockRing,SectionFlare,
+      TransientSpark,StrobeBars}Scene.tsx`, `src/engine/paletteCharacter.ts`,
+      `src/engine/AutoPilot.tsx`
+
+      **Wipe transitions live.** `inkDissolve`/`irisWipe`/`datamosh` (F257)
+      shipped with every mood's weight at 0, pending a live watch. That
+      watch happened and was confirmed good, so the exact withheld table
+      from F257 is now applied: `inkDissolve` co-dominates with `dissolve`
+      on serene/tender/melancholic, `irisWipe` leads on epic and features on
+      dreamy/mysterious/uplifting/euphoric, `datamosh` joins `collapse`/
+      `sortSlice` on aggressive/tense/driving/brooding. All 9 styles are now
+      selectable. The staged-rollout safety-pin test was replaced with real
+      ordering assertions; every pre-existing legibility/ordering assertion
+      still passes unmodified with the new weights in place.
+
+      **Effect scenes (shock/flare/spark/strobe) now scale by mood, not just
+      by which one fires.** A firing's duration (`effectDurationScale`,
+      0.75x-1.0x — shorter only, never longer than authored) and brightness
+      (`effectIntensityScale`, 0.8x-1.1x) are captured once at fire time from
+      the mood's propensity and held for the whole burst, the same pattern
+      Transient Spark's layout already used for its audio-driven strength.
+      **Strobe is untouched on anything flash-related** — the hard gap floor
+      and flash-peak cap are byte-identical; only its non-flash bar-cascade
+      brightness responds to mood. Colour was deliberately skipped: the
+      global grade already carries the mood's colour story, and a second
+      per-effect tint risked fighting it for little visible gain.
+
+      **Palette selection now leans toward the mood's colour, not only the
+      raw valence/arousal/tension point.** `pickPaletteByCharacter` gains an
+      optional `moodTarget` (the mood's `gradeSat`/`gradeTemp`/
+      `gradeContrast`), giving each palette's own intrinsic saturation/
+      warmth a bounded bonus (max 1.15x, calibrated under the existing
+      key-family bonus so it stays a nudge) toward palettes that already
+      carry the mood's colour. Proven by test that the bonus cannot override
+      a decisive V/A/T mismatch. Checked against `gradeResidual.ts`'s
+      one-sided credit formula for double-counting: selection getting better
+      at pre-satisfying the mood naturally shrinks what the residual has to
+      correct afterward; the residual formula itself needed no change.
+
+      **Verification.** `npm run check`: typecheck, lint, build and the
+      licence gate all pass. 2486 of 2487 tests pass; the one failure
+      (`checkDistLicences.test.ts`, a `SyntaxError` on import) remains the
+      pre-existing, unrelated flake first confirmed in F257 — reproduces
+      identically with every change on this branch removed.
+
+      **Still open (unchanged from F257's list, ordered):** `chroma[12]`/
+      `harmonicDissonance` computed and read by nothing; camera distance/
+      FOV/orbit-radius not mood-aware (mode/speed/shake only); a
+      `docs/FUTURE_IDEAS.md` housekeeping pass; the global photosensitivity
+      flash limiter, still deferred and more relevant now that `datamosh`
+      and sharper transition curves are live; `intensityGate` still keyed on
+      the old 6-state mood. The last three especially were deliberately held
+      back this round pending explicit direction, since they need a more
+      dedicated design pass or are safety-critical.
