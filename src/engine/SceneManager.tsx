@@ -21,6 +21,7 @@ import {
   usesRack,
   type TransitionStyle,
 } from './transitions'
+import { usesWipe, WIPE_LAYER_IN, WIPE_LAYER_OUT, WIPE_MAX_TIER } from './transitionWipe'
 import { quality } from './quality'
 import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
 import {
@@ -511,6 +512,12 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
   const started = useRef(false)
+  /**
+   * Layer bit currently applied to every object in this entry's subtree (see
+   * the wipe-layer block below). 0 is the Three default (layer 0 only, what
+   * every non-primary entry stays at forever).
+   */
+  const appliedLayer = useRef(0)
 
   useFrame(() => {
     const node = group.current
@@ -523,7 +530,8 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
     // `prewarmed`, skip the warm frames, and hand the real compile stall
     // straight to the first post-promotion draw: the exact failure this whole
     // mechanism exists to prevent, and one that looks like success.
-    if (!started.current && hasRenderable(node)) {
+    const justRenderable = !started.current && hasRenderable(node)
+    if (justRenderable) {
       started.current = true
       void prewarmShaders(gl, node, camera).then((result) => {
         entry.prewarmed = result.skippedWarmFrames
@@ -535,6 +543,40 @@ function EntryGroup({ entry, children }: { entry: Entry; children: ReactNode }) 
     // rendering forever once it had compiled.
     node.visible =
       entry.role === 'effect' ? entry.dir !== 0 : entry.dir !== 0 || !isWarmComplete(entry)
+
+    // Wipe-style transitions (see transitionWipe.ts) need the outgoing and
+    // incoming PRIMARY each captured to their own texture — real layer
+    // masking at gl.render()'s render-list build, not just an opacity
+    // multiplier, which is the only thing that can cleanly separate one
+    // primary's image from the merged frame. Only the two primary entries
+    // ever move off layer 0; background/accent/overlay/effect stay untouched
+    // (the plan's explicit scoping) because this whole block is gated on
+    // `entry.role === 'primary'`.
+    if (entry.role === 'primary') {
+      const tx = performanceState.transition
+      const wantWipe = tx.active && usesWipe(tx.style)
+      const targetLayer = !wantWipe ? 0 : entry.dir === -1 ? WIPE_LAYER_OUT : entry.dir === 1 ? WIPE_LAYER_IN : 0
+      // A group's `.layers` is NOT inherited by its children at render time —
+      // three.js tests each renderable object's OWN mask against the
+      // camera's, independently of its parents — so setting only `node`'s
+      // layers would leave every mesh inside still on layer 0: invisible to
+      // BOTH capture passes and still visible in the default merged frame,
+      // silently defeating the whole mechanism. The subtree is walked
+      // instead, and only when the target actually differs from what's
+      // already applied (or right as a lazily-loaded scene's content first
+      // appears mid-wipe, `justRenderable` — the same signal the prewarm
+      // block above uses) — so the common case (no wipe running, which is
+      // most frames of most sessions) costs one integer comparison per
+      // primary, not a traversal. Checked every frame regardless (not just on
+      // transition start/end), so an interrupted or replaced transition can
+      // never leave an entry stuck on a stale layer — the main camera stays
+      // masked to the Three default, layer 0 only, since nothing else in
+      // this codebase touches `camera.layers` (confirmed by grep).
+      if (targetLayer !== appliedLayer.current || (justRenderable && targetLayer !== 0)) {
+        node.traverse((obj) => obj.layers.set(targetLayer))
+        appliedLayer.current = targetLayer
+      }
+    }
   })
 
   // Only meaningful for non-additive layer blends, which composite against
@@ -907,6 +949,20 @@ export function SceneManager() {
         if (!hardCut && !fundsOverlap && usesRack(style as TransitionStyle)) {
           style = 'dissolve'
         }
+        // A wipe style is a SECOND, separate downgrade on top of the one just
+        // above — same "a cost problem gets less spend, not a changed edit"
+        // reasoning, extended with one more condition. A wipe costs the
+        // overlap PLUS two extra full-scene captures, so it is only offered
+        // when the overlap is affordable AND the tier is one of the two
+        // richest (`WIPE_MAX_TIER`, `transitionWipe.ts` — quality.ts's tier
+        // ladder runs richest-to-survival, 0 to 4, confirmed by reading its
+        // own doc comment before picking this constant). Every tier below
+        // that falls back to `dissolve` exactly like an unaffordable rack
+        // style does, never to a rack style specifically — there is no
+        // reason a wipe's fallback should differ from a rack's.
+        if (!hardCut && (!fundsOverlap || tier > WIPE_MAX_TIER) && usesWipe(style as TransitionStyle)) {
+          style = 'dissolve'
+        }
         performanceState.transition.style = style as TransitionStyle
         // Committed once, here, so a fade cannot change speed while it runs. The
         // mood's duration bias (computed above, alongside `suspendFrameSampling`)
@@ -924,6 +980,15 @@ export function SceneManager() {
         performanceState.transition.sharpness = useTransitionLook
           ? commitLook.transitionSharpness
           : undefined
+        // Captured once, here, same commit-once reasoning as `style`/
+        // `durationSec`/`sharpness` above — a wipe style's block hash must not
+        // re-seed mid-fade (see `transitionWipe.ts`'s `datamoshBlockOffset`
+        // header, "no per-frame reseed"). `f.beatIndex` is already in scope,
+        // already deterministic from the music's position (the same property
+        // `WingfoldJuliaScene`'s own beat-seeded gate relies on), and needs no
+        // new bookkeeping — meaningless while `style` is not a wipe style, so
+        // no gating is needed on which branch sets it.
+        performanceState.transition.seed = f.beatIndex
         if (hardCut) {
           if (outgoing) outgoing.fade.value = 0
           incoming.fade.value = 1

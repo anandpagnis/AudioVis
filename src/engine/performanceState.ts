@@ -384,6 +384,18 @@ export interface PerformanceState {
      * this argument is omitted entirely.
      */
     sharpness?: number
+    /**
+     * Deterministic seed for a wipe-style transition's per-block/per-pixel
+     * randomness (`datamosh`'s block hash; `inkDissolve`'s noise-field
+     * offset), captured ONCE at commit alongside `style`/`durationSec`/
+     * `sharpness` for the same reason — a seed that changed mid-fade would
+     * re-roll every block's displacement and reveal order on a live frame,
+     * which is exactly the "per-frame reseed" the plan's safety rule forbids
+     * (see `transitionWipe.ts`'s `datamoshBlockOffset` header). Meaningless
+     * (and unread) while `style` is not a wipe style — no default beyond the
+     * initial `0` below is needed for that case.
+     */
+    seed: number
   }
 
   /**
@@ -455,7 +467,7 @@ export const performanceState: PerformanceState = {
   limitless: { active: false, since: 0, manual: false },
   rackAudio: { kick: 0, highs: 0, mids: 0, onKick: 0, beat: false },
   transitionStyle: 'dissolve',
-  transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1, sharpness: undefined },
+  transition: { style: 'dissolve', progress: 1, active: false, durationSec: 1, sharpness: undefined, seed: 0 },
 
   // Empty, not neutral: at boot the director has formed no opinion yet, and
   // every scene's own authored defaults are the right thing to show until it

@@ -362,6 +362,29 @@ describe('MOOD_ROWS: ordering between moods', () => {
     }
   })
 
+  /**
+   * The plan's staged-rollout safety rule (Phasing item 3): the two-texture wipe machinery
+   * (`transitionWipe.ts`/`TransitionCapture`/`WipeCompositorPass`) is built, wired and tested
+   * end-to-end, but every mood row's `inkDissolve`/`irisWipe`/`datamosh` weight stays at an
+   * implicit 0 — exactly like `mosaic`/`sortSlice` were left at an implicit 0 for the 4 calmest
+   * moods by the prior phase — so the weighted picker (`pickTransitionStyle` in transitions.ts)
+   * cannot select any of the 3 new wipe styles yet. This is a DELIBERATE gate, not an oversight:
+   * nobody has watched the capture/composite path run on a real GPU. Real, well-reasoned per-mood
+   * weights were authored and verified (every assertion in this file, including a temporary
+   * ordering block mirroring the one above for mosaic/sortSlice, passed with them in place) and
+   * then reverted — see the session's final report for the withheld numbers as a table, ready to
+   * apply in one follow-up edit once this has been watched running live.
+   */
+  it('the 3 wipe-tier styles are pinned at 0 for every mood — the staged-rollout safety gate', () => {
+    const t = (m: CharacterMood, name: (typeof LOOK_TRANSITIONS)[number]): number =>
+      share(row(m).transitionWeights, LOOK_TRANSITIONS.indexOf(name))
+    for (const m of MOODS) {
+      for (const wipe of ['inkDissolve', 'irisWipe', 'datamosh'] as const) {
+        expect(t(m, wipe), `${m}.${wipe}`).toBe(0)
+      }
+    }
+  })
+
   it('traits: fast and angular for the driving moods, slow and organic for the calm ones, radial for the grand ones', () => {
     expect(row('driving').traitTempo).toBeGreaterThan(row('serene').traitTempo)
     for (const m of ['driving', 'aggressive', 'tense', 'euphoric', 'uplifting'] as const) {

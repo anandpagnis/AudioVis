@@ -22,8 +22,11 @@ import { MirrorPass } from './MirrorPass'
 import { getPalette } from './palettes'
 import { performanceState } from './performanceState'
 import { renderScale } from './renderScale'
+import { TransitionCapture } from './TransitionCapture'
 import { transitionRack, usesRack } from './transitions'
+import { featherFor, shouldCapture, usesWipe } from './transitionWipe'
 import { useDispose } from './useDispose'
+import { WipeCompositorPass } from './WipeCompositorPass'
 import { useStore } from '../store'
 
 /** Chromatic-aberration offset at mount — starts at zero so no first-frame flash. */
@@ -87,12 +90,31 @@ export function PostFXChain() {
   // component. See constraint 3 in the header before adding another selector.
   const scene = useThree((s) => s.scene)
   const gl = useThree((s) => s.gl)
+  // Stable for the session like `scene`/`gl` above — see constraint 3 in the
+  // header. Needed only for `TransitionCapture.render`'s two manual
+  // `gl.render()` calls, which must use the SAME camera the composer's own
+  // `RenderPass` renders with (its layer mask is saved and restored around
+  // each capture — see TransitionCapture.ts).
+  const camera = useThree((s) => s.camera)
   /** Scratch for the renderer size read below — reused, never allocated in the loop. */
   const sizeVec = useRef(new Vector2())
+  /** Scratch for the capture-size read in the wipe block below — a second
+   *  Vector2 rather than reusing `sizeVec` so neither read can stomp the
+   *  other if a future change reorders these blocks. */
+  const captureSizeVec = useRef(new Vector2())
   const feedbackPass = useMemo(() => new FeedbackPass(), [])
   const echoPass = useMemo(() => new EchoPass(), [])
   const mirrorPass = useMemo(() => new MirrorPass(), [])
   const lensPass = useMemo(() => new LensPass(), [])
+  /**
+   * Wipe-style transition machinery — see `WipeCompositorPass.ts`'s header for
+   * why it is mounted first in the chain below, and `TransitionCapture.ts`'s
+   * for why it is a plain helper rather than a composer pass. Both are
+   * `useMemo` with no deps like every sibling above (constraint 3): neither
+   * may be rebuilt by a re-render.
+   */
+  const wipeCompositorPass = useMemo(() => new WipeCompositorPass(), [])
+  const transitionCapture = useMemo(() => new TransitionCapture(), [])
   /**
    * The ISF filter slot. Mounted once, permanently, and disabled until
    * something selects a filter — see `IsfFilterPass`'s header for why the slot
@@ -115,7 +137,7 @@ export function PostFXChain() {
    *  in the loop, matching this file's no-allocation-per-frame discipline. */
   const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
   const txLens = useRef<LensRackState>({ amount: 0, style: 0 })
-  useDispose(feedbackPass, echoPass, mirrorPass, lensPass, isfFilterPass, gradePass)
+  useDispose(feedbackPass, echoPass, mirrorPass, lensPass, isfFilterPass, gradePass, wipeCompositorPass, transitionCapture)
   /** F81 guard: warned about a mis-ordered chain at most once per mount. */
   const warnedChainOrder = useRef(false)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
@@ -241,6 +263,36 @@ export function PostFXChain() {
       txLens.current.amount = Math.min(1, p.lens.amount + rack.lensAmount)
       txLens.current.style = rack.lensAmount > 0 ? rack.lensStyle : p.lens.style
     }
+
+    // Wipe-style transitions (`inkDissolve` / `irisWipe` / `datamosh`): the
+    // two-texture capture/composite path, gated by the SAME predicate
+    // `SceneManager.tsx`'s quality-tier downgrade and `transitionWipe.test.ts`'s
+    // cost-gating pin both use — see `shouldCapture`'s own doc for why this is
+    // imported and reused rather than reimplemented here. `false` is by far
+    // the common case (every ramp/mix transition, and every frame with no
+    // transition at all), and costs nothing beyond this one boolean check:
+    // `wipeCompositorPass.enabled = false` skips it in the composer, and
+    // `TransitionCapture.ensureTargets`/`.render` are simply never called, so
+    // no capture target is even allocated until the first wipe actually runs.
+    const wipeActive = shouldCapture(tx)
+    wipeCompositorPass.enabled = wipeActive
+    // `usesWipe(tx.style)` re-checked (not just `wipeActive`, which already implies it) purely so TypeScript
+    // narrows `tx.style` from the 9-member `TransitionStyle` union to `WipeStyle` inside this block — a type
+    // guard's narrowing does not survive being routed through `shouldCapture`'s plain `boolean` return.
+    if (wipeActive && usesWipe(tx.style)) {
+      gl.getSize(captureSizeVec.current)
+      transitionCapture.ensureTargets(captureSizeVec.current.width, captureSizeVec.current.height)
+      transitionCapture.render(gl, scene, camera)
+      wipeCompositorPass.setWipe(
+        tx.style,
+        tx.progress,
+        featherFor(tx.sharpness ?? 3),
+        performanceState.transition.seed,
+        transitionCapture.outTarget?.texture ?? null,
+        transitionCapture.inTarget?.texture ?? null,
+      )
+    }
+
     mirrorPass.advance(rack ? txMirror.current : p.mirror, delta, p.rackAudio.mids)
     lensPass.advance(rack ? txLens.current : p.lens, delta, p.rackAudio, p.djCam.active)
     feedbackPass.setTrails(Math.min(1, p.trails + (rack?.trails ?? 0)))
@@ -311,14 +363,29 @@ export function PostFXChain() {
   return (
     <EffectComposer ref={composerRef} multisampling={0}>
       {/*
+        FIRST in the chain, ahead of even mirror — see WipeCompositorPass.ts's
+        header for the full reasoning. Short version: while a wipe transition is
+        active, both primaries are layer-excluded from the composer's own
+        RenderPass (see SceneManager.tsx), so `tDiffuse` here is background/
+        layers/effects only. This pass adds each primary's own capture back in
+        through a mask BEFORE mirror/feedback/bloom/lens/grade run, so all of
+        them see one coherent composited frame and run exactly once over it —
+        no doubled bloom, no wipe content that skipped an earlier effect.
+        `enabled` is false whenever no wipe is running (the overwhelming
+        majority of frames), which is the composer's normal zero-cost skip —
+        same contract as every other pass in this chain.
+      */}
+      <primitive object={wipeCompositorPass} />
+      {/*
         A raw Pass, not a merged Effect — see FeedbackPass.ts's header for why
         that distinction is what makes mounting this unconditionally cheap. It
         sits BEFORE the Bloom/CA/Vignette list so bloom picks up the accumulated
         trail, not just the current frame, matching lilim's own chain order.
       */}
       {/*
-        Chain order is lilim's, and each position is load-bearing:
-        mirror -> feedback -> echo -> bloom/CA -> isf filter -> vignette -> lens -> grade.
+        Chain order is lilim's (plus the wipe compositor prepended — see the
+        comment above), and each position is load-bearing:
+        wipe compositor -> mirror -> feedback -> echo -> bloom/CA -> isf filter -> vignette -> lens -> grade.
 
         Mirror sits ahead of feedback so the trail accumulates THROUGH the fold
         and the pattern compounds into itself; behind it, symmetry would just be
