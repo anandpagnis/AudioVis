@@ -29,7 +29,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # wrangler itself refuses to run below Node 22 ("Wrangler requires at
+          # least Node.js v22.0.0"). `check` deliberately stays on Node 20 (see
+          # its own step) so it keeps catching a bare browser-global reference
+          # like the one F256 found, instead of only working by accident on a
+          # newer Node.
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run build
