@@ -174,7 +174,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.4, steerComplexity: 0.45, steerDensity: 0.35, steerFill: 0.4, steerContrast: 0.7,
     cameraWeights: camera({ push: 0.5, cinematic: 0.15, hover: 0.15, locked: 0.1, orbit: 0.1 }),
     cameraSpeed: 0.7, cameraShake: 0.3, cameraCutRate: 0.25,
-    transitionWeights: transitions({ smear: 0.6, dissolve: 0.2, melt: 0.2 }),
+    // A small sortSlice residual — the one CALM mood besides mysterious whose lens already touches glitch,
+    // so a rare harsh-directional streak isn't out of character; mosaic stays 0 (no `pixels` in the lens mix).
+    transitionWeights: transitions({ smear: 0.55, dissolve: 0.2, melt: 0.2, sortSlice: 0.05 }),
     gradeSat: 0.88, gradeTemp: -0.1, gradeContrast: 1.15,
     traitTempo: 0.3, traitAngular: 0.7, traitBusy: 0.4, traitRadial: 0.3, traitStrength: 0.55,
     fxShock: 0.3, fxFlare: 0.2, fxSpark: 0.2, fxStrobe: 0,
@@ -190,7 +192,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.3, steerComplexity: 0.55, steerDensity: 0.35, steerFill: 0.4, steerContrast: 0.55,
     cameraWeights: camera({ orbit: 0.5, spiral: 0.15, topdown: 0.1, hover: 0.1, pull: 0.1, cinematic: 0.05 }),
     cameraSpeed: 0.8, cameraShake: 0.1, cameraCutRate: 0.25,
-    transitionWeights: transitions({ smear: 0.7, dissolve: 0.2, melt: 0.1 }),
+    // sortSlice residual tracks this row's own pixelSort lens share (0.2, the only CALM mood carrying it);
+    // mosaic stays 0 — mysterious has no `pixels` in its lens mix, so a chunky LED read would be off-character.
+    transitionWeights: transitions({ smear: 0.62, dissolve: 0.2, melt: 0.1, sortSlice: 0.08 }),
     gradeSat: 0.85, gradeTemp: -0.3, gradeContrast: 1.05,
     traitTempo: 0.3, traitAngular: 0.35, traitBusy: 0.65, traitRadial: 0.85, traitStrength: 0.6,
     fxShock: 0.2, fxFlare: 0.3, fxSpark: 0.3, fxStrobe: 0,
@@ -207,7 +211,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.5, steerComplexity: 0.5, steerDensity: 0.52, steerFill: 0.5, steerContrast: 0.55,
     cameraWeights: camera({ orbit: 0.4, spiral: 0.15, push: 0.1, pull: 0.1, handheld: 0.1, hover: 0.05, topdown: 0.05, cinematic: 0.05 }),
     cameraSpeed: 1, cameraShake: 0.3, cameraCutRate: 0.5,
-    transitionWeights: transitions({ dissolve: 0.45, melt: 0.35, smear: 0.1, collapse: 0.1 }),
+    // mosaic (LED pixels) fits groove's own anamorphic+pixels lens mix directly — carved out of dissolve/melt/
+    // collapse, not added as extra mass. sortSlice stays 0: groove's lens never touches pixelSort or glitch.
+    transitionWeights: transitions({ dissolve: 0.35, melt: 0.25, smear: 0.1, collapse: 0.05, mosaic: 0.25 }),
     gradeSat: 0.98, gradeTemp: 0.05, gradeContrast: 1.08,
     traitTempo: 0.55, traitAngular: 0.35, traitBusy: 0.5, traitRadial: 0.35, traitStrength: 0.5,
     fxShock: 0.6, fxFlare: 0.5, fxSpark: 0.7, fxStrobe: 0,
@@ -224,7 +230,10 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.66, steerComplexity: 0.45, steerDensity: 0.5, steerFill: 0.62, steerContrast: 0.45,
     cameraWeights: camera({ handheld: 0.35, spiral: 0.2, orbit: 0.2, push: 0.1, topdown: 0.1, pull: 0.05 }),
     cameraSpeed: 1.1, cameraShake: 0.5, cameraCutRate: 0.6,
-    transitionWeights: transitions({ collapse: 0.6, melt: 0.2, dissolve: 0.1, smear: 0.1 }),
+    // The highest mosaic share of any mood — playful's lens is 60% `pixels`, the top share in the table — carved
+    // mostly out of collapse. A small sortSlice residual too: the only one of the three mosaic-led moods whose
+    // lens also carries glitch (0.25), so an occasional harsh streak among the bounce isn't out of character.
+    transitionWeights: transitions({ collapse: 0.3, melt: 0.15, dissolve: 0.1, smear: 0.05, mosaic: 0.35, sortSlice: 0.05 }),
     gradeSat: 1.15, gradeTemp: 0.25, gradeContrast: 1,
     traitTempo: 0.65, traitAngular: 0.3, traitBusy: 0.6, traitRadial: 0.35, traitStrength: 0.5,
     fxShock: 0.5, fxFlare: 0.7, fxSpark: 1, fxStrobe: 0.1,
@@ -240,7 +249,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.64, steerComplexity: 0.62, steerDensity: 0.6, steerFill: 0.68, steerContrast: 0.58,
     cameraWeights: camera({ push: 0.3, spiral: 0.3, orbit: 0.15, cinematic: 0.1, handheld: 0.1, pull: 0.05 }),
     cameraSpeed: 1.1, cameraShake: 0.3, cameraCutRate: 0.55,
-    transitionWeights: transitions({ collapse: 0.5, smear: 0.3, dissolve: 0.1, melt: 0.1 }),
+    // mosaic carved entirely out of collapse's dominant share — uplifting's lens carries a real `pixels` slice
+    // (0.3). sortSlice stays 0: no pixelSort or glitch in this row's lens at all.
+    transitionWeights: transitions({ collapse: 0.28, smear: 0.3, dissolve: 0.1, melt: 0.1, mosaic: 0.22 }),
     gradeSat: 1.12, gradeTemp: 0.32, gradeContrast: 1.05,
     traitTempo: 0.8, traitAngular: 0.3, traitBusy: 0.55, traitRadial: 0.5, traitStrength: 0.6,
     fxShock: 0.7, fxFlare: 1, fxSpark: 0.9, fxStrobe: 0.2,
@@ -257,7 +268,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.78, steerComplexity: 0.78, steerDensity: 0.75, steerFill: 0.8, steerContrast: 0.7,
     cameraWeights: camera({ spiral: 0.45, push: 0.2, orbit: 0.15, handheld: 0.1, topdown: 0.05, cinematic: 0.05 }),
     cameraSpeed: 1.3, cameraShake: 0.5, cameraCutRate: 0.7,
-    transitionWeights: transitions({ collapse: 0.55, melt: 0.35, smear: 0.1 }),
+    // Secondary mosaic mood (behind groove/playful/uplifting), carved out of collapse/melt — euphoric's lens
+    // still carries a real `pixels` share (0.4). A tiny sortSlice residual tracks its glitch share (0.2).
+    transitionWeights: transitions({ collapse: 0.42, melt: 0.27, smear: 0.1, mosaic: 0.18, sortSlice: 0.03 }),
     gradeSat: 1.25, gradeTemp: 0.2, gradeContrast: 1.1,
     traitTempo: 0.9, traitAngular: 0.4, traitBusy: 0.85, traitRadial: 0.8, traitStrength: 0.7,
     fxShock: 1.3, fxFlare: 1.4, fxSpark: 1.3, fxStrobe: 0.6,
@@ -273,7 +286,10 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.78, steerComplexity: 0.7, steerDensity: 0.65, steerFill: 0.65, steerContrast: 0.72,
     cameraWeights: camera({ push: 0.6, handheld: 0.15, spiral: 0.1, topdown: 0.1, orbit: 0.05 }),
     cameraSpeed: 1.5, cameraShake: 0.4, cameraCutRate: 0.75,
-    transitionWeights: transitions({ collapse: 0.85, melt: 0.1, dissolve: 0.05 }),
+    // sortSlice carved out of collapse's dominant share (0.85 -> 0.45) — driving's pixelSort lens share (0.45)
+    // is the second-highest of any mood after aggressive. A small mosaic residual too: the only one of the
+    // three harsh moods whose lens still carries a `pixels` sliver (0.1).
+    transitionWeights: transitions({ collapse: 0.45, melt: 0.1, dissolve: 0.05, sortSlice: 0.35, mosaic: 0.05 }),
     gradeSat: 1.1, gradeTemp: -0.05, gradeContrast: 1.15,
     traitTempo: 0.9, traitAngular: 0.8, traitBusy: 0.6, traitRadial: 0.2, traitStrength: 0.75,
     fxShock: 1, fxFlare: 0.6, fxSpark: 1, fxStrobe: 0.5,
@@ -291,7 +307,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.55, steerComplexity: 0.75, steerDensity: 0.6, steerFill: 0.5, steerContrast: 0.8,
     cameraWeights: camera({ handheld: 0.55, push: 0.2, locked: 0.1, topdown: 0.1, orbit: 0.05 }),
     cameraSpeed: 1, cameraShake: 1, cameraCutRate: 0.6,
-    transitionWeights: transitions({ smear: 0.7, dissolve: 0.1, melt: 0.1, collapse: 0.1 }),
+    // sortSlice takes tense's whole (small) collapse share, plus a trim off smear, to reach a real presence —
+    // tense's lens is 40% pixelSort. mosaic stays 0: no `pixels` anywhere in this row's lens mix.
+    transitionWeights: transitions({ smear: 0.55, dissolve: 0.1, melt: 0.1, sortSlice: 0.25 }),
     gradeSat: 0.85, gradeTemp: -0.2, gradeContrast: 1.2,
     traitTempo: 0.7, traitAngular: 0.85, traitBusy: 0.8, traitRadial: 0.25, traitStrength: 0.65,
     fxShock: 0.8, fxFlare: 0.3, fxSpark: 0.6, fxStrobe: 0.3,
@@ -309,7 +327,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.74, steerComplexity: 0.78, steerDensity: 0.74, steerFill: 0.7, steerContrast: 0.84,
     cameraWeights: camera({ handheld: 0.6, push: 0.2, topdown: 0.1, spiral: 0.05, orbit: 0.05 }),
     cameraSpeed: 1.4, cameraShake: 1.4, cameraCutRate: 0.9,
-    transitionWeights: transitions({ collapse: 0.65, melt: 0.35 }),
+    // The strongest sortSlice of any mood, carved entirely out of collapse (0.65 -> 0.25, melt untouched) —
+    // aggressive's lens is 55% pixelSort, the highest share in the table. mosaic stays 0: no `pixels` at all here.
+    transitionWeights: transitions({ collapse: 0.25, melt: 0.35, sortSlice: 0.4 }),
     gradeSat: 1.2, gradeTemp: 0.35, gradeContrast: 1.25,
     traitTempo: 0.95, traitAngular: 0.95, traitBusy: 0.8, traitRadial: 0.15, traitStrength: 0.8,
     fxShock: 1.5, fxFlare: 0.9, fxSpark: 1.2, fxStrobe: 0.7,
@@ -325,7 +345,9 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     steerSpeed: 0.6, steerComplexity: 0.7, steerDensity: 0.68, steerFill: 0.82, steerContrast: 0.65,
     cameraWeights: camera({ cinematic: 0.5, pull: 0.2, push: 0.15, orbit: 0.1, spiral: 0.05 }),
     cameraSpeed: 1, cameraShake: 0.15, cameraCutRate: 0.35,
-    transitionWeights: transitions({ smear: 0.45, collapse: 0.4, dissolve: 0.1, melt: 0.05 }),
+    // A small mosaic residual — epic's lens still carries a `pixels` sliver (0.15) — carved off smear/collapse.
+    // sortSlice stays 0: no pixelSort or glitch in this row's lens at all.
+    transitionWeights: transitions({ smear: 0.43, collapse: 0.37, dissolve: 0.1, melt: 0.05, mosaic: 0.05 }),
     gradeSat: 1.1, gradeTemp: 0.15, gradeContrast: 1.15,
     traitTempo: 0.55, traitAngular: 0.5, traitBusy: 0.65, traitRadial: 0.85, traitStrength: 0.6,
     fxShock: 1.3, fxFlare: 1.4, fxSpark: 1.1, fxStrobe: 0.5,

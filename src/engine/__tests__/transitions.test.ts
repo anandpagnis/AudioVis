@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { LENS } from '../look/lookRow'
 import {
   CONSTRAINED_FADE_SEC,
   TRANSITION_DURATION_BIAS_MAX,
@@ -140,6 +141,41 @@ describe('transitionRack', () => {
     // Index 3 is `melt` in opticalRack's LENS_STYLES. If that list is ever
     // reordered this silently selects a different material.
     expect(transitionRack('melt', 0.5).lensStyle).toBe(3)
+  })
+
+  it('mosaic and sortSlice peak mid-arc on the same triangular ramp every other rack style uses', () => {
+    // Same envelope as smear/melt/collapse — no new shape, just a different lens material.
+    expect(transitionRack('mosaic', 0.5).lensAmount).toBeGreaterThan(0.5)
+    expect(transitionRack('sortSlice', 0.5).lensAmount).toBeGreaterThan(0.5)
+    expect(transitionRack('mosaic', 0.5).lensAmount).toBeCloseTo(0.6, 9)
+    expect(transitionRack('sortSlice', 0.5).lensAmount).toBeCloseTo(0.65, 9)
+  })
+
+  it('mosaic and sortSlice are zero at both ends, like every other rack style', () => {
+    for (const style of ['mosaic', 'sortSlice'] as TransitionStyle[]) {
+      for (const t of [0, 1]) {
+        expect(transitionRack(style, t).lensAmount, `${style} at ${t}`).toBe(0)
+      }
+    }
+  })
+
+  it('names real lens materials for mosaic (pixels) and sortSlice (pixel-sort), referencing LENS rather than a magic number', () => {
+    expect(transitionRack('mosaic', 0.5).lensStyle).toBe(LENS.pixels)
+    expect(transitionRack('sortSlice', 0.5).lensStyle).toBe(LENS.pixelSort)
+  })
+
+  it('mosaic and sortSlice are deterministic, like every other style', () => {
+    expect(transitionRack('mosaic', 0.37)).toEqual(transitionRack('mosaic', 0.37))
+    expect(transitionRack('sortSlice', 0.62)).toEqual(transitionRack('sortSlice', 0.62))
+  })
+
+  it('usesRack recognizes exactly the five ramp-tier styles, and no others', () => {
+    expect(usesRack('mosaic')).toBe(true)
+    expect(usesRack('sortSlice')).toBe(true)
+    const rackStyles = new Set(['smear', 'melt', 'collapse', 'mosaic', 'sortSlice'])
+    for (const style of TRANSITION_STYLES) {
+      expect(usesRack(style), style).toBe(rackStyles.has(style))
+    }
   })
 })
 

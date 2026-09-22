@@ -342,6 +342,26 @@ describe('MOOD_ROWS: ordering between moods', () => {
     expect(t('dreamy', 'smear')).toBeGreaterThan(t('driving', 'smear'))
   })
 
+  it('transitions: mosaic favours the rhythmic moods, sortSlice favours the harsh ones', () => {
+    const t = (m: CharacterMood, name: (typeof LOOK_TRANSITIONS)[number]): number =>
+      share(row(m).transitionWeights, LOOK_TRANSITIONS.indexOf(name))
+    // mosaic (chunky, beat-locked, rides the `pixels` lens material): groove / playful / uplifting lead.
+    expect(t('groove', 'mosaic')).toBeGreaterThan(t('serene', 'mosaic'))
+    expect(t('playful', 'mosaic')).toBeGreaterThan(t('aggressive', 'mosaic'))
+    expect(t('uplifting', 'mosaic')).toBeGreaterThan(t('tense', 'mosaic'))
+    for (const calm of ['serene', 'tender', 'dreamy', 'melancholic'] as const) {
+      expect(t(calm, 'mosaic'), calm).toBe(0)
+    }
+    // sortSlice (harsh, directional, rides `pixel-sort`): aggressive / tense / driving lead, carved mostly
+    // out of collapse's share on those moods specifically.
+    expect(t('aggressive', 'sortSlice')).toBeGreaterThan(t('serene', 'sortSlice'))
+    expect(t('tense', 'sortSlice')).toBeGreaterThan(t('dreamy', 'sortSlice'))
+    expect(t('driving', 'sortSlice')).toBeGreaterThan(t('groove', 'sortSlice'))
+    for (const calm of ['serene', 'tender', 'dreamy', 'melancholic'] as const) {
+      expect(t(calm, 'sortSlice'), calm).toBe(0)
+    }
+  })
+
   it('traits: fast and angular for the driving moods, slow and organic for the calm ones, radial for the grand ones', () => {
     expect(row('driving').traitTempo).toBeGreaterThan(row('serene').traitTempo)
     for (const m of ['driving', 'aggressive', 'tense', 'euphoric', 'uplifting'] as const) {

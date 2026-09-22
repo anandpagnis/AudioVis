@@ -38,7 +38,7 @@
  * trusting each curve's algebra by eye.
  */
 
-import { LOOK_TRANSITIONS, type LookProfile } from './look/lookRow'
+import { LENS, LOOK_TRANSITIONS, type LookProfile } from './look/lookRow'
 
 /**
  * Styles that exist but may not currently be CHOSEN.
@@ -601,6 +601,17 @@ export function transitionRack(style: TransitionStyle, t: number): TransitionRac
       // it is untouched by F108's `p.mirror.tiles = 0` gate — restoring it here
       // does not reopen the standing mode.
       return { ...NO_RACK, mirrorTwist: arc * 2.2, mirrorTiles: arc > 0.35 ? 2 : 0 }
+    case 'mosaic':
+      // Same mechanism as `melt`/`collapse` — no new envelope, just the shared triangular `arc` riding a
+      // different lens material. `pixels` is the LED-grid quantize material, which is what makes this read
+      // as chunky and beat-locked rather than liquid (`melt`) or folded (`collapse`).
+      return { ...NO_RACK, lensAmount: arc * 0.6, lensStyle: LENS.pixels }
+    case 'sortSlice':
+      // Rides `pixel-sort`, amount on the same `arc`. The material's own kick/beat-gated re-seed of its
+      // streak DIRECTION (`uSeed` in LensPass.ts) is untouched by this — `transitionRack` only ever sets
+      // `lensAmount`/`lensStyle`, never a seed, so the streak's AMOUNT stays driven purely by transition
+      // progress while its direction keeps re-rolling on the beat exactly as it does outside a transition.
+      return { ...NO_RACK, lensAmount: arc * 0.65, lensStyle: LENS.pixelSort }
     default:
       return NO_RACK
   }
@@ -608,7 +619,13 @@ export function transitionRack(style: TransitionStyle, t: number): TransitionRac
 
 /** Does this style need the racks at all? Lets callers skip the work entirely. */
 export function usesRack(style: TransitionStyle): boolean {
-  return style === 'smear' || style === 'melt' || style === 'collapse'
+  return (
+    style === 'smear' ||
+    style === 'melt' ||
+    style === 'collapse' ||
+    style === 'mosaic' ||
+    style === 'sortSlice'
+  )
 }
 
 /**
