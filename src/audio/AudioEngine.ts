@@ -26,6 +26,8 @@ import { SectionTracker } from './SectionTracker'
 import { TimbreDescriptors } from './TimbreDescriptors'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 import { DropStateMachine } from './structure/dropStateMachine'
+import { StructureAnalyzer } from './structure/StructureAnalyzer'
+import { structureOff } from './structure/structureFlags'
 
 export type SourceKind = 'system' | 'mic' | 'file'
 
@@ -386,6 +388,12 @@ class AudioEngine {
    * below ~250 Hz). Runs in every build, with or without the Essentia provider. */
   private readonly chromaKey = new ChromaKeyEstimator()
   private readonly harmTension = new HarmonicTensionEstimator()
+  /** Always-on, non-Essentia structure segmentation — the fallback `StructureRaw` source in every
+   * real build (Essentia's `StructureBridge`, via `this.intel`, takes priority the rare frame it has
+   * a fresh read; see the `sectionTracker.update` call below). `structureOff()` is read once here,
+   * matching how other URL-flag-gated behaviour in this codebase is read once at construction rather
+   * than polled every frame (e.g. `characterLookOn` just below). */
+  private readonly structureAnalyzer = new StructureAnalyzer({ disabled: structureOff() })
   /** CHARACTER layer: valence/arousal/tension/pulse from audio features (percentile-calibrated),
    * then a soft 14-mood classification with a held primary. Runs in every build. */
   private readonly emotion = new EmotionDimensionEstimator()
@@ -850,6 +858,7 @@ class AudioEngine {
     this.sectionTracker.reset()
     this.chromaKey.reset()
     this.harmTension.reset()
+    this.structureAnalyzer.reset()
     this.emotion.reset()
     this.characterClassifier.reset()
     this.timbre.reset()
@@ -1108,8 +1117,19 @@ class AudioEngine {
 
     // --- Song structure: latched section read. `intel.updateStructure` drains
     // any completed worker segmentation (usually null) and schedules the next
-    // job; the tracker fuses it with the synchronous drop/build flags. ---
-    this.sectionTracker.update(f, this.intel.updateStructure(f))
+    // job; the tracker fuses it with the synchronous drop/build flags.
+    // `structureAnalyzer` is the always-on, non-Essentia fallback source: it
+    // only runs (and only does its per-frame accumulation) when `intel` has
+    // no fresh read this frame, which is every frame in a real/commercial
+    // build (NullProvider) and all but the rare frame a batch lands on the
+    // Essentia dev build. Fed the same `lowFreqDb`/sample rate this frame's
+    // key-detection `chromaKey.update` above already read, at zero new FFT
+    // cost — see StructureAnalyzer's own header for why those are explicit
+    // args rather than read off `f`. ---
+    this.sectionTracker.update(
+      f,
+      this.intel.updateStructure(f) ?? this.structureAnalyzer.update(f, this.lowFreqDb, ctx.sampleRate),
+    )
   }
 
   /**
