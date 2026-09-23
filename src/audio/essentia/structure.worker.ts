@@ -213,6 +213,13 @@ function foldToBeats(frames: RawFrame[], req: StructureRequest): BeatCell[] {
       air: avg((f) => f.air),
       sub: avg((f) => f.sub),
       bass: avg((f) => f.bass),
+      // This worker (Essentia-gated, off in every real build) is slated for retirement once the
+      // always-on, non-Essentia StructureAnalyzer lands — see the structure/tempo plan. `RawFrame`
+      // was never extended with mid/high/onsetDensity to match, since there is no real caller left
+      // to feed them accurately; placeholder zeros keep this file type-checking until it is removed.
+      mid: 0,
+      high: 0,
+      onsetDensity: 0,
     })
   }
   return cells

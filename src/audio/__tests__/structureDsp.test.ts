@@ -3,6 +3,7 @@ import {
   checkerboardNovelty,
   classifyKinds,
   cosine,
+  dualKernelNovelty,
   fuseNovelty,
   labelRepetitions,
   pickBoundaries,
@@ -25,6 +26,9 @@ function cell(beat: number, o: Partial<BeatCell> = {}): BeatCell {
     air: o.air ?? 0.2,
     sub: o.sub ?? 0.4,
     bass: o.bass ?? 0.4,
+    mid: o.mid ?? 0.4,
+    high: o.high ?? 0.2,
+    onsetDensity: o.onsetDensity ?? 0,
   }
 }
 
@@ -71,6 +75,53 @@ describe('checkerboardNovelty', () => {
     const vecs = Array.from({ length: n }, () => [1, 1, 1])
     const nov = checkerboardNovelty(selfSimilarity(vecs), 8)
     expect(Math.max(...nov)).toBeLessThan(0.5)
+  })
+})
+
+describe('dualKernelNovelty', () => {
+  const n = 64
+  const vecs: number[][] = []
+  for (let i = 0; i < n; i++) vecs.push(i < n / 2 ? [1, 0, 0] : [0, 1, 0])
+  const ssm = selfSimilarity(vecs)
+
+  it('returns a fused curve of the right length, peaking near the true boundary', () => {
+    const nov = dualKernelNovelty(ssm, [8, 32])
+    expect(nov).toHaveLength(n)
+    let peakIdx = 0
+    let peak = -1
+    for (let i = 0; i < n; i++) {
+      if (nov[i] > peak) {
+        peak = nov[i]
+        peakIdx = i
+      }
+    }
+    expect(Math.abs(peakIdx - n / 2)).toBeLessThanOrEqual(4)
+    expect(peak).toBeCloseTo(1, 5)
+  })
+
+  it('degrades sanely to a single-kernel result when given one width', () => {
+    const single = dualKernelNovelty(ssm, [8])
+    const direct = checkerboardNovelty(ssm, 8)
+    expect(single).toEqual(direct)
+  })
+
+  it('returns empty for an empty widths list', () => {
+    expect(dualKernelNovelty(ssm, [])).toEqual([])
+  })
+
+  it('the short and long components individually cross-check against checkerboardNovelty at that width', () => {
+    // Reimplement the exact fusion using the two component curves and confirm
+    // it reproduces what dualKernelNovelty returns end to end (short weighted
+    // 0.6, long weighted 0.4 — see STRUCTURE_DSP.kernelHalfWidths / the
+    // function's own doc comment for why).
+    const short = checkerboardNovelty(ssm, 8)
+    const long = checkerboardNovelty(ssm, 32)
+    const expected = fuseNovelty([
+      { curve: short, weight: 0.6 },
+      { curve: long, weight: 0.4 },
+    ])
+    const fused = dualKernelNovelty(ssm, [8, 32])
+    for (let i = 0; i < n; i++) expect(fused[i]).toBeCloseTo(expected[i], 9)
   })
 })
 
@@ -166,6 +217,19 @@ describe('riserScore', () => {
     const b = riserScore(cells, -1)
     expect(b.active).toBe(false)
     expect(b.beatsTillDrop).toBe(-1)
+  })
+
+  it('a rising high band + rising onsetDensity scores higher than an otherwise-identical flat sequence', () => {
+    const rising: BeatCell[] = []
+    const flat: BeatCell[] = []
+    for (let i = 0; i < 24; i++) {
+      const t = i / 23
+      rising.push(cell(100 + i, { high: 0.2 + t * 0.6, onsetDensity: 0 + t * 0.9 }))
+      flat.push(cell(100 + i, { high: 0.2, onsetDensity: 0 }))
+    }
+    const bRising = riserScore(rising, 100)
+    const bFlat = riserScore(flat, 100)
+    expect(bRising.score).toBeGreaterThan(bFlat.score)
   })
 })
 

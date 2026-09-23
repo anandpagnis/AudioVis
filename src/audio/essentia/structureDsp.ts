@@ -8,7 +8,8 @@
  * extraction; this file owns the algorithm.
  *
  * Approach: cosine self-similarity matrices per feature block, checkerboard
- * (Foote) novelty on each, weighted fusion, adaptive peak-pick → boundaries.
+ * (Foote) novelty on each at two kernel widths (fused — `dualKernelNovelty`),
+ * weighted fusion across feature blocks, adaptive peak-pick → boundaries.
  * Segment mean vectors → greedy repetition letters. Kind labelling is
  * deliberately minimal — `intro`/`outro` (position), `breakdown` (quiet-and-
  * tonal), everything else `section`; `build`/`drop` are the riser's job.
@@ -31,11 +32,22 @@ export interface BeatCell {
   air: number
   sub: number
   bass: number
+  mid: number
+  high: number
+  /** Rolling hi-hat/snare onset rate, 0..1 (`structure/onsetDensity.ts`). */
+  onsetDensity: number
 }
 
 export const STRUCTURE_DSP = {
-  /** Checkerboard kernel half-width in beats (~4 bars). */
+  /** Checkerboard kernel half-width in beats (~4 bars). Kept for backward
+   * compat / single-width callers and tests; `segment()` itself now runs
+   * `kernelHalfWidths` in parallel via `dualKernelNovelty()`. */
   kernelHalfWidth: 16,
+  /** Two novelty-kernel half-widths run in parallel and fused: short (~2
+   * bars) for fast EDM-scale cuts a wide kernel dilutes away, long (~8 bars)
+   * for slower verse/chorus-scale boundaries a narrow kernel is too local to
+   * see. See `dualKernelNovelty()`. */
+  kernelHalfWidths: [8, 32] as readonly number[],
   /** Minimum segment length in beats. */
   minSegmentBeats: 8,
   /** Cosine ≥ this ⇒ two segments share a repetition letter. */
@@ -129,6 +141,42 @@ export function checkerboardNovelty(
   for (const v of nov) if (v > peak) peak = v
   if (peak > 1e-9) for (let i = 0; i < n; i++) nov[i] /= peak
   return nov
+}
+
+/**
+ * Two (or more) checkerboard-novelty curves at different kernel widths,
+ * fused into one. Per the plan: a single kernel width forces a trade-off
+ * between catching fast, local cuts (needs a narrow kernel) and slower,
+ * section-scale boundaries (needs a wide one) — running both in parallel and
+ * fusing avoids picking one at the other's expense.
+ *
+ * Weighting: the shortest width gets 0.6, the rest split the remaining 0.4
+ * evenly (0.4 for the canonical two-width `[8, 32]` case). The short kernel
+ * is favoured because fast cuts are explicitly called out in the plan as the
+ * more commonly-missed failure mode of the old single-wide-kernel design
+ * (EDM-scale cuts happening in a couple of bars, which a ~4-bar-half-width
+ * kernel already smooths past) — a slow verse/chorus boundary is comparably
+ * easier for even a fairly narrow kernel to still catch, since it shows up
+ * as a large, sustained SSM discontinuity rather than a brief one. With one
+ * width this degrades to plain `checkerboardNovelty` at that width (handled
+ * directly, not through `fuseNovelty`, so a single-width call is exactly
+ * `checkerboardNovelty`'s own already-normalised output, not a second
+ * renormalisation of it).
+ */
+export function dualKernelNovelty(
+  ssm: number[][],
+  widths: readonly number[] = STRUCTURE_DSP.kernelHalfWidths,
+): number[] {
+  const n = widths.length
+  if (n === 0) return []
+  if (n === 1) return checkerboardNovelty(ssm, widths[0])
+  const order = widths.map((w, i) => ({ w, i })).sort((a, b) => a.w - b.w)
+  const weights = new Array(n).fill(0)
+  weights[order[0].i] = 0.6
+  const rest = 0.4 / (n - 1)
+  for (let k = 1; k < n; k++) weights[order[k].i] = rest
+  const curves = widths.map((w, i) => ({ curve: checkerboardNovelty(ssm, w), weight: weights[i] }))
+  return fuseNovelty(curves)
 }
 
 /** Weighted sum of novelty curves (each same length), re-normalised 0..1. */
@@ -280,10 +328,11 @@ function slope(vals: number[]): number {
 
 /**
  * Riser / build-up read over the last `riserWindow` beat cells. Weighted sum of
- * five normalised acoustic slopes; `beatsTillDrop` projects the RMS slope to a
- * ~0.95 ceiling and snaps to the nearest upcoming 8/16/32-beat grid target from
- * the build's start. The worker reports these numbers; `SectionTracker` owns
- * the latch/release.
+ * six normalised acoustic slopes (centroid, RMS, noise-sweep, hat/onset
+ * acceleration, kick dropout, high-band rise); `beatsTillDrop` projects the
+ * RMS slope to a ~0.95 ceiling and snaps to the nearest upcoming 8/16/32-beat
+ * grid target from the build's start. The worker reports these numbers;
+ * `SectionTracker` owns the latch/release.
  */
 export function riserScore(
   cells: BeatCell[],
@@ -301,17 +350,50 @@ export function riserScore(
   const flatRise = slope(w.map((c) => c.flatness))
   const airRise = slope(w.map((c) => c.air))
   const noiseSweep = norm(Math.min(flatRise, airRise) * 2, 0.3)
+  // Genuine multi-band term: a rising HIGH band specifically, not just a
+  // rising broadband centroid. Centroid can rise from the low end quieting
+  // down just as easily as from the top end brightening up; `high` isolates
+  // the "sweep/riser synth climbing into the top octave" case a broadband
+  // read dilutes. Same 0..1 domain as `centroid`, so the same slope scale.
+  const highRise = norm(slope(w.map((c) => c.high)), 0.35)
 
+  // Hat-acceleration read: blended, not fully replaced. The flux early/late
+  // split is a crude proxy (it can't tell a genuine accelerating onset rate
+  // from a broadband loudness ramp that happens to fall unevenly across the
+  // window) but it needs nothing but the spectrum already read every frame,
+  // so it still fires even before/without onset-density data available. The
+  // new `onsetDensity` term is the direct signal the plan calls for (a
+  // rising onset RATE is a much less ambiguous "snare roll" cue than a flux
+  // split), so it gets equal weight in the blend once it *is* available;
+  // when it isn't (flat/zero onsetDensity, e.g. before a caller wires the
+  // tracker in), the flux term alone still carries the read rather than the
+  // whole cue going to zero.
   const half = w.length >> 1
   const fluxEarly = w.slice(0, half).reduce((a, c) => a + c.flux, 0) / half
   const fluxLate = w.slice(half).reduce((a, c) => a + c.flux, 0) / (w.length - half)
-  const hatAccel = norm(fluxLate - fluxEarly, 0.25)
+  const fluxAccel = norm(fluxLate - fluxEarly, 0.25)
+  const onsetAccel = norm(slope(w.map((c) => c.onsetDensity)), 0.4)
+  const hatAccel = clamp01(0.5 * fluxAccel + 0.5 * onsetAccel)
 
   const lowSlope = slope(w.map((c) => c.sub + c.bass))
   const kickDropout = lowSlope < 0 && slope(w.map((c) => c.logRms)) > 0 ? norm(-lowSlope, 0.4) : 0
 
+  // Rebalanced to make room for `highRise` without letting any one term
+  // dominate: each of the five original terms was shaved down proportionally
+  // (0.22->0.18, 0.22->0.20, 0.2->0.17, 0.18->0.15, 0.18->0.15) so the new
+  // 0.15-weighted term still sums to exactly 1.0 — a deliberate choice over
+  // just tacking `highRise` on top uncapped, which would have let the total
+  // run past 1 well before `buildEnter`/`buildExit` intended, and over
+  // leaving the weights lopsided (previously 0.22 vs 0.18 was already a
+  // mild "trust broadband/RMS slightly more" bias; the new spread, 0.15-0.20,
+  // is flatter across six now-more-equally-informative terms).
   const score = clamp01(
-    centroidRise * 0.22 + rmsRise * 0.22 + noiseSweep * 0.2 + hatAccel * 0.18 + kickDropout * 0.18,
+    centroidRise * 0.18 +
+      rmsRise * 0.2 +
+      noiseSweep * 0.17 +
+      hatAccel * 0.15 +
+      kickDropout * 0.15 +
+      highRise * 0.15,
   )
   const active = score > STRUCTURE_DSP.buildEnter
   if (!active) {
@@ -335,8 +417,9 @@ export function riserScore(
 }
 
 /**
- * Full segmentation from a beat-cell window: build the three SSMs, fuse
- * novelty, pick boundaries, cut segments, label repetitions + kinds.
+ * Full segmentation from a beat-cell window: build the three SSMs, compute
+ * each one's dual-kernel novelty (`dualKernelNovelty`), fuse across blocks,
+ * pick boundaries, cut segments, label repetitions + kinds.
  */
 export function segment(cells: BeatCell[]): {
   novelty: number[]
@@ -354,9 +437,9 @@ export function segment(cells: BeatCell[]): {
     cells.map((c) => [c.logRms, c.centroid, c.flatness, c.air, c.sub, c.bass, c.flux]),
   )
   const novelty = fuseNovelty([
-    { curve: checkerboardNovelty(timbreSsm), weight: STRUCTURE_DSP.fuse.timbre },
-    { curve: checkerboardNovelty(harmSsm), weight: STRUCTURE_DSP.fuse.harm },
-    { curve: checkerboardNovelty(scalarSsm), weight: STRUCTURE_DSP.fuse.scalar },
+    { curve: dualKernelNovelty(timbreSsm), weight: STRUCTURE_DSP.fuse.timbre },
+    { curve: dualKernelNovelty(harmSsm), weight: STRUCTURE_DSP.fuse.harm },
+    { curve: dualKernelNovelty(scalarSsm), weight: STRUCTURE_DSP.fuse.scalar },
   ])
   const boundaries = pickBoundaries(novelty, cellBeats)
 

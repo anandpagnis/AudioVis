@@ -25,6 +25,7 @@ import { meanSquareToLufs } from './loudness'
 import { SectionTracker } from './SectionTracker'
 import { TimbreDescriptors } from './TimbreDescriptors'
 import { createEmptyFeatures, type AudioFeatures } from './types'
+import { DropStateMachine } from './structure/dropStateMachine'
 
 export type SourceKind = 'system' | 'mic' | 'file'
 
@@ -370,6 +371,10 @@ class AudioEngine {
   /** Peak reference for `midWaveform` — see normalizeWave. */
   private waveRef = 0
   private dropUntil = -1
+  /** Fast breakdown->dip->snap-back drop trigger — a second, independent way to set `dropUntil`
+   * alongside the broadband heuristic in `detectStructure`. See its header for the state machine and
+   * threshold rationale. */
+  private readonly dropStateMachine = new DropStateMachine()
 
   readonly bpmEstimator = new BpmEstimator()
   readonly phraseDetector = new PhraseDetector()
@@ -837,6 +842,7 @@ class AudioEngine {
     this.waveProbe = makeWaveProbe()
     this.silenceSince = 0
     this.dropUntil = -1
+    this.dropStateMachine.reset()
     this.bpmEstimator.reset()
     this.phraseDetector.reset()
     this.moodEstimator.reset()
@@ -1214,6 +1220,18 @@ class AudioEngine {
       //   before  0.000% / 0.016% / 0.446%   (28x more builds when loud)
       //   after   0.018% / 0.018% / 0.018%
       f.buildUp = slope > 0.197 && recent > 0.295 && recent > before
+    }
+
+    // Fast breakdown -> dip -> snap-back trigger: a second, independent path
+    // into the same `dropUntil` pulse-latch above. Unlike the ratio test
+    // above — which fires on any sudden broadband jump, with no memory of
+    // what preceded it — this one requires sub+bass to have genuinely
+    // dipped and stayed down first, then confirms the snap-back on a
+    // concurrent transient in well under half a second. See
+    // dropStateMachine.ts's header for the full rationale and thresholds.
+    // Both paths run every frame and either one can set `dropUntil`.
+    if (this.dropStateMachine.update(f.sub + f.bass, f.flux, f.delta)) {
+      this.dropUntil = now + 0.6
     }
     f.drop = now < this.dropUntil
   }
