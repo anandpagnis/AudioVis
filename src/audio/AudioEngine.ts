@@ -1,4 +1,5 @@
 import { BpmEstimator } from './BpmEstimator'
+import { tempoSpeedMultiplier } from './tempoSpeed'
 import { CharacterClassifier } from './CharacterClassifier'
 import { LookVizTracker, characterLookEnabled, lookState } from './characterLook'
 import { ChromaKeyEstimator } from './chromaKey'
@@ -39,6 +40,10 @@ const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
 
 /** Age-based length of the onset-flux ring — see {@link AudioEngine.fluxHistory}. */
 const FLUX_WINDOW_SEC = 1.0
+
+/** Time constant `f.tempoSpeed` eases toward its target at — see `advanceGrid` and `tempoSpeed.ts`'s header for
+ *  why this matches `BpmEstimator.confidence`'s own ~3.3s settle time rather than being faster or slower. */
+const TEMPO_SPEED_TAU_SEC = 3.3
 
 const FFT_SIZE = 2048
 
@@ -1132,6 +1137,13 @@ class AudioEngine {
     f.bpm = est.bpm
     f.confidence = est.confidence
     f.beatGridAccuracy = est.hitScore
+    // Eased toward the target rather than snapped, at roughly the same ~3.3s time constant `est.confidence`
+    // itself settles on (see tempoSpeed.ts's header) — the multiplier converges alongside the read that drives
+    // it, not ahead of or behind it. `f.delta` may be 0/NaN on the very first frame; TEMPO_SPEED_TAU_SEC's
+    // exponential guards that (k=0 leaves tempoSpeed at its seeded 1).
+    const targetSpeed = tempoSpeedMultiplier(f.bpm, f.confidence)
+    const k = f.delta > 0 && Number.isFinite(f.delta) ? 1 - Math.exp(-f.delta / TEMPO_SPEED_TAU_SEC) : 0
+    f.tempoSpeed += (targetSpeed - f.tempoSpeed) * k
     const idx = Math.floor((now - est.phase) / est.period)
     f.beatProgress = (now - est.phase) / est.period - idx
     f.nextBeatTime = est.phase + (idx + 1) * est.period

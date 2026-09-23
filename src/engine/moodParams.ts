@@ -48,6 +48,11 @@ export function getEffectiveParams(): VisualParams {
     out.reactivity = params.reactivity
   }
 
+  // Tempo: independent of `moodDrive` (a different signal — the song's actual, measured tempo, not a mood
+  // classification), so this applies whichever branch above ran, same as the band routing below. See
+  // tempoSpeed.ts's header: already confidence-gated and eased, 1 (no-op) until the read is trustworthy.
+  out.speed *= f.tempoSpeed
+
   // Band routing: each mapping scales its target by 1 + amount × envelope.
   for (const m of bandMappings) {
     if (m.amount !== 0) out[m.target] *= 1 + m.amount * sourceValue(f, m.source)

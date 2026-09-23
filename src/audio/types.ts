@@ -333,6 +333,10 @@ export interface AudioFeatures {
    * per-onset accuracy signal `confidence` is partly derived from, exposed on
    * its own for beat-tracking-accuracy analytics. */
   beatGridAccuracy: number
+  /** Tempo-driven visual speed multiplier (`tempoSpeed.ts`), confidence-gated and eased — see that file's
+   *  header. 1 = neutral (120 BPM, or `bpm`/`confidence` not yet trustworthy). Consumers multiply this into
+   *  their own speed term; it does not replace mood/energy-driven speed, it layers on top of it. */
+  tempoSpeed: number
 
   /** Phrase count (16 beats, re-anchored at detected section changes). */
   phrase: number
@@ -527,6 +531,7 @@ export function createEmptyFeatures(): AudioFeatures {
     confidence: 0,
     nextBeatTime: 0,
     beatGridAccuracy: 0,
+    tempoSpeed: 1,
     phrase: 0,
     phraseProgress: 0,
     sectionChange: false,
