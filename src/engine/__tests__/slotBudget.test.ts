@@ -125,7 +125,17 @@ describe('slotCostMs', () => {
     // request" no longer holds, is a product call for whoever owns
     // `TravellingScene.tsx`/`LattesFoldScene.tsx` to make, not an automatic
     // consequence of a corrected number.
-    const FORCED_LIVE_OVER_BUDGET = new Set<string>([])
+    //
+    // `tribalentity` (2026-09-22) — FORCED LIVE by explicit request, and
+    // genuinely over: measured, not estimated (7.2 ms at 1080p native against a
+    // 5.5 ms bar; see its SCENE_COST_MS row). Unlike the F199/F200 entries this
+    // is not a number waiting to be corrected. It was 25.3 ms at 84 orbit
+    // iterations; it now runs 24, the level picked from a 16/24/32/44 look
+    // sweep, and an early-out on orbit
+    // convergence was tried and bought nothing (the orbit is chaotic nearly
+    // everywhere). A `pixelBudget` is the remaining lever, at the price of
+    // softer lines.
+    const FORCED_LIVE_OVER_BUDGET = new Set<string>(['tribalentity'])
     const bar = sceneBudget(0) / 2
     const failures = SCENES.filter((scene) => !FORCED_LIVE_OVER_BUDGET.has(scene.id))
       .map((scene) => ({

@@ -13,6 +13,7 @@ import { exposure, GAIN_MIN } from './exposure'
 import { bloomThreshold } from './bloomParams'
 import { getEffectiveParams } from './moodParams'
 import { approach, performanceState } from './performanceState'
+import { slew } from './response'
 import { advanceSteer, clearSteer } from './sceneSteer'
 import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC, type TransitionBoundaryType } from './transitions'
 import { createHabituation, stepHabituation, type Habituation } from './habituation'
@@ -57,8 +58,18 @@ import { useStore } from '../store'
  * `wingfold` a folded Julia set — so a standing mirror-segment fold or a
  * history-persistence trail on top of them doubles up on the same gesture
  * rather than adding one, and reads as noise over the fractal's own detail.
+ *
+ * `tribalentity` joins for the same reason plus a harder one: its smoke is a
+ * standing non-zero floor, and a trail weight near 1 amplifies a floor x toward
+ * x/(1-w) — the slow wash-to-white `lumen` hit. A mirror fold would also split
+ * its face, which is the one thing it must hold still and symmetric.
+ *
+ * `mothwings` joins on the first reason alone: the same folded log-map fractal
+ * as `tribalentity`, already mirror-symmetric by construction, whose fine veins
+ * carry a travelling glow that a trail would smear into a wash. The lens rack
+ * is untouched — it is scene-blind and still plays over all of these.
  */
-const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
+const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold', 'tribalentity', 'mothwings'])
 
 /**
  * Scenes where the mirror rack alone must never engage — independent of
@@ -74,6 +85,30 @@ const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
  * this is its own set rather than adding `djcam` to the one above.
  */
 const MIRROR_ONLY_EXCLUDED_SCENES = new Set(['djcam'])
+
+/**
+ * Scenes whose post chain follows the beat as an eased swell instead of
+ * `beatPulse()`'s one-frame spike (explicit request, 2026-09-23).
+ *
+ * `beatPulse` jumps 0 -> 1 in a single frame on every beat, and bloom, its
+ * threshold, the aberration offset and the lens `kick` all ride it. On a
+ * picture of thin bright strokes that is a whole-frame brightness pop per
+ * beat: a recording of `tribalentity` showed frame-to-frame luma swings of up
+ * to ~35%, read by the owner as choppiness. For these scenes those continuous
+ * terms read {@link FLOW_PULSE}'s swell instead; echo sits out, because its
+ * discrete beat-locked repeats are stutter by construction; and the lens gets
+ * no re-seat events (`onKick`/`beat`), only the swell, so its material flows
+ * rather than jumping. Every other scene is unchanged.
+ */
+const FLOW_POST_SCENES = new Set(['tribalentity', 'mothwings'])
+
+/**
+ * Two cascaded slews of `beatPulse` — a rounded hump that starts rising on the
+ * beat and peaks ~130 ms after it — plus make-up gain. Simulated at 90-174 BPM:
+ * the largest per-frame step is ~6% of the raw pulse's (which steps the full
+ * 0 -> 1 in one frame), and the gain restores the swing the smoothing costs.
+ */
+const FLOW_PULSE = { rise1: 18, fall1: 18, rise2: 12, fall2: 6, gain: 1.9 }
 
 /**
  * Phrases (16-beat windows) a mirror look may hold before it is force-refreshed
@@ -270,6 +305,9 @@ export function PerformanceStateBridge() {
   const cutPhraseCount = useRef(0)
   /** Previous frame's beat state, so `rackAudio.onKick` can be an edge. */
   const wasOnKick = useRef(false)
+  /** The two stages of the FLOW_PULSE swell. Advanced every frame for every scene, so it is settled on a cut-in. */
+  const flowA = useRef(0)
+  const flowB = useRef(0)
   /** Mood the transition style was last chosen for — see the pick below. */
   const lastStyleMood = useRef('')
   /** Deterministic cycle position, on its own counter. */
@@ -510,7 +548,12 @@ export function PerformanceStateBridge() {
     // breakdown reads calm even if its transients are sharp, and a peak reads
     // hot even between hits. PostFXChain just applies the result.
     const pulse = beatPulse(f) * params.reactivity
-    const reactive = (f.bass * 0.7 + pulse * 0.7 + (f.drop ? 0.8 : 0)) * params.reactivity
+    // What the continuous post terms read: the raw pulse, or for FLOW_POST_SCENES its eased swell.
+    flowA.current = slew(flowA.current, pulse, f.delta, FLOW_PULSE.rise1, FLOW_PULSE.fall1)
+    flowB.current = slew(flowB.current, flowA.current, f.delta, FLOW_PULSE.rise2, FLOW_PULSE.fall2)
+    const flowPost = FLOW_POST_SCENES.has(p.activeScene)
+    const postPulse = flowPost ? flowB.current * FLOW_PULSE.gain : pulse
+    const reactive = (f.bass * 0.7 + postPulse * 0.7 + (f.drop ? 0.8 : 0)) * params.reactivity
     // The vocal lift: fast tonality-gated voice band for the MOTION, slow
     // voiceFocus for the PERMISSION. Computed here rather than in
     // PostFXChain because that stays a pure executor that reads no audio —
@@ -534,7 +577,7 @@ export function PerformanceStateBridge() {
       gainFloor: GAIN_MIN,
       tension: p.visualTension,
       drop: f.drop,
-      pulse,
+      pulse: postPulse,
     })
 
     // Aberration direction tracks the accumulating mid-driven shear, so the
@@ -561,9 +604,9 @@ export function PerformanceStateBridge() {
       s.quality === 'low'
         ? 0
         : postOn
-          ? glitchFromProfile(L, pulse, p.visualTension, f.drop, f.moodsValid ? f.moods.aggressive : 0)
+          ? glitchFromProfile(L, postPulse, p.visualTension, f.drop, f.moodsValid ? f.moods.aggressive : 0)
           : 0.0006 +
-            pulse * 0.0035 +
+            postPulse * 0.0035 +
             p.visualTension * 0.002 +
             (f.drop ? 0.004 : 0) +
             (f.moodsValid ? f.moods.aggressive * 0.0015 : 0)
@@ -592,15 +635,16 @@ export function PerformanceStateBridge() {
     // materials actually want. Without the edge, a material that "re-seats on
     // the kick" re-seats on every frame of the decay and reads as a flicker.
     const ra = p.rackAudio
-    ra.kick = Math.min(1, pulse)
+    ra.kick = Math.min(1, postPulse)
     ra.highs = f.high
     ra.mids = f.mid
-    ra.onKick = pulse > 0.6 && !wasOnKick.current ? Math.min(1, pulse) : 0
+    // FLOW_POST_SCENES get no re-seat events — see that set's doc.
+    ra.onKick = !flowPost && pulse > 0.6 && !wasOnKick.current ? Math.min(1, pulse) : 0
     wasOnKick.current = pulse > 0.6
     // The plain beat edge, no amplitude gate — see `rackAudio`'s own doc for
     // why `onKick` above isn't enough for every re-seat mechanism (`pixel
     // sort`'s `seedBeat`, this session).
-    ra.beat = f.beat
+    ra.beat = !flowPost && f.beat
 
     // Style for the NEXT scene change. Chosen here rather than in SceneManager
     // because it is a creative decision and this is the decide band; SceneManager
@@ -697,7 +741,7 @@ export function PerformanceStateBridge() {
     // (kifs/maze/wingfold) are already kaleidoscopic geometry a MIRROR fold
     // or a persistent TRAIL would double up on, which has nothing to do with
     // three discrete repeats of whatever those scenes already draw.
-    p.echo = postOn ? echoFromProfile(L, pulse) : echoTarget(look, pulse)
+    p.echo = flowPost ? 0 : postOn ? echoFromProfile(L, pulse) : echoTarget(look, pulse)
     // Beat-locked, not scaled by `p.echo`'s own value (F232) — see
     // `resolveEchoTapSpacingSec`'s doc for why a wall-clock ramp was the
     // wrong instrument. Resolved every frame (cheap: one division, no

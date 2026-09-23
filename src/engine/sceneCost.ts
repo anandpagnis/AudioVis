@@ -184,6 +184,18 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   spark: [0.33, 0.32, 0.32, 0.32, 0.32],
   strobe: [0.32, 0.32, 0.32, 0.32, 0.32],
   travelling: [0.26, 0.26, 0.26, 0.22, 0.22],
+  // `tribalentity` — NOT part of the F236 /bench sweep. Measured standalone
+  // (2026-09-22) after the 84 -> 24 orbit-iteration cut: the scene FRAG
+  // compiled behind the real prelude + palette include, drawn fullscreen at
+  // 1920x1080 native, each draw synced by a 1x1 readPixels (gl.finish is a
+  // no-op under ANGLE/Metal): 6.4-7.2 ms net across three runs and three zoom
+  // levels (the 84-iteration build: 17.1 ms on the same rig and run). Priced at
+  // the worst reading. It declares no `pixelBudget`, so this scales with
+  // canvas pixels (~3.4 ms/MP) — a 4K canvas costs ~4x. Held flat across tiers
+  // on purpose — the lower tiers were not measured, and an unmeasured tier
+  // should be priced pessimistically, not guessed down.
+  // ACTION: /bench it in-app and replace this row.
+  tribalentity: [7.2, 7.2, 7.2, 7.2, 7.2],
   truchet: [1.4, 1.4, 1.4, 1.4, 1.4],
   web: [0.25, 0.24, 0.22, 0.22, 0.22],
   wingfold: [4.23, 4.23, 3.9, 3.76, 3.76],

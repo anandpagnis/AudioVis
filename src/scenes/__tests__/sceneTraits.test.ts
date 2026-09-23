@@ -184,7 +184,9 @@ describe('sceneBoost: bounded, neutral at strength 0', () => {
         }
       }
     }
-  })
+    // Exhaustive sweep whose work grows with every scene added: ~2s alone, but
+    // it crossed vitest's 5s default under full-suite parallel load.
+  }, 20_000)
 
   it('is exactly 1 for every live scene when traitStrength is 0 (and no build is on)', () => {
     for (const mood of CHARACTER_MOODS) {

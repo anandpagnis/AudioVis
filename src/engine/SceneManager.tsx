@@ -187,6 +187,9 @@ const BOOT_PREWARM_IDS: readonly string[] = [
   'kifs',
   'maze',
   'wingfold',
+  // 44 unrolled atan+log iterations: a first compile heavy enough to stall a
+  // switch if it landed mid-show.
+  'mothwings',
 ]
 
 /**

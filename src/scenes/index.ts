@@ -47,6 +47,8 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   kifs: () => import('./KifsRoseScene').then((m) => ({ default: m.KifsRoseScene })),
   maze: () => import('./MazeFlightScene').then((m) => ({ default: m.MazeFlightScene })),
   wingfold: () => import('./WingfoldJuliaScene').then((m) => ({ default: m.WingfoldJuliaScene })),
+  tribalentity: () => import('./TribalEntityScene').then((m) => ({ default: m.TribalEntityScene })),
+  mothwings: () => import('./MothWingsScene').then((m) => ({ default: m.MothWingsScene })),
   crystalfold: () => import('./CrystalFoldScene').then((m) => ({ default: m.CrystalFoldScene })),
   shock: () => import('./ShockRingScene').then((m) => ({ default: m.ShockRingScene })),
   flare: () => import('./SectionFlareScene').then((m) => ({ default: m.SectionFlareScene })),
@@ -165,6 +167,8 @@ const MatrixRainScene = lazyScene('matrix')
 const KifsRoseScene = lazyScene('kifs')
 const MazeFlightScene = lazyScene('maze')
 const WingfoldJuliaScene = lazyScene('wingfold')
+const TribalEntityScene = lazyScene('tribalentity')
+const MothWingsScene = lazyScene('mothwings')
 const CrystalFoldScene = lazyScene('crystalfold')
 const ShockRingScene = lazyScene('shock')
 const SectionFlareScene = lazyScene('flare')
@@ -998,6 +1002,114 @@ export const SCENES: SceneDef[] = [
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
       // No `density`/`tilt` — nothing in an iterated escape-time field has a
       // discrete element count or a camera-relative axis for those to bind to.
+    },
+  },
+  {
+    id: 'tribalentity',
+    name: 'Tribal Entity',
+    component: TribalEntityScene,
+    metadata: {
+      // LIVE BY THE OWNER'S EXPLICIT DECISION (2026-09-22), NOT CLEARED.
+      // The fractal core derives from the same @christinacoffin Shadertoy piece
+      // as the quarantined `juliawings`; a 2026-09-12 provenance audit found it
+      // derivative, so this is `unverified` (restricted) rather than `original`.
+      // `commerciallyShippableScenes()` excludes it (so the free /demo pool never
+      // draws it), and it is the one named exception to the "live roster is
+      // fully shippable" check in sceneLicensing.test.ts. Resolve the licence
+      // with the author, or remove it, before billing goes live.
+      license: 'unverified',
+      provenance: {
+        source:
+          "Owner's Shadertoy iteration of @christinacoffin's Julia-set piece (Shadertoy, 2015-05-07) — the same source as the quarantined juliawings port; no URL recorded",
+        author: '@christinacoffin; iterated by the Lilim owner',
+        spdx: 'NOASSERTION',
+      },
+      // `speed` scales every clock (flap, travelling glow, blink, gaze, twitch,
+      // flicker) together; `fill` is a manual zoom on top of the camera's.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, fill: 0.5 },
+        paramLabels: { '*': { fill: 'zoom' } },
+      },
+      roles: ['primary'],
+      // An eerie, watchful presence rather than a dancy one: slow breathing
+      // flap for ambient/mellow, heavy candle flicker and a demon-horned pose
+      // for building/aggressive.
+      moods: ['ambient', 'mellow', 'building', 'aggressive'],
+      // mids hold/release the flap, kick punches the zoom and flares the eyes,
+      // snare shivers the fractal, hats pace the travelling glow, energy sets
+      // line brightness and the clock. See the scene file's header table.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // 24 atan+log orbit iterations per pixel (cut from 84): measured 7.2 ms
+      // at 1920x1080 native (standalone, readPixels-synced). Over the tier-0
+      // solo bar — live anyway by explicit request; see its SCENE_COST_MS row
+      // and the FORCED_LIVE_OVER_BUDGET entry in slotBudget.test.ts.
+      performanceCost: 'high',
+      // Owns the frame, and too expensive to share it.
+      compatibleWith: [],
+      moodFit: { ambient: 0.8, mellow: 0.72, building: 0.8, aggressive: 0.78 },
+      // A 2D fractal, but NOT inert: the scene reads the director's camera —
+      // distance from this anchor becomes zoom (push = slow zoom in, pull =
+      // zoom out, spiral = breathing in and out, locked = hold), sideways angle
+      // becomes a gentle tilt. The
+      // anchor's `distance` must match ANCHOR_DISTANCE in TribalEntityScene.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['cinematic', 'spiral', 'push', 'pull', 'hover', 'handheld', 'orbit', 'locked'],
+    },
+  },
+  {
+    id: 'mothwings',
+    name: 'Moth Wings',
+    component: MothWingsScene,
+    metadata: {
+      // LIVE BY THE OWNER'S EXPLICIT REQUEST (2026-09-22), NOT CLEARED — same
+      // basis as `tribalentity`. The owner's Shadertoy piece, but its fractal
+      // core is the same log-map fold iteration as `tribalentity`, which
+      // descends from @christinacoffin's Shadertoy piece (the quarantined
+      // `juliawings` source), so this is `unverified` (restricted) rather than
+      // `original`. `commerciallyShippableScenes()` excludes it (the free /demo
+      // pool never draws it), and it is a named exception to the "live roster
+      // is fully shippable" check in sceneLicensing.test.ts. Resolve the
+      // licence with the author, or remove it, before billing goes live.
+      license: 'unverified',
+      provenance: {
+        source:
+          "Owner's Shadertoy piece 'MOTH WINGS — clean B<->C morph'; fractal core shared with tribalentity, derived from @christinacoffin's Julia-set piece (Shadertoy, 2015-05-07); no URL recorded",
+        author: 'Lilim owner; fractal core after @christinacoffin',
+        spdx: 'NOASSERTION',
+      },
+      // `speed` scales both clocks (wingbeat, travelling glow); `fill` is a
+      // manual zoom on top of the camera's.
+      contract: {
+        version: 1,
+        params: { speed: 0.5, fill: 0.5 },
+        paramLabels: { '*': { fill: 'zoom' } },
+      },
+      roles: ['primary'],
+      // Luminous and flowing rather than punchy: the wingbeat and travelling
+      // glow suit a settled groove and a long build as much as a quiet
+      // passage; it has no hard-hitting move for peak/aggressive.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      // mids pace the wingbeat, hats pace the travelling glow, kick surges the
+      // glow and breathes the zoom, energy sets line brightness. Every one of
+      // them is slewed and integrated — see the scene file's header table.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // 44 atan+log iterations per pixel, and on a landscape canvas no pixel
+      // skips the loop. Over the tier-0 solo bar — live anyway by explicit
+      // request; see its SCENE_COST_MS row and the FORCED_LIVE_OVER_BUDGET
+      // entry in slotBudget.test.ts.
+      performanceCost: 'high',
+      // Owns the frame, and too expensive to share it.
+      compatibleWith: [],
+      moodFit: { ambient: 0.78, mellow: 0.84, groove: 0.72, building: 0.68 },
+      // A 2D fractal that reads the director's camera, exactly as
+      // `tribalentity` does: distance from this anchor becomes zoom, sideways
+      // angle becomes a gentle tilt. The anchor's `distance` must match
+      // ANCHOR_DISTANCE in MothWingsScene.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['cinematic', 'spiral', 'push', 'pull', 'hover', 'handheld', 'orbit', 'locked'],
     },
   },
   {

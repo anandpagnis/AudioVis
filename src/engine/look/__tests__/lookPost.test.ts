@@ -858,8 +858,10 @@ describe('trails shape', () => {
 describe('bridge wiring (source pins)', () => {
   const bridge = code(BRIDGE_SRC)
 
-  it('the scene exclusions are unchanged: kifs / maze / wingfold sit out mirror AND trails, djcam sits out the mirror', () => {
-    expect(bridge).toMatch(/MIRROR_TRAILS_EXCLUDED_SCENES\s*=\s*new Set\(\['kifs', 'maze', 'wingfold'\]\)/)
+  it('the scene exclusions are unchanged: kifs / maze / wingfold / tribalentity / mothwings sit out mirror AND trails, djcam sits out the mirror', () => {
+    expect(bridge).toMatch(
+      /MIRROR_TRAILS_EXCLUDED_SCENES\s*=\s*new Set\(\['kifs', 'maze', 'wingfold', 'tribalentity', 'mothwings'\]\)/,
+    )
     expect(bridge).toMatch(/MIRROR_ONLY_EXCLUDED_SCENES\s*=\s*new Set\(\['djcam'\]\)/)
     expect(bridge).toMatch(/rackSuppressed\s*=\s*MIRROR_TRAILS_EXCLUDED_SCENES\.has\(p\.activeScene\)/)
     expect(bridge).toMatch(/mirrorSuppressed\s*=\s*rackSuppressed\s*\|\|\s*MIRROR_ONLY_EXCLUDED_SCENES\.has\(p\.activeScene\)/)

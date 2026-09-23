@@ -79,7 +79,19 @@ describe('scene licensing', () => {
     // FAILS this assertion rather than passing it silently, because absent
     // reads as `unverified`. That inversion is the whole of F01; the test below
     // pins the default itself.
-    expect(commerciallyShippableScenes().length).toBe(SCENES.length)
+    //
+    // Named exceptions (2026-09-22): `tribalentity` and `mothwings` — the same
+    // fractal core, same unresolved source — are live by the owner's explicit
+    // decision while their licence is unresolved (see their metadata).
+    // Pinned by name in BOTH directions rather than loosening the check: any
+    // other restricted scene reaching the roster still fails here, and so does
+    // an exception going stale once its scene is cleared or removed.
+    const OWNER_APPROVED_RESTRICTED_LIVE = ['tribalentity', 'mothwings']
+    const restrictedLive = SCENES.filter(isNonCommercial).map((s) => s.id).sort()
+    expect(restrictedLive).toEqual([...OWNER_APPROVED_RESTRICTED_LIVE].sort())
+    expect(commerciallyShippableScenes().length).toBe(
+      SCENES.length - OWNER_APPROVED_RESTRICTED_LIVE.length,
+    )
   })
 
   it('treats an unmarked scene as restricted, so shippability is opt-IN', () => {

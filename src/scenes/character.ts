@@ -139,6 +139,22 @@ export const SCENE_CHARACTER: Record<string, SceneCharacter> = {
     0.24,
     'Bright Julia fractal that breathes and punches on the beat ("dancy"); open, colourful, celebratory, low tension.',
   ),
+  tribalentity: sc(
+    0.22,
+    0.5,
+    0.8,
+    0.3,
+    0.3,
+    'Horned moth-winged fractal entity watching through glowing slit eyes; dark, eerie, ritual, high tension. Time-driven, not beat-locked.',
+  ),
+  mothwings: sc(
+    0.62,
+    0.45,
+    0.3,
+    0.45,
+    0.3,
+    'Symmetric fractal moth whose wings breathe between two poses while light travels out along its veins; luminous, flowing, hypnotic, low tension. Flow-driven (mids pace the wingbeat), not beat-locked.',
+  ),
   snowflake: sc(
     0.6,
     0.1,
