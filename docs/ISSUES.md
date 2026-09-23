@@ -12646,3 +12646,131 @@ per-frame canvas heavy enough to distort the reading.
       licence gate all pass at every step. Tests: 2488/2489 pass throughout;
       the one failure is the pre-existing, unrelated `checkDistLicences.test.ts`
       flake first confirmed in F258.
+
+- [x] **F261 · Structural reactivity (verse/chorus/build/drop) rebuilt on a
+      clean-room, always-on detector; BPM-driven visual speed** — *2026-09-23,
+      user report ("more than 50% of the time it does not realise that a
+      song is building, and does not see a drop, that cannot happen"),
+      approved plan, executed in auto mode with agents* `src/audio/tempoSpeed.ts`,
+      `src/engine/moodParams.ts`, `src/engine/CameraDirector.tsx`,
+      `src/audio/essentia/structureDsp.ts`, `src/audio/structure/` (new:
+      `onsetDensity.ts`, `timbreBands.ts`, `dropStateMachine.ts`,
+      `StructureAnalyzer.ts`, `structureFlags.ts`), `src/audio/AudioEngine.ts`,
+      `scripts/calibrate/features.ts`, `scripts/calibrate/structure-sanity.calib.ts`,
+      `src/ui/DebugPanel.tsx`
+
+      **Root cause, found by reading the code before touching anything.** The
+      engine already had a real structure detector —
+      `structureDsp.ts` implements Foote checkerboard-kernel self-similarity
+      segmentation plus a multi-term build/drop riser score, roughly
+      state-of-the-art for causal, real-time structure analysis. It had
+      simply never run for the user: its feature extraction
+      (`structure.worker.ts`) depended on `essentia.js` (AGPL-3.0), gated
+      behind `VITE_ENABLE_ESSENTIA=1`, off in every real build for the same
+      licensing reason F252's mood-engine firewall exists. `structureValid`
+      was therefore permanently false in practice, and every director fell
+      back to a blind wall-clock timer plus a crude instantaneous heuristic
+      — exactly the F153 bug, fixed once in principle, never actually
+      reaching a real user because the one piece feeding it features never
+      got the clean-room treatment every *other* Essentia dependency here
+      already has (key/mode, harmonic tension, tempo).
+
+      **Part A — clean-room structure detector, shipped in four waves:**
+      1. *Richer segmentation cues* (`structureDsp.ts`): `BeatCell` gained
+         `mid`/`high`/`onsetDensity`. Two novelty-kernel widths (8/32 beats)
+         run in parallel and fuse, instead of one fixed width — short for
+         fast EDM-scale cuts, long for slower verse/chorus-scale ones.
+         `riserScore` gained a `highRise` term and swapped its "hat
+         acceleration" term for a blend of flux-accel and real onset-density
+         acceleration (an accelerating snare roll — one of the most reliable
+         build cues in the literature — was previously invisible). Weights
+         rebalanced across six terms. 32 tests added to the existing 13.
+      2. *A fast, independent drop detector* (`dropStateMachine.ts`): an
+         explicit breakdown → dip → snap-back state machine watching
+         sub+bass against a trailing baseline that freezes while "deep" (so
+         an extended breakdown can't drag its own comparison point down),
+         confirming on `f.flux` (not the smoothed `f.transient`) within
+         ~0.5s — running every frame, not waiting on the slow batch cycle.
+         Wired into `AudioEngine.detectStructure()` alongside the existing
+         broadband threshold, not replacing it.
+      3. *The always-on orchestrator* (`StructureAnalyzer.ts`, ~330 lines):
+         runs on the main thread (no worker — the only reason one existed
+         was Essentia's WASM module). Accumulates a running per-frame
+         average — a second, fast 2s-tau `ChromaKeyEstimator` instance for
+         harmonic content, `timbreBands.ts`'s log-mel filterbank (no DCT —
+         the segmenter only needs cosine similarity) for timbre,
+         `onsetDensity.ts`'s leaky-integrator rate for onset density, plus
+         the multi-band/centroid/flux/flatness fields `AudioEngine` already
+         computes every frame — into the current beat cell, folds it on
+         `f.beat` (mirroring the old worker's `foldToBeats` shape), and
+         periodically (self-throttling cadence, further backed off at
+         higher `quality.tier`) runs `segment()`/`riserScore()` over a
+         200-beat rolling window. `AudioEngine.ts`'s one integration line
+         became `this.intel.updateStructure(f) ?? this.structureAnalyzer.update(f, this.lowFreqDb, ctx.sampleRate)`
+         — Essentia still wins the rare frame it has a fresh read (dev
+         builds only), the new analyzer fills every other frame, which is
+         *all* frames in a real build. Warm-up shrunk from the old
+         Essentia-readiness-driven ~30-38s to ~20-25s, since that
+         dependency no longer exists. A `?structure=off` kill switch
+         reproduces exactly the old (degraded) behaviour as an escape
+         hatch. `SectionTracker.ts` needed zero changes — its contract was
+         already source-agnostic.
+      4. *Offline firing-sanity harness + debug visibility*:
+         `scripts/calibrate/structure-sanity.calib.ts` (new) steps the real
+         `StructureAnalyzer` over decoded corpus audio and checks it isn't
+         silently inert — not an accuracy gate (no labeled boundary ground
+         truth exists), a regression gate, since an *inert* detector is
+         exactly what happened here undetected for months. Run against 40
+         real PMEmo clips: **88% fired at least one boundary**, mean 3.13
+         boundaries/clip, mean batch cost 2.6ms (max 10.4ms, confirming the
+         plan's "cheap enough inline" estimate). `f.spectrum` turned out to
+         have never been populated in the calibration harness at all — fixed
+         as part of wiring this in, or the new detector's timbre channel
+         would have silently run on an all-zero array offline.
+         `DebugPanel.tsx`'s structure row now shows the analyzer's live
+         novelty/boundary/build/history/ETA/run-count whenever
+         `!f.structureValid`, and distinguishes "not valid yet" from
+         "`?structure=off`" explicitly.
+
+      **Part B — BPM-driven visual speed**, shipped first (smaller,
+      independent, fully unit-testable without audio):
+      `tempoSpeedMultiplier(bpm, confidence)` in the new `tempoSpeed.ts`:
+      `clamp(1 + 0.6*log2(bpm/120), 0.6, 1.6)`, log-scaled because tempo is
+      *perceived* logarithmically (doubling/halving are equal perceptual
+      steps, a linear ratio would make 200 BPM look absurd next to 60),
+      confidence-gated toward neutral (1.0) below a trust threshold using
+      the same "ease toward neutral when untrustworthy" shape already used
+      elsewhere in this codebase. Takes the tempo estimator's already
+      octave-corrected `f.bpm` directly — no re-solving octave errors here.
+      Multiplied once into `moodParams.ts`'s `getEffectiveParams().speed`
+      (the one global reactivity multiplier every scene reads) and into
+      `CameraDirector.tsx`'s motion-rate calculation (which had zero BPM
+      term before this). Smoothed with a multi-second time constant so it
+      settles at the pace the underlying tempo read itself stabilizes.
+      Deliberately NOT touched: `sceneSteer.ts`'s speed dial (a different,
+      existing rule about mood *pretending* tempo changed) and
+      `AnimationDirector.ts`'s existing fine-grained BPM terms (would
+      double-count tempo specifically there).
+
+      **What a prior investigation already settled and this did not
+      reopen:** F153 explicitly scoped and rejected training/distilling an
+      ML model for structure segmentation (multi-week GPU pipeline, a
+      realistic offline ceiling around 0.6 boundary-F, against the need for
+      something causal in a browser) — this plan's research pull confirmed
+      that call still holds.
+
+      **Verification.** `npm run check` (typecheck × 2 configs, lint,
+      full test suite, build, licence gate) all pass. 2554/2557 tests pass;
+      the sole failure is the pre-existing, unrelated
+      `checkDistLicences.test.ts` flake (first confirmed in F258). The
+      offline firing-sanity harness ran against real corpus audio, not
+      just typechecked (numbers above). **Not yet watched live against real
+      music** — no browser/GPU in this environment, same limitation as
+      every other DSP/visual change this session; the extended
+      `?lookdebug`/`DebugPanel` structure row exists specifically so this
+      check is fast once it can be watched. Every threshold in Part A
+      (kernel widths, the breakdown-dip ratio, the snap-back window, the
+      quality-tier cadence backoff) and Part B's formula constants are
+      reasoned starting points from the plan's research, not tuned against
+      real listening — expect a by-ear pass, the same as the mood engine's
+      rows needed.
