@@ -22,6 +22,9 @@ corpus/audio/
 corpus/frames/
 corpus/refs/
 corpus/emotion/
+# Structure-detector firing-sanity report (scripts/calibrate/structure-sanity.calib.ts) — derived from
+# the same non-commercial PMEmo/DEAM audio as corpus/emotion/, same reasoning.
+corpus/structure/
 
 # Converted TF.js model weights (Essentia, CC BY-NC-SA). Binaries, and
 # reproducible from scripts/convert-essentia-models.md — same reasoning as the

@@ -5,12 +5,19 @@
  * Everything that is a pure, exported module in `src/audio` is imported and
  * used directly — `computeSpectralBands`, `computeLowBands`, `BandNormalizer`,
  * `ProgramLevel`, `BpmEstimator`, `PhraseDetector`, `MoodEstimator`,
- * `PercussionDetector`. Only the glue that lives inline inside `AudioEngine`
+ * `PercussionDetector`, `StructureAnalyzer` (F260's always-on, non-Essentia
+ * structure detector — the same fallback source `AudioEngine.ts` feeds
+ * `SectionTracker` from). Only the glue that lives inline inside `AudioEngine`
  * (the FFT reads, the RMS/crest loop, the smoothing lines, the energy blend,
  * the fps-independent onset/percussion tick, `advanceGrid`, `detectStructure`)
  * is re-implemented here, each block tagged with the `AudioEngine.ts` step it
  * mirrors. `crosscheck.calib.ts` bounds the residual difference against a real
  * browser decode.
+ *
+ * `structureRuns`/`structureStatus` on `TrackRunResult` and `structureBuildActive`
+ * on `FrameSample` are for `structure-sanity.calib.ts` only — see that file for
+ * why structure needs the full linear spectrum every frame (`f.spectrum`, not
+ * on the narrow `FrameSample`) rather than a cached replay.
  *
  * Faithful to AudioEngine as of the F154 front-end sweep: the 2048 main FFT +
  * 8192 sub/bass FFT, `f.sub` off the 8192 grid, `f.sparkle`, the age-windowed
@@ -24,10 +31,12 @@ import { HarmonicTensionEstimator } from '../../src/audio/harmonicTension'
 import { MoodEstimator } from '../../src/audio/MoodEstimator'
 import { PercussionDetector } from '../../src/audio/PercussionDetector'
 import { PhraseDetector } from '../../src/audio/PhraseDetector'
-import { computeLowBands, computeSpectralBands } from '../../src/audio/spectralFeatures'
+import { computeLowBands, computeSpectralBands, writeLinearSpectrum } from '../../src/audio/spectralFeatures'
 import { evictExpired, fftAdvanced, makeWaveProbe } from '../../src/audio/frameGating'
 import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
 import { OfflineLoudness } from '../../src/audio/loudness'
+import { StructureAnalyzer, type StructureAnalyzerStatus } from '../../src/audio/structure/StructureAnalyzer'
+import type { StructureRaw } from '../../src/audio/essentia/structureProtocol'
 import { createEmptyFeatures, type AudioFeatures } from '../../src/audio/types'
 import { frequencyDataDb } from './fft'
 
@@ -64,6 +73,15 @@ export interface TrackRunResult {
   frameRate: number
   sampleRate: number
   durationSec: number
+  /** Every non-null `StructureRaw` the (always-on, non-Essentia) `StructureAnalyzer` produced over
+   *  the track, in order — one per completed batch. Segments/boundaries accumulate and refine batch
+   *  to batch, so the LAST entry is the one worth reporting for a per-track summary; earlier entries
+   *  are kept too so a caller can see how the read evolved. Empty for a track too short to clear
+   *  `StructureAnalyzer`'s warm-up gates (`MIN_HISTORY_SEC` + `FIRST_JOB_DELAY_SEC`). */
+  structureRuns: StructureRaw[]
+  /** The analyzer's own status object at the end of the run (`runs`, `lastCostMs`, `buildScore`, …) —
+   *  see `StructureAnalyzer.ts`. Present even when `structureRuns` is empty (still shows warm-up state). */
+  structureStatus: StructureAnalyzerStatus
 }
 
 /** The subset of `AudioFeatures` the calibration reports read, per frame. */
@@ -115,6 +133,10 @@ export interface FrameSample {
   harmonicTonalness: number
   harmonicRoughness: number
   harmonicDissonance: number
+  /** `StructureAnalyzer`'s own held build-active read at this frame (its `status.buildActive`,
+   *  current between batches — not just true on the rare frame a new `StructureRaw` lands). For
+   *  comparing against the fast, always-on `buildUp` flag above: see `structure-sanity.calib.ts`. */
+  structureBuildActive: boolean
 }
 
 /**
@@ -157,6 +179,11 @@ export function runTrack(
   const percussionDetector = new PercussionDetector()
   const chromaKey = new ChromaKeyEstimator()
   const harmTension = new HarmonicTensionEstimator()
+  // Always-on, non-Essentia structure segmentation — the same class AudioEngine.ts falls back to in
+  // every real build (see its header). NOT disabled: this harness wants its live reads, not the
+  // `?structure=off` kill-switch path.
+  const structureAnalyzer = new StructureAnalyzer()
+  const structureRuns: StructureRaw[] = []
 
   const freqDb = new Float32Array(FFT_SIZE / 2)
   const prevMag = new Float32Array(FFT_SIZE / 2)
@@ -200,6 +227,11 @@ export function runTrack(
     for (let k = 0; k < 1024; k++) waveform[k] = pcm[end - 1024 + k] ?? 0
     frequencyDataDb(fftFrame, FFT_SIZE, freqDb)
     frequencyDataDb(lowFrame, LOW_FFT_SIZE, lowFreqDb)
+    // f.spectrum: AudioEngine.ts writes this from the MAIN (2048) FFT, not lowFreqDb — see its own
+    // "--- Spectrum ---" block. Needed here for `StructureAnalyzer`'s mel-band timbre channel
+    // (`melBands(f.spectrum, ...)`), which nothing before this harness's structure work read, so it
+    // was never populated.
+    writeLinearSpectrum(freqDb, f.spectrum)
 
     // C8 — did the FFT advance? (Always yes here; see the declaration comment.)
     // Same shared helper the live engine uses, so the two can't drift.
@@ -384,6 +416,14 @@ export function runTrack(
     phraseDetector.update(now, f)
     moodEstimator.update(f)
 
+    // --- Song structure (AudioEngine.ts: same relative position — after mood, at the
+    // `sectionTracker.update` call site — since `StructureAnalyzer.update()` only needs `f.beat`/
+    // `f.beatIndex` (advanceGrid, above), the percussion triggers (above) and `f.spectrum` (this
+    // frame's spectrum write, above); it doesn't read mood/character at all, so exact placement
+    // relative to those two blocks doesn't affect its output, only the ordering convention. ---
+    const structureRaw = structureAnalyzer.update(f, lowFreqDb, sampleRate)
+    if (structureRaw) structureRuns.push(structureRaw)
+
     frames.push({
       t: now,
       rms: f.rms,
@@ -430,6 +470,7 @@ export function runTrack(
       harmonicTonalness: f.harmonicTonalness,
       harmonicRoughness: f.harmonicRoughness,
       harmonicDissonance: f.harmonicDissonance,
+      structureBuildActive: structureAnalyzer.status.buildActive,
     })
   }
 
@@ -438,6 +479,8 @@ export function runTrack(
     frameRate,
     sampleRate,
     durationSec: pcm.length / sampleRate,
+    structureRuns,
+    structureStatus: structureAnalyzer.status,
   }
 }
 

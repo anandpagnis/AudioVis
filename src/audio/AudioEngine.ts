@@ -26,7 +26,7 @@ import { SectionTracker } from './SectionTracker'
 import { TimbreDescriptors } from './TimbreDescriptors'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 import { DropStateMachine } from './structure/dropStateMachine'
-import { StructureAnalyzer } from './structure/StructureAnalyzer'
+import { StructureAnalyzer, type StructureAnalyzerStatus } from './structure/StructureAnalyzer'
 import { structureOff } from './structure/structureFlags'
 
 export type SourceKind = 'system' | 'mic' | 'file'
@@ -394,6 +394,12 @@ class AudioEngine {
    * matching how other URL-flag-gated behaviour in this codebase is read once at construction rather
    * than polled every frame (e.g. `characterLookOn` just below). */
   private readonly structureAnalyzer = new StructureAnalyzer({ disabled: structureOff() })
+  /** Read-only view of the fallback structure analyzer's live diagnostics — `DebugPanel`'s "structure
+   *  not yet valid" row reads this in every real (non-Essentia) build, where `structureBridge.status`
+   *  is permanently uninformative (Essentia's provider never runs there). */
+  get structureAnalyzerStatus(): StructureAnalyzerStatus {
+    return this.structureAnalyzer.status
+  }
   /** CHARACTER layer: valence/arousal/tension/pulse from audio features (percentile-calibrated),
    * then a soft 14-mood classification with a held primary. Runs in every build. */
   private readonly emotion = new EmotionDimensionEstimator()
