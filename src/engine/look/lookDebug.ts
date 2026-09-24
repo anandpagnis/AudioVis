@@ -58,6 +58,17 @@ export interface LookDebugApplied {
   bpm: number
   tempoOctaves: number
   tempoRate: number
+  /** The armed drop scene (`engine/armedChange.ts`), or null when nothing is armed. `warm` = compiled and ready. */
+  armed: {
+    sceneId: string
+    sinceBeat: number
+    expiresBeat: number
+    gate: string
+    warm: boolean
+    trigger: string
+  } | null
+  /** The last arm outcome (`drop@b140`, `fizzle@b120`, ...), shown while nothing is armed. */
+  armedLast: string
 }
 
 /** Everything one overlay refresh prints. */
@@ -128,7 +139,13 @@ export function formatLookDebug(s: LookDebugSnapshot): string[] {
     `shot  camera=${a.cameraMode}  transition: requested=${a.transitionStyle} applied=${a.committedTransitionStyle}` +
       `${downgraded ? ' (DOWNGRADED)' : ''}  active=${a.transitionActive} t=${fmt(a.transitionProgress, 2)}`,
   )
-  lines.push(`quality tier=${a.qualityTier} (wipe needs <= ${a.wipeMaxTier})`)
+  // The armed drop scene shares the quality line (the overlay is capped at 12 lines): it is the same kind of
+  // fact, what the show is holding back for the machine's sake, and that line is short.
+  const arm = a.armed
+  const armText = arm
+    ? `armed ${arm.sceneId} since b${fmt(arm.sinceBeat, 0)} gate=${arm.gate} warm=${arm.warm ? 'y' : 'n'} expires b${fmt(arm.expiresBeat, 0)} trig=${arm.trigger}`
+    : `armed -  last=${a.armedLast}`
+  lines.push(`quality tier=${a.qualityTier} (wipe needs <= ${a.wipeMaxTier})  ${armText}`)
   lines.push(
     `tempo bpm=${fmt(a.bpm, 0)} oct=${fmtSigned(a.tempoOctaves, 2)} coupling=${fmt(look.tempoCoupling, 2)} -> speed x${fmt(a.tempoRate, 2)}`,
   )

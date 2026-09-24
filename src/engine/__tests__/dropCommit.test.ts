@@ -113,3 +113,54 @@ describe('resolveCommit — warm gate on normal switches', () => {
     expect(resolveCommit({ ...drop, waited: 0.4 }).immediate).toBe(true)
   })
 })
+
+/**
+ * An ARMED scene (`engine/armedChange.ts`) is held: warmed like any pending scene, committed by nothing until it
+ * is released. Unarmed, `resolveCommit` must be exactly what it was before arming existed.
+ */
+describe('resolveCommit — held (armed) scene', () => {
+  const warm = { ...base, incomingWarm: true as boolean | null }
+
+  it('is not committed by a downbeat, an untrusted grid, the 2.5 s backstop, or a pending-immediate flag', () => {
+    expect(resolveCommit({ ...warm, held: true, onDownbeat: true }).commit).toBe(false)
+    expect(resolveCommit({ ...warm, held: true, gridTrusted: false }).commit).toBe(false)
+    expect(resolveCommit({ ...warm, held: true, waited: 60 }).commit).toBe(false)
+    expect(resolveCommit({ ...warm, held: true, pendingImmediate: true }).commit).toBe(false)
+    expect(resolveCommit({ ...warm, held: true, onDownbeat: true, waited: 60 }).immediate).toBe(false)
+  })
+
+  it('is held whether or not it has finished warming', () => {
+    for (const incomingWarm of [true, false, null]) {
+      expect(resolveCommit({ ...base, held: true, incomingWarm, onDownbeat: true, waited: 9 }).commit).toBe(false)
+    }
+  })
+
+  it('released as a drop: a warm scene cuts at once', () => {
+    const r = resolveCommit({ ...warm, held: false, pendingImmediate: true, waited: 0 })
+    expect(r).toEqual({ commit: true, immediate: true })
+  })
+
+  it('released as a drop while still cold: waits only the usual grace, then cuts', () => {
+    const cold = { ...base, held: false, pendingImmediate: true, incomingWarm: false }
+    expect(resolveCommit({ ...cold, waited: 0.05 }).commit).toBe(false)
+    expect(resolveCommit({ ...cold, waited: 0.4 })).toEqual({ commit: true, immediate: true })
+  })
+
+  it('released as a predicted drop: a normal crossfade that waits for the next downbeat, never a hard cut', () => {
+    const released = { ...warm, held: false, pendingImmediate: false, waited: 0 }
+    expect(resolveCommit(released).commit).toBe(false)
+    expect(resolveCommit({ ...released, onDownbeat: true })).toEqual({ commit: true, immediate: false })
+  })
+
+  it('held omitted or false is byte-for-byte the unarmed behaviour, over every input combination', () => {
+    for (const gridTrusted of [true, false])
+      for (const onDownbeat of [true, false])
+        for (const pendingImmediate of [true, false])
+          for (const incomingWarm of [true, false, null])
+            for (const waited of [0, 0.1, 0.4, 2.6, 9]) {
+              const o = { gridTrusted, onDownbeat, pendingImmediate, incomingWarm, waited }
+              expect(resolveCommit({ ...o, held: false })).toEqual(resolveCommit(o))
+              expect(resolveCommit({ ...o, held: undefined })).toEqual(resolveCommit(o))
+            }
+  })
+})

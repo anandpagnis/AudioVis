@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CHARACTER_MOODS } from '../../../audio/characterTypes'
-import { lookDebugEnabled, lookFamilies, lookForceMood, tempoCouplingOff } from '../lookFlags'
+import { armOff, lookDebugEnabled, lookFamilies, lookForceMood, tempoCouplingOff } from '../lookFlags'
 
 const ALL_ON = { grade: true, post: true, scene: true, camera: true }
 const ALL_OFF = { grade: false, post: false, scene: false, camera: false }
@@ -67,6 +67,35 @@ describe('tempoCouplingOff', () => {
     expect(tempoCouplingOff('?tempo=0')).toBe(true)
     expect(tempoCouplingOff('?tempo=false')).toBe(true)
     expect(tempoCouplingOff('?tempo=no')).toBe(true)
+  })
+})
+
+describe('armOff', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('is an off-switch only for an explicit off value, case-insensitively', () => {
+    expect(armOff('')).toBe(false)
+    expect(armOff('?arm=on')).toBe(false)
+    expect(armOff('?arm')).toBe(false)
+    expect(armOff('?arm=off')).toBe(true)
+    expect(armOff('?arm=OFF')).toBe(true)
+    expect(armOff('?arm=0')).toBe(true)
+    expect(armOff('?arm=false')).toBe(true)
+    expect(armOff('?arm=no')).toBe(true)
+    expect(armOff('?tempo=off')).toBe(false) // a different switch
+  })
+
+  it('reads location.search by default and survives a throwing location', () => {
+    vi.stubGlobal('location', { search: '?arm=off' })
+    expect(armOff()).toBe(true)
+    vi.stubGlobal('location', {
+      get search(): string {
+        throw new Error('blocked')
+      },
+    })
+    expect(armOff()).toBe(false)
   })
 })
 

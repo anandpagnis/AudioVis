@@ -402,7 +402,7 @@ describe('the one-shot build pick (real picker, lifted point, build boost)', () 
 describe('call-site wiring (source checks)', () => {
   it('AutoPilot: every pickVariedMode call passes the gated look, and the look is gated by sceneLookActive', () => {
     const calls = AUTOPILOT_SRC.match(/pickVariedMode\([^)]*\)/g) ?? []
-    expect(calls.length).toBe(4) // mode vary, build switch, drop pre-arm, main pick
+    expect(calls.length).toBe(5) // mode vary, build switch, armed drop scene, drop pre-arm, main pick
     for (const c of calls) expect(c, c).toMatch(/,\s*sceneLook\)$/)
     expect(AUTOPILOT_SRC).toContain('sceneLookActive(performanceState.look) ? performanceState.look : undefined')
   })

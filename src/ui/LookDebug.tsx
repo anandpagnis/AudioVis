@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
+import { armedProbe } from '../engine/armedChange'
 import { performanceState } from '../engine/performanceState'
 import { quality } from '../engine/quality'
+import { sceneStreamer } from '../engine/streaming/sceneStreamer'
 import { currentTempoRate } from '../engine/tempoRate'
 import { WIPE_MAX_TIER } from '../engine/transitionWipe'
 import { lookDebugEnabled } from '../engine/look/lookFlags'
@@ -70,6 +72,17 @@ function snapshot(): LookDebugSnapshot {
       bpm: audioEngine.features.bpm,
       tempoOctaves: audioEngine.features.tempoOctaves,
       tempoRate: currentTempoRate(),
+      armed: armedProbe.armed
+        ? {
+            sceneId: armedProbe.armed.sceneId,
+            sinceBeat: armedProbe.armed.armedAtBeat,
+            expiresBeat: armedProbe.armed.expiresAtBeat,
+            gate: armedProbe.armed.gate,
+            warm: sceneStreamer.isReady(armedProbe.armed.sceneId),
+            trigger: armedProbe.armed.trigger,
+          }
+        : null,
+      armedLast: armedProbe.lastOutcome,
     },
     grade: lookDebugProbe,
   }

@@ -336,6 +336,15 @@ interface AppState {
    * describes one pending transition, not persisted state.
    */
   pendingImmediate: boolean
+  /**
+   * The scene AutoPilot has ARMED for the coming drop (`engine/armedChange.ts`): mounted and compiled through
+   * the pending slot like any request, but `SceneManager.resolveCommit` will not commit it while this equals
+   * `pendingSceneId`. Cleared by any other `requestScene`, by `commitScene`, `releaseHold` and `disarmScene`.
+   * Compared against `pendingSceneId` rather than used as a flag, so a stale value (the pending scene was
+   * cleared or replaced behind its back, e.g. by a cutaway or the output-window link) can never hold an
+   * unrelated request. Transient, not persisted.
+   */
+  heldSceneId: string | null
   /** Most-recently-committed primary scene ids, newest first, capped at 4.
    *  Transient (not persisted) — feeds `pickVariedScene`'s recency penalty so
    *  AutoPilot/PerformanceDirector don't show the same handful of scenes on
@@ -640,6 +649,21 @@ interface AppState {
    *  automatic dwell floor has not elapsed) — callers that act on the
    *  incoming scene must check, not assume. */
   requestScene: (id: string, opts?: { auto?: boolean; immediate?: boolean }) => boolean
+  /**
+   * Arm `id` for the coming drop: mount and compile it through the pending slot but HOLD it (`heldSceneId`).
+   * Refused (false) when it is the current scene, cannot hold `primary`, or the pending slot is taken. Unlike an
+   * automatic `requestScene` it does NOT check the 32-beat dwell: the dwell is enforced when the hold is
+   * released for a non-drop reason, and a drop bypasses it (see `armedChange.ts`).
+   */
+  armScene: (id: string) => boolean
+  /**
+   * Release the held scene so `SceneManager` may commit it: `immediate` cuts NOW (a confirmed drop), otherwise it
+   * lands on the next downbeat as a normal crossfade. Returns false (and clears any stale hold) when nothing is
+   * held for the current pending scene.
+   */
+  releaseHold: (immediate: boolean) => boolean
+  /** Give the pending slot back: clears the held scene and, when it is still the pending one, the pending scene. */
+  disarmScene: () => void
   /** Ask `FilterDirector` to fire this filter on its next frame. Unlike
    *  `requestScene` there is nothing for a caller to check — the director
    *  validates the id and consumes the request either way — so this returns
@@ -796,6 +820,7 @@ export const useStore = create<AppState>()(
       sceneId: 'wireframe',
       pendingSceneId: null,
       pendingImmediate: false,
+      heldSceneId: null,
       recentSceneIds: [],
       lastCommitBeat: -Infinity,
       layerSceneIds: emptyLayerScenes(),
@@ -1137,8 +1162,40 @@ export const useStore = create<AppState>()(
         // instant, and a drop is worth interrupting a dwell for.
         if (opts?.auto && !opts.immediate && !canAutoSwitch(get().lastCommitBeat)) return false
         preloadScene(id) // start fetching the lazy chunk before the downbeat commit
-        set({ pendingSceneId: id, pendingImmediate: opts?.immediate === true })
+        // Any request other than `armScene` replaces the pending scene outright, so it also drops a hold: a
+        // request for the ARMED scene therefore doubles as its confirmation, and a manual pick is never held.
+        set({ pendingSceneId: id, pendingImmediate: opts?.immediate === true, heldSceneId: null })
         return true
+      },
+
+      armScene: (id) => {
+        const s = get()
+        if (id === s.sceneId || s.pendingSceneId !== null) return false
+        if (!canHoldPrimary(id)) return false
+        preloadScene(id) // start fetching the lazy chunk now: the whole point is to be ready long before the drop
+        set({ pendingSceneId: id, pendingImmediate: false, heldSceneId: id })
+        return true
+      },
+
+      releaseHold: (immediate) => {
+        const s = get()
+        if (s.heldSceneId === null) return false
+        if (s.heldSceneId !== s.pendingSceneId) {
+          set({ heldSceneId: null })
+          return false
+        }
+        set({ heldSceneId: null, pendingImmediate: immediate })
+        return true
+      },
+
+      disarmScene: () => {
+        const s = get()
+        if (s.heldSceneId === null) return
+        if (s.heldSceneId === s.pendingSceneId) {
+          set({ pendingSceneId: null, pendingImmediate: false, heldSceneId: null })
+        } else {
+          set({ heldSceneId: null })
+        }
       },
 
       // No roster lookup, no dwell floor, no cooldown here — deliberately.
@@ -1282,6 +1339,7 @@ export const useStore = create<AppState>()(
             sceneId: pending,
             pendingSceneId: null,
             pendingImmediate: false,
+            heldSceneId: null,
             recentSceneIds: recent,
             lastCommitBeat: audioEngine.features.beatIndex,
           })

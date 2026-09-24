@@ -346,6 +346,10 @@ const IMMEDIATE_WARM_GRACE_SEC = 0.35
  * the "drops don't switch" bug survived for as long as it did.
  *
  * `incomingWarm` is null when no warm entry exists yet (nothing to wait for).
+ *
+ * `held` is an ARMED scene (`engine/armedChange.ts`): mounted and compiled like any pending scene, but not
+ * committed until something releases it. Nothing commits it while held: not an untrusted grid, not a downbeat, not
+ * the 2.5 s backstop. Omitted or false, this function is exactly what it was before arming existed.
  */
 export function resolveCommit(opts: {
   gridTrusted: boolean
@@ -353,8 +357,10 @@ export function resolveCommit(opts: {
   pendingImmediate: boolean
   incomingWarm: boolean | null
   waited: number
+  held?: boolean
 }): { commit: boolean; immediate: boolean } {
   const { gridTrusted, onDownbeat, pendingImmediate, incomingWarm, waited } = opts
+  if (opts.held === true) return { commit: false, immediate: false }
   const immediate =
     pendingImmediate && (incomingWarm === null || incomingWarm || waited > IMMEDIATE_WARM_GRACE_SEC)
 
@@ -764,6 +770,13 @@ export function SceneManager() {
     const { pendingSceneId, commitScene } = state
     if (pendingSceneId) {
       if (pendingSince.current < 0) pendingSince.current = clock.elapsedTime
+      // An ARMED scene is warmed below like any other pending one but not committed (see `resolveCommit`'s
+      // `held`). Matched against the pending id so a stale hold can never freeze an unrelated request. While held
+      // the wait clock is pinned to now, so the moment it is released `waited` starts from ~0: the drop's warm
+      // grace and a non-drop release's downbeat wait then behave exactly as for a freshly requested scene, instead
+      // of seeing a huge `waited` and skipping straight to the 2.5 s backstop.
+      const held = state.heldSceneId !== null && state.heldSceneId === pendingSceneId
+      if (held) pendingSince.current = clock.elapsedTime
 
       // Pre-warm: mount the incoming scene the moment it's requested so its
       // shader compiles now, well before the downbeat we actually switch on.
@@ -830,6 +843,7 @@ export function SceneManager() {
         pendingImmediate: state.pendingImmediate,
         incomingWarm: pendingWarm ? isWarmComplete(pendingWarm) : null,
         waited,
+        held,
       })
 
       if (commit) {
