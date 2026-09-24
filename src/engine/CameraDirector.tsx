@@ -5,6 +5,7 @@ import type { MoodState } from '../audio/types'
 import { getScene } from '../scenes'
 import { LOOK_CAMERA_MODES, type LookProfile } from './look/lookRow'
 import { approach, performanceState, type CameraMode } from './performanceState'
+import { currentTempoRate } from './tempoRate'
 import { rotationUnit } from './transitions'
 
 /**
@@ -470,10 +471,10 @@ export function computeDesired(mode: CameraMode, anchor: CameraAnchor, time: num
   // corrupt profile can never freeze or fling the lens.
   const look = performanceState.look
   const lookOn = look.valid && look.families.camera
-  // `f.tempoSpeed` is independent of the mood look (a different signal — the song's measured tempo, not a mood
-  // classification) and multiplies in regardless of `lookOn`, same as it does in moodParams.ts. Already
+  // The tempo rate is independent of the mood look's OWN gains (the song's measured tempo, scaled by the mood's
+  // `tempoCoupling`) and multiplies in regardless of `lookOn`, same as it does in moodParams.ts. Already
   // confidence-gated and eased (tempoSpeed.ts), so this is 1 (no-op) until the tempo read is trustworthy.
-  const speed = (lookOn ? lookGain(look.cameraSpeed, 0.25, 2) : 1) * f.tempoSpeed
+  const speed = (lookOn ? lookGain(look.cameraSpeed, 0.25, 2) : 1) * currentTempoRate()
   const shake = lookOn ? lookGain(look.cameraShake, 0, 2) : 1
 
   switch (mode) {

@@ -12,6 +12,8 @@ import type { LookFamilies } from './lookRow'
  *  - `?look=-grade,-post,-scene,-camera`  per-family kill switches: a leading '-' disables that family, anything
  *    else (unknown names, tokens without '-') is ignored. Repeated `look=` params accumulate.
  *  - `?scenepick=legacy`  the pre-existing "original mood labels everywhere" switch: ALL families off.
+ *  - `?tempo=off`         turn the BPM -> motion-speed coupling off (`0|false|off|no` all count); motion speed is then
+ *                         exactly what it was before the coupling existed.
  */
 
 function readSearch(search?: string): string {
@@ -49,6 +51,13 @@ export function lookDebugEnabled(search?: string): boolean {
   if (p === null || !p.has('lookdebug')) return false
   const v = (p.get('lookdebug') ?? '').trim().toLowerCase()
   return !OFF_VALUES.includes(v)
+}
+
+/** `?tempo=off` (or 0 / false / no): the BPM -> motion-speed coupling is disabled. Absent or any other value: on. */
+export function tempoCouplingOff(search?: string): boolean {
+  const raw = paramsOf(search)?.get('tempo')
+  if (raw === null || raw === undefined) return false
+  return OFF_VALUES.includes(raw.trim().toLowerCase())
 }
 
 /**

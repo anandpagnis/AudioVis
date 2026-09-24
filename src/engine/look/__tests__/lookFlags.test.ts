@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CHARACTER_MOODS } from '../../../audio/characterTypes'
-import { lookDebugEnabled, lookFamilies, lookForceMood } from '../lookFlags'
+import { lookDebugEnabled, lookFamilies, lookForceMood, tempoCouplingOff } from '../lookFlags'
 
 const ALL_ON = { grade: true, post: true, scene: true, camera: true }
 const ALL_OFF = { grade: false, post: false, scene: false, camera: false }
@@ -54,6 +54,19 @@ describe('lookDebugEnabled', () => {
     expect(lookDebugEnabled('?lookdebugger')).toBe(false)
     expect(lookDebugEnabled('?look=debug')).toBe(false)
     for (const off of ['0', 'false', 'off', 'no', 'OFF']) expect(lookDebugEnabled(`?lookdebug=${off}`)).toBe(false)
+  })
+})
+
+describe('tempoCouplingOff', () => {
+  it('is off-switch only for an explicit off value', () => {
+    expect(tempoCouplingOff('')).toBe(false)
+    expect(tempoCouplingOff('?tempo=on')).toBe(false)
+    expect(tempoCouplingOff('?tempo')).toBe(false)
+    expect(tempoCouplingOff('?tempo=off')).toBe(true)
+    expect(tempoCouplingOff('?tempo=OFF')).toBe(true)
+    expect(tempoCouplingOff('?tempo=0')).toBe(true)
+    expect(tempoCouplingOff('?tempo=false')).toBe(true)
+    expect(tempoCouplingOff('?tempo=no')).toBe(true)
   })
 })
 

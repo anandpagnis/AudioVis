@@ -52,6 +52,9 @@ function snap(over: Partial<LookDebugSnapshot> = {}): LookDebugSnapshot {
       transitionProgress: 0.4,
       qualityTier: 1,
       wipeMaxTier: 1,
+      bpm: 128,
+      tempoOctaves: 0.09,
+      tempoRate: 1.06,
     },
     grade: { sat: 1.06, temp: 0.04, contrast: 1.02 },
     ...over,
@@ -112,6 +115,7 @@ describe('formatLookDebug', () => {
     expect(text).not.toMatch(/DOWNGRADED/)
     expect(text).toMatch(/active=true t=0\.40/)
     expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\)/)
+    expect(text).toMatch(/tempo bpm=128 oct=\+0\.09 coupling=\d\.\d\d -> speed x1\.06/)
   })
 
   it('flags a silent downgrade — the requested style did not actually reach the screen', () => {

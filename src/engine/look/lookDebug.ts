@@ -54,6 +54,10 @@ export interface LookDebugApplied {
   /** Live quality tier (0 = richest). Wipe styles need `tier <= wipeMaxTier` — see the `shot` line. */
   qualityTier: number
   wipeMaxTier: number
+  /** Tempo -> motion speed: the live BPM, the eased octave distance from 120, and the resulting rate (`tempoRate.ts`). */
+  bpm: number
+  tempoOctaves: number
+  tempoRate: number
 }
 
 /** Everything one overlay refresh prints. */
@@ -125,6 +129,9 @@ export function formatLookDebug(s: LookDebugSnapshot): string[] {
       `${downgraded ? ' (DOWNGRADED)' : ''}  active=${a.transitionActive} t=${fmt(a.transitionProgress, 2)}`,
   )
   lines.push(`quality tier=${a.qualityTier} (wipe needs <= ${a.wipeMaxTier})`)
+  lines.push(
+    `tempo bpm=${fmt(a.bpm, 0)} oct=${fmtSigned(a.tempoOctaves, 2)} coupling=${fmt(look.tempoCoupling, 2)} -> speed x${fmt(a.tempoRate, 2)}`,
+  )
   const f = look.families
   lines.push(
     `family ${f.grade ? 'grade' : '-grade'} ${f.post ? 'post' : '-post'} ${f.scene ? 'scene' : '-scene'} ${f.camera ? 'camera' : '-camera'}`,

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { audioEngine } from '../audio/AudioEngine'
 import { performanceState } from '../engine/performanceState'
 import { quality } from '../engine/quality'
+import { currentTempoRate } from '../engine/tempoRate'
 import { WIPE_MAX_TIER } from '../engine/transitionWipe'
 import { lookDebugEnabled } from '../engine/look/lookFlags'
 import {
@@ -66,6 +67,9 @@ function snapshot(): LookDebugSnapshot {
       transitionProgress: p.transition.progress,
       qualityTier: quality.tier,
       wipeMaxTier: WIPE_MAX_TIER,
+      bpm: audioEngine.features.bpm,
+      tempoOctaves: audioEngine.features.tempoOctaves,
+      tempoRate: currentTempoRate(),
     },
     grade: lookDebugProbe,
   }

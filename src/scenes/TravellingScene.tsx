@@ -673,6 +673,8 @@ interface TravellingState {
 export const TravellingScene = createShaderScene<TravellingState>({
   id: 'travelling',
   frag: FRAG,
+  // Travel rate is beats-per-second (`bps`) already, so the factory must not fold the tempo in again.
+  tempoLocked: true,
   // travellingPulse(): one exp and one divide per plane per pixel (4 planes),
   // against the ~100 fbm evaluations per pixel documented above. Not
   // measurable here — SCENE_COST_MS is unchanged and deliberately so.

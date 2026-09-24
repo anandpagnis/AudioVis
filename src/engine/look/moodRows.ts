@@ -43,6 +43,10 @@ import {
  *  - Melancholic, brooding, mysterious and tense are cool and dark (gradeTemp <= 0, heavy vignette);
  *    aggressive, euphoric, uplifting, playful and tender are warm.
  *  - Strobe is 0 for every calm mood and never above 0.8; mirror spin never above 0.7 (no new flash sources).
+ *  - `tempoCoupling` (how far the song's BPM pulls motion speed) follows how much the mood is ABOUT the pulse:
+ *    driving and aggressive 1.0, groove 0.9, euphoric 0.85, playful 0.8, uplifting 0.75, tense 0.7, epic 0.6
+ *    (grand and heavy, so it follows tempo only partly), mysterious 0.4, brooding 0.45, melancholic 0.35, tender
+ *    and dreamy 0.3, serene 0.2. A fast dreamy track therefore stays floaty; a fast driving one races.
  *
  * ## Authoring conventions
  * Every field is written out for every row (nothing silently inherits the neutral row). The `row()` helper
@@ -105,6 +109,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.2, mirrorMode: mirrorMode({ kaleido: 1 }), mirrorSegments: mirrorSegs({ 6: 0.8, 8: 0.2 }),
     mirrorSpinMin: 0.05, mirrorSpinMax: 0.15, mirrorTwistMax: 0.4, mirrorMix: 0.7, mirrorBusyGain: 0.3,
     steerSpeed: 0.2, steerComplexity: 0.3, steerDensity: 0.3, steerFill: 0.4, steerContrast: 0.3,
+    tempoCoupling: 0.2,
     cameraWeights: camera({ hover: 0.6, orbit: 0.15, pull: 0.1, locked: 0.05, spiral: 0.05, cinematic: 0.05 }),
     cameraSpeed: 0.6, cameraShake: 0, cameraCutRate: 0.1,
     transitionWeights: transitions({ dissolve: 0.4, smear: 0.15, inkDissolve: 0.45 }),
@@ -122,6 +127,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.15, mirrorMode: mirrorMode({ kaleido: 1 }), mirrorSegments: mirrorSegs({ 4: 0.2, 6: 0.8 }),
     mirrorSpinMin: 0.05, mirrorSpinMax: 0.2, mirrorTwistMax: 0.4, mirrorMix: 0.7, mirrorBusyGain: 0.3,
     steerSpeed: 0.34, steerComplexity: 0.32, steerDensity: 0.3, steerFill: 0.4, steerContrast: 0.4,
+    tempoCoupling: 0.3,
     cameraWeights: camera({ orbit: 0.5, hover: 0.25, cinematic: 0.1, pull: 0.1, spiral: 0.05 }),
     cameraSpeed: 0.7, cameraShake: 0.05, cameraCutRate: 0.2,
     transitionWeights: transitions({ dissolve: 0.3, smear: 0.3, inkDissolve: 0.4 }),
@@ -138,6 +144,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.45, mirrorMode: mirrorMode({ kaleido: 0.7, vortex: 0.3 }), mirrorSegments: mirrorSegs({ 6: 0.5, 8: 0.5 }),
     mirrorSpinMin: 0.05, mirrorSpinMax: 0.25, mirrorTwistMax: 0.6, mirrorMix: 0.8, mirrorBusyGain: 0.5,
     steerSpeed: 0.28, steerComplexity: 0.35, steerDensity: 0.3, steerFill: 0.42, steerContrast: 0.35,
+    tempoCoupling: 0.3,
     cameraWeights: camera({ spiral: 0.5, orbit: 0.2, hover: 0.15, pull: 0.1, cinematic: 0.05 }),
     cameraSpeed: 0.7, cameraShake: 0.05, cameraCutRate: 0.2,
     transitionWeights: transitions({ smear: 0.3, melt: 0.2, dissolve: 0.1, inkDissolve: 0.25, irisWipe: 0.15 }),
@@ -155,6 +162,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0, mirrorMode: mirrorMode({ kaleido: 1 }), mirrorSegments: mirrorSegs({ 6: 1 }),
     mirrorSpinMin: 0.05, mirrorSpinMax: 0.1, mirrorTwistMax: 0.2, mirrorMix: 0.5, mirrorBusyGain: 0,
     steerSpeed: 0.24, steerComplexity: 0.24, steerDensity: 0.16, steerFill: 0.2, steerContrast: 0.48,
+    tempoCoupling: 0.35,
     cameraWeights: camera({ hover: 0.5, pull: 0.25, locked: 0.15, orbit: 0.1 }),
     cameraSpeed: 0.6, cameraShake: 0, cameraCutRate: 0.1,
     transitionWeights: transitions({ dissolve: 0.45, smear: 0.1, inkDissolve: 0.45 }),
@@ -172,6 +180,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.2, mirrorMode: mirrorMode({ kaleido: 0.25, vortex: 0.75 }), mirrorSegments: mirrorSegs({ 4: 0.4, 6: 0.4, 8: 0.2 }),
     mirrorSpinMin: 0.05, mirrorSpinMax: 0.2, mirrorTwistMax: 0.8, mirrorMix: 0.7, mirrorBusyGain: 0.4,
     steerSpeed: 0.4, steerComplexity: 0.45, steerDensity: 0.35, steerFill: 0.4, steerContrast: 0.7,
+    tempoCoupling: 0.45,
     cameraWeights: camera({ push: 0.5, cinematic: 0.15, hover: 0.15, locked: 0.1, orbit: 0.1 }),
     cameraSpeed: 0.7, cameraShake: 0.3, cameraCutRate: 0.25,
     // A small sortSlice residual — the one CALM mood besides mysterious whose lens already touches glitch,
@@ -190,6 +199,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.55, mirrorMode: mirrorMode({ kaleido: 0.9, vortex: 0.1 }), mirrorSegments: mirrorSegs({ 6: 0.5, 8: 0.5 }),
     mirrorSpinMin: 0.05, mirrorSpinMax: 0.3, mirrorTwistMax: 0.5, mirrorMix: 0.9, mirrorBusyGain: 0.6,
     steerSpeed: 0.3, steerComplexity: 0.55, steerDensity: 0.35, steerFill: 0.4, steerContrast: 0.55,
+    tempoCoupling: 0.4,
     cameraWeights: camera({ orbit: 0.5, spiral: 0.15, topdown: 0.1, hover: 0.1, pull: 0.1, cinematic: 0.05 }),
     cameraSpeed: 0.8, cameraShake: 0.1, cameraCutRate: 0.25,
     // sortSlice residual tracks this row's own pixelSort lens share (0.2, the only CALM mood carrying it);
@@ -209,6 +219,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.35, mirrorMode: mirrorMode({ kaleido: 0.7, vortex: 0.3 }), mirrorSegments: mirrorSegs({ 4: 0.6, 8: 0.4 }),
     mirrorSpinMin: 0.15, mirrorSpinMax: 0.4, mirrorTwistMax: 0.8, mirrorMix: 0.8, mirrorBusyGain: 0.5,
     steerSpeed: 0.5, steerComplexity: 0.5, steerDensity: 0.52, steerFill: 0.5, steerContrast: 0.55,
+    tempoCoupling: 0.9,
     cameraWeights: camera({ orbit: 0.4, spiral: 0.15, push: 0.1, pull: 0.1, handheld: 0.1, hover: 0.05, topdown: 0.05, cinematic: 0.05 }),
     cameraSpeed: 1, cameraShake: 0.3, cameraCutRate: 0.5,
     // mosaic (LED pixels) fits groove's own anamorphic+pixels lens mix directly — carved out of dissolve/melt/
@@ -228,6 +239,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.4, mirrorMode: mirrorMode({ kaleido: 0.85, vortex: 0.15 }), mirrorSegments: mirrorSegs({ 4: 0.5, 6: 0.5 }),
     mirrorSpinMin: 0.2, mirrorSpinMax: 0.5, mirrorTwistMax: 0.6, mirrorMix: 0.8, mirrorBusyGain: 0.6,
     steerSpeed: 0.66, steerComplexity: 0.45, steerDensity: 0.5, steerFill: 0.62, steerContrast: 0.45,
+    tempoCoupling: 0.8,
     cameraWeights: camera({ handheld: 0.35, spiral: 0.2, orbit: 0.2, push: 0.1, topdown: 0.1, pull: 0.05 }),
     cameraSpeed: 1.1, cameraShake: 0.5, cameraCutRate: 0.6,
     // The highest mosaic share of any mood — playful's lens is 60% `pixels`, the top share in the table — carved
@@ -247,6 +259,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.35, mirrorMode: mirrorMode({ kaleido: 0.9, vortex: 0.1 }), mirrorSegments: mirrorSegs({ 6: 0.2, 8: 0.8 }),
     mirrorSpinMin: 0.15, mirrorSpinMax: 0.4, mirrorTwistMax: 0.5, mirrorMix: 0.85, mirrorBusyGain: 0.5,
     steerSpeed: 0.64, steerComplexity: 0.62, steerDensity: 0.6, steerFill: 0.68, steerContrast: 0.58,
+    tempoCoupling: 0.75,
     cameraWeights: camera({ push: 0.3, spiral: 0.3, orbit: 0.15, cinematic: 0.1, handheld: 0.1, pull: 0.05 }),
     cameraSpeed: 1.1, cameraShake: 0.3, cameraCutRate: 0.55,
     // mosaic carved entirely out of collapse's dominant share — uplifting's lens carries a real `pixels` slice
@@ -266,6 +279,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.6, mirrorMode: mirrorMode({ kaleido: 0.85, vortex: 0.15 }), mirrorSegments: mirrorSegs({ 6: 0.4, 8: 0.6 }),
     mirrorSpinMin: 0.25, mirrorSpinMax: 0.55, mirrorTwistMax: 0.7, mirrorMix: 1, mirrorBusyGain: 0.7,
     steerSpeed: 0.78, steerComplexity: 0.78, steerDensity: 0.75, steerFill: 0.8, steerContrast: 0.7,
+    tempoCoupling: 0.85,
     cameraWeights: camera({ spiral: 0.45, push: 0.2, orbit: 0.15, handheld: 0.1, topdown: 0.05, cinematic: 0.05 }),
     cameraSpeed: 1.3, cameraShake: 0.5, cameraCutRate: 0.7,
     // Secondary mosaic mood (behind groove/playful/uplifting), carved out of collapse/melt — euphoric's lens
@@ -284,6 +298,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.2, mirrorMode: mirrorMode({ vortex: 1 }), mirrorSegments: mirrorSegs({ 4: 1, 6: 1, 8: 1 }),
     mirrorSpinMin: 0.3, mirrorSpinMax: 0.6, mirrorTwistMax: 1, mirrorMix: 0.8, mirrorBusyGain: 0.3,
     steerSpeed: 0.78, steerComplexity: 0.7, steerDensity: 0.65, steerFill: 0.65, steerContrast: 0.72,
+    tempoCoupling: 1,
     cameraWeights: camera({ push: 0.6, handheld: 0.15, spiral: 0.1, topdown: 0.1, orbit: 0.05 }),
     cameraSpeed: 1.5, cameraShake: 0.4, cameraCutRate: 0.75,
     // sortSlice carved out of collapse's dominant share (0.85 -> 0.45) — driving's pixelSort lens share (0.45)
@@ -305,6 +320,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.3, mirrorMode: mirrorMode({ vortex: 1 }), mirrorSegments: mirrorSegs({ 4: 1, 6: 1, 8: 1 }),
     mirrorSpinMin: 0.2, mirrorSpinMax: 0.5, mirrorTwistMax: 1.2, mirrorMix: 0.7, mirrorBusyGain: 0.4,
     steerSpeed: 0.55, steerComplexity: 0.75, steerDensity: 0.6, steerFill: 0.5, steerContrast: 0.8,
+    tempoCoupling: 0.7,
     cameraWeights: camera({ handheld: 0.55, push: 0.2, locked: 0.1, topdown: 0.1, orbit: 0.05 }),
     cameraSpeed: 1, cameraShake: 1, cameraCutRate: 0.6,
     // sortSlice takes tense's whole (small) collapse share, plus a trim off smear, to reach a real presence —
@@ -325,6 +341,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.15, mirrorMode: mirrorMode({ vortex: 1 }), mirrorSegments: mirrorSegs({ 4: 1, 6: 1, 8: 1 }),
     mirrorSpinMin: 0.3, mirrorSpinMax: 0.65, mirrorTwistMax: 1.3, mirrorMix: 0.6, mirrorBusyGain: 0.2,
     steerSpeed: 0.74, steerComplexity: 0.78, steerDensity: 0.74, steerFill: 0.7, steerContrast: 0.84,
+    tempoCoupling: 1,
     cameraWeights: camera({ handheld: 0.6, push: 0.2, topdown: 0.1, spiral: 0.05, orbit: 0.05 }),
     cameraSpeed: 1.4, cameraShake: 1.4, cameraCutRate: 0.9,
     // The strongest sortSlice of any mood, carved entirely out of collapse (0.65 -> 0.25, melt untouched) —
@@ -343,6 +360,7 @@ export const MOOD_ROWS: Record<CharacterMood, LookRow> = {
     mirrorEngage: 0.5, mirrorMode: mirrorMode({ kaleido: 0.9, vortex: 0.1 }), mirrorSegments: mirrorSegs({ 6: 0.5, 8: 0.5 }),
     mirrorSpinMin: 0.1, mirrorSpinMax: 0.35, mirrorTwistMax: 0.6, mirrorMix: 0.8, mirrorBusyGain: 0.6,
     steerSpeed: 0.6, steerComplexity: 0.7, steerDensity: 0.68, steerFill: 0.82, steerContrast: 0.65,
+    tempoCoupling: 0.6,
     cameraWeights: camera({ cinematic: 0.5, pull: 0.2, push: 0.15, orbit: 0.1, spiral: 0.05 }),
     cameraSpeed: 1, cameraShake: 0.15, cameraCutRate: 0.35,
     // A small mosaic residual — epic's lens still carries a `pixels` sliver (0.15) — carved off smear/collapse.

@@ -2,94 +2,151 @@ import { describe, expect, it } from 'vitest'
 import {
   CONFIDENCE_CEIL,
   CONFIDENCE_FLOOR,
+  OCTAVES_MAX,
+  RATE_MAX,
+  RATE_MIN,
   REF_BPM,
-  TEMPO_SPEED_MAX,
-  TEMPO_SPEED_MIN,
-  tempoSpeedMultiplier,
+  foldedSpeedDial,
+  speedDialBias,
+  tempoOctaves,
+  tempoRate,
 } from '../tempoSpeed'
 
-describe('tempoSpeedMultiplier', () => {
-  it('is exactly 1 at the reference BPM, at full confidence', () => {
-    expect(tempoSpeedMultiplier(REF_BPM, 1)).toBeCloseTo(1, 9)
+/** `sceneParams.ts`'s `drastic`, restated so this audio-side test stays free of engine imports. */
+const drastic = (p: number) => Math.pow(4, (p - 0.5) * 2)
+
+describe('tempoOctaves', () => {
+  it('is 0 at the reference BPM and +-1 at double / half time, at full confidence', () => {
+    expect(tempoOctaves(REF_BPM, 1)).toBeCloseTo(0, 12)
+    expect(tempoOctaves(REF_BPM * 2, 1)).toBeCloseTo(1, 12)
+    expect(tempoOctaves(REF_BPM / 2, 1)).toBeCloseTo(-1, 12)
   })
 
-  it('is greater than 1 above the reference BPM and less than 1 below it, at full confidence', () => {
-    expect(tempoSpeedMultiplier(160, 1)).toBeGreaterThan(1)
-    expect(tempoSpeedMultiplier(80, 1)).toBeLessThan(1)
+  it('is exactly antisymmetric in log-space', () => {
+    expect(tempoOctaves(REF_BPM * 1.5, 1)).toBeCloseTo(-tempoOctaves(REF_BPM / 1.5, 1), 12)
   })
 
-  it('matches worked values from the plan (k=0.6, ref=120)', () => {
-    expect(tempoSpeedMultiplier(60, 1)).toBeCloseTo(TEMPO_SPEED_MIN, 9) // raw 0.4, clamped up to 0.6
-    expect(tempoSpeedMultiplier(80, 1)).toBeCloseTo(0.649, 2)
-    expect(tempoSpeedMultiplier(160, 1)).toBeCloseTo(1.249, 2)
-    expect(tempoSpeedMultiplier(200, 1)).toBeCloseTo(1.442, 2)
+  it('clamps at +-OCTAVES_MAX so an octave-double misread cannot fling motion around', () => {
+    expect(tempoOctaves(480, 1)).toBe(OCTAVES_MAX)
+    expect(tempoOctaves(20, 1)).toBe(-OCTAVES_MAX)
   })
 
-  it('clamps at the extremes: a very low bpm floors, an octave-double-style high bpm ceilings', () => {
-    expect(tempoSpeedMultiplier(30, 1)).toBe(TEMPO_SPEED_MIN)
-    expect(tempoSpeedMultiplier(320, 1)).toBe(TEMPO_SPEED_MAX) // e.g. a 160-track misread as double
-  })
-
-  it('is monotonically increasing in bpm at fixed (full) confidence', () => {
-    const bpms = [60, 70, 85, 100, 120, 140, 160, 180, 200]
+  it('is monotonically increasing in bpm at full confidence', () => {
     let prev = -Infinity
-    for (const bpm of bpms) {
-      const v = tempoSpeedMultiplier(bpm, 1)
+    for (const bpm of [40, 60, 80, 100, 120, 140, 160, 200, 300]) {
+      const v = tempoOctaves(bpm, 1)
       expect(v).toBeGreaterThanOrEqual(prev)
       prev = v
     }
   })
 
-  it('is roughly symmetric in log-space around the reference BPM (equal ratio, opposite sign deviation)', () => {
-    const up = tempoSpeedMultiplier(REF_BPM * 1.5, 1) - 1
-    const down = tempoSpeedMultiplier(REF_BPM / 1.5, 1) - 1
-    expect(up).toBeCloseTo(-down, 9)
+  it('is fully neutral at or below the confidence floor, whatever the bpm', () => {
+    expect(tempoOctaves(200, 0)).toBe(0)
+    expect(tempoOctaves(60, CONFIDENCE_FLOOR)).toBe(0)
   })
 
-  it('is fully neutral (1) at zero confidence, whatever the bpm', () => {
-    expect(tempoSpeedMultiplier(200, 0)).toBe(1)
-    expect(tempoSpeedMultiplier(60, 0)).toBe(1)
+  it('ramps linearly with confidence between the floor and the ceiling, and saturates above it', () => {
+    const full = tempoOctaves(160, 1)
+    expect(tempoOctaves(160, (CONFIDENCE_FLOOR + CONFIDENCE_CEIL) / 2)).toBeCloseTo(full * 0.5, 12)
+    expect(tempoOctaves(160, CONFIDENCE_CEIL)).toBeCloseTo(full, 12)
+    expect(tempoOctaves(160, 0.9)).toBeCloseTo(full, 12)
   })
 
-  it('ramps linearly with confidence between the floor and the ceiling', () => {
-    const full = tempoSpeedMultiplier(160, 1)
-    const mid = tempoSpeedMultiplier(160, (CONFIDENCE_FLOOR + CONFIDENCE_CEIL) / 2)
-    expect(mid).toBeCloseTo(1 + (full - 1) * 0.5, 6)
+  it('reads as neutral (0) for non-finite or non-positive bpm, and for non-finite confidence', () => {
+    for (const bpm of [0, -10, NaN, Infinity, -Infinity]) expect(tempoOctaves(bpm, 1)).toBe(0)
+    for (const c of [NaN, Infinity, -Infinity]) expect(tempoOctaves(160, c)).toBe(0)
+  })
+})
+
+describe('tempoRate', () => {
+  it('is exactly 1 at zero octaves for every coupling', () => {
+    for (const k of [0, 0.2, 0.6, 1, 1.2]) expect(tempoRate(0, k)).toBe(1)
   })
 
-  it('is monotonically non-decreasing in confidence for a bpm above the reference', () => {
-    const confidences = [0, 0.1, CONFIDENCE_FLOOR, 0.25, CONFIDENCE_CEIL, 0.7, 1]
-    let prev = -Infinity
-    for (const c of confidences) {
-      const v = tempoSpeedMultiplier(160, c)
-      expect(v).toBeGreaterThanOrEqual(prev - 1e-9)
-      prev = v
+  it('is exactly 1 for every tempo at zero coupling (a mood that ignores tempo)', () => {
+    for (const o of [-1, -0.5, 0.4, 1]) expect(tempoRate(o, 0)).toBe(1)
+  })
+
+  it('at coupling 1, is proportional to tempo: 160 BPM = 4/3, 80 BPM = 2/3', () => {
+    expect(tempoRate(Math.log2(160 / REF_BPM), 1)).toBeCloseTo(160 / 120, 9)
+    expect(tempoRate(Math.log2(80 / REF_BPM), 1)).toBeCloseTo(80 / 120, 9)
+  })
+
+  it('a higher coupling pulls harder in both directions (fast gets faster, slow gets slower)', () => {
+    const fast = Math.log2(160 / REF_BPM)
+    const slow = Math.log2(80 / REF_BPM)
+    expect(tempoRate(fast, 1)).toBeGreaterThan(tempoRate(fast, 0.3))
+    expect(tempoRate(fast, 0.3)).toBeGreaterThan(1)
+    expect(tempoRate(slow, 1)).toBeLessThan(tempoRate(slow, 0.3))
+    expect(tempoRate(slow, 0.3)).toBeLessThan(1)
+  })
+
+  it('a 2x faster and a 2x slower song sit at exact reciprocal rates', () => {
+    for (const k of [0.3, 0.7, 1]) expect(tempoRate(0.7, k) * tempoRate(-0.7, k)).toBeCloseTo(1, 12)
+  })
+
+  it('never leaves [RATE_MIN, RATE_MAX], even for an absurd coupling', () => {
+    expect(tempoRate(1, 50)).toBe(RATE_MAX)
+    expect(tempoRate(-1, 50)).toBe(RATE_MIN)
+  })
+
+  it('treats a negative coupling as 0 and non-finite inputs as neutral', () => {
+    expect(tempoRate(0.8, -1)).toBe(1)
+    expect(tempoRate(NaN, 1)).toBe(1)
+    expect(tempoRate(0.5, NaN)).toBe(1)
+    expect(tempoRate(Infinity, 1)).toBe(1)
+  })
+
+  it('a dreamy-like coupling keeps a fast track floaty while a driving-like one races', () => {
+    const o = Math.log2(160 / REF_BPM)
+    expect(tempoRate(o, 0.3)).toBeLessThan(1.15)
+    expect(tempoRate(o, 1)).toBeGreaterThan(1.3)
+  })
+})
+
+describe('speedDialBias', () => {
+  it('makes drastic(dial + bias) exactly drastic(dial) * rate, for any dial position', () => {
+    for (const dial of [0, 0.2, 0.5, 0.75, 1]) {
+      for (const rate of [RATE_MIN, 0.8, 1, 1.33, RATE_MAX]) {
+        expect(drastic(dial + speedDialBias(rate))).toBeCloseTo(drastic(dial) * rate, 9)
+      }
     }
   })
 
-  it('reaches the same value at and above the confidence ceiling (no further change past it)', () => {
-    expect(tempoSpeedMultiplier(160, CONFIDENCE_CEIL)).toBeCloseTo(tempoSpeedMultiplier(160, 1), 9)
-    expect(tempoSpeedMultiplier(160, 0.8)).toBeCloseTo(tempoSpeedMultiplier(160, 1), 9)
+  it('is 0 for a neutral rate and for garbage', () => {
+    expect(speedDialBias(1)).toBe(0)
+    for (const r of [0, -1, NaN, Infinity]) expect(speedDialBias(r)).toBe(0)
   })
 
-  it('never throws and reads as neutral for non-finite or non-positive bpm', () => {
-    for (const bpm of [0, -10, NaN, Infinity, -Infinity]) {
-      expect(tempoSpeedMultiplier(bpm, 1)).toBe(1)
+  it('stays within +-0.25 of the dial across the whole rate range', () => {
+    expect(speedDialBias(RATE_MAX)).toBeCloseTo(0.25, 12)
+    expect(speedDialBias(RATE_MIN)).toBeCloseTo(-0.25, 12)
+  })
+})
+
+describe('foldedSpeedDial', () => {
+  it('multiplies drastic(dial) by the global speed exactly, for any dial and global speed', () => {
+    for (const dial of [0, 0.3, 0.5, 0.8, 1]) {
+      for (const g of [0.3, 0.6, 1, 1.5, 2.2]) {
+        expect(drastic(foldedSpeedDial(dial, g, 1.2, false))).toBeCloseTo(drastic(dial) * g, 9)
+      }
     }
   })
 
-  it('never throws for non-finite confidence — every non-finite value reads as untrustworthy (neutral)', () => {
-    // Infinity is NOT treated as "maximally confident": only a genuine finite reading is ever trusted, so
-    // any non-finite value (NaN, +-Infinity) falls through to the same safe default as a missing read.
-    for (const c of [NaN, Infinity, -Infinity]) expect(tempoSpeedMultiplier(160, c)).toBe(1)
+  it('leaves the dial untouched at a global speed of 1', () => {
+    expect(foldedSpeedDial(0.42, 1, 1, false)).toBe(0.42)
   })
 
-  it('octave correction is the caller\'s job, not this function\'s: a doubled bpm is just a bigger input', () => {
-    // This function takes only (bpm, confidence) and imports nothing from BpmEstimator, so there is no
-    // internal state that could double-apply octave correction — confirmed structurally by the module's
-    // own header, and behaviourally here: a naive double/half input just moves along the same formula.
-    const at80 = tempoSpeedMultiplier(80, 1)
-    const at160 = tempoSpeedMultiplier(160, 1)
-    expect(at160).toBeGreaterThan(at80)
+  it('a tempo-locked scene gets the global speed WITHOUT the tempo rate (no double tempo)', () => {
+    const global = 0.8 * 1.3 // e.g. mood 0.8 x tempo rate 1.3
+    const locked = foldedSpeedDial(0.5, global, 1.3, true)
+    expect(drastic(locked)).toBeCloseTo(0.8, 9)
+    expect(drastic(foldedSpeedDial(0.5, global, 1.3, false))).toBeCloseTo(global, 9)
+  })
+
+  it('a tempo-locked scene is unaffected by a garbage rate (falls back to the plain global speed)', () => {
+    for (const r of [0, -1, NaN, Infinity]) {
+      expect(drastic(foldedSpeedDial(0.5, 1.4, r, true))).toBeCloseTo(1.4, 9)
+    }
   })
 })
