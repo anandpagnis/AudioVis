@@ -12774,3 +12774,95 @@ per-frame canvas heavy enough to distort the reading.
       reasoned starting points from the plan's research, not tuned against
       real listening — expect a by-ear pass, the same as the mood engine's
       rows needed.
+
+- [x] **F262 · Three dead paths in F261's structure detector fixed; the song's
+      BPM now sets motion speed by a per-mood coupling and reaches every scene**
+      — *2026-09-24, user request ("look into the section change analyser and
+      see what improvements we can do compared to state of the art ... I want
+      bpm and mood to directly affect the raw speed of the scenes ... a
+      multiplier that is changed by mood")* `src/audio/SectionTracker.ts`,
+      `src/audio/structure/StructureAnalyzer.ts`, `src/audio/AudioEngine.ts`,
+      `src/audio/essentia/structureDsp.ts`, `src/audio/tempoSpeed.ts`,
+      `src/engine/tempoRate.ts`, `src/engine/createShaderScene.tsx`,
+      `src/engine/look/{lookRow,moodRows,lookFlags,lookDebug}.ts`,
+      `src/engine/{moodParams.ts,CameraDirector.tsx}`
+
+      **F261 shipped a detector that was running but largely ineffective.** An
+      audit of the analyser against the code (three claims re-verified by hand)
+      found three defects, all in or around what F261 built:
+      1. **SectionTracker could never use the analyser's boundaries.**
+         `checkerboardNovelty` zeroes the newest M cells (a boundary needs future
+         context), so the newest boundary sits >= 8 beats behind the live beat;
+         the tracker only acted on a boundary within 4 beats. Dead as a result:
+         build-to-drop by boundary, committing a section kind at a boundary, and
+         `beatsTillBoundary`. The old tests hid it by injecting boundaries in the
+         future. The analyser's edge-zeroing is correct and untouched; the
+         contract changed instead: a boundary is a CONFIRMED PAST boundary. It
+         dates the section (`beatsInSection` counts from it), adopts the covering
+         segment's kind promptly, resolves a build retroactively (a boundary
+         older than 2 beats fires NO late drop event, since a drop cue 10 beats
+         late is worse than none; the instant path is `f.drop`), and predicts the
+         next boundary as the last plus the median spacing, snapped to the 8/4
+         beat grid. The old boundary-driven drop latch also could never commit
+         `'drop'` (8-beat hold on an 8-beat latch); fixed.
+      2. **The build (riser) score was read only per batch**, every 15 s or more
+         (after a 20 s warm-up), while a 16-bar build lasts ~30 s at 120 BPM. It
+         is now read every beat between batches (cached segments, fresh riser),
+         batch cadence is 8 s, and the riser uses a hysteresis exit
+         (`riserScore`'s new optional `enter` argument) so a per-beat read does
+         not flicker around its threshold. Frequent raws exposed three latent
+         SectionTracker bugs, fixed with regression tests: the staleness clock
+         was refreshed by replays, the still-active riser window re-armed `build`
+         right after a drop, and a shrinking "beats till drop" countdown fizzled
+         a 36-beat build at beat 29.
+      3. **`f.buildUp` was arithmetically unreachable in steady state.** It needed
+         a slope of 0.197/s, but energy is 0..1 over a 6 s window, so the ceiling
+         is ~0.167/s; it could only fire in a track's first seconds (the recorded
+         0.018% firing rate was that start-up transient, not builds). It is now a
+         least-squares fit over the window: slope > 0.03/s and R^2 > 0.8 (rejects
+         a single step, accepts a ramp or a staircase). NOTE: the formula is
+         duplicated in `scripts/calibrate/features.ts`; edit both.
+
+      **BPM -> motion speed, controlled by mood.** `rate = (bpm/120)^coupling`,
+      where `coupling` is the new per-mood row field `LookRow.tempoCoupling`
+      (0..1.2): driving/aggressive 1.0, groove 0.9, euphoric 0.85, playful 0.8,
+      uplifting 0.75, tense 0.7, epic 0.6, brooding 0.45, mysterious 0.4,
+      melancholic 0.35, tender/dreamy 0.3, serene 0.2. 120 BPM is neutral for
+      every mood; the mood only sets how far the tempo pulls, so a fast dreamy
+      track stays floaty while a fast driving one races. `f.tempoOctaves` (eased,
+      confidence-gated `log2(bpm/120)`) replaces F261's fixed-slope
+      `f.tempoSpeed`; `engine/tempoRate.ts` is the single choke point (global
+      speed, camera, shader scenes). `?tempo=off` disables it; `?lookdebug`
+      shows bpm, octaves, coupling and the resulting rate.
+      **Reach: F261's tempo multiplier only reached ~18 of the scenes.** The ~25
+      shader-factory scenes read only their own 0..1 dial via `drastic(P.speed)`,
+      never the global speed, so tempo, the mood's speed and the user's Speed
+      dial were all inert for them. `createShaderScene` now gives each instance a
+      private copy of its dials with the global speed folded into `P.speed` as an
+      exact multiplier on `drastic()` (`foldedSpeedDial`). Scenes already locked
+      to the beat grid (`beats`, `javazone`, `travelling`) opt out of the tempo
+      part with `tempoLocked`. OrbitGlow and SynthGrid had a private `bpm/120`
+      term on top of the global speed, which F261's multiplier double-counted;
+      removed.
+
+      **Found, NOT changed:** the director's mood-driven scene-dial steering
+      (`steerSpeed`, `steerComplexity`, `steerDensity`, `steerFill`,
+      `steerContrast`) never reaches the shader-factory scenes: only
+      `sceneFrame` calls `resolveSteeredParams`, and the factory reads its dials
+      from `useSceneParams`, which has no steering layer. Worth a decision.
+
+      **Verification.** typecheck (both configs), lint, build and the licence
+      gate pass; 2604/2607 tests pass (sole failure the pre-existing,
+      unrelated `checkDistLicences.test.ts` flake first seen in F258). Offline
+      harness on 30 calm PMEmo clips: fast `buildUp` 0.000% (was 0.015%),
+      analyser `build.active` 0.315%, boundaries/clip 3.47; 18 full Jamendo tracks
+      fired the new `buildUp` twice in 67 minutes. That only shows calm material
+      stays quiet. **Nothing here has been watched live** (no browser/GPU); the
+      slope/R^2/energy gates, the 3-beat jitter margin, the 48-beat age cap, the
+      24-beat re-arm block and every per-mood coupling value are reasoned
+      starting points that need a by-ear pass. Still open from the audit, in
+      order: fuse the fast phrase-change signal (`f.sectionChange`) into the
+      section read for quicker verse->chorus; z-score/threshold the similarity
+      matrix and add an absolute novelty floor; a ~4-beat causal lookahead;
+      loosen the drop machine's 1.5 s dip hold; real downbeat/bar tracking
+      (`beatInBar` is just `beatIndex % 4`).
