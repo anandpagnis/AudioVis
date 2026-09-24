@@ -118,7 +118,7 @@ describe('formatLookDebug', () => {
     expect(text).toMatch(/active=true t=0\.40/)
     expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\)/)
     expect(text).toMatch(/tempo bpm=128 oct=\+0\.09 coupling=\d\.\d\d -> speed x1\.06/)
-    expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\)  armed -  last=-/)
+    expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\) {2}armed - {2}last=-/)
   })
 
   it('prints the armed drop scene on the quality line, within the width and line caps', () => {
@@ -135,7 +135,7 @@ describe('formatLookDebug', () => {
   it('shows the last outcome while nothing is armed, and never prints NaN for a garbage beat', () => {
     const s = snap()
     s.applied.armedLast = 'drop@b140'
-    expect(formatLookDebug(s).join('\n')).toMatch(/armed -  last=drop@b140/)
+    expect(formatLookDebug(s).join('\n')).toMatch(/armed - {2}last=drop@b140/)
     s.applied.armed = { sceneId: 'kifs', sinceBeat: NaN, expiresBeat: Infinity, gate: 'hold', warm: false, trigger: 'build' }
     const text = formatLookDebug(s).join('\n')
     expect(text).not.toMatch(/NaN|Infinity/)
