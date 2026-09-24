@@ -9,6 +9,10 @@ import type { AudioFeatures } from './types'
  * entered a new section (verse → chorus, breakdown, drop...). Section
  * boundaries re-anchor the phrase grid, so `phraseProgress` completes
  * exactly on musically meaningful boundaries instead of drifting.
+ *
+ * "Downbeat" here is `f.beatInBar === 0`: the real bar line once the engine's
+ * downbeat estimator has locked (`f.downbeatLocked`), the legacy arbitrary
+ * `beatIndex % 4` phase until then. The public output shape is unchanged.
  */
 
 const SAMPLE_INTERVAL = 0.1
@@ -46,7 +50,12 @@ export class PhraseDetector {
       }
     }
 
-    // Only consider boundaries on downbeats — sections change on the grid.
+    // Only consider boundaries on downbeats — sections change on the grid. `f.beatInBar` is measured from
+    // the estimated downbeat when `f.downbeatLocked` (structure/downbeat.ts), so this snaps to the real
+    // bar line; when the estimator is not confident it is the legacy `beatIndex % 4` (arbitrary phase),
+    // exactly as before. When the offset is adopted or moved (rare) `beatInBar` jumps once, which here
+    // just means the next boundary candidate lands on a different beat - `phraseStartBeat` is a raw
+    // `beatIndex`, so `phrase` / `phraseProgress` stay continuous across it.
     if (f.beat && f.beatInBar === 0 && now > this.cooldownUntil && !f.silence) {
       const recent = [0, 0, 0, 0]
       const before = [0, 0, 0, 0]

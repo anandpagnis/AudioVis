@@ -519,10 +519,14 @@ export const KifsRoseScene = createShaderScene<KifsRoseState>({
     u.uPhase.value = st.phase
     u.uBeatAccent.value = st.accent
     u.uFoldStep.value = st.fold
-    // Continuous 0..1 across the bar. `beatInBar` is `beatIndex % 4` upstream
-    // (AudioEngine), so this ramp and `isDownbeat` above agree on where the bar
-    // line is by construction rather than by coincidence.
-    u.uBarSweep.value = barPhase(f.beatIndex, f.beatProgress)
+    // Continuous 0..1 across the bar. Fed `f.beatInBar` (NOT `f.beatIndex`): upstream, `beatInBar` is
+    // measured from the estimated downbeat once the engine has locked one (`beatIndex % 4` until then),
+    // so the ramp and `isDownbeat` above agree on where the bar line is by construction. Passing
+    // `beatIndex` here would keep the sweep on the legacy phase while the fold step moved to the real bar
+    // line. `beatInBar` is already 0..3, so `barPhase`'s own modulo is a no-op on it. The sweep is read
+    // as `sin(2*pi*sweep)` in the shader, so the one-off jump when the offset is adopted is a ~2% radial
+    // breath step, not a visible cut.
+    u.uBarSweep.value = barPhase(f.beatInBar, f.beatProgress)
     u.uSymmetry.value = st.symmetry
     // Fold count no longer reads the quality tier (F129 reverts F111 here):
     // the tier's job is resolution, via the global pixelBudget/performanceCost

@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
 import { lookOf } from '../audio/characterLook'
 import type { CharacterMood } from '../audio/characterTypes'
+import { isPhraseEdge } from '../audio/structure/downbeat'
 import type { MoodState } from '../audio/types'
 import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
@@ -450,7 +451,9 @@ export function PerformanceStateBridge() {
     // PerformanceDirector already uses for its own structure-absent fallback,
     // so this never fires faster than the existing beat-grid vocabulary
     // already allows elsewhere in the show.
-    const phraseBoundary = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
+    // Bar-phase aware (see `isPhraseEdge`): the old `beatIndex % 16 === 0` form is dead once a downbeat
+    // offset is adopted. Identical to it at offset 0.
+    const phraseBoundary = isPhraseEdge(f.beat, f.beatInBar, f.bar)
     const arousalDue =
       p.arousal > AROUSAL_CUT_THRESHOLD && phraseBoundary && f.beatIndex !== lastCameraBeat.current
     const sceneChanged = active.id !== lastCameraScene.current
@@ -751,7 +754,7 @@ export function PerformanceStateBridge() {
     // glitch rather than as a choice. `LENS_MAX_PHRASES` below exists only to
     // guarantee it EVENTUALLY gets a decision opportunity even when the music
     // never trips `f.sectionChange` — see that constant's own doc.
-    const phraseEdge = f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
+    const phraseEdge = isPhraseEdge(f.beat, f.beatInBar, f.bar)
     if (f.sectionChange || phraseEdge) {
       // F134: the phrase edge is a chance to re-roll, not a mandate to. A
       // section boundary always commits — it is the one unambiguous "the music

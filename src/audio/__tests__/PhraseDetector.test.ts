@@ -86,6 +86,43 @@ describe('PhraseDetector', () => {
     expect(f.sectionChange).toBe(false)
   })
 
+  it('snaps to the bar line as reported by f.beatInBar, not to beatIndex % 4', () => {
+    // With a locked downbeat offset, beatInBar === 0 lands on beatIndex values that are NOT multiples of 4.
+    const onBar = new PhraseDetector()
+    const f1 = makeFeatures()
+    const t1 = buildHistory(onBar, f1, [0.2, 0.2, 0.2, 0.2], [0.9, 0.9, 0.9, 0.9], 1.3)
+    f1.beat = true
+    f1.beatInBar = 0
+    f1.beatIndex = 66 // 66 % 4 === 2: a legacy phase would call this an off-beat
+    tick(onBar, f1, t1)
+    expect(f1.sectionChange).toBe(true)
+
+    const offBar = new PhraseDetector()
+    const f2 = makeFeatures()
+    const t2 = buildHistory(offBar, f2, [0.2, 0.2, 0.2, 0.2], [0.9, 0.9, 0.9, 0.9], 1.3)
+    f2.beat = true
+    f2.beatInBar = 2
+    f2.beatIndex = 64 // 64 % 4 === 0, but the estimated bar line says this is beat 3
+    tick(offBar, f2, t2)
+    expect(f2.sectionChange).toBe(false)
+  })
+
+  it('phrase / phraseProgress stay continuous when beatInBar jumps (a downbeat offset adopted mid-phrase)', () => {
+    const pd = new PhraseDetector()
+    const f = makeFeatures()
+    let prev = -1
+    for (let beat = 0; beat < 48; beat++) {
+      f.beat = true
+      f.beatIndex = beat
+      f.beatProgress = 0
+      f.beatInBar = beat < 20 ? beat % 4 : (beat - 2) % 4 // the offset moves once, at beat 20
+      tick(pd, f, beat * 0.5)
+      const pos = f.phrase + f.phraseProgress
+      expect(pos).toBeGreaterThanOrEqual(prev)
+      prev = pos
+    }
+  })
+
   it('never flags a boundary during silence', () => {
     const pd = new PhraseDetector()
     const f = makeFeatures()

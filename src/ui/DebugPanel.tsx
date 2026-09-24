@@ -98,6 +98,13 @@ export function DebugPanel() {
             ? 'ess:err'
             : null,
         oct !== 1 ? `oct×${oct}` : null,
+        // Bar phase (structure/downbeat.ts): `DB85` = downbeat locked at 85% confidence (beatInBar is
+        // bar-aligned); `db41` = a candidate is forming but beatInBar is still the legacy phase.
+        f.downbeatLocked
+          ? `DB${(f.downbeatConfidence * 100).toFixed(0)}`
+          : f.downbeatConfidence >= 0.25
+            ? `db${(f.downbeatConfidence * 100).toFixed(0)}`
+            : null,
         f.silence ? 'silence' : null,
         f.buildUp ? 'build' : null,
         f.drop ? 'DROP' : null,

@@ -36,6 +36,7 @@ import { evictExpired, fftAdvanced, makeWaveProbe } from '../../src/audio/frameG
 import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
 import { OfflineLoudness } from '../../src/audio/loudness'
 import { StructureAnalyzer, type StructureAnalyzerStatus } from '../../src/audio/structure/StructureAnalyzer'
+import { BeatSalienceGatherer, DownbeatEstimator, barPosition } from '../../src/audio/structure/downbeat'
 import type { StructureRaw } from '../../src/audio/essentia/structureProtocol'
 import { createEmptyFeatures, type AudioFeatures } from '../../src/audio/types'
 import { frequencyDataDb } from './fft'
@@ -45,6 +46,8 @@ const FFT_SIZE = 2048
 const LOW_FFT_SIZE = 8192 // dedicated sub/bass analyser — f.sub only
 const FLUX_WINDOW_SEC = 1.0
 const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
+/** AudioEngine.ts DOWNBEAT_MIN_GRID_CONF — keep in sync. */
+const DOWNBEAT_MIN_GRID_CONF = 0.3
 
 /**
  * Dev A/B knob for the broadband energy term.
@@ -65,6 +68,26 @@ export interface StepHooks {
   /** Called before `bpmEstimator.update`; return a `[bpm, confidence01]` to feed
    * `setModelTempo`, or null. Lets the harness exercise the model-vote path. */
   modelTempo?: (now: number) => [number, number] | null
+  /** Construct the `StructureAnalyzer` disabled (its `update()` returns null immediately). For harnesses that
+   *  only need the beat grid / downbeat (`downbeat-sanity.calib.ts`) and would otherwise pay for its batches. */
+  skipStructure?: boolean
+  /** Override AudioEngine's DOWNBEAT_MIN_GRID_CONF for a tuning experiment (default: the engine's value). */
+  downbeatMinGridConf?: number
+}
+
+/** One beat crossing, for `downbeat-sanity.calib.ts` (the bar-phase estimator's per-beat trace). */
+export interface BeatSample {
+  t: number
+  beatIndex: number
+  beatInBar: number
+  /** Downbeat offset in force at this crossing: `(beatIndex - beatInBar) mod 4`. 0 unless locked. */
+  offset: number
+  downbeatLocked: boolean
+  downbeatConfidence: number
+  /** The estimator's leading phase (-1 = not enough evidence yet), adopted or not. */
+  candidate: number
+  gridConfidence: number
+  silence: boolean
 }
 
 export interface TrackRunResult {
@@ -80,6 +103,10 @@ export interface TrackRunResult {
    *  per-track summary; earlier entries are kept too so a caller can see how the read evolved. Empty for a track too short to clear
    *  `StructureAnalyzer`'s warm-up gates (`MIN_HISTORY_SEC` + `FIRST_JOB_DELAY_SEC`). */
   structureRuns: StructureRaw[]
+  /** One entry per beat crossing, with the downbeat estimator's state at that beat. */
+  beats: BeatSample[]
+  /** Every per-beat salience the gatherer closed (what the estimator was fed), for diagnosing the evidence. */
+  salience: Array<{ beatIndex: number; salience: number; usable: boolean }>
   /** The analyzer's own status object at the end of the run (`runs`, `lastCostMs`, `buildScore`, …) —
    *  see `StructureAnalyzer.ts`. Present even when `structureRuns` is empty (still shows warm-up state). */
   structureStatus: StructureAnalyzerStatus
@@ -183,8 +210,14 @@ export function runTrack(
   // Always-on, non-Essentia structure segmentation — the same class AudioEngine.ts falls back to in
   // every real build (see its header). NOT disabled: this harness wants its live reads, not the
   // `?structure=off` kill-switch path.
-  const structureAnalyzer = new StructureAnalyzer()
+  const structureAnalyzer = new StructureAnalyzer({ disabled: hooks.skipStructure ?? false })
   const structureRuns: StructureRaw[] = []
+  // AudioEngine.ts's bar-phase estimator + its per-frame evidence gatherer (structure/downbeat.ts).
+  const downbeat = new DownbeatEstimator()
+  const beatSalience = new BeatSalienceGatherer()
+  const beats: BeatSample[] = []
+  const salienceLog: Array<{ beatIndex: number; salience: number; usable: boolean }> = []
+  const downbeatMinGridConf = hooks.downbeatMinGridConf ?? DOWNBEAT_MIN_GRID_CONF
 
   const freqDb = new Float32Array(FFT_SIZE / 2)
   const prevMag = new Float32Array(FFT_SIZE / 2)
@@ -366,13 +399,45 @@ export function runTrack(
       if (idx !== lastGridIndex) {
         if (lastGridIndex !== -1 && idx > lastGridIndex) {
           f.beat = true
-          f.beatIndex += Math.min(idx - lastGridIndex, 4)
-          f.beatInBar = f.beatIndex % 4
-          f.bar = Math.floor(f.beatIndex / 4)
-          f.measure = Math.floor(f.beatIndex / 16)
+          const crossed = idx - lastGridIndex
+          f.beatIndex += Math.min(crossed, 4)
+          if (crossed > 4) downbeat.discontinuity()
+          const bp = barPosition(f.beatIndex, downbeat.offset)
+          f.beatInBar = bp.beatInBar
+          f.bar = bp.bar
+          f.measure = bp.measure
           f.beatStrength = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
         }
         lastGridIndex = idx
+      }
+      // Downbeat evidence (AudioEngine.ts advanceGrid, same block, same inputs).
+      const kick = f.percussion.kick
+      const closed = beatSalience.frame({
+        pos: f.beatIndex + f.beatProgress,
+        kickTrigger: kick.trigger,
+        kickStrength: kick.strength,
+        low: (f.sub + f.bass) * 0.5,
+        dt: f.delta,
+        usable: !f.silence && f.confidence >= downbeatMinGridConf,
+      })
+      if (closed) {
+        downbeat.update(closed.beatIndex, closed.salience, closed.usable)
+        salienceLog.push({ beatIndex: closed.beatIndex, salience: closed.salience, usable: closed.usable })
+      }
+      f.downbeatConfidence = downbeat.confidence
+      f.downbeatLocked = downbeat.locked
+      if (f.beat) {
+        beats.push({
+          t: now,
+          beatIndex: f.beatIndex,
+          beatInBar: f.beatInBar,
+          offset: (((f.beatIndex - f.beatInBar) % 4) + 4) % 4,
+          downbeatLocked: f.downbeatLocked,
+          downbeatConfidence: f.downbeatConfidence,
+          candidate: downbeat.candidate,
+          gridConfidence: f.confidence,
+          silence: f.silence,
+        })
       }
     }
 
@@ -505,6 +570,8 @@ export function runTrack(
     sampleRate,
     durationSec: pcm.length / sampleRate,
     structureRuns,
+    beats,
+    salience: salienceLog,
     structureStatus: structureAnalyzer.status,
   }
 }

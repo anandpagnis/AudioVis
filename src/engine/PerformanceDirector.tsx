@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
+import { isPhraseEdge } from '../audio/structure/downbeat'
 import type { MoodState } from '../audio/types'
 import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
@@ -245,8 +246,10 @@ export function PerformanceDirector() {
     // With a real structure read, a latched boundary replaces the blind
     // 16-beat timer; without one, the timer is the degraded fallback.
     const latchedBoundary = f.structureValid && f.songSection.boundaryChanged
-    const phraseFallback =
-      !f.structureValid && f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
+    // `isPhraseEdge` = first beat of every 4th bar (`bar` counts from the estimated downbeat). The old
+    // `beatIndex % 16 === 0` test is only equal to this while the downbeat offset is 0; with an adopted
+    // offset it could never be true together with `beatInBar === 0`, silently killing this fallback.
+    const phraseFallback = !f.structureValid && isPhraseEdge(f.beat, f.beatInBar, f.bar)
     const boundary = f.sectionChange || latchedBoundary || phraseFallback
     if (!boundary || f.beatIndex === lastBoundaryBeat.current) return
     lastBoundaryBeat.current = f.beatIndex

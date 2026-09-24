@@ -28,6 +28,12 @@ import { createEmptyFeatures, type AudioFeatures } from './types'
 import { DropStateMachine } from './structure/dropStateMachine'
 import { StructureAnalyzer, type StructureAnalyzerStatus } from './structure/StructureAnalyzer'
 import { structureOff } from './structure/structureFlags'
+import {
+  BeatSalienceGatherer,
+  DownbeatEstimator,
+  barPosition,
+  type BeatSalienceFrame,
+} from './structure/downbeat'
 
 export type SourceKind = 'system' | 'mic' | 'file'
 
@@ -47,6 +53,10 @@ const FLUX_WINDOW_SEC = 1.0
 /** Time constant `f.tempoOctaves` eases toward its target at — see `advanceGrid` and `tempoSpeed.ts`'s header for
  *  why this matches `BpmEstimator.confidence`'s own ~3.3s settle time rather than being faster or slower. */
 const TEMPO_OCTAVES_TAU_SEC = 3.3
+
+/** Grid confidence below which a beat is unusable evidence for the downbeat estimator (a shaky grid has
+ *  no trustworthy bar phase to learn or move). Same order as SceneManager's `gridTrusted` (> 0.25). */
+const DOWNBEAT_MIN_GRID_CONF = 0.3
 
 const FFT_SIZE = 2048
 
@@ -380,6 +390,19 @@ class AudioEngine {
 
   readonly bpmEstimator = new BpmEstimator()
   readonly phraseDetector = new PhraseDetector()
+  /** Conservative 4/4 downbeat (bar-phase) estimate over the beat grid; `offset` stays 0 (the legacy
+   * `beatIndex % 4`) unless it is confident. Fed per beat by `advanceGrid`; see structure/downbeat.ts. */
+  private readonly downbeat = new DownbeatEstimator()
+  private readonly beatSalience = new BeatSalienceGatherer()
+  /** Reused every frame (fully overwritten in `advanceGrid`) so the per-frame feed allocates nothing. */
+  private readonly salienceFrame: BeatSalienceFrame = {
+    pos: 0,
+    kickTrigger: false,
+    kickStrength: 0,
+    low: 0,
+    dt: 0,
+    usable: false,
+  }
   readonly moodEstimator = new MoodEstimator()
   readonly percussionDetector = new PercussionDetector()
   readonly sectionTracker = new SectionTracker()
@@ -859,6 +882,9 @@ class AudioEngine {
     this.dropStateMachine.reset()
     this.bpmEstimator.reset()
     this.phraseDetector.reset()
+    // A new source must never inherit the previous track's bar phase.
+    this.downbeat.reset()
+    this.beatSalience.reset()
     this.moodEstimator.reset()
     this.percussionDetector.reset()
     this.sectionTracker.reset()
@@ -1189,15 +1215,42 @@ class AudioEngine {
         // under-count (which drifts beat-anchored cue/phrase timing off the
         // music). Cap the catch-up so a tempo re-lock that jumps the grid index
         // can't inject a burst of phantom beats.
-        f.beatIndex += Math.min(idx - this.lastGridIndex, 4)
-        f.beatInBar = f.beatIndex % 4
-        f.bar = Math.floor(f.beatIndex / 4)
-        f.measure = Math.floor(f.beatIndex / 16)
+        const crossed = idx - this.lastGridIndex
+        f.beatIndex += Math.min(crossed, 4)
+        // The catch-up was capped: the grid moved further than `beatIndex` followed, so the music's bar
+        // phase relative to `beatIndex` may have slipped. The estimator forgets its bins (an adopted
+        // offset is kept until fresh evidence disagrees) - see DownbeatEstimator.discontinuity().
+        if (crossed > 4) this.downbeat.discontinuity()
+        // Bar position from the (conservatively) estimated downbeat. `downbeat.offset` is 0 unless the
+        // estimator is confident, and barPosition(_, 0) is exactly the legacy `% 4` / `/ 4` / `/ 16`.
+        // Changes only here, at a beat crossing, so `beatInBar` and `beatProgress` stay coherent; at an
+        // (rare) adoption / re-anchor `beatInBar` jumps once - see structure/downbeat.ts's contract.
+        const bp = barPosition(f.beatIndex, this.downbeat.offset)
+        f.beatInBar = bp.beatInBar
+        f.bar = bp.bar
+        f.measure = bp.measure
         f.beatStrength = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
         this.beatHoldUntil = now + 0.05
       }
       this.lastGridIndex = idx
     }
+
+    // --- Downbeat evidence. One salience per beat (kick hit + low-band rise within +-half a beat of the
+    // crossing), fed once the beat's window closes. Unusable while the grid is shaky or the program is
+    // silent, so neither can adopt or move the bar phase. Runs on the idle (no-audio) path too, where
+    // everything reads zero / unusable and the estimator stays at its legacy defaults.
+    const kick = f.percussion.kick
+    const sf = this.salienceFrame
+    sf.pos = f.beatIndex + f.beatProgress
+    sf.kickTrigger = kick.trigger
+    sf.kickStrength = kick.strength
+    sf.low = (f.sub + f.bass) * 0.5
+    sf.dt = f.delta
+    sf.usable = !f.silence && f.confidence >= DOWNBEAT_MIN_GRID_CONF
+    const closed = this.beatSalience.frame(sf)
+    if (closed) this.downbeat.update(closed.beatIndex, closed.salience, closed.usable)
+    f.downbeatConfidence = this.downbeat.confidence
+    f.downbeatLocked = this.downbeat.locked
   }
 
   private detectStructure(now: number, f: AudioFeatures) {
