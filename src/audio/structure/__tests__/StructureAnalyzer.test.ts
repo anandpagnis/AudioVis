@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { audioEngine } from '../../AudioEngine'
 import { createEmptyFeatures, type AudioFeatures } from '../../types'
 import { quality } from '../../../engine/quality'
-import { FIRST_JOB_DELAY_SEC, MIN_HISTORY_SEC, StructureAnalyzer } from '../StructureAnalyzer'
+import {
+  CADENCE_MAX,
+  CADENCE_SEC,
+  FIRST_JOB_DELAY_SEC,
+  MIN_HISTORY_SEC,
+  StructureAnalyzer,
+} from '../StructureAnalyzer'
 
 const SAMPLE_RATE = 44100
 
@@ -197,6 +203,16 @@ describe('batch cadence lengthens as quality.tier rises', () => {
     quality.tier = originalTier
   })
 
+  it('CADENCE_SEC is 8 s (was 15) with the cost-based ceiling untouched', () => {
+    expect(CADENCE_SEC).toBe(8)
+    expect(CADENCE_MAX).toBe(45)
+  })
+
+  // ADJUSTED: this test used to detect "a second batch" as "update() returned a non-null raw". Since the
+  // analyzer now also returns a (cached-segmentation) raw on EVERY beat fold once a batch has run, a
+  // non-null return no longer means a batch ran, so batches are counted through `status.runs` instead.
+  // The window is also re-derived from the new 8 s base cadence: 30 beats @ 120 BPM = 15 s is past the
+  // tier-0 cadence (8 s x 1) and short of the tier-4 one (8 s x 3 = 24 s).
   it('the same post-warm-up window yields a second batch at tier 0 but not at tier 4', () => {
     const secPerBeat = 0.5
     const lowFreqDb = makeLowFreqDb()
@@ -213,34 +229,231 @@ describe('batch cadence lengthens as quality.tier rises', () => {
         raw = analyzer.update(f, lowFreqDb, SAMPLE_RATE)
       }
       expect(raw).not.toBeNull()
+      expect(analyzer.status.runs).toBe(1)
       return i - 1 // last i consumed (0-indexed loop increments past the winning call)
     }
 
-    function secondBatchWithin(analyzer: StructureAnalyzer, fromBeat: number, beats: number): boolean {
-      let raw = null as ReturnType<StructureAnalyzer['update']>
-      for (let j = fromBeat + 1; j <= fromBeat + beats && !raw; j++) {
+    function batchesAfter(analyzer: StructureAnalyzer, fromBeat: number, beats: number): number {
+      const before = analyzer.status.runs
+      for (let j = fromBeat + 1; j <= fromBeat + beats; j++) {
         const f = baseFeatures()
         f.time = j * secPerBeat
         f.delta = secPerBeat
         f.beat = true
         f.beatIndex = j
-        raw = analyzer.update(f, lowFreqDb, SAMPLE_RATE)
+        analyzer.update(f, lowFreqDb, SAMPLE_RATE)
       }
-      return raw !== null
+      return analyzer.status.runs - before
     }
 
-    // Base cadence (CADENCE_SEC) is 15s when batch cost is negligible, as it is here. 40 beats at
-    // 120 BPM is 20s — comfortably past 15s (tier 0, multiplier 1x) but well short of 45s (tier 4,
-    // multiplier 3x).
+    const window = 30
+    expect(window * secPerBeat).toBeGreaterThan(CADENCE_SEC)
+    expect(window * secPerBeat).toBeLessThan(CADENCE_SEC * 3)
+
     quality.tier = 0
     const lowTierAnalyzer = new StructureAnalyzer()
     const lowLast = warmUpToFirstBatch(lowTierAnalyzer)
-    expect(secondBatchWithin(lowTierAnalyzer, lowLast, 40)).toBe(true)
+    expect(batchesAfter(lowTierAnalyzer, lowLast, window)).toBeGreaterThanOrEqual(1)
 
     quality.tier = 4
     const highTierAnalyzer = new StructureAnalyzer()
     const highLast = warmUpToFirstBatch(highTierAnalyzer)
-    expect(secondBatchWithin(highTierAnalyzer, highLast, 40)).toBe(false)
+    expect(batchesAfter(highTierAnalyzer, highLast, window)).toBe(0)
+  })
+
+  it('batches recur on the 8 s cadence at tier 0, not the old 15 s', () => {
+    quality.tier = 0
+    const analyzer = new StructureAnalyzer()
+    const lowFreqDb = makeLowFreqDb()
+    const secPerBeat = 0.5
+    const runsAt: number[] = []
+    for (let i = 0; i < 120; i++) {
+      const f = baseFeatures()
+      f.time = i * secPerBeat
+      f.delta = secPerBeat
+      f.beat = true
+      f.beatIndex = i
+      const before = analyzer.status.runs
+      analyzer.update(f, lowFreqDb, SAMPLE_RATE)
+      if (analyzer.status.runs > before) runsAt.push(f.time)
+    }
+    expect(runsAt.length).toBeGreaterThanOrEqual(4)
+    for (let k = 1; k < runsAt.length; k++) {
+      expect(runsAt[k] - runsAt[k - 1]).toBeGreaterThanOrEqual(CADENCE_SEC - 1e-9)
+      expect(runsAt[k] - runsAt[k - 1]).toBeLessThan(CADENCE_SEC + 2 * 0.5)
+    }
+  })
+})
+
+/**
+ * After the first batch the analyzer returns a raw on every BEAT FOLD: the cached last-batch
+ * segmentation (same array references) with a FRESH `riserScore` read, so a build that starts and ends
+ * between two ~8 s batches is still seen.
+ */
+describe('per-beat riser refresh between batches', () => {
+  const originalTier = quality.tier
+
+  afterEach(() => {
+    quality.tier = originalTier
+  })
+
+  const secPerBeat = 0.5
+  const lowFreqDb = makeLowFreqDb()
+  type Raw = NonNullable<ReturnType<StructureAnalyzer['update']>>
+  type Read = { beat: number; sub: number; raw: Raw }
+
+  /** A frame `sub` sub-frames into `beat` (sub 0 is the beat frame itself, 4 frames per beat). */
+  function frame(beat: number, sub: number, level: number): AudioFeatures {
+    const f = baseFeatures()
+    f.time = beat * secPerBeat + (sub * secPerBeat) / 4
+    f.delta = secPerBeat / 4
+    f.beat = sub === 0
+    f.beatIndex = beat
+    // `level` 0..1 drives every riser cue at once (centroid/rms/high/flat/air up, sub+bass down, flux up).
+    f.loudness = 0.3 + 0.6 * level
+    f.centroid = 0.2 + 0.6 * level
+    f.high = 0.1 + 0.6 * level
+    f.spectralFlatness = 0.1 + 0.5 * level
+    f.air = 0.1 + 0.6 * level
+    f.flux = 0.1 + 0.5 * level
+    f.sub = 0.5 - 0.4 * level
+    f.bass = 0.5 - 0.4 * level
+    f.percussion.hihat.trigger = level > 0.2 && sub % 2 === 0
+    return f
+  }
+
+  /** Feed beats [from, to) (4 frames each), `levelAt(beat)` per beat; collect every non-null raw. */
+  function feed(analyzer: StructureAnalyzer, from: number, to: number, levelAt: (beat: number) => number): Read[] {
+    const out: Read[] = []
+    for (let b = from; b < to; b++) {
+      for (let sub = 0; sub < 4; sub++) {
+        const raw = analyzer.update(frame(b, sub, levelAt(b)), lowFreqDb, SAMPLE_RATE)
+        if (raw) out.push({ beat: b, sub, raw })
+      }
+    }
+    return out
+  }
+
+  /** Warm up on flat features until the first batch has run; returns the next beat to feed. */
+  function warmUp(analyzer: StructureAnalyzer): number {
+    let b = 0
+    while (analyzer.status.runs === 0 && b < 400) {
+      feed(analyzer, b, b + 1, () => 0)
+      b++
+    }
+    expect(analyzer.status.runs).toBe(1)
+    return b
+  }
+
+  it('returns nothing before the first batch, then a raw on exactly the beat-fold frames after it', () => {
+    quality.tier = 0
+    const analyzer = new StructureAnalyzer()
+    const reads: Read[] = []
+    for (let b = 0; b < 60; b++) reads.push(...feed(analyzer, b, b + 1, () => 0))
+    expect(reads.length).toBeGreaterThan(10)
+    // Nothing at all during warm-up (>= MIN_HISTORY_SEC of buffered history).
+    expect(reads[0].beat * secPerBeat).toBeGreaterThanOrEqual(MIN_HISTORY_SEC - secPerBeat)
+    // Afterwards: only beat frames (sub 0), and never twice for one beat.
+    for (const r of reads) expect(r.sub).toBe(0)
+    expect(new Set(reads.map((r) => r.beat)).size).toBe(reads.length)
+    // ...and every beat after the first batch has one (batches share those frames).
+    for (let k = 1; k < reads.length; k++) expect(reads[k].beat).toBe(reads[k - 1].beat + 1)
+  })
+
+  it('replays the cached segmentation by REFERENCE with atBeat = the newest cell, and a tiny costMs', () => {
+    quality.tier = 0
+    const analyzer = new StructureAnalyzer()
+    const start = warmUp(analyzer)
+    // The batch raw is the one returned on the beat the batch ran (start - 1); re-run to capture it.
+    const analyzer2 = new StructureAnalyzer()
+    let batchRaw: Raw | null = null
+    let b = 0
+    while (!batchRaw && b < 400) {
+      const r = feed(analyzer2, b, b + 1, () => 0)
+      if (r.length) batchRaw = r[0].raw
+      b++
+    }
+    expect(batchRaw).not.toBeNull()
+    expect(b).toBe(start)
+    const refreshes = feed(analyzer2, b, b + 6, () => 0)
+    expect(refreshes.length).toBe(6)
+    for (const { beat, raw } of refreshes) {
+      expect(raw.segments).toBe(batchRaw!.segments)
+      expect(raw.boundaries).toBe(batchRaw!.boundaries)
+      expect(raw.novelty).toBe(batchRaw!.novelty)
+      expect(raw.atBeat).toBe(beat)
+      expect(raw.costMs).toBeLessThan(50)
+    }
+    expect(analyzer2.status.runs).toBe(1) // all six were refreshes, not batches
+  })
+
+  it('sees a build that starts and ends BETWEEN two batches (status + raw.build track it live)', () => {
+    quality.tier = 0
+    const analyzer = new StructureAnalyzer()
+    const start = warmUp(analyzer)
+    const runsAfterWarmUp = analyzer.status.runs
+    // A 12-beat ramp (6 s) right after the first batch — shorter than the 8 s cadence, so no batch
+    // runs during it. Each beat's `level` climbs toward 1.
+    const ramp = feed(analyzer, start, start + 12, (beat) => (beat - start + 1) / 12)
+    expect(analyzer.status.runs).toBe(runsAfterWarmUp) // still no new batch
+    const active = ramp.filter((r) => r.raw.build.active)
+    expect(active.length).toBeGreaterThan(0)
+    // Its status reads the fresh value too (not held from the batch).
+    expect(analyzer.status.buildActive).toBe(true)
+    expect(analyzer.status.buildScore).toBeGreaterThan(0.4)
+    // buildStartBeat bookkeeping: every active read of the same build reports the SAME start, set
+    // from the first active read.
+    const starts = new Set(active.map((r) => r.raw.build.startBeat))
+    expect(starts.size).toBe(1)
+    const s0 = [...starts][0]
+    expect(s0).toBeGreaterThanOrEqual(start - 24)
+    expect(s0).toBeLessThanOrEqual(active[0].beat)
+    // Once it flattens for long enough, the read goes inactive and the start resets (inactive => -1).
+    const tail = feed(analyzer, start + 12, start + 12 + 60, () => 1)
+    const last = tail[tail.length - 1].raw.build
+    expect(last.active).toBe(false)
+    expect(last.startBeat).toBe(-1)
+    expect(analyzer.status.buildActive).toBe(false)
+    // A second, later ramp (from a quiet floor again) is a NEW build with a later start.
+    feed(analyzer, start + 72, start + 102, () => 0)
+    const ramp2 = feed(analyzer, start + 102, start + 114, (beat) => (beat - (start + 102) + 1) / 12)
+    const active2 = ramp2.filter((r) => r.raw.build.active)
+    expect(active2.length).toBeGreaterThan(0)
+    expect(active2[0].raw.build.startBeat).toBeGreaterThan(s0)
+  })
+
+  it('riser hysteresis: while a build is in flight the start never flickers', () => {
+    quality.tier = 0
+    const analyzer = new StructureAnalyzer()
+    const start = warmUp(analyzer)
+    const ramp = feed(analyzer, start, start + 12, (beat) => (beat - start + 1) / 12)
+    const firstActive = ramp.find((r) => r.raw.build.active)
+    expect(firstActive).toBeDefined()
+    const startBeat = firstActive!.raw.build.startBeat
+    // Flat afterwards (no batch yet for a few more beats): record every read.
+    const reads = feed(analyzer, start + 12, start + 20, () => 1).map((r) => r.raw.build)
+    // While active the start is the one the build began with (a flicker would reset it and re-guess).
+    for (const b of reads) if (b.active) expect(b.startBeat).toBe(startBeat)
+    // ...and once inactive it does not flicker back on with a different start.
+    let sawInactive = false
+    for (const b of reads) {
+      if (!b.active) sawInactive = true
+      else expect(sawInactive).toBe(false)
+    }
+  })
+
+  it('does not refresh during silence, and reset() drops the cache (no raws until the next batch)', () => {
+    quality.tier = 0
+    const analyzer = new StructureAnalyzer()
+    const start = warmUp(analyzer)
+    const silentFrame = frame(start, 0, 0)
+    silentFrame.silence = true
+    expect(analyzer.update(silentFrame, lowFreqDb, SAMPLE_RATE)).toBeNull()
+    expect(feed(analyzer, start + 1, start + 3, () => 0).length).toBe(2) // live again
+    analyzer.reset()
+    expect(analyzer.status.runs).toBe(0)
+    // After reset there is no cache, so nothing is returned until history rebuilds and a batch runs.
+    expect(feed(analyzer, 0, 30, () => 0).length).toBe(0)
   })
 })
 

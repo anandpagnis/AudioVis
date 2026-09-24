@@ -1236,17 +1236,56 @@ class AudioEngine {
       if (recent > before * 1.573 && recent > 0.447 && f.bass > 0.507 && now > this.dropUntil + 4) {
         this.dropUntil = now + 0.6
       }
-      // Build-up: sustained rise over the window.
-      const span = now - oldest
-      const first = this.energyLog[0]
-      const slope = span > 3 ? (recent - first.e) / span : 0
-      // Re-derived the same way. `slope` is the term that moved most (0.09 ->
-      // 0.197) because it is an absolute rate of change in `energy`, so it
-      // scales with the band range the fix restored: left at 0.09 it fired 43x
-      // too often. Build rate at 0.25x / 1x / 4x gain:
-      //   before  0.000% / 0.016% / 0.446%   (28x more builds when loud)
-      //   after   0.018% / 0.018% / 0.018%
-      f.buildUp = slope > 0.197 && recent > 0.295 && recent > before
+      // Build-up: a sustained, roughly linear CLIMB of `energy` over the log window.
+      //
+      // The previous form, `(recent - firstSample) / span > 0.197`, was
+      // unreachable in steady state: the log is trimmed to 6 s (`update()`), so
+      // `span` is ~6 and `energy` is a 0..1 mean, which caps that slope near
+      // 1/6 = 0.167 < 0.197. It could only fire in a track's first few seconds,
+      // while the log was still short - the "0.018%" recorded for it was that
+      // start-up transient, not builds. It was also meant to be gain-invariant
+      // (0.09 -> 0.197, re-derived after the normalizer fix); that intent stays:
+      // `energy` comes out of the normalised band pipeline, so the absolute
+      // 0..1 numbers below do not move with playback volume.
+      //
+      // Now a least-squares fit of `energy` against time over the whole log
+      // (one pass, no allocation):
+      //   slope > 0.03 / s   a climb of >= ~0.18 over the 6 s window. A build
+      //                      going 0.3 -> 0.8 in 6-8 s (~0.07 / s) clears it
+      //                      with room to spare; a slow 0.4 -> 0.5 drift
+      //                      (~0.017 / s) does not.
+      //   R^2   > 0.8        the climb is roughly LINEAR, so a single step
+      //                      (verse -> chorus, R^2 <= ~0.75 wherever it sits in
+      //                      the window) does not look like a ramp; a staircase
+      //                      of layers being added does.
+      //   recent > 0.295 && recent > before   the old floor / still-rising guards.
+      let n = 0
+      let sx = 0
+      let sy = 0
+      let sxx = 0
+      let sxy = 0
+      let syy = 0
+      for (const s of this.energyLog) {
+        const x = s.t - now
+        n++
+        sx += x
+        sy += s.e
+        sxx += x * x
+        sxy += x * s.e
+        syy += s.e * s.e
+      }
+      const cov = n * sxy - sx * sy
+      const varX = n * sxx - sx * sx
+      const varY = n * syy - sy * sy
+      f.buildUp =
+        now - oldest > 4 &&
+        varX > 1e-9 &&
+        varY > 1e-12 &&
+        cov > 0 &&
+        cov / varX > 0.03 &&
+        (cov * cov) / (varX * varY) > 0.8 &&
+        recent > 0.295 &&
+        recent > before
     }
 
     // Fast breakdown -> dip -> snap-back trigger: a second, independent path

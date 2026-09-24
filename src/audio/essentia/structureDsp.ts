@@ -333,11 +333,17 @@ function slope(vals: number[]): number {
  * RMS slope to a ~0.95 ceiling and snaps to the nearest upcoming 8/16/32-beat
  * grid target from the build's start. The worker reports these numbers;
  * `SectionTracker` owns the latch/release.
+ *
+ * `enter` is the score above which the read is `active` (default
+ * `buildEnter`). A caller that re-reads the riser every beat and already has an
+ * active build in flight passes the lower `buildExit` so the read has
+ * hysteresis instead of flickering around a single threshold.
  */
 export function riserScore(
   cells: BeatCell[],
   buildStartBeat: number,
   window: number = STRUCTURE_DSP.riserWindow,
+  enter: number = STRUCTURE_DSP.buildEnter,
 ): StructureBuild {
   const w = cells.slice(-window)
   if (w.length < 8) {
@@ -395,7 +401,7 @@ export function riserScore(
       kickDropout * 0.15 +
       highRise * 0.15,
   )
-  const active = score > STRUCTURE_DSP.buildEnter
+  const active = score > enter
   if (!active) {
     return { active: false, score, progress: 0, beatsTillDrop: -1, startBeat: -1 }
   }

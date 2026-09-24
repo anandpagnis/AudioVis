@@ -1,6 +1,6 @@
 import { ChromaKeyEstimator } from '../chromaKey'
 import { riserScore, segment, STRUCTURE_DSP, type BeatCell } from '../essentia/structureDsp'
-import type { StructureRaw } from '../essentia/structureProtocol'
+import type { StructureBuild, StructureRaw, StructureSegment } from '../essentia/structureProtocol'
 import type { AudioFeatures } from '../types'
 import { quality } from '../../engine/quality'
 import { OnsetDensityTracker } from './onsetDensity'
@@ -19,9 +19,18 @@ import { melBands } from './timbreBands'
  * over the rolling beat-cell window. Runs on the main thread, not a worker —
  * the only reason a worker existed was Essentia's WASM module; the actual
  * arithmetic (self-similarity matrices over a few hundred beat cells) is a few
- * million operations at a ~15s cadence, cheap enough inline, and is throttled
+ * million operations at a ~8s cadence, cheap enough inline, and is throttled
  * further at high `quality.tier` (see `TIER_CADENCE_SCALE`) rather than moved
  * off-thread.
+ *
+ * TWO RETURN CADENCES. The O(n^2) `segment()` only runs per batch, but
+ * `riserScore()` is O(24 cells) and a build (~30 s for a 16-bar build at 120
+ * BPM) is far too short to sample at batch cadence — it was seen once or twice,
+ * often before the ramp or after the drop. So after the first successful batch,
+ * EVERY beat fold also returns a `StructureRaw` whose `build` is a FRESH
+ * `riserScore()` and whose `segments`/`boundaries`/`novelty` are the CACHED
+ * last-batch arrays (same references — `SectionTracker` tells a replay from a
+ * fresh segmentation by array identity). `atBeat` is the newest cell's beat.
  *
  * FEATURE SOURCES (all already computed by `AudioEngine` before its call site
  * runs; nothing here recomputes anything already on `f`):
@@ -80,12 +89,15 @@ const FAST_CHROMA_TAU_SEC = 2
  *  the algorithm requires it. */
 const MEL_BANDS = 13
 
-/** Base seconds between batch segmentation runs. Intentionally the SAME value as
- *  `StructureBridge`'s own `CADENCE_SEC`/`CADENCE_MAX` (private, unexported there — this file does
- *  not import them, per the plan: that bridge stays permanently Essentia-path-only). Redeclared
- *  locally rather than imported. Exported (unlike `StructureBridge`'s copies) so tests/the debug
- *  overlay can reference the real values instead of duplicating magic numbers. */
-export const CADENCE_SEC = 15
+/** Base seconds between batch segmentation runs. Was 15 (the same as `StructureBridge`'s private
+ *  `CADENCE_SEC`); lowered to 8 because the measured batch cost is tiny (~2.6 ms mean, ~10 ms max on
+ *  the calibration corpus) and a boundary is only learned at the next batch, so at 15 s a real
+ *  section change could sit unreported for a quarter-minute. The cost-based self-throttle below and
+ *  the `quality.tier` backoff both still apply on top. `CADENCE_MAX` is unchanged and still the same
+ *  as `StructureBridge`'s (private, unexported there — redeclared locally, that bridge stays
+ *  permanently Essentia-path-only). Exported so tests/the debug overlay can reference the real
+ *  values instead of duplicating magic numbers. */
+export const CADENCE_SEC = 8
 export const CADENCE_MAX = 45
 
 /** Wall-clock seconds of buffered beat-cell history required before the FIRST batch may run.
@@ -134,10 +146,12 @@ export interface StructureAnalyzerStatus {
   lastBoundaries: number
   /** Peak value of the last batch's fused novelty curve, 0..1. */
   lastNoveltyPeak: number
-  /** Current riser/build score, 0..1 — held between batches. */
+  /** Current riser/build score, 0..1 — re-read on every beat fold once the first batch has run
+   *  (and on each batch), not held between batches. */
   buildScore: number
   buildActive: boolean
-  /** Seconds until the next batch is eligible to run (0 = could run right now, subject to the
+  /** Seconds until the next BATCH segmentation is eligible to run (the per-beat riser refresh is
+   *  not gated by this). 0 = could run right now, subject to the
    *  history/warm-up gates also being satisfied; a large finite number, not `Infinity`, while no
    *  history has accumulated yet, so a debug readout has something sane to show). */
   nextBatchEtaSec: number
@@ -194,10 +208,14 @@ export class StructureAnalyzer {
   private lastBatchAt = -1
   private costCadence = CADENCE_SEC
   /** Beat the current build (if any) started on, per `riserScore`'s own `startBeat` — tracked across
-   *  batches so a build spanning several cadence cycles keeps a stable start rather than each batch
-   *  re-guessing one from its own window (see `riserScore`'s doc for what happens when this is -1). */
+   *  batches and per-beat refreshes so a build spanning many reads keeps a stable start rather than
+   *  each read re-guessing one from its own window (see `riserScore`'s doc for what happens when this
+   *  is -1). Set from `startBeat` on the first active read, reset on the first inactive one. */
   private buildStartBeat = -1
   private runs = 0
+  /** The last batch's segmentation, replayed by reference on every per-beat refresh (see the class
+   *  header). Null until the first batch has run. */
+  private cached: { novelty: number[]; boundaries: number[]; segments: StructureSegment[] } | null = null
 
   readonly status: StructureAnalyzerStatus
 
@@ -218,6 +236,7 @@ export class StructureAnalyzer {
     this.costCadence = CADENCE_SEC
     this.buildStartBeat = -1
     this.runs = 0
+    this.cached = null
     const fresh = freshStatus(!this.disabled)
     Object.assign(this.status, fresh)
   }
@@ -228,8 +247,10 @@ export class StructureAnalyzer {
    * class header for why those two are extra parameters rather than read off `f`. Accumulates into
    * the current beat cell, folds a completed cell on `f.beat`, and runs a batch segmentation when the
    * cadence/history conditions are met. Returns a fresh `StructureRaw` on the frame a batch
-   * completes, else `null` (the common case) — the same return contract `MusicIntelProvider.
-   * updateStructure()` has, so `AudioEngine`'s single integration line can `??` between them.
+   * completes, and — once a batch has run — on every frame a beat cell is folded (same segmentation,
+   * fresh riser read; see the class header), else `null` (the common case for the ~60 frames between
+   * beats) — the same return contract `MusicIntelProvider.updateStructure()` has, so `AudioEngine`'s
+   * single integration line can `??` between them.
    */
   update(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number): StructureRaw | null {
     if (this.disabled) return null
@@ -244,18 +265,21 @@ export class StructureAnalyzer {
 
   private updateInner(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number): StructureRaw | null {
     this.accumulateFrame(f, lowFreqDb, sampleRate)
-    if (f.beat) this.foldBeat(f)
+    const folded = f.beat && this.foldBeat(f)
 
     if (this.startedAt < 0) this.startedAt = f.time
     this.status.historyBeats = this.cells.length
 
     const eta = this.computeEtaSec(f)
     this.status.nextBatchEtaSec = Number.isFinite(eta) ? eta : UNKNOWN_ETA_SEC
-    if (eta > 0) return null
     if (f.silence) return null
     if (this.cells.length < STRUCTURE_DSP.minSegmentBeats * 2) return null
+    if (eta <= 0) return this.runBatch(f)
 
-    return this.runBatch(f)
+    // Between batches: a beat was just folded and a segmentation is cached, so re-read the (cheap)
+    // riser and replay the cache. Off-beat frames stay `null`.
+    if (folded && this.cached) return this.refreshBuild(f)
+    return null
   }
 
   private accumulateFrame(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number): void {
@@ -308,10 +332,10 @@ export class StructureAnalyzer {
   /** Push the running accumulator as one completed `BeatCell`, tagged with the beat that just
    *  finished (`f.beatIndex` — `advanceGrid()` has already advanced it by the time `f.beat` reads
    *  true this frame). Mirrors `structure.worker.ts`'s old `foldToBeats()`: average whatever
-   *  accumulated since the last fold, reset, repeat. */
-  private foldBeat(f: AudioFeatures): void {
+   *  accumulated since the last fold, reset, repeat. Returns whether a cell was pushed. */
+  private foldBeat(f: AudioFeatures): boolean {
     const n = this.frameCount
-    if (n <= 0) return // update() always accumulates before folding, so this only guards a future refactor.
+    if (n <= 0) return false // update() always accumulates before folding, so this only guards a future refactor.
     const inv = 1 / n
     const cell: BeatCell = {
       beat: f.beatIndex,
@@ -332,6 +356,7 @@ export class StructureAnalyzer {
     if (this.cells.length > WINDOW_BEATS) this.cells.shift()
     if (this.firstCellAt < 0) this.firstCellAt = f.time
     this.resetAccumulator()
+    return true
   }
 
   /** Seconds until the next batch may run — the max of the three independent gates (start delay,
@@ -351,10 +376,48 @@ export class StructureAnalyzer {
     return Math.max(startEta, historyEta, cadenceEta)
   }
 
+  /** Fresh riser read over the current cells, with `buildStartBeat` bookkeeping and hysteresis:
+   *  once a build is in flight (`buildStartBeat >= 0`) it stays active until the score falls under
+   *  `buildExit`, not merely under `buildEnter` — a per-beat read would otherwise flicker around one
+   *  threshold and reset the start (and so the drop projection) on every dip. Updates the status. */
+  private readRiser(): StructureBuild {
+    const enter = this.buildStartBeat >= 0 ? STRUCTURE_DSP.buildExit : STRUCTURE_DSP.buildEnter
+    const build = riserScore(this.cells, this.buildStartBeat, STRUCTURE_DSP.riserWindow, enter)
+    if (build.active) {
+      if (this.buildStartBeat < 0) this.buildStartBeat = build.startBeat
+    } else {
+      this.buildStartBeat = -1
+    }
+    this.status.buildScore = build.score
+    this.status.buildActive = build.active
+    return build
+  }
+
+  private newestBeat(f: AudioFeatures): number {
+    return this.cells.length ? this.cells[this.cells.length - 1].beat : f.beatIndex
+  }
+
+  /** Per-beat refresh: fresh riser read + the cached last-batch segmentation (same array
+   *  references). Only called once `cached` is set. */
+  private refreshBuild(f: AudioFeatures): StructureRaw {
+    const t0 = performance.now()
+    const build = this.readRiser()
+    const costMs = performance.now() - t0
+    const c = this.cached!
+    return {
+      atBeat: this.newestBeat(f),
+      novelty: c.novelty,
+      boundaries: c.boundaries,
+      segments: c.segments,
+      build,
+      costMs,
+    }
+  }
+
   private runBatch(f: AudioFeatures): StructureRaw {
     const t0 = performance.now()
     const { novelty, boundaries, segments } = segment(this.cells)
-    const build = riserScore(this.cells, this.buildStartBeat)
+    const build = this.readRiser()
     const costMs = performance.now() - t0
 
     this.lastBatchAt = f.time
@@ -364,12 +427,6 @@ export class StructureAnalyzer {
     // `computeEtaSec()`, not here, so the two backoffs stay independently inspectable.
     this.costCadence = Math.min(CADENCE_MAX, Math.max(CADENCE_SEC, (costMs / 1000) * 3))
 
-    if (build.active) {
-      if (this.buildStartBeat < 0) this.buildStartBeat = build.startBeat
-    } else {
-      this.buildStartBeat = -1
-    }
-
     let noveltyPeak = 0
     for (const v of novelty) if (v > noveltyPeak) noveltyPeak = v
 
@@ -377,14 +434,13 @@ export class StructureAnalyzer {
     this.status.lastCostMs = costMs
     this.status.lastBoundaries = boundaries.length
     this.status.lastNoveltyPeak = noveltyPeak
-    this.status.buildScore = build.score
-    this.status.buildActive = build.active
 
-    const atBeat = this.cells.length ? this.cells[this.cells.length - 1].beat : f.beatIndex
+    const boundaryBeats = boundaries.map((b) => b.beat)
+    this.cached = { novelty, boundaries: boundaryBeats, segments }
     return {
-      atBeat,
+      atBeat: this.newestBeat(f),
       novelty,
-      boundaries: boundaries.map((b) => b.beat),
+      boundaries: boundaryBeats,
       segments,
       build,
       costMs,

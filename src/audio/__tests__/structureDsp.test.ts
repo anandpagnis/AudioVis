@@ -10,6 +10,7 @@ import {
   riserScore,
   segment,
   selfSimilarity,
+  STRUCTURE_DSP,
   type BeatCell,
 } from '../essentia/structureDsp'
 
@@ -230,6 +231,23 @@ describe('riserScore', () => {
     const bRising = riserScore(rising, 100)
     const bFlat = riserScore(flat, 100)
     expect(bRising.score).toBeGreaterThan(bFlat.score)
+  })
+
+  it('the optional `enter` threshold gives per-beat callers hysteresis: a score between exit and enter is active only with the lower bar', () => {
+    // A mild rise: centroid + logRms + high only, so the score lands between buildExit and buildEnter.
+    const cells: BeatCell[] = []
+    for (let i = 0; i < 24; i++) {
+      const t = i / 23
+      cells.push(cell(100 + i, { centroid: 0.3 + t * 0.4, logRms: 0.3 + t * 0.3, high: 0.2 + t * 0.4 }))
+    }
+    const strict = riserScore(cells, 100)
+    expect(strict.score).toBeGreaterThan(STRUCTURE_DSP.buildExit)
+    expect(strict.score).toBeLessThanOrEqual(STRUCTURE_DSP.buildEnter)
+    expect(strict.active).toBe(false)
+    const lenient = riserScore(cells, 100, STRUCTURE_DSP.riserWindow, STRUCTURE_DSP.buildExit)
+    expect(lenient.score).toBe(strict.score) // the score itself is untouched
+    expect(lenient.active).toBe(true)
+    expect(lenient.startBeat).toBe(100)
   })
 })
 

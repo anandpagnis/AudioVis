@@ -74,9 +74,10 @@ export interface TrackRunResult {
   sampleRate: number
   durationSec: number
   /** Every non-null `StructureRaw` the (always-on, non-Essentia) `StructureAnalyzer` produced over
-   *  the track, in order — one per completed batch. Segments/boundaries accumulate and refine batch
-   *  to batch, so the LAST entry is the one worth reporting for a per-track summary; earlier entries
-   *  are kept too so a caller can see how the read evolved. Empty for a track too short to clear
+   *  the track, in order — one per completed batch PLUS, after the first batch, one per beat fold (the
+   *  cached segmentation with a fresh riser read; count batches via `structureStatus.runs`).
+   *  Segments/boundaries refine batch to batch, so the LAST entry is the one worth reporting for a
+   *  per-track summary; earlier entries are kept too so a caller can see how the read evolved. Empty for a track too short to clear
    *  `StructureAnalyzer`'s warm-up gates (`MIN_HISTORY_SEC` + `FIRST_JOB_DELAY_SEC`). */
   structureRuns: StructureRaw[]
   /** The analyzer's own status object at the end of the run (`runs`, `lastCostMs`, `buildScore`, …) —
@@ -400,10 +401,34 @@ export function runTrack(
         if (recent > before * 1.573 && recent > 0.447 && f.bass > 0.507 && now > dropUntil + 4) {
           dropUntil = now + 0.6
         }
-        const span = now - oldest
-        const first = energyLog[0]
-        const slope = span > 3 ? (recent - first.e) / span : 0
-        f.buildUp = slope > 0.197 && recent > 0.295 && recent > before
+        // Build-up: least-squares climb of `energy` over the log (mirrors AudioEngine.detectStructure).
+        let n = 0
+        let sx = 0
+        let sy = 0
+        let sxx = 0
+        let sxy = 0
+        let syy = 0
+        for (const s of energyLog) {
+          const x = s.t - now
+          n++
+          sx += x
+          sy += s.e
+          sxx += x * x
+          sxy += x * s.e
+          syy += s.e * s.e
+        }
+        const cov = n * sxy - sx * sy
+        const varX = n * sxx - sx * sx
+        const varY = n * syy - sy * sy
+        f.buildUp =
+          now - oldest > 4 &&
+          varX > 1e-9 &&
+          varY > 1e-12 &&
+          cov > 0 &&
+          cov / varX > 0.03 &&
+          (cov * cov) / (varX * varY) > 0.8 &&
+          recent > 0.295 &&
+          recent > before
       }
       f.drop = now < dropUntil
     }
