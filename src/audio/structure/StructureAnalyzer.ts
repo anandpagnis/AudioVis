@@ -1,5 +1,12 @@
 import { ChromaKeyEstimator } from '../chromaKey'
-import { riserScore, segment, STRUCTURE_DSP, type BeatCell } from '../essentia/structureDsp'
+import {
+  confirmBoundaries,
+  cutSegments,
+  detectBoundaries,
+  riserScore,
+  STRUCTURE_DSP,
+  type BeatCell,
+} from '../essentia/structureDsp'
 import type { StructureBuild, StructureRaw, StructureSegment } from '../essentia/structureProtocol'
 import type { AudioFeatures } from '../types'
 import { quality } from '../../engine/quality'
@@ -15,15 +22,25 @@ import { melBands } from './timbreBands'
  * combined, minus Essentia: accumulate a running average of per-frame
  * features into the CURRENT beat cell every `update()` call, fold it into a
  * completed `BeatCell` when `f.beat` fires, and periodically (a self-tuning
- * cadence, not per-frame) run `structureDsp.ts`'s `segment()` + `riserScore()`
- * over the rolling beat-cell window. Runs on the main thread, not a worker —
- * the only reason a worker existed was Essentia's WASM module; the actual
- * arithmetic (self-similarity matrices over a few hundred beat cells) is a few
- * million operations at a ~8s cadence, cheap enough inline, and is throttled
- * further at high `quality.tier` (see `TIER_CADENCE_SCALE`) rather than moved
- * off-thread.
+ * cadence, not per-frame) run `structureDsp.ts`'s `detectBoundaries()` +
+ * `cutSegments()` + `riserScore()` over the rolling beat-cell window. Runs on the
+ * main thread, not a worker — the only reason a worker existed was Essentia's
+ * WASM module; the actual arithmetic (self-similarity matrices over up to
+ * `WINDOW_BEATS` cells) measured ~1-1.5 ms per batch at a full window offline, cheap
+ * enough inline at a ~4 s cadence, and is throttled further at high `quality.tier`
+ * (see `TIER_CADENCE_SCALE`) rather than moved off-thread.
  *
- * TWO RETURN CADENCES. The O(n^2) `segment()` only runs per batch, but
+ * BOUNDARY PERSISTENCE. `detectBoundaries()` proposes candidates (the absolute novelty
+ * floor is already applied); a candidate is only PUBLISHED in `StructureRaw.boundaries`
+ * (and segments are cut only at published ones) when it is strong
+ * (`STRUCTURE_DSP.strongBoundary`) or the previous batch proposed one within
+ * `persistTolBeats` (`confirmBoundaries`). A weak boundary therefore costs one extra
+ * cadence before it is believed; a clear one costs nothing. Caveat: with only a ~4-beat
+ * lookahead the second sighting of the SAME seam is largely the same evidence again, so
+ * persistence mostly filters peaks whose location wanders between batches — the
+ * absolute floor does most of the false-positive work.
+ *
+ * TWO RETURN CADENCES. The O(n^2) segmentation only runs per batch, but
  * `riserScore()` is O(24 cells) and a build (~30 s for a 16-bar build at 120
  * BPM) is far too short to sample at batch cadence — it was seen once or twice,
  * often before the ramp or after the drop. So after the first successful batch,
@@ -82,7 +99,7 @@ import { melBands } from './timbreBands'
 const FAST_CHROMA_TAU_SEC = 2
 
 /** Mel-band count fed into `BeatCell.mfcc`. `structureDsp.ts` places no dimension requirement on
- *  `mfcc`/`hpcp` — `segment()`/`riserScore()` only ever compare same-length vectors with cosine
+ *  `mfcc`/`hpcp` — `detectBoundaries()`/`riserScore()` only ever compare same-length vectors with cosine
  *  similarity (confirmed by reading `structureDsp.ts` end to end: no `MFCC_COEFFS`-shaped constant
  *  lives there, only in the now-superseded `structure.worker.ts`, where it was 13). 13 is kept here
  *  purely for continuity with the dimensionality the field was originally sized for — not because
@@ -90,14 +107,18 @@ const FAST_CHROMA_TAU_SEC = 2
 const MEL_BANDS = 13
 
 /** Base seconds between batch segmentation runs. Was 15 (the same as `StructureBridge`'s private
- *  `CADENCE_SEC`); lowered to 8 because the measured batch cost is tiny (~2.6 ms mean, ~10 ms max on
- *  the calibration corpus) and a boundary is only learned at the next batch, so at 15 s a real
- *  section change could sit unreported for a quarter-minute. The cost-based self-throttle below and
+ *  `CADENCE_SEC`), then 8; now 4 because (a) the asymmetric ~4-beat-lookahead kernels make a boundary
+ *  visible ~4 beats after it happens, so the wait for the next batch is now the biggest part of the
+ *  delay, and (b) the batch got cheap: measured offline (`scripts/calibrate`, PMEmo clips + Jamendo
+ *  full tracks) the whole `detectBoundaries` + `cutSegments` + riser batch averages ~1 ms on real
+ *  35-180 s windows and ~1.4 ms (max ~2.7 ms) on a full 200-cell window — the old symmetric 8/32
+ *  kernels were ~7 ms there — comfortably under the ~3 ms budget. It also halves the wait for the
+ *  second sighting persistence needs (`confirmBoundaries`). The cost-based self-throttle below and
  *  the `quality.tier` backoff both still apply on top. `CADENCE_MAX` is unchanged and still the same
  *  as `StructureBridge`'s (private, unexported there — redeclared locally, that bridge stays
  *  permanently Essentia-path-only). Exported so tests/the debug overlay can reference the real
  *  values instead of duplicating magic numbers. */
-export const CADENCE_SEC = 8
+export const CADENCE_SEC = 4
 export const CADENCE_MAX = 45
 
 /** Wall-clock seconds of buffered beat-cell history required before the FIRST batch may run.
@@ -105,7 +126,7 @@ export const CADENCE_MAX = 45
  *  rhythm/voice workers time to get their own first reads in first, not by anything the algorithm
  *  itself needs — no such dependency exists here (`f.bpm` is available almost immediately from the
  *  synchronous `BpmEstimator`). The algorithm's real floor is `STRUCTURE_DSP.minSegmentBeats * 2` =
- *  16 beat cells (`segment()` returns empty below that): at typical tempo (76-180 BPM) that is
+ *  16 beat cells (`detectBoundaries()` returns empty below that): at typical tempo (76-180 BPM) that is
  *  5.3-12.6s of music. 20s leaves comfortable margin above that across the whole range while landing
  *  `structureValid` around the plan's own stated target of "roughly 20-25s" (vs. the old ~30-38s). */
 export const MIN_HISTORY_SEC = 20
@@ -142,9 +163,13 @@ export interface StructureAnalyzerStatus {
   runs: number
   /** Wall-clock cost of the last batch, ms. */
   lastCostMs: number
-  /** Boundary count from the last batch. */
+  /** PUBLISHED boundary count from the last batch (after the absolute floor and persistence). */
   lastBoundaries: number
-  /** Peak value of the last batch's fused novelty curve, 0..1. */
+  /** Candidates the last batch proposed BEFORE persistence (>= `lastBoundaries`); the gap is what
+   *  persistence is still holding back. */
+  lastCandidates: number
+  /** Peak value of the last batch's fused novelty curve on the ABSOLUTE scale (1 = a textbook block
+   *  change, 0 = nothing changes; it used to be peak-normalised, so it always read 1). */
   lastNoveltyPeak: number
   /** Current riser/build score, 0..1 — re-read on every beat fold once the first batch has run
    *  (and on each batch), not held between batches. */
@@ -173,6 +198,7 @@ function freshStatus(enabled: boolean): StructureAnalyzerStatus {
     runs: 0,
     lastCostMs: 0,
     lastBoundaries: 0,
+    lastCandidates: 0,
     lastNoveltyPeak: 0,
     buildScore: 0,
     buildActive: false,
@@ -216,6 +242,9 @@ export class StructureAnalyzer {
   /** The last batch's segmentation, replayed by reference on every per-beat refresh (see the class
    *  header). Null until the first batch has run. */
   private cached: { novelty: number[]; boundaries: number[]; segments: StructureSegment[] } | null = null
+  /** Beats of the PREVIOUS batch's candidate boundaries (before persistence filtering): what a weak
+   *  candidate in the current batch must match (within `persistTolBeats`) to be published. */
+  private prevCandidates: number[] = []
 
   readonly status: StructureAnalyzerStatus
 
@@ -237,6 +266,7 @@ export class StructureAnalyzer {
     this.buildStartBeat = -1
     this.runs = 0
     this.cached = null
+    this.prevCandidates = []
     const fresh = freshStatus(!this.disabled)
     Object.assign(this.status, fresh)
   }
@@ -416,7 +446,13 @@ export class StructureAnalyzer {
 
   private runBatch(f: AudioFeatures): StructureRaw {
     const t0 = performance.now()
-    const { novelty, boundaries, segments } = segment(this.cells)
+    const { novelty, boundaries: candidates } = detectBoundaries(this.cells)
+    const boundaries = confirmBoundaries(candidates, this.prevCandidates)
+    this.prevCandidates = candidates.map((c) => c.beat)
+    const segments = cutSegments(
+      this.cells,
+      boundaries.map((b) => b.beat),
+    )
     const build = this.readRiser()
     const costMs = performance.now() - t0
 
@@ -433,6 +469,7 @@ export class StructureAnalyzer {
     this.status.runs = this.runs
     this.status.lastCostMs = costMs
     this.status.lastBoundaries = boundaries.length
+    this.status.lastCandidates = candidates.length
     this.status.lastNoveltyPeak = noveltyPeak
 
     const boundaryBeats = boundaries.map((b) => b.beat)

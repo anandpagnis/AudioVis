@@ -4,12 +4,16 @@ import type { StructureRaw, StructureSegment } from './essentia/structureProtoco
 /**
  * Synchronous fusion state machine over the async structure-analyzer output.
  *
- * The analyzer's O(n²) segmentation lands every ~8 s; the per-frame signal
+ * The analyzer's O(n²) segmentation lands every ~4 s; the per-frame signal
  * the directors depend on must stay deterministic DSP. So this class owns the
  * state: it latches the analyzer's boundaries/segments into a stable
  * `SongSectionMomentum`, overlays the fast synchronous `f.drop` / `f.buildUp`
  * flags (which the analyzer's cadence can't resolve), and applies hysteresis so
- * a director never cuts on a flicker.
+ * a director never cuts on a flicker. The fast phrase-change flag
+ * (`f.sectionChange`, ~1 bar latency) is fused as a LOW-confidence hint only: it can
+ * shorten the hold on a section KIND the analyzer's own boundary already proposed,
+ * but it never commits a kind or fires `boundaryChanged` by itself (see
+ * `PHRASE_HINT_*`).
  *
  * `update(f, raw)` takes the plain payload as an argument (not off a singleton)
  * so it unit-tests in `environment: 'node'` like `MoodEstimator` /
@@ -26,14 +30,16 @@ import type { StructureRaw, StructureSegment } from './essentia/structureProtoco
  *
  * BOUNDARY CONTRACT: every entry of `raw.boundaries` is a CONFIRMED PAST
  * boundary — "a section began at beat b, learned some beats later". The
- * analyzer's checkerboard novelty zeroes its outer kernel-half-width cells (a
- * boundary needs future context), so the newest boundary it can ever report is
- * >= ~8 beats behind the live beat; nothing here may wait for a boundary to be
- * "near now". Instead a NEW boundary (not yet consumed, <= `MAX_BOUNDARY_AGE_BEATS`
- * old, not before the committed section's start) means: the section covering
- * "now" started at `b` (`beatsInSection` counts from `b`), its covering
- * segment's `kind` is adopted promptly (the evidence is aged, so no fresh
- * hold), and an in-flight build is RESOLVED retroactively (see below).
+ * analyzer's asymmetric checkerboard novelty zeroes its newest `lookahead` (4) cells
+ * (a boundary needs a bar of future context), so the newest boundary it can ever
+ * report is >= ~4 beats behind the live beat — plus up to a batch cadence (~4 s), and
+ * a second batch for a weak boundary that has to pass persistence; nothing here may
+ * wait for a boundary to be "near now". Instead a NEW boundary (not yet consumed, <=
+ * `MAX_BOUNDARY_AGE_BEATS` old, not before the committed section's start)
+ * means: the section covering "now" started at `b` (`beatsInSection` counts
+ * from `b`), its covering segment's `kind` is adopted once the boundary has
+ * aged past the hold (8 beats from `b`; ~3 with a corroborating fast
+ * phrase-change), and an in-flight build is RESOLVED retroactively (see below).
  * Boundaries beyond the live beat (a provider that reports ahead) are kept and
  * consumed when the beat reaches them.
  */
@@ -46,13 +52,18 @@ const BUILD_CONFIRM_FRAMES = 8
 /** A build with no drop is abandoned this many beats past its projected drop. */
 const BUILD_FIZZLE_SLACK_BEATS = 16
 /** A boundary older than this many beats (or before the committed section's
- * start) is history, not news: never consumed as a "new section" event. */
+ * start) is history, not news: never consumed as a "new section" event. Unchanged by the
+ * shorter analysis lag: a boundary is now first learned ~4-14 beats after it happened
+ * (4-beat lookahead + up to one ~4 s batch), ~10-25 with a persistence batch on top, so 48
+ * still leaves a wide margin (and covers the quality-tier cadence backoff). */
 const MAX_BOUNDARY_AGE_BEATS = 48
 /** A "new" boundary within this many beats of the last consumed one is the same
- * physical boundary re-picked with a peak that shifted a beat or two as the
+ * physical boundary re-picked with a peak that shifted a few beats as the
  * analysis window slid (minSegmentBeats is 8, so real ones never sit this
- * close) — not a second event. */
-const BOUNDARY_MATCH_BEATS = 3
+ * close) — not a second event. Was 3; 4 because a peak located from only ~4
+ * beats of "after" wanders a little more between batches than the old 8/32-cell
+ * kernels' did (the analyzer's own persistence match is +-2 for the same reason). */
+const BOUNDARY_MATCH_BEATS = 4
 /** A boundary that resolves a build no more than this many beats behind the
  * live beat may still fire a visual drop event/latch; any later and a drop cue
  * is worse than none, so the build is only ended retroactively (state
@@ -75,6 +86,24 @@ const SPACING_SNAP_TOL_BEATS = 1
 /** `beatsTillBoundary` extrapolates at most this many periods past the last
  * known boundary — beyond that the phase is too stale to claim. */
 const MAX_PREDICT_PERIODS = 4
+
+// FAST PHRASE-CHANGE HINT (`f.sectionChange` from `PhraseDetector`, ~1 bar latency). Fused as a
+// low-confidence corroboration ONLY: it can shorten the hold on a section the analyzer's own boundary
+// has already proposed, nothing more. Every number below is a reasoned starting point (tune live).
+
+/** A phrase-change stays a usable hint for this many beats. */
+const PHRASE_HINT_WINDOW_BEATS = 8
+/** ...and only if its strength (`f.sectionChangeStrength` at the event; the detector's own trigger
+ * is 0.45, its typical event ~0.6, the top tenth >= ~1.0) is at least this: a clearly-above-trigger
+ * change, not one that barely scraped past. */
+const PHRASE_HINT_MIN_STRENGTH = 0.6
+/** ...and it must be about the same physical event as the pending analyzer boundary: within this
+ * many beats of it (the detector fires 0-4 beats after a real change; the analyzer's seam sits at it). */
+const PHRASE_HINT_MATCH_BEATS = 8
+/** With a corroborating hint the hold of a boundary-proposed section drops to at most this many
+ * beats (from 8 for a plain section / 4 for a breakdown). Not 0: the analyzer's boundary still has to
+ * be at least this old, and the dwell of the committed section still applies. */
+const PHRASE_HINT_HOLD_BEATS = 3
 
 /** Hold (beats) a candidate section must persist before it commits. */
 function holdFor(next: SongSection, viaDrop: boolean): number {
@@ -147,6 +176,8 @@ export class SectionTracker {
   private sectionStartBeat = 0
   private candidate: SongSection = ''
   private candidateSinceBeat = 0
+  /** Beat of the most recent qualifying fast phrase-change (-Infinity = none). */
+  private phraseChangeBeat = Number.NEGATIVE_INFINITY
 
   private buildFrames = 0
   private buildStartBeat = -1
@@ -191,6 +222,7 @@ export class SectionTracker {
     this.sectionStartBeat = 0
     this.candidate = ''
     this.candidateSinceBeat = 0
+    this.phraseChangeBeat = Number.NEGATIVE_INFINITY
     this.buildFrames = 0
     this.buildStartBeat = -1
     this.buildDropBeat = -1
@@ -231,6 +263,15 @@ export class SectionTracker {
     return actionable
   }
 
+  /** True while a qualifying fast phrase-change is recent (<= PHRASE_HINT_WINDOW_BEATS old) AND is
+   * about the same event as the analyzer boundary currently pending application (within
+   * PHRASE_HINT_MATCH_BEATS of it). With no pending boundary there is nothing to corroborate: false. */
+  private phraseHintFor(beat: number): boolean {
+    const age = beat - this.phraseChangeBeat
+    if (!(age >= 0 && age <= PHRASE_HINT_WINDOW_BEATS)) return false
+    return this.pendingBoundary >= 0 && Math.abs(this.phraseChangeBeat - this.pendingBoundary) <= PHRASE_HINT_MATCH_BEATS
+  }
+
   /** Beats until the next section boundary: a known future boundary if the
    * provider reported one, else `lastBoundary + period` (phase-locked, see
    * `boundarySpacing`), else -1 (unknown). */
@@ -252,6 +293,12 @@ export class SectionTracker {
     const beat = f.beatIndex
     const newBeat = beat !== this.lastBeatIndex
     this.lastBeatIndex = beat
+
+    // Fast phrase-change hint: remember only the latest qualifying event. It changes nothing by
+    // itself — see `phraseHintFor` for the one place it is read.
+    if (f.sectionChange && !f.silence && f.sectionChangeStrength >= PHRASE_HINT_MIN_STRENGTH) {
+      this.phraseChangeBeat = beat
+    }
 
     if (newBeat && !f.silence) {
       this.energyHistory.push({ beat, e: f.energy })
@@ -443,10 +490,13 @@ export class SectionTracker {
           ? Math.max(this.pendingBoundary, dwellEnd)
           : Math.max(beat, dwellEnd)
     }
-    if (
-      this.candidate !== this.committed &&
-      beat - this.candidateSinceBeat >= holdFor(this.candidate, viaDrop || silentRelease)
-    ) {
+    // A recent, strong, matching phrase-change corroborates a boundary-proposed candidate: its hold
+    // is cut to PHRASE_HINT_HOLD_BEATS (verse -> chorus no longer waits out the full 8 beats behind a
+    // boundary the analyzer learned only ~4-6 beats after it happened). Never extends a hold, never
+    // applies without an analyzer boundary behind the candidate.
+    let hold = holdFor(this.candidate, viaDrop || silentRelease)
+    if (viaBoundary && this.phraseHintFor(beat)) hold = Math.min(hold, PHRASE_HINT_HOLD_BEATS)
+    if (this.candidate !== this.committed && beat - this.candidateSinceBeat >= hold) {
       s.previousSection = this.committed
       this.committed = this.candidate
       this.committedAtBeat = beat

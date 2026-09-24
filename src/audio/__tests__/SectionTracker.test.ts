@@ -253,12 +253,15 @@ describe('SectionTracker', () => {
 })
 
 /**
- * REALISTIC boundaries. `StructureAnalyzer`'s novelty curve is zero over its outer kernel half-width
- * (8+ cells), so every boundary in `raw.boundaries` is a CONFIRMED PAST boundary at least ~8 beats
- * behind the live beat. Every scenario below therefore delivers boundaries >= 8 (usually 12-20) beats
- * behind `f.beatIndex`; none relies on a boundary "near now" or in the future.
+ * REALISTIC boundaries. `StructureAnalyzer`'s novelty curve is zero over its newest `lookahead` cells
+ * (4: a boundary needs a bar of "after"), so every boundary in `raw.boundaries` is a CONFIRMED PAST
+ * boundary at least ~4 beats behind the live beat (it used to be >= 8 with the symmetric kernels; a
+ * weak one is also held a batch for persistence, so 10-25 is common). The scenarios below deliver
+ * boundaries 2-20 beats behind `f.beatIndex` (2 only to pin the "fresh" path); none relies on a boundary
+ * "near now" or in the future. The ~4-6-beat-old case that the shorter lookahead makes typical has its own
+ * tests (the fast phrase-change hint block at the end).
  */
-describe('SectionTracker: confirmed-past boundaries (>= 8 beats behind the live beat)', () => {
+describe('SectionTracker: confirmed-past boundaries (>= ~4 beats behind the live beat)', () => {
   it('adopts the covering segment kind from a boundary 20 beats old, on the frame it is learned', () => {
     const { f } = run(frameOf(60) + 1, (f, i) => {
       if (i === frameOf(2)) return rawWith([seg(0, 400, 'section')], f.beatIndex)
@@ -344,6 +347,24 @@ describe('SectionTracker: confirmed-past boundaries (>= 8 beats behind the live 
     expect(f.songSection.section).toBe('outro')
     expect(f.songSection.changeCount).toBe(1) // not 2
     expect(f.songSection.beatsInSection).toBe(30) // still dated from 40, not 41
+  })
+
+  // BOUNDARY_MATCH_BEATS went 3 -> 4: with only ~4 beats of "after" the analyzer's peak wanders a little more
+  // between batches. Real boundaries are >= 8 apart, so anything within 4 of the last consumed one is a re-pick.
+  it('a re-pick up to 4 beats away is the same boundary; 5 beats away is a new one (re-dating, no event for the same kind)', () => {
+    const at = (repick: number) =>
+      run(frameOf(70) + 1, (f, i) => {
+        if (i === frameOf(2)) return rawWith([seg(0, 400, 'section')], f.beatIndex)
+        if (i === frameOf(60)) return rawWith([seg(0, 40, 'section'), seg(40, 400, 'outro')], f.beatIndex, [40])
+        if (i === frameOf(70)) return rawWith([seg(0, repick, 'section'), seg(repick, 400, 'outro')], f.beatIndex, [repick])
+        return null
+      }).f
+    const four = at(44)
+    expect(four.songSection.changeCount).toBe(1)
+    expect(four.songSection.beatsInSection).toBe(30) // still dated from 40
+    const five = at(45)
+    expect(five.songSection.changeCount).toBe(1) // same kind: no second event...
+    expect(five.songSection.beatsInSection).toBe(25) // ...but the section is re-dated from the new boundary
   })
 
   describe('build -> drop resolved by a boundary', () => {
@@ -578,5 +599,169 @@ describe('SectionTracker: per-beat raws (cached segmentation + fresh riser read)
       return f.beat ? rawWith(segs, f.beatIndex, bnds) : null
     })
     expect(prevAtDrop).toBe('build')
+  })
+})
+
+/**
+ * The FAST phrase-change hint (`f.sectionChange` + `f.sectionChangeStrength`, ~1 bar latency) is a
+ * low-confidence corroboration: it can only shorten the hold on a section kind the analyzer's own
+ * boundary already proposed. It never commits a kind, never fires `boundaryChanged` on its own.
+ *
+ * With the analyzer's ~4-beat lookahead a boundary is first learned only ~4-6 beats after it
+ * happened, so the plain 8-beat hold (counted from the boundary) is now what a verse -> chorus
+ * commit waits for; a corroborating phrase-change cuts it to 3.
+ */
+describe('SectionTracker: fast phrase-change hint', () => {
+  /** Bootstrap 'section' at `bootstrapAt` (default beat 2); at `learnedAt` the analyzer delivers
+   * boundary `boundary` whose covering segment is 'outro'. `phrase` = [beat, strength] fast
+   * phrase-change pulses (one frame each, on the beat's first frame). Runs through `until`'s first frame. */
+  function scenario(o: {
+    boundary: number
+    learnedAt: number
+    phrase?: [number, number][]
+    until: number
+    bootstrapAt?: number
+  }) {
+    const bootAt = o.bootstrapAt ?? 2
+    const { f } = run(frameOf(o.until) + 1, (f, i) => {
+      f.energy = 0.5
+      const hit = (o.phrase ?? []).find(([b]) => i === frameOf(b))
+      f.sectionChange = !!hit
+      f.sectionChangeStrength = hit ? hit[1] : 0
+      if (i === frameOf(bootAt)) return rawWith([seg(0, 400, 'section')], f.beatIndex)
+      if (i === frameOf(o.learnedAt)) {
+        return rawWith([seg(0, o.boundary, 'section'), seg(o.boundary, 400, 'outro')], f.beatIndex, [o.boundary])
+      }
+      return null
+    })
+    return f
+  }
+
+  it('a lone phrase-change never commits a kind or fires boundaryChanged (no analyzer boundary behind it)', () => {
+    // (a) no analyzer result at all
+    const a = run(frameOf(80), (f, i) => {
+      f.sectionChange = i % 120 === 60
+      f.sectionChangeStrength = 1.5
+    })
+    expect(a.f.structureValid).toBe(false)
+    expect(a.f.songSection.section).toBe('')
+    expect(a.f.songSection.changeCount).toBe(0)
+
+    // (b) analyzer bootstrapped, its segment list even changes kind later (with no boundary reported
+    // for it): a strong phrase-change on top must not turn that into a section change
+    let events = 0
+    const b = run(frameOf(80), (f, i) => {
+      f.energy = 0.5
+      f.sectionChange = i % 60 === 0 && i > 0
+      f.sectionChangeStrength = 1.5
+      if (f.songSection.boundaryChanged) events++
+      if (i === frameOf(2)) return rawWith([seg(0, 400, 'section')], f.beatIndex)
+      if (i === frameOf(30)) return rawWith([seg(0, 20, 'section'), seg(20, 400, 'outro')], f.beatIndex, [])
+      return null
+    })
+    expect(b.f.songSection.section).toBe('section')
+    expect(b.f.songSection.changeCount).toBe(0)
+    expect(events).toBe(0)
+  })
+
+  it('phrase-change + a pending, differing analyzer segment commits sooner than the plain 8-beat hold', () => {
+    // Boundary 56 learned at beat 60 (4 beats old) -> plain: waits until 56 + 8 = 64.
+    expect(scenario({ boundary: 56, learnedAt: 60, until: 63 }).songSection.section).toBe('section')
+    expect(scenario({ boundary: 56, learnedAt: 60, until: 64 }).songSection.section).toBe('outro')
+
+    // Same, with a strong phrase-change at beat 58 (before the boundary is even learned): the moment
+    // the boundary arrives (beat 60, 4 beats old >= the 3-beat hint hold) the section commits.
+    const hinted = scenario({ boundary: 56, learnedAt: 60, phrase: [[58, 0.9]], until: 60 })
+    expect(hinted.songSection.section).toBe('outro')
+    expect(hinted.songSection.previousSection).toBe('section')
+    expect(hinted.songSection.boundaryChanged).toBe(true)
+    expect(hinted.songSection.changeCount).toBe(1)
+    expect(hinted.songSection.beatsInSection).toBe(4) // still dated from the analyzer's boundary
+  })
+
+  it('a phrase-change arriving DURING the hold shortens it from that moment', () => {
+    // Boundary 56 learned at 58 (2 beats old): plain commit at 64. Phrase-change at 60 -> commit at 60.
+    expect(scenario({ boundary: 56, learnedAt: 58, phrase: [[60, 0.9]], until: 59 }).songSection.section).toBe('section')
+    const at = scenario({ boundary: 56, learnedAt: 58, phrase: [[60, 0.9]], until: 60 })
+    expect(at.songSection.section).toBe('outro')
+    expect(at.songSection.boundaryChanged).toBe(true)
+  })
+
+  it('stale phrase-changes (older than the window) and weak ones do nothing', () => {
+    // Beat 40 is 20 beats before the analyzer learns of the boundary at 60: outside the 8-beat window.
+    expect(scenario({ boundary: 56, learnedAt: 60, phrase: [[40, 1.5]], until: 63 }).songSection.section).toBe('section')
+    // Exactly at the window edge (beat 52 = 8 beats before 60; the boundary 56 is within 8 of it) still counts...
+    expect(scenario({ boundary: 56, learnedAt: 60, phrase: [[52, 0.9]], until: 60 }).songSection.section).toBe('outro')
+    // ...one beat older does not.
+    expect(scenario({ boundary: 56, learnedAt: 60, phrase: [[51, 0.9]], until: 63 }).songSection.section).toBe('section')
+    // Below the strength floor (0.6): ignored, and the plain hold still commits it afterwards.
+    expect(scenario({ boundary: 56, learnedAt: 60, phrase: [[58, 0.5]], until: 63 }).songSection.section).toBe('section')
+    expect(scenario({ boundary: 56, learnedAt: 60, phrase: [[58, 0.5]], until: 64 }).songSection.section).toBe('outro')
+  })
+
+  it("only corroborates the boundary it is about (within 8 beats), and never skips the committed section's dwell", () => {
+    // Bootstrap at beat 30 (dwell to 38); boundary 31 learned at 36 (5 beats old): the hold counts from
+    // max(31, 38) = 38 -> plain commit at 46.
+    expect(scenario({ boundary: 31, learnedAt: 36, bootstrapAt: 30, until: 45 }).songSection.section).toBe('section')
+    // A phrase-change at 40 is 9 beats from the boundary: a different event -> no shortening.
+    expect(
+      scenario({ boundary: 31, learnedAt: 36, bootstrapAt: 30, phrase: [[40, 0.9]], until: 45 }).songSection.section,
+    ).toBe('section')
+    // One at 39 (8 beats from it) corroborates: hold 3 counted from the dwell end (38) -> commit at 41, not before.
+    expect(
+      scenario({ boundary: 31, learnedAt: 36, bootstrapAt: 30, phrase: [[39, 0.9]], until: 40 }).songSection.section,
+    ).toBe('section')
+    expect(
+      scenario({ boundary: 31, learnedAt: 36, bootstrapAt: 30, phrase: [[39, 0.9]], until: 41 }).songSection.section,
+    ).toBe('outro')
+  })
+
+  it('does not touch a same-kind boundary (no event) or the build overlay', () => {
+    let events = 0
+    const { f } = run(frameOf(70), (f, i) => {
+      f.energy = 0.5
+      f.sectionChange = i === frameOf(58)
+      f.sectionChangeStrength = 1.2
+      if (f.songSection.boundaryChanged) events++
+      if (i === frameOf(2)) return rawWith([seg(0, 400, 'section')], f.beatIndex)
+      if (i === frameOf(60)) {
+        return rawWith([seg(0, 56, 'section'), seg(56, 400, 'section', { repetitionLabel: 'B' })], f.beatIndex, [56])
+      }
+      return null
+    })
+    expect(f.songSection.section).toBe('section')
+    expect(events).toBe(0)
+    expect(f.songSection.changeCount).toBe(0)
+
+    // A phrase-change during a build neither ends it nor drops.
+    const b = run(frameOf(40), (f, i) => {
+      f.buildUp = i >= frameOf(4)
+      f.sectionChange = i === frameOf(30)
+      f.sectionChangeStrength = 1.5
+    })
+    expect(b.f.songSection.isBuild).toBe(true)
+    expect(b.f.songSection.isDrop).toBe(false)
+  })
+
+  it('reset() forgets a pending phrase-change hint', () => {
+    const tracker = new SectionTracker()
+    const f = createEmptyFeatures()
+    f.silence = false
+    f.bpm = 120
+    f.beatIndex = 58
+    f.time = 29
+    f.sectionChange = true
+    f.sectionChangeStrength = 1
+    tracker.update(f, rawWith([seg(0, 400, 'section')], 58))
+    tracker.reset()
+    f.sectionChange = false
+    f.beatIndex = 60
+    f.time = 30
+    tracker.update(f, rawWith([seg(0, 400, 'section')], 60))
+    // A boundary that the pre-reset phrase-change would have corroborated waits its full hold.
+    f.beatIndex = 61
+    f.time = 30.5
+    tracker.update(f, rawWith([seg(0, 58, 'section'), seg(58, 400, 'outro')], 61, [58]))
+    expect(f.songSection.section).toBe('section')
   })
 })

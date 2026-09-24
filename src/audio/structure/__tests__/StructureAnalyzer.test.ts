@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { audioEngine } from '../../AudioEngine'
 import { createEmptyFeatures, type AudioFeatures } from '../../types'
 import { quality } from '../../../engine/quality'
+import { STRUCTURE_DSP } from '../../essentia/structureDsp'
 import {
   CADENCE_MAX,
   CADENCE_SEC,
@@ -203,16 +204,20 @@ describe('batch cadence lengthens as quality.tier rises', () => {
     quality.tier = originalTier
   })
 
-  it('CADENCE_SEC is 8 s (was 15) with the cost-based ceiling untouched', () => {
-    expect(CADENCE_SEC).toBe(8)
+  // UPDATED: 8 -> 4 s. The asymmetric ~4-beat-lookahead kernels make the wait for the next batch the
+  // biggest part of the boundary delay, and the batch now costs ~1 ms (was ~7 ms at a full window).
+  it('CADENCE_SEC is 4 s (was 8, originally 15) with the cost-based ceiling untouched', () => {
+    expect(CADENCE_SEC).toBe(4)
+    expect(CADENCE_SEC).toBeGreaterThanOrEqual(4)
+    expect(CADENCE_SEC).toBeLessThanOrEqual(8)
     expect(CADENCE_MAX).toBe(45)
   })
 
   // ADJUSTED: this test used to detect "a second batch" as "update() returned a non-null raw". Since the
   // analyzer now also returns a (cached-segmentation) raw on EVERY beat fold once a batch has run, a
   // non-null return no longer means a batch ran, so batches are counted through `status.runs` instead.
-  // The window is also re-derived from the new 8 s base cadence: 30 beats @ 120 BPM = 15 s is past the
-  // tier-0 cadence (8 s x 1) and short of the tier-4 one (8 s x 3 = 24 s).
+  // The window is also re-derived from the base cadence: 16 beats @ 120 BPM = 8 s is past the tier-0
+  // cadence (4 s x 1) and short of the tier-4 one (4 s x 3 = 12 s). (Was 30 beats = 15 s against 8 s / 24 s.)
   it('the same post-warm-up window yields a second batch at tier 0 but not at tier 4', () => {
     const secPerBeat = 0.5
     const lowFreqDb = makeLowFreqDb()
@@ -246,7 +251,7 @@ describe('batch cadence lengthens as quality.tier rises', () => {
       return analyzer.status.runs - before
     }
 
-    const window = 30
+    const window = 16
     expect(window * secPerBeat).toBeGreaterThan(CADENCE_SEC)
     expect(window * secPerBeat).toBeLessThan(CADENCE_SEC * 3)
 
@@ -261,7 +266,7 @@ describe('batch cadence lengthens as quality.tier rises', () => {
     expect(batchesAfter(highTierAnalyzer, highLast, window)).toBe(0)
   })
 
-  it('batches recur on the 8 s cadence at tier 0, not the old 15 s', () => {
+  it('batches recur on the base cadence at tier 0 (CADENCE_SEC), not the old 15 s', () => {
     quality.tier = 0
     const analyzer = new StructureAnalyzer()
     const lowFreqDb = makeLowFreqDb()
@@ -392,9 +397,10 @@ describe('per-beat riser refresh between batches', () => {
     const analyzer = new StructureAnalyzer()
     const start = warmUp(analyzer)
     const runsAfterWarmUp = analyzer.status.runs
-    // A 12-beat ramp (6 s) right after the first batch — shorter than the 8 s cadence, so no batch
-    // runs during it. Each beat's `level` climbs toward 1.
-    const ramp = feed(analyzer, start, start + 12, (beat) => (beat - start + 1) / 12)
+    // UPDATED (was a 12-beat / 6 s ramp against the 8 s cadence): a 7-beat (3.5 s) ramp right after the
+    // first batch — shorter than the 4 s cadence, so no batch runs during it. Each beat's `level`
+    // climbs toward 1.
+    const ramp = feed(analyzer, start, start + 7, (beat) => (beat - start + 1) / 7)
     expect(analyzer.status.runs).toBe(runsAfterWarmUp) // still no new batch
     const active = ramp.filter((r) => r.raw.build.active)
     expect(active.length).toBeGreaterThan(0)
@@ -409,14 +415,14 @@ describe('per-beat riser refresh between batches', () => {
     expect(s0).toBeGreaterThanOrEqual(start - 24)
     expect(s0).toBeLessThanOrEqual(active[0].beat)
     // Once it flattens for long enough, the read goes inactive and the start resets (inactive => -1).
-    const tail = feed(analyzer, start + 12, start + 12 + 60, () => 1)
+    const tail = feed(analyzer, start + 7, start + 72, () => 1)
     const last = tail[tail.length - 1].raw.build
     expect(last.active).toBe(false)
     expect(last.startBeat).toBe(-1)
     expect(analyzer.status.buildActive).toBe(false)
     // A second, later ramp (from a quiet floor again) is a NEW build with a later start.
     feed(analyzer, start + 72, start + 102, () => 0)
-    const ramp2 = feed(analyzer, start + 102, start + 114, (beat) => (beat - (start + 102) + 1) / 12)
+    const ramp2 = feed(analyzer, start + 102, start + 109, (beat) => (beat - (start + 102) + 1) / 7)
     const active2 = ramp2.filter((r) => r.raw.build.active)
     expect(active2.length).toBeGreaterThan(0)
     expect(active2[0].raw.build.startBeat).toBeGreaterThan(s0)
@@ -454,6 +460,112 @@ describe('per-beat riser refresh between batches', () => {
     expect(analyzer.status.runs).toBe(0)
     // After reset there is no cache, so nothing is returned until history rebuilds and a batch runs.
     expect(feed(analyzer, 0, 30, () => 0).length).toBe(0)
+  })
+})
+
+/**
+ * Boundary detection through the analyzer: absolute floor (stationary => nothing), a clear texture
+ * switch published promptly (strong candidates pass persistence at once), and the status counters
+ * `lastCandidates` (before persistence) >= `lastBoundaries` (published).
+ */
+describe('boundary detection + persistence through the analyzer', () => {
+  const originalTier = quality.tier
+  afterEach(() => {
+    quality.tier = originalTier
+  })
+
+  const secPerBeat = 0.5
+  const lowFreqDb = makeLowFreqDb()
+
+  /** Spectrum with its energy shifted up by `shift` bins-ish (a different timbre, same loudness scale). */
+  function shiftedSpectrum(tilt: number): Float32Array {
+    const arr = new Float32Array(1024)
+    for (let i = 0; i < 1024; i++) arr[i] = clamp01(0.5 * Math.exp(-i / (220 * tilt)) + 0.05 * Math.sin(i * 0.3))
+    return arr
+  }
+  const SPEC_B = shiftedSpectrum(3)
+
+  function frame(beat: number, second: boolean): AudioFeatures {
+    const f = baseFeatures()
+    f.time = beat * secPerBeat
+    f.delta = secPerBeat
+    f.beat = true
+    f.beatIndex = beat
+    if (second) {
+      f.spectrum = SPEC_B
+      f.loudness = 0.8
+      f.centroid = 0.7
+      f.sub = 0.15
+      f.bass = 0.2
+      f.high = 0.6
+      f.air = 0.5
+    }
+    return f
+  }
+
+  /** Feed beats [0, total); `secondFrom` = first beat of the second texture (Infinity = never). Returns, per
+   *  beat, the boundaries of the newest raw seen so far and the beat each boundary was first published. */
+  function drive(total: number, secondFrom: number) {
+    const analyzer = new StructureAnalyzer()
+    let boundaries: number[] = []
+    const firstSeen = new Map<number, number>() // boundary beat -> live beat when first published
+    const candidatesPerBatch: number[] = []
+    const publishedPerBatch: number[] = []
+    let lastRuns = 0
+    for (let b = 0; b < total; b++) {
+      const raw = analyzer.update(frame(b, b >= secondFrom), lowFreqDb, SAMPLE_RATE)
+      if (raw) {
+        boundaries = raw.boundaries
+        for (const x of boundaries) if (![...firstSeen.keys()].some((k) => Math.abs(k - x) <= 3)) firstSeen.set(x, b)
+      }
+      if (analyzer.status.runs > lastRuns) {
+        lastRuns = analyzer.status.runs
+        candidatesPerBatch.push(analyzer.status.lastCandidates)
+        publishedPerBatch.push(analyzer.status.lastBoundaries)
+      }
+    }
+    return { analyzer, boundaries, firstSeen, candidatesPerBatch, publishedPerBatch }
+  }
+
+  it('a stationary stream publishes no boundary and proposes no candidate (absolute floor, not per-window normalisation)', () => {
+    quality.tier = 0
+    const { boundaries, candidatesPerBatch, publishedPerBatch, analyzer } = drive(200, Infinity)
+    expect(analyzer.status.runs).toBeGreaterThanOrEqual(8)
+    expect(boundaries).toEqual([])
+    expect(publishedPerBatch.every((n) => n === 0)).toBe(true)
+    expect(candidatesPerBatch.every((n) => n === 0)).toBe(true)
+    // The status novelty peak is on the absolute scale now (it read a constant 1 when normalised).
+    expect(analyzer.status.lastNoveltyPeak).toBeLessThan(STRUCTURE_DSP.noveltyFloor)
+  })
+
+  it('a clear texture switch is published near the join, promptly (strong candidates skip the persistence wait)', () => {
+    quality.tier = 0
+    const join = 100
+    const { boundaries, firstSeen, candidatesPerBatch, publishedPerBatch } = drive(160, join)
+    expect(boundaries.some((b) => Math.abs(b - join) <= 3)).toBe(true)
+    // Nothing published in the stationary lead-in.
+    for (const [beat] of firstSeen) expect(beat).toBeGreaterThanOrEqual(join - 3)
+    // First published within lookahead (4) + one 4 s batch (8 beats) + slack of the join, not the old >= 8-32 + 8 s.
+    const seen = [...firstSeen.entries()].find(([b]) => Math.abs(b - join) <= 3)!
+    expect(seen[1] - join).toBeLessThanOrEqual(4 + 8 + 2)
+    // Candidates are a superset of what is published, batch by batch.
+    for (let i = 0; i < candidatesPerBatch.length; i++) {
+      expect(candidatesPerBatch[i]).toBeGreaterThanOrEqual(publishedPerBatch[i])
+    }
+  })
+
+  it('segments are cut only at published boundaries', () => {
+    quality.tier = 0
+    const analyzer = new StructureAnalyzer()
+    let last: NonNullable<ReturnType<StructureAnalyzer['update']>> | null = null
+    for (let b = 0; b < 160; b++) {
+      const raw = analyzer.update(frame(b, b >= 100), lowFreqDb, SAMPLE_RATE)
+      if (raw) last = raw
+    }
+    expect(last).not.toBeNull()
+    expect(last!.segments.length).toBe(last!.boundaries.length + 1)
+    const starts = last!.segments.slice(1).map((s) => s.startBeat)
+    expect(starts).toEqual(last!.boundaries)
   })
 })
 

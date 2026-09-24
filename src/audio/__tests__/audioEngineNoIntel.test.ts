@@ -92,7 +92,7 @@ describe('AudioEngine detectStructure: f.drop has two independent trigger paths'
       engine.detectStructure(now, f)
     }
     expect(f.drop).toBe(false)
-    // Breakdown: sub+bass well under the trailing baseline, sustained past the arming floor (~1.5s).
+    // Breakdown: sub+bass well under the trailing baseline, sustained past the arming floor (0.7s; 2s here).
     f.sub = 0.05
     f.bass = 0.05
     for (let i = 0; i < 40; i++) {

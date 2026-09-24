@@ -17,11 +17,15 @@
  * This class fixes that by requiring the breakdown to happen FIRST, as an
  * explicit state, before a snap-back is even eligible to fire:
  *
- *   normal  --(sub+bass falls under `dipRatio * baseline` and STAYS there
- *              for >= dipMinSec)-->  armed
- *   armed   --(sub+bass reaches the baseline again AND a qualifying
- *              transient both land within snapWindowSec of the last sample
- *              that was still "deep")-->  FIRES (one frame), -> normal
+ *   normal  --(sub+bass falls under `dipRatio * baseline` and accumulates
+ *              >= dipMinSec of "deep" time — LEAKY: a short flicker back above
+ *              the threshold drains the timer at `dipLeak`x real time instead of
+ *              zeroing it)-->  armed
+ *   armed   --(sub+bass reaches the baseline again within snapWindowSec of the
+ *              last sample that was still "deep", AND EITHER a qualifying
+ *              transient lands in that same window OR the dip was a long one
+ *              (>= lowSnapMinDipSec of deep time: the low-band-only snap-back,
+ *              for when the flux input is small))-->  FIRES (one frame), -> normal
  *   armed   --(no qualifying snap-back within armTimeoutSec)--> normal
  *              (stale arm released, not latched forever)
  *
@@ -61,12 +65,32 @@
  *                         passage). 40% sits in the middle of the plan's
  *                         35-45% band; `dipMinSec` below is what actually
  *                         guards against a merely-quiet moment arming.
- *   dipMinSec = 1.5       Below ~1s risks arming on a single quiet beat or
- *                         bar-fill (too strict a floor here = misses real,
- *                         short breakdowns; too loose = a quiet beat arms
- *                         it); above ~2s risks missing a short 2-bar hush
- *                         before a drop. 1.5s is the middle of the plan's
- *                         1-2s band.
+ *   dipMinSec = 0.7       Was 1.5. That floor missed the short 1-bar hush/gap
+ *                         producers leave right before a drop (typically 1-2
+ *                         beats, 0.5-1 s). 0.7 s (~1.4 beats at 120 BPM) sits
+ *                         in the 0.5-0.8 s band: above the deep time a single
+ *                         missing kick leaves in a four-on-the-floor loop
+ *                         (sub+bass decays under 40% of its average ~0.4 s after
+ *                         a kick, so one skipped kick is deep for ~0.6 s; an
+ *                         ordinary between-kick interval for ~0.1 s), below a
+ *                         real 1-beat-plus pre-drop gap. The flicker/leak rule
+ *                         below and the snap-back requirement carry the rest of
+ *                         the false-positive load.
+ *   dipLeak = 2           A frame back above the deep threshold drains the dip
+ *                         timer at 2x real time (was: reset to zero). A single
+ *                         50 ms flicker inside a genuine breakdown (a stray hit,
+ *                         an LFO peak) costs 100 ms of accumulated dip instead
+ *                         of all of it; a genuinely non-deep stretch (>= half as
+ *                         long as the dip so far) still drains it to nothing,
+ *                         and a beat-by-beat kick loop (0.1-0.15 s deep, 0.35 s
+ *                         not) never accumulates.
+ *   lowSnapMinDipSec = 1.0  The low-band-only trigger: sub+bass returning to
+ *                         baseline within snapWindowSec of the last deep sample
+ *                         fires WITHOUT a concurrent flux spike — but only after
+ *                         at least this much deep time, i.e. a clearly hollowed-
+ *                         out breakdown, since without the transient the dip
+ *                         length is the only evidence left. Shorter dips still
+ *                         need the transient.
  *   snapWindowSec = 0.5   Fixed by the plan's explicit requirement ("fast,
  *                         transient-based ... confirming in under half a
  *                         second"). Measured from the last sample that was
@@ -113,8 +137,14 @@ export interface DropStateMachineOptions {
   baselineTauSec?: number
   /** Sub+bass must fall below this fraction of the baseline to count as "deep". Default 0.4. */
   dipRatio?: number
-  /** Minimum continuous time (s) sub+bass must stay deep before arming. Default 1.5. */
+  /** Minimum accumulated "deep" time (s) before arming (leaky, see `dipLeak`). Default 0.7. */
   dipMinSec?: number
+  /** While dipping, a frame back above the deep threshold drains the accumulated dip time at this
+   * multiple of real time (0 = never drains, huge = the old reset-to-zero). Default 2. */
+  dipLeak?: number
+  /** Dip length (s of deep time) from which a snap-back needs no concurrent transient — the
+   * low-band-only trigger. Default 1.0 (>= `dipMinSec`; set very large to require the transient always). */
+  lowSnapMinDipSec?: number
   /** Window (s) for the snap-back + transient confirmation once armed. Default 0.5. */
   snapWindowSec?: number
   /** Stale-arm release timeout (s) — armed with no snap-back this long releases to normal. Default 25. */
@@ -125,7 +155,9 @@ export interface DropStateMachineOptions {
 
 const DEFAULT_BASELINE_TAU_SEC = 8
 const DEFAULT_DIP_RATIO = 0.4
-const DEFAULT_DIP_MIN_SEC = 1.5
+const DEFAULT_DIP_MIN_SEC = 0.7
+const DEFAULT_DIP_LEAK = 2
+const DEFAULT_LOW_SNAP_MIN_DIP_SEC = 1.0
 const DEFAULT_SNAP_WINDOW_SEC = 0.5
 const DEFAULT_ARM_TIMEOUT_SEC = 25
 const DEFAULT_TRANSIENT_THRESHOLD = 0.5
@@ -140,6 +172,8 @@ export class DropStateMachine {
   private readonly baselineTau: number
   private readonly dipRatio: number
   private readonly dipMinSec: number
+  private readonly dipLeak: number
+  private readonly lowSnapMinDipSec: number
   private readonly snapWindowSec: number
   private readonly armTimeoutSec: number
   private readonly transientThreshold: number
@@ -147,7 +181,10 @@ export class DropStateMachine {
   private baseline = 0
   private seeded = false
   private state: DropState = 'normal'
+  /** Leaky accumulated deep time while dipping (s). */
   private dipElapsed = 0
+  /** Total deep time of the current dip, carried through `armed` (keeps growing while still deep). */
+  private deepSec = 0
   private armElapsed = 0
   /** Internal wall clock, advanced by (capped) `dt` each call — `update()` never receives an absolute
    * timestamp, so the snap-back window is measured against this instead. */
@@ -159,6 +196,8 @@ export class DropStateMachine {
     this.baselineTau = Math.max(0.5, opts.baselineTauSec ?? DEFAULT_BASELINE_TAU_SEC)
     this.dipRatio = Math.min(0.95, Math.max(0.01, opts.dipRatio ?? DEFAULT_DIP_RATIO))
     this.dipMinSec = Math.max(0, opts.dipMinSec ?? DEFAULT_DIP_MIN_SEC)
+    this.dipLeak = Math.max(0, opts.dipLeak ?? DEFAULT_DIP_LEAK)
+    this.lowSnapMinDipSec = Math.max(0, opts.lowSnapMinDipSec ?? DEFAULT_LOW_SNAP_MIN_DIP_SEC)
     this.snapWindowSec = Math.max(0, opts.snapWindowSec ?? DEFAULT_SNAP_WINDOW_SEC)
     this.armTimeoutSec = Math.max(0, opts.armTimeoutSec ?? DEFAULT_ARM_TIMEOUT_SEC)
     this.transientThreshold = opts.transientThreshold ?? DEFAULT_TRANSIENT_THRESHOLD
@@ -169,6 +208,7 @@ export class DropStateMachine {
     this.seeded = false
     this.state = 'normal'
     this.dipElapsed = 0
+    this.deepSec = 0
     this.armElapsed = 0
     this.clock = 0
     this.lastDeepClock = -Infinity
@@ -206,7 +246,8 @@ export class DropStateMachine {
       case 'normal':
         if (isDeep) {
           this.state = 'dipping'
-          this.dipElapsed = 0
+          // The frame that crosses under the threshold is deep time too (so N deep frames = N * dt).
+          this.dipElapsed = h
         }
         break
       case 'dipping':
@@ -215,26 +256,33 @@ export class DropStateMachine {
           if (this.dipElapsed >= this.dipMinSec) {
             this.state = 'armed'
             this.armElapsed = 0
+            this.deepSec = this.dipElapsed
           }
         } else {
-          // Recovered before the dip was sustained long enough to count as a genuine breakdown — a
-          // single quiet beat, not a structural one. Deliberately resets rather than decaying: the
-          // simplest rule that is still easy to reason about and test; a leakier accumulator is a
-          // plausible future refinement once this is tuned against real material, not before.
-          this.state = 'normal'
+          // LEAKY: a frame back above the deep threshold drains the timer (dipLeak x real time) rather
+          // than zeroing it, so one stray flicker inside a genuine breakdown doesn't throw away the dip so
+          // far — while a stretch that is not deep for long enough (a beat-by-beat kick loop, a single
+          // quiet beat) still drains it to nothing and drops back to normal.
+          this.dipElapsed -= h * this.dipLeak
+          if (this.dipElapsed <= 0) {
+            this.dipElapsed = 0
+            this.state = 'normal'
+          }
         }
         break
       case 'armed':
         this.armElapsed += h
+        if (isDeep) this.deepSec += h
         if (subBass >= this.baseline) {
-          // A genuine SNAP requires BOTH "recently deep" and "a concurrent transient" inside the same
-          // tight window — that combination is what a slow climb out of a breakdown can never produce
-          // (see header). Either way, reaching the baseline spends this arm cycle: there is no more
-          // "dip" left to snap out of, fired or not.
-          if (
-            this.clock - this.lastDeepClock <= this.snapWindowSec &&
-            this.clock - this.lastTransientClock <= this.snapWindowSec
-          ) {
+          // A genuine SNAP requires "recently deep" — reaching the baseline within snapWindowSec of the
+          // last deep sample is what a slow climb out of a breakdown can never do (see header) — PLUS
+          // one of two confirmations: a concurrent transient in that same window, OR (low-band-only) a
+          // dip long enough (lowSnapMinDipSec of deep time) that the returning low end is evidence by
+          // itself, for when the flux input is small. Either way, reaching the baseline spends this arm
+          // cycle: there is no more "dip" left to snap out of, fired or not.
+          const recentlyDeep = this.clock - this.lastDeepClock <= this.snapWindowSec
+          const transientNow = this.clock - this.lastTransientClock <= this.snapWindowSec
+          if (recentlyDeep && (transientNow || this.deepSec >= this.lowSnapMinDipSec)) {
             fired = true
           }
           this.state = 'normal'
