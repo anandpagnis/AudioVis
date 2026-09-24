@@ -9,7 +9,8 @@
  *     (`log2(bpm / 120)`; +1 = double time, -1 = half time). Published on `AudioFeatures.tempoOctaves`, eased.
  *  2. {@link tempoRate}: `rate = 2 ** (coupling * octaves)`, i.e. `(bpm / 120) ** coupling`. `coupling` is the
  *     per-mood exponent (`LookRow.tempoCoupling`): 0 ignores tempo entirely, 1 makes motion exactly proportional to
- *     tempo (160 BPM = 1.33x, 80 BPM = 0.67x), values in between soften the effect. The rate is 1 at 120 BPM for
+ *     tempo (160 BPM = 1.33x, 80 BPM = 0.67x), values in between soften the effect and values above 1 exaggerate
+ *     it (up to 1.5: 160 BPM = 1.54x). The result is clamped to [RATE_MIN, RATE_MAX]. The rate is 1 at 120 BPM for
  *     every coupling, so mood only changes how far the tempo pulls, never where the neutral point sits.
  *
  * ## Why a power law
@@ -43,8 +44,8 @@
 export const REF_BPM = 120
 /** Octave distance is clamped to +-this (60..240 BPM). A misread beyond it must not fling motion around. */
 export const OCTAVES_MAX = 1
-/** Coupling used when there is no valid mood look (warm-up, `?look=off`): the previous fixed slope. */
-export const DEFAULT_COUPLING = 0.6
+/** Coupling used when there is no valid mood look (warm-up, `?look=off`): the neutral row's value. */
+export const DEFAULT_COUPLING = 0.9
 export const RATE_MIN = 0.5
 export const RATE_MAX = 2
 /** Below this beat-tracking confidence, the tempo has no effect (octaves = 0). */

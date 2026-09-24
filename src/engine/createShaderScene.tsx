@@ -7,10 +7,9 @@ import { FULLSCREEN_VERT } from './glsl'
 import { createLilimState, updateLilimState, type LilimAudioState } from './lilimState'
 import type { PaletteBlender } from './palettes'
 import { useSceneFrame, type SceneFrame } from './sceneFrame'
-import { useSceneParams, type ResolvedSceneParams } from './sceneParams'
+import { resolveFactoryDials, useSceneParams, type ResolvedSceneParams } from './sceneParams'
 import { resourceCache } from './streaming/resourceCache'
 import { prewarmShaders } from './streaming/shaderPrewarm'
-import { foldedSpeedDial } from '../audio/tempoSpeed'
 import { currentTempoRate } from './tempoRate'
 
 /**
@@ -92,8 +91,9 @@ export interface ShaderSceneContext<S = void> {
    *
    * `P.speed` ALREADY includes the global speed — the user's Speed dial x the mood's speed x the song's tempo
    * rate (`getEffectiveParams().speed`), folded in as an exact multiplier on `drastic(P.speed)` — so a scene
-   * must NOT multiply `params.speed` or the tempo in again. This is a per-instance copy: writing to it is safe
-   * but pointless (it is rebuilt every frame).
+   * must NOT multiply `params.speed` or the tempo in again. The other dials (`complexity`, `density`, `fill`,
+   * `contrast`) carry the director's mood steer, with the user's own dial winning where set. This is a
+   * per-instance copy: writing to it is safe but pointless (it is rebuilt every frame).
    */
   P: Readonly<ResolvedSceneParams>
   /** The live five-slot palette, already bound to the standard uniforms. */
@@ -401,12 +401,12 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
     }
 
     u.uFade.value = ctx.vis
-    // Refresh the private copy, then fold the global speed into its dial. `drastic(p + bias) = drastic(p) * rate`
-    // exactly (tempoSpeed.ts), so every scene that already does `phase += dt * ... * drastic(P.speed)` picks up the
-    // user's Speed dial, the mood's speed and the song's tempo with no per-scene edit. A tempo-locked scene gets
-    // everything but the tempo (it already follows the beat grid).
-    Object.assign(P, Pdials)
-    P.speed = foldedSpeedDial(Pdials.speed, ctx.params.speed, currentTempoRate(), spec.tempoLocked === true)
+    // Refresh the private copy of the dials. Takes them from `ctx.p` (declared default -> the director's mood
+    // steer -> the user's own dial), NOT from `useSceneParams`, which has no steering layer; then folds the global
+    // speed into `speed` as an exact multiplier on `drastic()` (tempoSpeed.ts), so every scene that already does
+    // `phase += dt * ... * drastic(P.speed)` picks up the user's Speed dial, the mood's speed and the song's tempo
+    // with no per-scene edit. A tempo-locked scene gets everything but the tempo (it already follows the beat grid).
+    resolveFactoryDials(P, Pdials, ctx.p, ctx.params.speed, currentTempoRate(), spec.tempoLocked === true)
     u.uMode.value = P.modeIndex
 
     if (rendered.current < WARM_RENDERS) rendered.current++

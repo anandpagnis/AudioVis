@@ -32,7 +32,7 @@ const RANGES: Record<ScalarKey, readonly [number, number]> = {
   lensEngage: [0, 0.7], lensAmountFloor: [0.15, 0.42], lensAmountCeil: [0.15, 0.42],
   mirrorEngage: [0, 0.9], mirrorSpinMin: [0, 0.7], mirrorSpinMax: [0, 0.7], mirrorTwistMax: [0, 1.3], mirrorMix: [0, 1], mirrorBusyGain: [0, 1],
   steerSpeed: [0, 1], steerComplexity: [0, 1], steerDensity: [0, 1], steerFill: [0, 1], steerContrast: [0, 1],
-  tempoCoupling: [0, 1.2],
+  tempoCoupling: [0, 1.5],
   cameraSpeed: [0.6, 1.6], cameraShake: [0, 1.5], cameraCutRate: [0, 1],
   transitionDurationBias: [0.6, 1.6], transitionSharpness: [1, 8],
   gradeSat: [0.75, 1.3], gradeTemp: [-1, 1], gradeContrast: [0.95, 1.3],
