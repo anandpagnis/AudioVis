@@ -12866,3 +12866,90 @@ per-frame canvas heavy enough to distort the reading.
       matrix and add an absolute novelty floor; a ~4-beat causal lookahead;
       loosen the drop machine's 1.5 s dip hold; real downbeat/bar tracking
       (`beatInBar` is just `beatIndex % 4`).
+
+- [x] **F263 · Shader scenes now receive the mood's steering; tempo coupling
+      raised to 1.5; the structure detector's four open items; a real downbeat
+      estimate; the drop scene armed at build start (phase 1)** — *2026-09-25,
+      user requests ("do that, also do this ... increase the multiplier values,
+      maxing out at 1.5 ... keep something lined up and waiting for
+      confirmation")* `src/engine/{createShaderScene.tsx,sceneParams.ts,armedChange.ts,AutoPilot.tsx,SceneManager.tsx}`,
+      `src/store.ts`, `src/audio/{SectionTracker.ts,PhraseDetector.ts,AudioEngine.ts}`,
+      `src/audio/structure/{StructureAnalyzer.ts,dropStateMachine.ts,downbeat.ts}`,
+      `src/audio/essentia/structureDsp.ts`, `src/engine/look/{moodRows,lookRow,lookFlags,lookDebug}.ts`
+
+      **Steering gap closed.** The ~25 shader-factory scenes read their dials from
+      `useSceneParams`, which has no steering layer, so the director's mood steer
+      (speed, complexity, density, fill, contrast) only ever reached the older
+      scenes. The factory now takes the seven dials from the scene frame's `ctx.p`
+      (declared default -> mood steer -> the user's own dial, user wins) via the
+      pure `resolveFactoryDials`, keeping `mode`/`modeIndex` from `useSceneParams`.
+      **These scenes will now change look with the mood: unwatched, amounts unproven.**
+
+      **Tempo coupling raised.** Per-mood `tempoCoupling` scaled 1.5x so the
+      strongest reach 1.5 (driving/aggressive 1.5, groove 1.35, euphoric 1.3,
+      playful 1.2, uplifting 1.1, tense 1.05, epic 0.9, brooding 0.65, mysterious
+      0.6, melancholic 0.5, tender/dreamy 0.45, serene 0.3); neutral row and the
+      no-look default 0.9. Above 1 exaggerates tempo (160 BPM at 1.5 is x1.54). The
+      total rate is still clamped to [0.5, 2].
+
+      **Structure detector (F262's open list, four items).**
+      1. *Fast phrase-change hint*: `f.sectionChange` (strength >= 0.6) shortens the
+         kind-commit hold from 8 to 3 beats when an analyser boundary is pending and
+         within 8 beats. A lone phrase change never commits a kind.
+      2. *Cleaner SSM*: per-window mean-centring (essential: uncentred, no candidate
+         reached 0.12), a fixed absolute novelty scale, an absolute floor, and a
+         cross-batch persistence gate for weak boundaries.
+      3. *~4-beat lookahead*: an asymmetric checkerboard kernel (past 8/24, future
+         4) reports a seam ~4 beats after it happens instead of >= 8; cadence 8 s ->
+         4 s (mean batch 0.5 ms).
+      4. *Drop detector*: minimum dip 1.5 s -> 0.7 s, leaky dip timer, and a
+         low-band-only snap-back trigger.
+      **The floor was set to 0.16, overriding the implementation's first value of
+      0.22.** At 0.22 boundaries/clip fell from 3.47 to 0.63 and recall of
+      loudness steps from 73% to 42%: the deaf end, which is the failure this work
+      exists to fix. Measured on 30 PMEmo clips at 0.16: 1.20 boundaries/clip, 70%
+      of clips with one. Raise toward 0.20-0.22 if live listening shows spurious
+      section changes. Its persistence gate adds ~one cadence of delay for weak
+      boundaries (strong ones, >= 0.35, pass at once).
+
+      **Real downbeat (bar phase).** `beatInBar`/`bar`/`measure` were
+      `beatIndex % 4`: right one time in four. `DownbeatEstimator` (per-beat kick +
+      low-end salience into 4 decaying phase bins, effect-size + significance
+      confidence) adopts a phase only after ~10 bars, holds it through breakdowns,
+      re-anchors only after a sustained stronger challenger, and reads exactly the
+      legacy `% 4` whenever anything is ambiguous. Three phrase-edge tests that
+      could never be true after a shift now use `isPhraseEdge`; KifsRose uses the
+      real bar line. **On 60 real PMEmo clips it adopted nothing (0/60):** clips are
+      short and their tempo confidence is low, so on ordinary pop it is currently
+      legacy; synthetic accented drum tracks lock to the true phase 100% of the time
+      when locked (first lock 29-46 s) and unaccented ones never lock. Live effect
+      unproven and may be nil; first knobs are `DOWNBEAT_MIN_GRID_CONF` (0.3),
+      `enterConf`, `relFull`. The `DB85`/`db41` flag in the DebugPanel bpm row shows
+      locked / forming.
+
+      **Armed drop scene, phase 1** (`engine/armedChange.ts`, a pure state machine).
+      The old drop pick happened AT the drop, so a scene cold this session paid pick
+      -> chunk load -> shader compile inside `SceneManager`'s 0.35 s grace and then
+      committed cold; the old 1-3-beat pre-arm was usually refused by the 32-beat
+      dwell. Now, once per confirmed build (`structureValid && isSustain`),
+      AutoPilot picks the hype scene and holds it in the existing pending slot
+      (`store.heldSceneId`; `resolveCommit` will not commit it while held). A `f.drop`
+      rising edge releases it as an immediate hard cut; a projected drop beat (one
+      beat early, dwell enforced) releases it as a normal crossfade and suppresses
+      the ordinary drop pick for 8 beats. Disarms: 32-beat expiry, build fizzle, tier
+      above 2, manual/cue/cutaway states, supersession, new source. `?arm=off`
+      keeps the original pre-arm exactly; `?lookdebug` prints the armed scene, its
+      warmth and the last outcome. **Gaps:** a cancelled arm loses its compile; a
+      build the analyser misses is never armed; with `?arm` on at tier <= 2 the old
+      pre-arm no longer runs as a fallback if an arm was refused. **Not built (phases
+      2-3 of the plan):** pre-picking discrete look choices at arm time, and
+      committing section changes at the predicted boundary beat.
+
+      **Verification.** typecheck (both configs), lint, build and the licence gate
+      pass; 2793 of 2796 tests pass (sole failure the pre-existing, unrelated
+      `checkDistLicences.test.ts` flake first seen in F258). Lint caught two
+      `no-regex-spaces` errors in the armed-scene debug test that were committed
+      before lint was run; fixed in `da05d86`. **Nothing here has been watched
+      live** (no browser/GPU): every threshold, coupling value and ARM constant is a
+      reasoned starting point. Per-piece constants needing a by-ear pass are listed in
+      each commit message.
