@@ -3,6 +3,7 @@ import { Link, Navigate } from 'react-router'
 import { Stage } from '../engine/Stage'
 import { Console } from '../ui/Console'
 import { LookDebug } from '../ui/LookDebug'
+import { StructureLog } from '../ui/StructureLog'
 import { audioEngine } from '../audio/AudioEngine'
 import { claimSource, isDemoWindow, isOutput } from '../engine/outputLink'
 import { djCamSource } from '../engine/djCamSource'
@@ -154,6 +155,8 @@ function OutputSurface() {
       <Stage />
       {/* `?lookdebug` only (renders nothing otherwise): the mood look profile and what it applied. */}
       <LookDebug />
+      {/* `?structurelog` only (renders nothing otherwise): the tap-to-mark section-change ground-truth logger. */}
+      <StructureLog />
     </div>
   )
 }
