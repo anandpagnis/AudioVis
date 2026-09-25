@@ -19,6 +19,13 @@
  * why structure needs the full linear spectrum every frame (`f.spectrum`, not
  * on the narrow `FrameSample`) rather than a cached replay.
  *
+ * Phase 0C (scene-cadence baseline) additions, all additive and opt-in so every existing harness is unchanged:
+ * `SectionTracker` is now stepped after `StructureAnalyzer` exactly as `AudioEngine.update()` does (it only writes
+ * `f.songSection` / `f.structureValid`, which nothing else here reads); `hooks.dropStateMachine` adds the engine's
+ * second drop path, `hooks.character` steps the emotion/character read per frame, and `hooks.trace` returns
+ * `TrackRunResult.trace`, a compact columnar record of every field the scene-change trigger logic reads
+ * (`src/audio/eval/cadenceTrace.ts`, replayed by `legacyCadence.ts`). `FULL_CHAIN_HOOKS` turns all three on.
+ *
  * Faithful to AudioEngine as of the F154 front-end sweep: the 2048 main FFT +
  * 8192 sub/bass FFT, `f.sub` off the 8192 grid, `f.sparkle`, the age-windowed
  * flux ring, and the stale-frame guard (a no-op here — this harness steps at a
@@ -29,9 +36,14 @@ import { BpmEstimator } from '../../src/audio/BpmEstimator'
 import { beatLeadSec } from '../../src/audio/beatLead'
 import { ChromaKeyEstimator } from '../../src/audio/chromaKey'
 import { HarmonicTensionEstimator } from '../../src/audio/harmonicTension'
+import { CharacterClassifier } from '../../src/audio/CharacterClassifier'
+import { EmotionDimensionEstimator } from '../../src/audio/emotionDimensions'
 import { MoodEstimator } from '../../src/audio/MoodEstimator'
 import { PercussionDetector } from '../../src/audio/PercussionDetector'
 import { PhraseDetector } from '../../src/audio/PhraseDetector'
+import { SectionTracker } from '../../src/audio/SectionTracker'
+import { CadenceTraceBuilder, type CadenceTrace } from '../../src/audio/eval/cadenceTrace'
+import { DropStateMachine } from '../../src/audio/structure/dropStateMachine'
 import { computeLowBands, computeSpectralBands, writeLinearSpectrum } from '../../src/audio/spectralFeatures'
 import { evictExpired, fftAdvanced, makeWaveProbe } from '../../src/audio/frameGating'
 import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
@@ -81,7 +93,22 @@ export interface StepHooks {
   /** Override the published-beat lead in seconds (default: `beatLeadSec()`, the engine's built-in lead). 0 = the
    *  grid exactly as `BpmEstimator` has it. For `beat-latency.calib.ts`. */
   beatLeadSec?: number
+  /** Also step the engine's SECOND drop path (`DropStateMachine`: breakdown -> dip -> snap-back), which
+   *  `AudioEngine.detectStructure` runs alongside the broadband ratio test. Default OFF so every existing harness
+   *  keeps its calibrated `drop` / mood numbers bit-identical (`f.drop` feeds `MoodEstimator`); the scene-cadence
+   *  baseline turns it on because a live `f.drop` includes it. */
+  dropStateMachine?: boolean
+  /** Also step `EmotionDimensionEstimator` + `CharacterClassifier` every frame, like `AudioEngine.update()` does
+   *  (the emotion harness instead replays them from a 20 Hz cache, `emotion.ts`). Fills `f.character` and the
+   *  trace's `charPrimary`. Default OFF: nothing else in `FrameSample` depends on it. */
+  character?: boolean
+  /** Return `TrackRunResult.trace`: a compact columnar per-frame record of everything the scene-change trigger
+   *  logic reads (`src/audio/eval/cadenceTrace.ts`). Default OFF. */
+  trace?: boolean
 }
+
+/** The hooks that make `runTrack` mirror the LIVE engine's trigger inputs as closely as this harness can. */
+export const FULL_CHAIN_HOOKS: StepHooks = { dropStateMachine: true, character: true, trace: true }
 
 /** One beat crossing, for `downbeat-sanity.calib.ts` (the bar-phase estimator's per-beat trace). */
 export interface BeatSample {
@@ -118,6 +145,10 @@ export interface TrackRunResult {
   /** The analyzer's own status object at the end of the run (`runs`, `lastCostMs`, `buildScore`, …) —
    *  see `StructureAnalyzer.ts`. Present even when `structureRuns` is empty (still shows warm-up state). */
   structureStatus: StructureAnalyzerStatus
+  /** Columnar per-frame trace of the trigger inputs (phase 0C). Present only when `hooks.trace` was set. It
+   *  includes `SectionTracker`'s output (`songSection`, `structureValid`), which `runTrack` now steps after
+   *  `StructureAnalyzer` exactly as `AudioEngine.update()` does. */
+  trace?: CadenceTrace
 }
 
 /** The subset of `AudioFeatures` the calibration reports read, per frame. */
@@ -220,6 +251,15 @@ export function runTrack(
   // `?structure=off` kill-switch path.
   const structureAnalyzer = new StructureAnalyzer({ disabled: hooks.skipStructure ?? false })
   const structureRuns: StructureRaw[] = []
+  // `SectionTracker` fuses the analyzer's segmentation with the fast `f.drop` / `f.buildUp` / `f.sectionChange`
+  // flags into `f.songSection` + `f.structureValid`, which every director reads. AudioEngine steps it right
+  // after the analyzer; nothing else in this harness reads its output, so it cannot move any other field.
+  const sectionTracker = new SectionTracker()
+  // Optional (see `StepHooks`): the engine's second drop path, and the per-frame character read.
+  const dropStateMachine = hooks.dropStateMachine ? new DropStateMachine() : null
+  const emotion = hooks.character ? new EmotionDimensionEstimator() : null
+  const characterClassifier = hooks.character ? new CharacterClassifier() : null
+  if (characterClassifier) f.character = characterClassifier.state
   // AudioEngine.ts's bar-phase estimator + its per-frame evidence gatherer (structure/downbeat.ts).
   const downbeat = new DownbeatEstimator()
   const beatSalience = new BeatSalienceGatherer()
@@ -254,6 +294,12 @@ export function runTrack(
   // reaches further back, zero-padded at the track start like a real node's
   // warm-up.
   const totalFrames = Math.floor((pcm.length - FFT_SIZE) / hop)
+  const traceBuilder = hooks.trace
+    ? new CadenceTraceBuilder(Math.max(0, totalFrames), frameRate, sampleRate, pcm.length / sampleRate, {
+        characterStepped: !!hooks.character,
+        dropStateMachine: !!hooks.dropStateMachine,
+      })
+    : null
 
   for (let i = 0; i < totalFrames; i++) {
     const now = i * delta
@@ -520,6 +566,8 @@ export function runTrack(
           recent > 0.295 &&
           recent > before
       }
+      // AudioEngine.detectStructure's second drop path: breakdown -> dip -> snap-back, into the same latch.
+      if (dropStateMachine?.update(f.sub + f.bass, f.flux, f.delta)) dropUntil = now + 0.6
       f.drop = now < dropUntil
     }
 
@@ -531,13 +579,26 @@ export function runTrack(
     phraseDetector.update(now, f)
     moodEstimator.update(f)
 
+    // --- Character (AudioEngine.ts: emotion dimensions -> classifier, every frame the FFT advanced) ---
+    if (emotion && characterClassifier && advanced) {
+      emotion.update(f, delta)
+      characterClassifier.update(emotion.read(), now)
+    }
+
     // --- Song structure (AudioEngine.ts: same relative position — after mood, at the
     // `sectionTracker.update` call site — since `StructureAnalyzer.update()` only needs `f.beat`/
     // `f.beatIndex` (advanceGrid, above), the percussion triggers (above) and `f.spectrum` (this
     // frame's spectrum write, above); it doesn't read mood/character at all, so exact placement
     // relative to those two blocks doesn't affect its output, only the ordering convention. ---
     const structureRaw = structureAnalyzer.update(f, lowFreqDb, sampleRate)
-    if (structureRaw) structureRuns.push(structureRaw)
+    if (structureRaw) {
+      structureRuns.push(structureRaw)
+      traceBuilder?.noteBoundaries(i, structureRaw.boundaries)
+    }
+    // AudioEngine.ts: `this.sectionTracker.update(f, this.intel.updateStructure(f) ?? this.structureAnalyzer.update(...))`.
+    // No Essentia provider here (the commercial build's NullProvider), so `intel.updateStructure` is always null
+    // and the analyzer's read (a fresh batch, or the per-beat refresh) is what the tracker gets each frame.
+    sectionTracker.update(f, structureRaw)
 
     frames.push({
       t: now,
@@ -587,6 +648,7 @@ export function runTrack(
       harmonicDissonance: f.harmonicDissonance,
       structureBuildActive: structureAnalyzer.status.buildActive,
     })
+    traceBuilder?.push(i, f)
   }
 
   return {
@@ -598,6 +660,7 @@ export function runTrack(
     beats,
     salience: salienceLog,
     structureStatus: structureAnalyzer.status,
+    ...(traceBuilder ? { trace: traceBuilder.finish() } : {}),
   }
 }
 
