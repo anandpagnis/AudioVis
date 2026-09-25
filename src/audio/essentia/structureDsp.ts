@@ -44,6 +44,14 @@ export interface BeatCell {
   high: number
   /** Rolling hi-hat/snare onset rate, 0..1 (`structure/onsetDensity.ts`). */
   onsetDensity: number
+  /**
+   * OPTIONAL, ADDITIVE (`audio/events`, the live change scorer; nothing in this file reads it): the beat's mean RAW,
+   * un-normalised levels in dB, `[sub, bass, mid, presence, high, air, rms]` (`events/rawTap.ts`). Only differences
+   * between beats are meaningful (gain-invariant use); the absolute dB scale depends on the analyser.
+   */
+  raw?: number[]
+  /** OPTIONAL, ADDITIVE: the share (0..1) of this beat's frames that `f.silence` flagged. */
+  silent?: number
 }
 
 export const STRUCTURE_DSP = {

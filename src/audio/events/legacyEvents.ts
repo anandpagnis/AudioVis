@@ -15,7 +15,7 @@ import type { EventType, SectionEvent } from './types'
  *                   cadence simulation (`show/__tests__/cadenceSim.ts`): 0.85 left too many real changes below the
  *                   age threshold (hit rate 0.70), 0.95 answers 0.8-0.86 of them within a bar at a 12-bar median.
  *  - `songSection.boundaryChanged` (one frame, the latched analyser section): `change`, or `breakdown` when the new
- *    section is a breakdown, or `drop` when it commits the drop latch, or `buildStart` when it commits a build (a
+ *    section is a breakdown, or `drop` when it resolves a build (see below), or `buildStart` when it commits a build (a
  *    build is a riser beginning, not a scene change). A settle back to a plain section right after a drop is NOT a
  *    boundary (the drop already produced its event) and is skipped.
  *      strength   = a documented constant per kind (0.75 / 0.80 / 1.0 / 0.6): the analyser's per-boundary novelty is
@@ -25,10 +25,21 @@ import type { EventType, SectionEvent } from './types'
  *                   only honest evidence the tracker exposes.
  *      boundaryBeat = beat - beatsInSection: the analyser learns of a boundary ~4-6 beats late, and the tracker dates
  *                   the section from the aged boundary, so this recovers where it really began.
- *  - `f.drop` rising edge: `drop`, strength 1, confidence 0.70, or 0.90 when a build was running (or ended within
- *    {@link LEGACY.buildLookbackBeats} beats): S = 1.25 * 1 * conf = 0.875 alone, 1.125 after a build. Only the second
- *    clears the director's drop fast lane (S >= 1.0): a drop with no build behind it is treated as a candidate change,
- *    not a hard cut (false drops are the only dwell bypass in the legacy show).
+ *  - `f.drop` rising edge: `drop`, strength 1. On the 98 real tracks it fires ~250 times an hour (median track 150/h,
+ *    the densest 10% about once every 6 s) and only 6% of the edges have a build within 4 bars behind them (21% within
+ *    32 bars, 8% a breakdown within 4 bars): it is mostly a loud-transient detector, so its confidence is graded by the
+ *    evidence behind the edge: {@link LEGACY.dropBuildConfidence} 0.90 when a build was running or ended within
+ *    {@link LEGACY.buildLookbackBeats} (4 bars), {@link LEGACY.dropReleaseConfidence} 0.85 when a breakdown did (the
+ *    bass-return release), {@link LEGACY.dropMidConfidence} 0.60 when a build ended within
+ *    {@link LEGACY.buildMemoryBeats} (32 bars), else {@link LEGACY.dropConfidence} 0.40 (a LONE drop). S = 1.25 * conf:
+ *    1.125 / 1.06 clear the director's fast lane (S >= 1.0, a hard cut), 0.75 waits for ~7 bars, a lone drop's 0.50 for
+ *    ~13 bars, and the director's rarity weighting (`showPolicy.dropCredibility`) lowers a drop that is one of many.
+ *  - `songSection.boundaryChanged` with the section `drop` is NOT independent evidence: SectionTracker commits its
+ *    drop section from the very same `f.drop` edge (same frame, no hold), so on 571 of 1505 drop edges the "drop
+ *    boundary" was an echo that used to merge in as a corroboration (+0.1 confidence, the tracker's 0.6-0.9 confidence
+ *    and strength 1.0) and lifted a lone drop into the fast lane. An echo is now ignored ({@link LEGACY.echoCorroborates}
+ *    false); a drop boundary with no edge of its own (the tracker resolving a build at an analyser boundary) is a real
+ *    build-backed drop and takes the build confidence.
  *  - the rising edge of a confirmed build (`songSection.isSustain`, or the fast `f.buildUp`): `buildStart`, strength
  *    0.6, confidence 0.8. Weight 0 in the director: it arms and adds pressure, never cuts.
  *

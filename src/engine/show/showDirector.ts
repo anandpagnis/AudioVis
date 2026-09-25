@@ -43,6 +43,8 @@ export interface ShowAction {
   age: number
   /** Pressure 0..1. */
   pressure: number
+  /** Drop credibility 0..1 (rarity of the detector's own drops); 1 for anything that is not a drop. */
+  credibility: number
   /** `SectionEvent.id` acted on, -1 when the decision was not about an event. */
   eventId: number
   eventType: EventType | ''
@@ -148,6 +150,7 @@ function makeAction(): ShowAction {
     T: 0,
     age: 0,
     pressure: 0,
+    credibility: 1,
     eventId: -1,
     eventType: '',
     micro: null,
@@ -301,6 +304,7 @@ function emit(
   out.T = T
   out.age = age
   out.pressure = pressure
+  out.credibility = 1
   out.eventId = ev ? ev.id : -1
   out.eventType = ev ? ev.type : ''
   out.micro = null
