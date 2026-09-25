@@ -160,6 +160,9 @@ export const FRAG = /* glsl */ `
   vec3 pal(float t){ return toDisplay(paletteLit(t)); }
 
   mat2 rot(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
+  // exp(-x^2). Not pow(x, 2.0): pow of a negative base is undefined in GLSL,
+  // and ANGLE's exp2(2*log2(x)) makes it NaN.
+  float gauss(float x){ return exp(-x*x); }
   float hash11(float x){ return fract(sin(x * 127.1) * 43758.5453); }
   float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
   float vnoise(vec2 p){
@@ -280,7 +283,7 @@ export const FRAG = /* glsl */ `
       float detail = smoothstep(7.0, 14.0, IRIS_R / pxE);
       vec3 irisCol = mix(hot, deep, smoothstep(0.15, 1.0, r)) * mix(1.0, 0.35 + 1.1 * fib, detail);
       irisCol *= 1.0 - 0.7 * smoothstep(0.72, 1.0, r);                     // dark limbal ring
-      irisCol += hot * exp(-pow((r - 0.42) / 0.08, 2.0)) * (0.35 + 0.5 * uPunch);   // collarette
+      irisCol += hot * gauss((r - 0.42) / 0.08) * (0.35 + 0.5 * uPunch);            // collarette
       irisCol *= 0.7 + 0.45 * glowAmt;
 
       // Sclera: a dim ember, darker toward the corners.
@@ -292,7 +295,7 @@ export const FRAG = /* glsl */ `
       float pd = length(q / vec2(pw, PUPIL_H));
       float pa = pxE / pw;
       float pupil = 1.0 - smoothstep(1.0 - pa, 1.0 + pa, pd);
-      float prim = exp(-pow((pd - 1.15) / 0.3, 2.0)) * irisMask;
+      float prim = gauss((pd - 1.15) / 0.3) * irisMask;
 
       vec3 eye = mix(sclera, irisCol, irisMask);
       eye += hot * prim * (0.4 + 0.7 * glowAmt);
@@ -312,11 +315,10 @@ export const FRAG = /* glsl */ `
       // what spreads it softly, this only has to seed it.
       vec3 hotLin = mix(uGlow, vec3(1.0), 0.35);
       float open = smoothstep(0.1, 0.6, bl);
-      float hr = 0.010 + 0.010 * glowAmt;
-      float dh = max(dEye, 0.0);
-      float halo = exp(-dh * dh / (hr * hr)) * (1.0 - fill);
-      float core = fill * irisMask * (1.0 - pupil) * (1.0 - r);
-      eyeHDR = hotLin * open * (halo * (0.05 + 0.22 * glowAmt) + core * (0.2 + 1.3 * glowAmt));
+      float halo = gauss(max(dEye, 0.0) / (0.006 + 0.008 * glowAmt)) * (1.0 - fill);
+      float core = fill * irisMask * (1.0 - pupil) * max(1.0 - r, 0.0);
+      eyeHDR = open * (mix(uAccent, uGlow, 0.5) * halo * (0.01 + 0.06 * max(glowAmt - 0.3, 0.0))
+                     + hotLin * core * (0.2 + 1.3 * glowAmt));
     }
   #endif
 

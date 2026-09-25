@@ -5,7 +5,7 @@ import { lookOf } from '../audio/characterLook'
 import type { CharacterMood } from '../audio/characterTypes'
 import type { MoodState } from '../audio/types'
 import { animationSignals } from './AnimationDirector'
-import { getScene } from '../scenes'
+import { getScene, sceneOwnsFrame } from '../scenes'
 import { CAMERA_MODE_SHOT, cutCamera, pickCameraMode, shouldHardCut, type CameraShotTag } from './CameraDirector'
 import { computeValenceArousal } from './valenceArousal'
 import { advanceBandClocks } from './bandClocks'
@@ -100,7 +100,7 @@ const MIRROR_ONLY_EXCLUDED_SCENES = new Set(['djcam'])
  * no re-seat events (`onKick`/`beat`), only the swell, so its material flows
  * rather than jumping. Every other scene is unchanged.
  */
-const FLOW_POST_SCENES = new Set(['tribalentity', 'mothwings'])
+const FLOW_POST_SCENES = new Set(['tribalentity', 'mothwings', 'inkfluid'])
 
 /**
  * Two cascaded slews of `beatPulse` — a rounded hump that starts rising on the
@@ -388,10 +388,17 @@ export function PerformanceStateBridge() {
     // `LimitlessDirector` (-86.5) both run at this point, after this bridge
     // (-95), so the store desires still show for the single hard-cut-in frame
     // — invisible against the cut.
+    //
+    // A subject that owns the frame (`ownsFrame`: `tribalentity`, `mothwings`)
+    // gets the same rule, whether it is committed or still crossfading in — so
+    // the old composition's layers fade out as it arrives, and the next
+    // subject's layers only arrive once it has committed. PerformanceDirector
+    // composes nothing for it either; this also covers a switch AutoPilot made.
     const cutawayUp = p.djCam.active || p.limitless.active
-    p.layers.background = cutawayUp ? null : s.layerSceneIds.background
-    p.layers.accent = cutawayUp ? null : s.layerSceneIds.accent
-    p.layers.overlay = cutawayUp ? null : s.layerSceneIds.overlay
+    const layersHeld = cutawayUp || sceneOwnsFrame(s.sceneId) || sceneOwnsFrame(s.pendingSceneId)
+    p.layers.background = layersHeld ? null : s.layerSceneIds.background
+    p.layers.accent = layersHeld ? null : s.layerSceneIds.accent
+    p.layers.overlay = layersHeld ? null : s.layerSceneIds.overlay
     p.palette = s.paletteId
     p.mood = m.state
 

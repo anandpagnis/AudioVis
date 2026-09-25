@@ -135,7 +135,12 @@ describe('slotCostMs', () => {
     // convergence was tried and bought nothing (the orbit is chaotic nearly
     // everywhere). A `pixelBudget` is the remaining lever, at the price of
     // softer lines.
-    const FORCED_LIVE_OVER_BUDGET = new Set<string>(['tribalentity'])
+    //
+    // `mothwings` (2026-09-23) — FORCED LIVE by explicit request, same footing:
+    // measured 9.6 ms at 1080p native (see its SCENE_COST_MS row). Its 44
+    // iterations are the owner's tuned look, ported as provided; the tier
+    // ladder's resolution solve is what sheds its cost.
+    const FORCED_LIVE_OVER_BUDGET = new Set<string>(['tribalentity', 'mothwings'])
     const bar = sceneBudget(0) / 2
     const failures = SCENES.filter((scene) => !FORCED_LIVE_OVER_BUDGET.has(scene.id))
       .map((scene) => ({

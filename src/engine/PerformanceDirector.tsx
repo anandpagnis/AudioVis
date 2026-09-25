@@ -17,6 +17,7 @@ import {
   getScene,
   getScenesForMood,
   pickVariedScene,
+  sceneOwnsFrame,
   type SceneDef,
   type ScenePerformanceCost,
 } from '../scenes'
@@ -365,7 +366,13 @@ export function PerformanceDirector() {
       response.energy > 0.58 || response.dropPulse > 0 ? 'overlay' : 'accent'
     // See `layerPoolForRole`'s own doc for the bug this fixes — the fallback
     // to the full mood-fit pool now happens per role, not once globally.
-    const forRole = (role: LayerRole) => layerPoolForRole(role, layerFits, primaryId, compatibleIds)
+    //
+    // A subject that owns the frame (`ownsFrame`) takes no layers: every pool is
+    // empty, so the composition writes null into each slot and the store agrees
+    // with what renders (PerformanceStateBridge holds them null regardless).
+    const owned = sceneOwnsFrame(primaryId)
+    const forRole = (role: LayerRole) =>
+      owned ? [] : layerPoolForRole(role, layerFits, primaryId, compatibleIds)
 
     // Background recomposes on SECTION boundaries only, never on the phrase
     // fallback: it is the ground the rest of the composition sits on, and a

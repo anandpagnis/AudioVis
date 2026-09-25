@@ -168,6 +168,17 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   fridaylines: [0.98, 0.98, 0.98, 0.98, 0.98],
   gyroid: [0.7, 0.7, 0.7, 0.7, 0.54],
   hold: [0.35, 0.35, 0.35, 0.33, 0.33],
+  // `inkfluid` — NOT part of the F236 /bench sweep. Measured standalone
+  // (2026-09-25) through the scene's own solver and render code on a real
+  // three.js renderer at 1920x1080: one frame = the five solver passes (a
+  // 364x205 lattice, a 1280x720 ink grid) plus the render pass at 1080p,
+  // timed as the difference between 80 and 40 back-to-back frames, each run
+  // synced by a 1x1 readPixels from the render target. 1.5-2.4 ms across the
+  // three modes over five rounds; priced at the worst. The solver grids are
+  // fixed-size, so only the render pass scales with the canvas (and only it
+  // sheds cost down the tiers). Held flat across tiers: not measured there.
+  // ACTION: /bench it in-app and replace this row.
+  inkfluid: [2.5, 2.5, 2.5, 2.5, 2.5],
   javazone: [1.43, 1.43, 1.43, 1.43, 1.43],
   kifs: [4.8, 4.8, 4.8, 4.8, 4.8],
   lattesfold: [1.1, 1.1, 1.1, 1.1, 1.04],
@@ -175,6 +186,20 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   malachite: [0.38, 0.34, 0.34, 0.34, 0.34],
   matrix: [0.87, 0.87, 0.87, 0.86, 0.86],
   maze: [0.15, 0.15, 0.14, 0.14, 0.14],
+  // `mothwings` — NOT part of the F236 /bench sweep. Measured standalone
+  // (2026-09-23), same method as `tribalentity`: the scene FRAG compiled behind
+  // the real prelude + palette include with three's WebGL2 prefixes, drawn
+  // fullscreen at 1920x1080 native, 30 warm-up draws, each timed draw synced by
+  // a 1x1 readPixels (gl.finish is a no-op under ANGLE/Metal), sync baseline
+  // subtracted: 8.3-9.6 ms net across three rounds at both morph poses and at
+  // 0.7x zoom. Priced at the worst reading. The machine was loaded during that
+  // run — `tribalentity` read 7.4-8.0 ms in the same rounds against its 7.2
+  // row — so this likely sits a little high. 44 atan+log iterations with no
+  // early-out that fires on a landscape canvas; no `pixelBudget`, so it scales
+  // with canvas pixels (~4.6 ms/MP). Held flat across tiers: the lower tiers
+  // were not measured.
+  // ACTION: /bench it in-app and replace this row.
+  mothwings: [9.6, 9.6, 9.6, 9.6, 9.6],
   nebula: [0.58, 0.56, 0.54, 0.52, 0.39],
   plasma: [4.57, 4.49, 3.67, 3.15, 2.66],
   pointcloud: [4.42, 3.68, 3.12, 2.77, 2.4],
@@ -190,8 +215,10 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   // 1920x1080 native, each draw synced by a 1x1 readPixels (gl.finish is a
   // no-op under ANGLE/Metal): 6.4-7.2 ms net across three runs and three zoom
   // levels (the 84-iteration build: 17.1 ms on the same rig and run). Priced at
-  // the worst reading. It declares no `pixelBudget`, so this scales with
-  // canvas pixels (~3.4 ms/MP) — a 4K canvas costs ~4x. Held flat across tiers
+  // the worst reading. The 2026-09-23 reactive/eyes rework measured +0.0-0.3 ms
+  // against it, interleaved A/B on the same rig (the eye shading is gated to
+  // the ~10% of the frame near the eyes). It declares no `pixelBudget`, so this
+  // scales with canvas pixels (~3.4 ms/MP) — a 4K canvas costs ~4x. Held flat across tiers
   // on purpose — the lower tiers were not measured, and an unmeasured tier
   // should be priced pessimistically, not guessed down.
   // ACTION: /bench it in-app and replace this row.

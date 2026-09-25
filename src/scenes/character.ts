@@ -148,12 +148,20 @@ export const SCENE_CHARACTER: Record<string, SceneCharacter> = {
     'Horned moth-winged fractal entity watching through glowing slit eyes; dark, eerie, ritual, high tension. Time-driven, not beat-locked.',
   ),
   mothwings: sc(
-    0.62,
-    0.45,
+    0.6,
+    0.4,
     0.3,
-    0.45,
     0.3,
+    0.24,
     'Symmetric fractal moth whose wings breathe between two poses while light travels out along its veins; luminous, flowing, hypnotic, low tension. Flow-driven (mids pace the wingbeat), not beat-locked.',
+  ),
+  inkfluid: sc(
+    0.5,
+    0.4,
+    0.36,
+    0.3,
+    0.24,
+    'Ink poured into dark water and run as a real fluid: rising plumes, curling filaments, vortex pairs; organic, restless, softly turbulent. Kicks surge the jets, but the flow is its own clock, not beat-locked.',
   ),
   snowflake: sc(
     0.6,

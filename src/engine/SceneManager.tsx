@@ -190,6 +190,9 @@ const BOOT_PREWARM_IDS: readonly string[] = [
   // 44 unrolled atan+log iterations: a first compile heavy enough to stall a
   // switch if it landed mid-show.
   'mothwings',
+  // Five programs (four solver passes plus the render) and the tank's
+  // half-float targets; its prewarm compiles and allocates all of them.
+  'inkfluid',
 ]
 
 /**

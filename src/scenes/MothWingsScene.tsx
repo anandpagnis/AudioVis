@@ -24,8 +24,8 @@ import { bipolar, drastic } from './contract'
  * line shaping, the travelling glow, the vignette and its early-out, and both
  * bottom lobes. Only the drivers changed:
  *
- *   - `iTime` became three accumulated phases (morph, glow travel, and nothing
- *     else), each advanced by a slewed rate. A phase that is INTEGRATED from a
+ *   - `iTime` became two accumulated phases (the wingbeat and the glow's
+ *     travel), each advanced by a slewed rate. A phase that is INTEGRATED from a
  *     smoothed rate cannot jump — the music changes how fast the moth moves,
  *     never where it is — which is what keeps every reaction here flowing
  *     rather than jittering. No audio envelope reaches the shader raw.
@@ -179,9 +179,38 @@ const CAM_ZOOM_MAX = 1.6
 /** Largest tilt the camera's sideways angle may apply, in radians. */
 const MAX_SWAY = 0.2
 
+/**
+ * Longest step the two clocks take in one frame. The engine already caps a
+ * frame at 0.1 s; after a stall (a tab returning, a GC pause) that would still
+ * skip the wings a quarter-beat ahead in one frame. Capped to the same 1/30 s
+ * the slews and spring use, a stall reads as a pause rather than a skip.
+ */
+const MAX_CLOCK_STEP = 1 / 30
+
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x))
 
-interface MothWingsState {
+/** The audio one frame reads. `LilimAudioState` satisfies it as-is. */
+export interface MothWingsAudio {
+  energy: number
+  mids: number
+  highs: number
+  kick: number
+}
+
+/** The dials one frame reads. `ResolvedSceneParams` satisfies it as-is. */
+export interface MothWingsDials {
+  speed: number
+  fill: number
+}
+
+/** The director camera's position. A `THREE.Vector3` satisfies it as-is. */
+export interface MothWingsCamera {
+  x: number
+  y: number
+  z: number
+}
+
+export interface MothWingsState {
   /** Wingbeat phase in cycles, wrapped to 0..1 so float precision never erodes. */
   morph: number
   /** Travelling-glow phase in radians, wrapped to 0..TAU. */
@@ -198,15 +227,15 @@ interface MothWingsState {
   /** Spring carrying the kick breath, so a hit swells in rather than snapping. */
   breath: SpringState
   /** Eased camera zoom and tilt, so mode switches and handheld wobble glide. */
-  zoom: number
+  camZoom: number
   roll: number
+  /** Outputs: final zoom (camera x fill x breath) and line brightness. */
+  zoom: number
+  bright: number
 }
 
-export const MothWingsScene = createShaderScene<MothWingsState>({
-  id: 'mothwings',
-  frag: FRAG,
-  include: PALETTE_RAMP_GLSL,
-  state: () => ({
+export function createMothWingsState(): MothWingsState {
+  return {
     morph: 0,
     travel: 0,
     energy: 0,
@@ -214,9 +243,64 @@ export const MothWingsScene = createShaderScene<MothWingsState>({
     highs: 0,
     surge: 0,
     breath: spring(0),
-    zoom: 1,
+    camZoom: 1,
     roll: 0,
-  }),
+    zoom: 1,
+    bright: BRIGHT_FLOOR,
+  }
+}
+
+/**
+ * Advance one frame. Pure over its inputs (no engine, no GL), so the "flows,
+ * never jitters" property is testable directly — see MothWingsScene.test.ts.
+ */
+export function stepMothWings(
+  st: MothWingsState,
+  s: MothWingsAudio,
+  P: MothWingsDials,
+  cam: MothWingsCamera,
+  dt: number,
+): void {
+  const rate = drastic(P.speed)
+  st.energy = slew(st.energy, s.energy, dt, 2.5, 1.2)
+  st.mids = slew(st.mids, s.mids, dt, 1.5, 0.8)
+  st.highs = slew(st.highs, s.highs, dt, 3, 1.5)
+  st.surge = slew(st.surge, s.kick, dt, 18, 3.5)
+  springStep(st.breath, s.kick, dt, BREATH_STIFFNESS, BREATH_DAMPING)
+
+  // Integrated, never set: the music changes how fast the moth moves, not
+  // where it is, so nothing here can jump.
+  const step = isFinite(dt) && dt > 0 ? Math.min(dt, MAX_CLOCK_STEP) : 0
+  st.morph += step * rate * MORPH_SPD * (MORPH_FLOOR + MORPH_MIDS * st.mids)
+  st.morph -= Math.floor(st.morph)
+  st.travel +=
+    step * rate * (TRAVEL_SPD * (TRAVEL_FLOOR + TRAVEL_HATS * st.highs) + SURGE_SPD * st.surge)
+  st.travel %= TAU
+
+  // Camera director -> zoom and sway. The anchor target is the origin.
+  const dist = Math.max(Math.hypot(cam.x, cam.y, cam.z), 0.01)
+  const camZoom = clamp(
+    Math.pow(ANCHOR_DISTANCE / dist, CAM_ZOOM_POWER),
+    CAM_ZOOM_MIN,
+    CAM_ZOOM_MAX,
+  )
+  st.camZoom = slew(st.camZoom, camZoom * (1 + bipolar(P.fill, 0.3)), dt, 4, 4)
+  // The director aims with lookAt(), so the camera never rolls; its sideways
+  // angle around the anchor is what orbit/cinematic/handheld actually change.
+  // sin(yaw) keeps a full orbit a gentle rock rather than a spin.
+  const side = Math.hypot(cam.x, cam.z)
+  const sway = side > 1e-6 ? (cam.x / side) * MAX_SWAY : 0
+  st.roll = slew(st.roll, sway, dt, 3, 3)
+
+  st.zoom = st.camZoom * (1 + BREATH_ZOOM * Math.max(0, st.breath.value))
+  st.bright = BRIGHT_FLOOR + BRIGHT_ENERGY * st.energy
+}
+
+export const MothWingsScene = createShaderScene<MothWingsState>({
+  id: 'mothwings',
+  frag: FRAG,
+  include: PALETTE_RAMP_GLSL,
+  state: createMothWingsState,
   uniforms: () => ({
     uMorph: { value: 0 },
     uTravel: { value: 0 },
@@ -225,36 +309,11 @@ export const MothWingsScene = createShaderScene<MothWingsState>({
     uBright: { value: BRIGHT_FLOOR },
   }),
   update({ u, s, P, st, dt, ctx }) {
-    const rate = drastic(P.speed)
-    st.energy = slew(st.energy, s.energy, dt, 2.5, 1.2)
-    st.mids = slew(st.mids, s.mids, dt, 1.5, 0.8)
-    st.highs = slew(st.highs, s.highs, dt, 3, 1.5)
-    st.surge = slew(st.surge, s.kick, dt, 18, 3.5)
-    springStep(st.breath, s.kick, dt, BREATH_STIFFNESS, BREATH_DAMPING)
-
-    // Integrated, never set: the music changes how fast the moth moves, not
-    // where it is, so nothing here can jump.
-    st.morph += dt * rate * MORPH_SPD * (MORPH_FLOOR + MORPH_MIDS * st.mids)
-    st.morph -= Math.floor(st.morph)
-    st.travel += dt * rate * (TRAVEL_SPD * (TRAVEL_FLOOR + TRAVEL_HATS * st.highs) + SURGE_SPD * st.surge)
-    st.travel %= TAU
-
-    // Camera director -> zoom and sway. The anchor target is the origin.
-    const { x, z } = ctx.camera.position
-    const dist = Math.max(ctx.camera.position.length(), 0.01)
-    const camZoom = clamp(Math.pow(ANCHOR_DISTANCE / dist, CAM_ZOOM_POWER), CAM_ZOOM_MIN, CAM_ZOOM_MAX)
-    st.zoom = slew(st.zoom, camZoom * (1 + bipolar(P.fill, 0.3)), dt, 4, 4)
-    // The director aims with lookAt(), so the camera never rolls; its sideways
-    // angle around the anchor is what orbit/cinematic/handheld actually change.
-    // sin(yaw) keeps a full orbit a gentle rock rather than a spin.
-    const side = Math.hypot(x, z)
-    const sway = side > 1e-6 ? (x / side) * MAX_SWAY : 0
-    st.roll = slew(st.roll, sway, dt, 3, 3)
-
+    stepMothWings(st, s, P, ctx.camera.position, dt)
     u.uMorph.value = st.morph
     u.uTravel.value = st.travel
-    u.uZoom.value = st.zoom * (1 + BREATH_ZOOM * Math.max(0, st.breath.value))
+    u.uZoom.value = st.zoom
     u.uRoll.value = st.roll
-    u.uBright.value = BRIGHT_FLOOR + BRIGHT_ENERGY * st.energy
+    u.uBright.value = st.bright
   },
 })

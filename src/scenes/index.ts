@@ -49,6 +49,7 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   wingfold: () => import('./WingfoldJuliaScene').then((m) => ({ default: m.WingfoldJuliaScene })),
   tribalentity: () => import('./TribalEntityScene').then((m) => ({ default: m.TribalEntityScene })),
   mothwings: () => import('./MothWingsScene').then((m) => ({ default: m.MothWingsScene })),
+  inkfluid: () => import('./InkFluidScene').then((m) => ({ default: m.InkFluidScene })),
   crystalfold: () => import('./CrystalFoldScene').then((m) => ({ default: m.CrystalFoldScene })),
   shock: () => import('./ShockRingScene').then((m) => ({ default: m.ShockRingScene })),
   flare: () => import('./SectionFlareScene').then((m) => ({ default: m.SectionFlareScene })),
@@ -169,6 +170,7 @@ const MazeFlightScene = lazyScene('maze')
 const WingfoldJuliaScene = lazyScene('wingfold')
 const TribalEntityScene = lazyScene('tribalentity')
 const MothWingsScene = lazyScene('mothwings')
+const InkFluidScene = lazyScene('inkfluid')
 const CrystalFoldScene = lazyScene('crystalfold')
 const ShockRingScene = lazyScene('shock')
 const SectionFlareScene = lazyScene('flare')
@@ -284,6 +286,21 @@ export interface SceneMetadata {
   intensity: SceneIntensity
   compatibleWith: string[]
   performanceCost: ScenePerformanceCost
+
+  /**
+   * A primary that composites ALONE: while it is the subject (committed or
+   * incoming), no background, accent or overlay layer is mounted with it —
+   * the same tenancy rule a DJ Cam / Limitless cutaway gets.
+   *
+   * Not the same thing as `compatibleWith: []`, which only says "no declared
+   * partners": the layer director reads an empty list as no preference and
+   * falls back to every mood-fitting layer, so it never kept a layer off
+   * anything. This is for a subject whose picture depends on its own darks —
+   * the primary slot composites additively, so a layer beneath shows straight
+   * through them, and one above lands on line work tuned to be the only thing
+   * moving.
+   */
+  ownsFrame?: boolean
 
   /**
    * Is this scene's cost per-pixel? **Defaults to true.**
@@ -1036,9 +1053,10 @@ export const SCENES: SceneDef[] = [
       // flap for ambient/mellow, heavy candle flicker and a demon-horned pose
       // for building/aggressive.
       moods: ['ambient', 'mellow', 'building', 'aggressive'],
-      // mids hold/release the flap, kick punches the zoom and flares the eyes,
-      // snare shivers the fractal, hats pace the travelling glow, energy sets
-      // line brightness and the clock. See the scene file's header table.
+      // mids hold/release the flap, bass dilates the eyes' pupils and thickens
+      // the smoke, hats pace the travelling glow, energy sets line brightness,
+      // eye glow and the clock; kick and snare (not bands) arrive as eased
+      // swells. See the scene file's header table.
       bands: ['bass', 'mid', 'high', 'energy'],
       intensity: 'medium',
       // 24 atan+log orbit iterations per pixel (cut from 84): measured 7.2 ms
@@ -1046,8 +1064,11 @@ export const SCENES: SceneDef[] = [
       // solo bar — live anyway by explicit request; see its SCENE_COST_MS row
       // and the FORCED_LIVE_OVER_BUDGET entry in slotBudget.test.ts.
       performanceCost: 'high',
-      // Owns the frame, and too expensive to share it.
+      // Owns the frame, and too expensive to share it. `ownsFrame` is what
+      // actually enforces that — an empty `compatibleWith` never did: a layer
+      // beneath showed through the entity's dark body and eye sockets.
       compatibleWith: [],
+      ownsFrame: true,
       moodFit: { ambient: 0.8, mellow: 0.72, building: 0.8, aggressive: 0.78 },
       // A 2D fractal, but NOT inert: the scene reads the director's camera —
       // distance from this anchor becomes zoom (push = slow zoom in, pull =
@@ -1101,8 +1122,11 @@ export const SCENES: SceneDef[] = [
       // request; see its SCENE_COST_MS row and the FORCED_LIVE_OVER_BUDGET
       // entry in slotBudget.test.ts.
       performanceCost: 'high',
-      // Owns the frame, and too expensive to share it.
+      // Owns the frame, and too expensive to share it. `ownsFrame` is what
+      // actually enforces that — an empty `compatibleWith` never did: a layer
+      // beneath showed through the wings' black gaps.
       compatibleWith: [],
+      ownsFrame: true,
       moodFit: { ambient: 0.78, mellow: 0.84, groove: 0.72, building: 0.68 },
       // A 2D fractal that reads the director's camera, exactly as
       // `tribalentity` does: distance from this anchor becomes zoom, sideways
@@ -1110,6 +1134,59 @@ export const SCENES: SceneDef[] = [
       // ANCHOR_DISTANCE in MothWingsScene.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['cinematic', 'spiral', 'push', 'pull', 'hover', 'handheld', 'orbit', 'locked'],
+    },
+  },
+  {
+    id: 'inkfluid',
+    name: 'Ink Fluid',
+    component: InkFluidScene,
+    metadata: {
+      // CC0-1.0, sourced from glslop ("Stable Fluids", shader rys00f2f), whose
+      // header states everything on it is public domain; the ISF CREDIT field
+      // itself reads "CC0". Same basis as `malachite` / `kifs`.
+      license: 'original',
+      provenance: {
+        source: "glslop 'Stable Fluids' (shader rys00f2f), a six-pass ISF Stam stable-fluids solver",
+        author: 'glslop contributor (uncredited; the ISF CREDIT field reads "CC0")',
+        spdx: 'CC0-1.0',
+      },
+      // Modes are the render styles (how the tank is photographed); the dials
+      // shape the tank itself. None of them can stop the water — see the
+      // scene file's "Always fluid" note.
+      contract: {
+        version: 1,
+        modes: ['ink', 'neon', 'contour'],
+        params: { speed: 0.5, shape: 0, density: 0.2, complexity: 0.5 },
+        paramLabels: { '*': { shape: 'layout', density: 'sources', complexity: 'curl' } },
+      },
+      // A subject on its own, or ink poured over another subject as an accent.
+      // Its empty water is true black, so under the slot's default additive
+      // blend it adds plumes and hides nothing.
+      roles: ['primary', 'accent'],
+      // Slow ink drifting through dark water suits a quiet passage best; the
+      // kick surges and the energy-driven clock carry it into a groove and a
+      // build. It has no hard-hitting move for peak/aggressive.
+      moods: ['ambient', 'mellow', 'groove', 'building'],
+      // kick surges the emitters, mids drive the stirrer, hats the curl,
+      // energy the simulation clock. All slewed; see the scene file.
+      bands: ['bass', 'mid', 'high', 'energy'],
+      intensity: 'medium',
+      // Four solver passes on a 205-row lattice, one ink pass on a 720-row
+      // grid, and the render pass at display resolution. See its
+      // SCENE_COST_MS row.
+      performanceCost: 'medium',
+      // The subjects its ink layers over well: dark ground and open space for
+      // the plumes. Without partners it would almost never be picked as an
+      // accent — the layer director prefers a subject's declared partners and
+      // only falls back to the whole pool when there are none. Deliberately
+      // not the busy full-frame subjects, nor the ones that own the frame.
+      compatibleWith: ['wireframe', 'chrome', 'dissolve', 'pointcloud', 'snowflake', 'butterfly'],
+      moodFit: { ambient: 0.8, mellow: 0.82, groove: 0.7, building: 0.62 },
+      // Distance from this anchor becomes a gentle zoom INTO the tank (push in,
+      // never out past the glass). The anchor's `distance` must match
+      // ANCHOR_DISTANCE in InkFluidScene.
+      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
+      cameraModes: ['hover', 'push', 'pull', 'locked', 'cinematic', 'spiral'],
     },
   },
   {
@@ -3457,6 +3534,12 @@ export function isSteerable(id: string): boolean {
 export function canHoldRole(id: string, role: SceneRole): boolean {
   const def = SCENES.find((s) => s.id === id)
   return def !== undefined && def.metadata.roles.includes(role)
+}
+
+/** Does this subject composite alone? See {@link SceneMetadata.ownsFrame}. Null-safe for a pending id. */
+export function sceneOwnsFrame(id: string | null | undefined): boolean {
+  if (!id) return false
+  return SCENES.find((s) => s.id === id)?.metadata.ownsFrame === true
 }
 
 /**

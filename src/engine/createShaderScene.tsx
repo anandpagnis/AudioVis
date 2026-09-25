@@ -105,6 +105,13 @@ export interface ShaderSceneContext<S = void> {
   st: S
   /** The full engine context, for anything the above does not cover. */
   ctx: SceneFrame
+  /**
+   * The renderer, for a scene that runs its own offscreen passes before the
+   * factory draws its fragment shader — a multi-pass simulation (`inkfluid`'s
+   * fluid solver) that {@link ShaderSceneSpec.sim}'s single ping-pong buffer
+   * cannot express. Restore the previous render target when done.
+   */
+  gl: THREE.WebGLRenderer
 }
 
 export interface ShaderSceneSpec<S = void> {
@@ -433,6 +440,7 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
         t: elapsed.current,
         st: sceneState,
         ctx,
+        gl,
       })
       if (shouldRender !== false) {
         const prevTarget = gl.getRenderTarget()
@@ -453,6 +461,7 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
       t: elapsed.current,
       st: sceneState,
       ctx,
+      gl,
     })
     return true
   }
