@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { audioEngine } from '../AudioEngine'
+import { beatLeadSec } from '../beatLead'
 import { barPosition } from '../structure/downbeat'
 
 /**
@@ -77,9 +78,16 @@ function simulate(o: SimOpts): number {
 describe('AudioEngine.advanceGrid: bar position from the downbeat estimate', () => {
   beforeEach(() => {
     audioEngine.stop()
+    // This suite labels each beat's true bar position from wall-clock grid lines, which assumes the beat fires ON the
+    // line. The published-beat lead (beatLead.ts) fires it ~40 ms EARLY, so the labels would be off by one beat. The
+    // lead is orthogonal to bar phase (audioEngineBeatLead.test.ts covers it): pin it to 0 here.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(audioEngine as any).beatLeadSec = 0
   })
   afterEach(() => {
     audioEngine.stop()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(audioEngine as any).beatLeadSec = beatLeadSec()
   })
 
   it('a clear 1-heavy kick pattern is adopted: beatInBar / bar / measure follow the estimated downbeat', () => {

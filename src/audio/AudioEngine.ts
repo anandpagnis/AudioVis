@@ -1,5 +1,6 @@
 import { BpmEstimator } from './BpmEstimator'
 import { tempoOctaves } from './tempoSpeed'
+import { beatLeadSec } from './beatLead'
 import { CharacterClassifier } from './CharacterClassifier'
 import { LookVizTracker, characterLookEnabled, lookState } from './characterLook'
 import { ChromaKeyEstimator } from './chromaKey'
@@ -353,6 +354,13 @@ class AudioEngine {
   private lastFrameTime = 0
   private lastGridIndex = -1
   private beatHoldUntil = -1
+  /** How far ahead of the analysis clock the published beat grid runs (s): the built-in lead plus `?beatoffset`.
+   *  See `beatLead.ts` for why and for the measurements behind it. 0 = the grid exactly as the estimator has it. */
+  private beatLeadSec = beatLeadSec()
+  /** Newest beat crossing (`now`), and the strongest `f.bass` seen since the previous one: with a lead the grid
+   *  crosses BEFORE the kick reaches the analysed bands, so `beatStrength` reads the previous beat's peak instead. */
+  private lastBeatAt = -1
+  private beatPeakBass = 0
   /**
    * Probe state for {@link fftAdvanced}: last frame's time-domain samples at
    * three indices. When all three are unchanged the `AnalyserNode` has not
@@ -874,6 +882,8 @@ class AudioEngine {
     this.lastFrameTime = 0
     this.lastGridIndex = -1
     this.beatHoldUntil = -1
+    this.lastBeatAt = -1
+    this.beatPeakBass = 0
     // Force the next frame to count as "FFT advanced" — a fresh source's first
     // frame must never be mistaken for a duplicate of the previous source's last.
     this.waveProbe = makeWaveProbe()
@@ -1203,9 +1213,14 @@ class AudioEngine {
     const targetOctaves = tempoOctaves(f.bpm, f.confidence)
     const k = f.delta > 0 && Number.isFinite(f.delta) ? 1 - Math.exp(-f.delta / TEMPO_OCTAVES_TAU_SEC) : 0
     f.tempoOctaves += (targetOctaves - f.tempoOctaves) * k
-    const idx = Math.floor((now - est.phase) / est.period)
-    f.beatProgress = (now - est.phase) / est.period - idx
-    f.nextBeatTime = est.phase + (idx + 1) * est.period
+    // The grid is read `lead` seconds AHEAD of the analysis clock (see beatLead.ts): it is phase-locked to onset
+    // DETECTION times, which trail the kick by the FFT window + threshold latency, so left as is every scene's
+    // beat lands ~40 ms late. `lead` 0 makes `gridNow === now` exactly (and the `- lead` below a no-op).
+    const lead = this.beatLeadSec
+    const gridNow = now + lead
+    const idx = Math.floor((gridNow - est.phase) / est.period)
+    f.beatProgress = (gridNow - est.phase) / est.period - idx
+    f.nextBeatTime = est.phase + (idx + 1) * est.period - lead
     f.beat = false
     if (idx !== this.lastGridIndex) {
       if (this.lastGridIndex !== -1 && idx > this.lastGridIndex) {
@@ -1229,10 +1244,30 @@ class AudioEngine {
         f.beatInBar = bp.beatInBar
         f.bar = bp.bar
         f.measure = bp.measure
-        f.beatStrength = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+        // With a lead the crossing precedes the kick's arrival in the analysed bands, so `f.bass` here is still
+        // the DECAYED previous hit and would read the pulse weak: use the previous beat's peak as the prediction
+        // (a steady kick repeats), and let the running max below raise it once the real hit shows up.
+        const bassForStrength = lead > 0 ? Math.max(f.bass, this.beatPeakBass * 0.9) : f.bass
+        f.beatStrength = Math.min(1, 0.25 + bassForStrength * 0.9) * (0.35 + 0.65 * f.confidence)
         this.beatHoldUntil = now + 0.05
+        this.lastBeatAt = now
+        this.beatPeakBass = 0
       }
-      this.lastGridIndex = idx
+      // A step BACK of exactly one grid index is a phase slew (the PLL / `BpmEstimator.acquirePhase` moved the grid
+      // LATER across this frame's boundary): keep the higher index, or the same crossing is counted a second time
+      // when the grid catches up (a ~30 ms double beat that shifts every `beatInBar` for good). A larger step back
+      // is a genuine re-anchor (new source, external clock, big tempo jump): resync without firing.
+      if (idx > this.lastGridIndex || idx < this.lastGridIndex - 1 || this.lastGridIndex === -1) {
+        this.lastGridIndex = idx
+      }
+    }
+    if (lead > 0) {
+      if (f.bass > this.beatPeakBass) this.beatPeakBass = f.bass
+      // Catch the real attack: for ~120 ms after a crossing the strength may only be RAISED to what the bass now says.
+      if (this.lastBeatAt >= 0 && now - this.lastBeatAt < 0.12) {
+        const live = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+        if (live > f.beatStrength) f.beatStrength = live
+      }
     }
 
     // --- Downbeat evidence. One salience per beat (kick hit + low-band rise within +-half a beat of the

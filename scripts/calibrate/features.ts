@@ -26,6 +26,7 @@
  */
 import { BandNormalizer, ProgramLevel, type SilenceConfig } from '../../src/audio/bandNormalizer'
 import { BpmEstimator } from '../../src/audio/BpmEstimator'
+import { beatLeadSec } from '../../src/audio/beatLead'
 import { ChromaKeyEstimator } from '../../src/audio/chromaKey'
 import { HarmonicTensionEstimator } from '../../src/audio/harmonicTension'
 import { MoodEstimator } from '../../src/audio/MoodEstimator'
@@ -73,6 +74,13 @@ export interface StepHooks {
   skipStructure?: boolean
   /** Override AudioEngine's DOWNBEAT_MIN_GRID_CONF for a tuning experiment (default: the engine's value). */
   downbeatMinGridConf?: number
+  /** Called at every broadband onset handed to the beat grid (`bpmEstimator.addOnset`), with the harness frame
+   *  time (window START; add `FFT_SIZE / sampleRate` for the live `ctx.currentTime` convention). For
+   *  `beat-latency.calib.ts`, which measures how late the detector fires relative to the true onset. */
+  onOnset?: (t: number, strength: number) => void
+  /** Override the published-beat lead in seconds (default: `beatLeadSec()`, the engine's built-in lead). 0 = the
+   *  grid exactly as `BpmEstimator` has it. For `beat-latency.calib.ts`. */
+  beatLeadSec?: number
 }
 
 /** One beat crossing, for `downbeat-sanity.calib.ts` (the bar-phase estimator's per-beat trace). */
@@ -218,6 +226,9 @@ export function runTrack(
   const beats: BeatSample[] = []
   const salienceLog: Array<{ beatIndex: number; salience: number; usable: boolean }> = []
   const downbeatMinGridConf = hooks.downbeatMinGridConf ?? DOWNBEAT_MIN_GRID_CONF
+  const lead = hooks.beatLeadSec ?? beatLeadSec()
+  let lastBeatAt = -1
+  let beatPeakBass = 0
 
   const freqDb = new Float32Array(FFT_SIZE / 2)
   const prevMag = new Float32Array(FFT_SIZE / 2)
@@ -376,6 +387,7 @@ export function runTrack(
           lastOnsetTime = now
           const strength = Math.min(1, (spectral.bassFlux - mean) / (std * 4 + 1e-6))
           bpmEstimator.addOnset(now, strength)
+          hooks.onOnset?.(now, strength)
         }
       }
     }
@@ -392,9 +404,11 @@ export function runTrack(
     f.beatGridAccuracy = bpmEstimator.hitScore
     {
       const est = bpmEstimator
-      const idx = Math.floor((now - est.phase) / est.period)
-      f.beatProgress = (now - est.phase) / est.period - idx
-      f.nextBeatTime = est.phase + (idx + 1) * est.period
+      // AudioEngine.advanceGrid: the grid is read `lead` ahead of the analysis clock (src/audio/beatLead.ts).
+      const gridNow = now + lead
+      const idx = Math.floor((gridNow - est.phase) / est.period)
+      f.beatProgress = (gridNow - est.phase) / est.period - idx
+      f.nextBeatTime = est.phase + (idx + 1) * est.period - lead
       f.beat = false
       if (idx !== lastGridIndex) {
         if (lastGridIndex !== -1 && idx > lastGridIndex) {
@@ -406,9 +420,20 @@ export function runTrack(
           f.beatInBar = bp.beatInBar
           f.bar = bp.bar
           f.measure = bp.measure
-          f.beatStrength = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+          const bassForStrength = lead > 0 ? Math.max(f.bass, beatPeakBass * 0.9) : f.bass
+          f.beatStrength = Math.min(1, 0.25 + bassForStrength * 0.9) * (0.35 + 0.65 * f.confidence)
+          lastBeatAt = now
+          beatPeakBass = 0
         }
-        lastGridIndex = idx
+        // AudioEngine.advanceGrid: hold the index on a one-step backward slew (no double count), resync on a larger one.
+        if (idx > lastGridIndex || idx < lastGridIndex - 1 || lastGridIndex === -1) lastGridIndex = idx
+      }
+      if (lead > 0) {
+        if (f.bass > beatPeakBass) beatPeakBass = f.bass
+        if (lastBeatAt >= 0 && now - lastBeatAt < 0.12) {
+          const live = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+          if (live > f.beatStrength) f.beatStrength = live
+        }
       }
       // Downbeat evidence (AudioEngine.ts advanceGrid, same block, same inputs).
       const kick = f.percussion.kick
