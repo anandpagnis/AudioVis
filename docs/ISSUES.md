@@ -12953,3 +12953,95 @@ per-frame canvas heavy enough to distort the reading.
       live** (no browser/GPU): every threshold, coupling value and ARM constant is a
       reasoned starting point. Per-piece constants needing a by-ear pass are listed in
       each commit message.
+
+- [x] **F264 · Tempo multiplier reduced; cheaper wipe transitions; a constantly
+      armed scene; the off-beat feel fixed and measured; mirrors stopped
+      flipping** — *2026-09-25, user report while going to sleep ("the multiplier is
+      too much ... the new transitions are too graphically taxing ... the armed scene
+      didn't work even once ... the visuals seem off beat ... mirrors are turning on
+      and off randomly ... auto plan and execute")*
+      `src/audio/{tempoSpeed,BpmEstimator,beatLead}.ts`, `src/audio/AudioEngine.ts`,
+      `src/engine/{armedChange,armedPick,armedDirector,mirrorGate}.ts`,
+      `src/engine/{WipeCompositorPass,TransitionCapture,transitionWipe,transitions,PostFXChain}.ts*`,
+      `src/engine/{AutoPilot,PerformanceDirector,PerformanceStateBridge,SceneManager}.tsx`
+
+      **Multiplier reduced.** Per-mood `tempoCoupling` scaled by 0.75 (driving and
+      aggressive 1.12, groove 1.0 ... serene 0.22; neutral and no-look default 0.68);
+      tempo rate clamped to [0.6, 1.7]; the global speed folded into a shader scene's
+      dial clamped to [0.6, 1.5] (the raw user x mood x tempo product spans
+      0.15..2.2). Scenes marked `tempoLocked` (beats, javazone, travelling) now get NO
+      fold at all: extra speed on beat-locked motion pulls it off the beat.
+
+      **Transitions made cheaper without changing their look** (read from the code,
+      never profiled on a GPU). The wipe compositor runs at full display resolution:
+      datamosh sampled both captures for each of three channels (7 taps, 3 hashes),
+      ink and iris always sampled both, ink also evaluated two value-noise fields per
+      pixel. Datamosh now takes ~2 taps typically (one where the channels agree), ink
+      and iris one tap outside the thin feather band (identical output); ink noise is a
+      128x128 tiling texture built once; the second capture render skips a redundant
+      world-matrix update (one scene-graph traversal saved per wipe frame).
+      `sortSlice` rode the pixel-sort lens (~17 dependent taps, ~28 sin per pixel,
+      full resolution, the priciest lens material) and now rides the 3-tap `ribs` lens
+      at a higher amount; it reads as hard fluted strips, not sort streaks. The
+      standing pixel-sort lens (harsh moods' ordinary look) and datamosh's three block
+      hashes are untouched. **Check by eye:** ink blob positions differ (same noise
+      kind and scale); `sortSlice` still suits the harsh moods.
+
+      **Constantly armed scene.** Why phase 1 (F263) never fired for the user:
+      `ARM.maxTier` was 2 but their sessions read tier 3-4 (F260), it only armed on a
+      CONFIRMED build, and only a drop released it. Now `armedChange.ts` keeps a scene
+      armed whenever nothing is pending, automation is allowed, no silence or
+      transition, and tier <= 3 (tier 4 off). `armedPick.ts` picks from the mood point
+      pushed toward hot or calm by the DSP trend, BPM against the scene's tempo trait,
+      the look's trait boost and a cost factor (above tier 2 only compiled or cheap
+      scenes). Re-scored every 4 beats, re-picked below 45% of the best (max once per
+      16 beats, never during a transition). Commit triggers: a real drop (hard cut),
+      and, behind the 32-beat dwell as a crossfade: a latched section boundary, a
+      strong fast phrase change (or a moderate one at the next phrase edge), a
+      sustained energy step, the projected drop beat, or age (48 beats + a phrase edge).
+      `AutoPilot` and `PerformanceDirector` now try the armed scene (`tryCommitArmed`)
+      before picking a cold one. **Cost:** a warm-complete hidden scene draws nothing
+      and skips its offscreen pass (`node.visible = false`; `createShaderScene` skips
+      at `vis <= 0.001`), but still runs one `useSceneFrame` callback per frame (~60
+      property writes); each fresh arm costs a one-off chunk load + shader compile +
+      4 warm frames, and a budgeted scene holds an offscreen render target while
+      mounted. Mitigated by preferring scenes compiled this session, no cold arms above
+      tier 2, rate-limited re-picks, and quality-frame sampling suspended while an armed
+      scene warms (else the compile spike would be read as load). `?arm=off` unchanged.
+
+      **Off-beat feel, measured.** Synthetic drums with known kick times (7 tempi
+      80-170 BPM; `scripts/calibrate/beat-latency.calib.ts`): the published beat was a
+      median 42 ms LATE, spread up to 55 ms, up to 100% of a track's beats off the kick
+      at 128 BPM, and the grid took 25 s to lock at 80 BPM (never within 60 s at 128).
+      After: median +1.4 ms, spread <= 7 ms, ~2 off-kick beats per track, lock in a
+      median 5.4 s (worst 7.0). Three fixes: `BpmEstimator.acquirePhase` re-locks a grid
+      that started or drifted more than 30% of a beat off (the per-onset PLL cannot);
+      `beatLead.ts` publishes the beat 40 ms ahead of the analysis clock
+      (`?beatoffset=<ms>` adds to it, positive = visuals earlier, for Bluetooth and
+      other output latency the page cannot measure); and `advanceGrid` no longer counts
+      the same beat twice after a small backward slew (which permanently shifted the
+      bar phase). **Not fixed:** `f.bass` and other band envelopes still peak ~40 ms
+      after the kick and kick-detector pulses lag ~23 ms; `AnimationDirector` keeps two
+      free-running BPM oscillators with no beat phase; soft kicks still read ~13-16 ms
+      late, hard ~0 (one constant lead). Only synthetic drums were measured.
+
+      **Mirrors.** The mirror was re-rolled with a fresh coin flip on every
+      `f.sectionChange` and phrase edge; a mood change, a section change and a stale
+      timer bypassed every minimum hold; a re-roll that stayed engaged snapped to a new
+      segment count. Those triggers fire far more often since this session's detector
+      work, so the flicker multiplied. `mirrorGate.ts` (pure) now decides only on a
+      beat: an engaged fold holds >= 32 beats, an off one rests >= 16, no two decisions
+      within 16 beats; triggers are a committed section boundary or a phrase-edge
+      backstop (64 beats engaged / 32 off), never a mood change; the choice is seeded
+      per (section, mood, re-decision); a reshape fades the old fold out and installs
+      the new one below 8% mix. Also fixed: the `collapse` transition's mirror rack
+      omitted the standing fold's `mix`, so a faded-out fold showed at full strength for
+      the transition and then vanished. Duty with the real mood rows: 16-36% engaged.
+      If mirrors now feel too rare, lower `MIRROR_GATE.maxOffBeats` (32).
+
+      **Verification.** typecheck (both configs), lint, build and the licence gate pass;
+      2922 of 2925 tests pass (sole failure the pre-existing, unrelated
+      `checkDistLicences.test.ts` flake, first seen in F258). **Nothing here has been
+      watched live** (no browser/GPU). Every constant (arm thresholds and weights, the
+      mirror gate's holds, the 40 ms lead, the acquisition gain, the coupling values)
+      is a reasoned starting point; the listed by-ear checks are in each commit message.
