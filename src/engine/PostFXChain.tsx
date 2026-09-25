@@ -260,6 +260,10 @@ export function PostFXChain() {
       txMirror.current.twist = p.mirror.twist + rack.mirrorTwist
       txMirror.current.slice = p.mirror.slice
       txMirror.current.spin = p.mirror.spin
+      // Carry the standing fold's mix into the transition rack. Without it a faded-out (or half-faded) fold reads as
+      // FULLY visible for the transition's duration (missing `mix` defaults to 1) and then vanishes: a mirror that
+      // pops on for a `collapse` and off again a beat later.
+      txMirror.current.mix = p.mirror.mix
       txLens.current.amount = Math.min(1, p.lens.amount + rack.lensAmount)
       txLens.current.style = rack.lensAmount > 0 ? rack.lensStyle : p.lens.style
     }

@@ -2,9 +2,9 @@ import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
 import { lookOf } from '../audio/characterLook'
-import type { CharacterMood } from '../audio/characterTypes'
+import { CHARACTER_MOODS, type CharacterMood } from '../audio/characterTypes'
 import { isPhraseEdge } from '../audio/structure/downbeat'
-import type { MoodState } from '../audio/types'
+import { MOOD_STATES, type MoodState } from '../audio/types'
 import { animationSignals } from './AnimationDirector'
 import { getScene } from '../scenes'
 import { CAMERA_MODE_SHOT, cutCamera, pickCameraMode, shouldHardCut, type CameraShotTag } from './CameraDirector'
@@ -19,12 +19,18 @@ import { pickTransitionStyle, SECTION_DIP_WINDOW_SEC, type TransitionBoundaryTyp
 import { createHabituation, stepHabituation, type Habituation } from './habituation'
 import { resolveEchoTapSpacingSec } from './echoParams'
 import {
+  commitMirrorDecision,
+  createMirrorGate,
+  mirrorSwapReady,
+  planMirrorInstall,
+  stepMirrorGate,
+} from './mirrorGate'
+import {
   echoTarget,
   lensAmountTarget,
   lensForSection,
   MIRROR_OFF,
   mirrorForSection,
-  shouldRepickMirror,
   trailsTarget,
   visualTensionFloor,
   type MirrorTarget,
@@ -77,18 +83,6 @@ const MIRROR_TRAILS_EXCLUDED_SCENES = new Set(['kifs', 'maze', 'wingfold'])
 const MIRROR_ONLY_EXCLUDED_SCENES = new Set(['djcam'])
 
 /**
- * Phrases (16-beat windows) a mirror look may hold before it is force-refreshed
- * even if nothing about the music moved. F134 — reported as the rack "ending
- * abruptly and too soon": the phrase-edge re-decision below re-rolled on every
- * 16 beats unconditionally, so a fold that had just committed could be
- * overwritten (often by MIRROR_OFF) one phrase later regardless of whether the
- * section, mood or tension had actually changed — a fixed beat-count timer, not
- * a musical event. 3 phrases (~24s at 125 BPM) is a backstop for a mood/tension
- * pair that never budges, not the normal exit; see the re-decision guard below.
- */
-const MIRROR_MAX_PHRASES = 3
-
-/**
  * Phrases (16-beat windows) a lens material may hold with NO decision
  * opportunity at all before one is forced (F237).
  *
@@ -126,46 +120,13 @@ const MIRROR_MAX_PHRASES = 3
  */
 const LENS_MAX_PHRASES = 8
 
-/**
- * Phrases an ENGAGED mirror pick must hold before a `tensionMoved`-only
- * signal is allowed to re-decide it downward — see `shouldRepickMirror`'s doc
- * for why `tensionMoved` specifically needs this and `sectionChange`/`stale`/
- * `moodMoved` do not.
- *
- * Raised 1 -> 2 (this session, user report: "trigger a bit too less, and when
- * they do trigger they dont stay active at all"). At 1, the pick survived only
- * the very next phrase edge unconditionally and became eligible for a
- * tension-triggered take-down from the phrase edge AFTER that — i.e. as little
- * as one held phrase (~7-8s) before tension alone could end it, which reads as
- * "barely stayed on" rather than as a held choice. At 2, that becomes ~15s
- * minimum, well short of the `MIRROR_MAX_PHRASES` backstop above.
- * `sectionChange`/`moodMoved`/`stale` are unaffected — they still bypass this
- * guard unconditionally, exactly as before; only a tension-alone take-down is
- * held back longer.
+/*
+ * WHEN the mirror may engage, disengage or reshape is decided by `mirrorGate.ts` (minimum on / off dwell, one
+ * decision per section, a deterministic seed per section and mood). It replaces the phrase-edge re-roll with its
+ * `MIRROR_MAX_PHRASES` / `MIRROR_MIN_HOLD_PHRASES` / `MIRROR_MIN_OFF_PHRASES` constants and `shouldRepickMirror`,
+ * which let a section change, a mood change or staleness re-roll an engaged fold at any time and made it read as
+ * turning on and off at random.
  */
-const MIRROR_MIN_HOLD_PHRASES = 2
-
-/**
- * Consecutive phrase-edges the rack must sit at OFF before `nothingToInterrupt`
- * alone may re-engage it (F229 — see `shouldRepickMirror`'s header). Before
- * this existed, off -> on was completely unconditional: the very phrase after
- * the rack turned off it was already eligible to fire again, which combined
- * with a base rate that never fell below a real floor to make the whole rack
- * read as "always on" rather than as an effect that arrives.
- *
- * Lowered 2 -> 1 (this session, user report: "mirrors trigger a bit too
- * less" — the opposite complaint from the one that set this to 2 in F229).
- * That history: F131 raised the base rate for the same complaint, a session
- * recording afterward still measured only 18% duty, then F229 lowered the
- * base rate again AND added this rest-period guard for the opposite
- * complaint ("trigger a bit too much"). Rather than re-litigate F229's base
- * rate a second time in the same direction, this pass loosens the OTHER lever
- * that also gates re-engagement — the two combined were plausibly making
- * re-engagement doubly rare. 1 phrase is roughly 7-15s at typical tempos:
- * still a real rest (a re-decision opportunity has to actually pass), just
- * not a second one stacked on top of the base-rate roll below.
- */
-const MIRROR_MIN_OFF_PHRASES = 1
 
 /**
  * `approach()` rate for `p.mirror.mix` — the fold's VISIBILITY, as distinct
@@ -178,6 +139,19 @@ const MIRROR_MIN_OFF_PHRASES = 1
  * fading, which reads better held a bit longer.
  */
 const MIRROR_MIX_RATE = 0.45
+
+/**
+ * `approach()` rate for the fold's mix while it is FADING OUT (time constant 1 / 0.8 = 1.25 s, ~95% gone in ~3.7 s,
+ * about 7 beats at 120 BPM). Faster than the fade-in on purpose: a fold that lingers at a few percent while a
+ * transition borrows the mirror rack (PostFXChain's `txMirror` reads `p.mirror.segments` but never `mix`) would pop
+ * back to full strength for the transition's duration, so it must be gone soon, and its held segment count is
+ * zeroed once the mix is below {@link MIRROR_SEGMENTS_ZERO_MIX}.
+ */
+const MIRROR_MIX_FADE_OUT_RATE = 0.8
+
+/** A held segment / tile count is zeroed once the fold's mix has faded below this (see the rate above). */
+const MIRROR_SEGMENTS_ZERO_MIX = 0.03
+
 
 /**
  * Minimum `f.songSection.sectionConfidence` (see `SectionTracker.ts`; ranges
@@ -285,18 +259,10 @@ export function PerformanceStateBridge() {
   const lensPhrasesHeld = useRef(0)
   /** The mirror look this section committed to; eased toward every frame. */
   const mirrorTarget = useRef<MirrorTarget>(MIRROR_OFF)
-  /** Phrases seen. Separate from the section counter so the two rotate apart. */
-  const mirrorSeed = useRef(0)
-  /** Mood at the mirror's last pick, so a re-roll can tell "the music moved" apart from "16 beats passed." */
-  const mirrorMoodAtPick = useRef<MoodState | null>(null)
-  /** Coarse tension bucket at the last pick — same purpose, for the continuous half of the read. */
-  const mirrorTensionAtPick = useRef(-1)
-  /** Phrases held on the current pick, capped by MIRROR_MAX_PHRASES below. */
-  const mirrorPhrasesHeld = useRef(0)
-  /** Consecutive phrase-edges the rack has sat at OFF — the rest-period
-   *  counter `shouldRepickMirror`'s `offPhrasesHeld` reads (F229). Incremented
-   *  whenever the current pick is off, reset the moment a repick re-engages. */
-  const mirrorOffPhrases = useRef(0)
+  /** The mirror's decision gate (dwell, one decision per section, deterministic seed): see mirrorGate.ts. */
+  const mirrorGateState = useRef(createMirrorGate())
+  /** A reshape waiting for the old fold to fade out before it is installed (see MIRROR_SWAP_MIX). */
+  const mirrorPending = useRef<MirrorTarget | null>(null)
   /** Recent-engagement memory for the mirror and lens gates (audit c1),
    *  replacing the bare `seed % n` roll each used to make with no notion of
    *  how recently it last fired — see habituation.ts. */
@@ -317,8 +283,6 @@ export function PerformanceStateBridge() {
   const lensDesired = useRef(0)
   /** Whether the previous frame ran the profile-driven post path, to re-seed the two refs above when it (re)starts. */
   const wasPostOn = useRef(false)
-  /** The profile's primary mood at the mirror's last pick: its `moodMoved` signal while the profile is valid. */
-  const mirrorPrimaryAtPick = useRef<CharacterMood | null>(null)
   /** The profile's primary mood the transition style was last chosen for. */
   const lastStylePrimary = useRef<CharacterMood | null>(null)
 
@@ -755,64 +719,37 @@ export function PerformanceStateBridge() {
     // guarantee it EVENTUALLY gets a decision opportunity even when the music
     // never trips `f.sectionChange` — see that constant's own doc.
     const phraseEdge = isPhraseEdge(f.beat, f.beatInBar, f.bar)
-    if (f.sectionChange || phraseEdge) {
-      // F134: the phrase edge is a chance to re-roll, not a mandate to. A
-      // section boundary always commits — it is the one unambiguous "the music
-      // changed" signal. Off to on always commits too — there's no live look to
-      // cut short. Otherwise a currently-engaged rack holds through the phrase
-      // edge unless the mood changed, the tension moved a real step (not just
-      // beat-to-beat jitter — bucketed to a fifth), or it has already run the
-      // backstop's worth of phrases with neither moving. That is what makes
-      // "ends on a proper change in mood or energy" true instead of aspirational.
-      //
-      // A `tensionMoved` trigger specifically is also held back for at least
-      // `MIRROR_MIN_HOLD_PHRASES` phrases while a pick is engaged — see
-      // shouldRepickMirror's doc. Without it, a drop's brief tension spike
-      // (0.6s) decays well before the NEXT phrase edge, so `tensionMoved`
-      // fires there too and tears the engagement the drop just caused right
-      // back down one phrase later.
-      const tensionBucket = Math.round(p.visualTension * 5)
-      // With a valid profile the "mood" that moved is its (hysteresis-held) primary of the 14, not the 7-state look.
-      const moodMoved = postOn ? L.primary !== mirrorPrimaryAtPick.current : look !== mirrorMoodAtPick.current
-      const tensionMoved = tensionBucket !== mirrorTensionAtPick.current
-      mirrorPhrasesHeld.current++
-      const nothingToInterrupt = mirrorTarget.current.mode === 'off'
-      // F229: counts consecutive phrase-edges spent at off, independent of
-      // `mirrorPhrasesHeld` above (which tracks phrases since the last
-      // re-decision REGARDLESS of what it landed on). Reset the instant a
-      // repick re-engages, below.
-      if (nothingToInterrupt) mirrorOffPhrases.current++
-      const stale = mirrorPhrasesHeld.current >= MIRROR_MAX_PHRASES
-      const repick = shouldRepickMirror({
-        sectionChange: f.sectionChange,
-        nothingToInterrupt,
-        moodMoved,
-        tensionMoved,
-        stale,
-        currentlyEngaged: !nothingToInterrupt,
-        phrasesHeld: mirrorPhrasesHeld.current,
-        minHoldPhrases: MIRROR_MIN_HOLD_PHRASES,
-        offPhrasesHeld: mirrorOffPhrases.current,
-        minOffPhrases: MIRROR_MIN_OFF_PHRASES,
-      })
-      if (repick) {
-        // The whole rack, not just the segment count. `tiles`, `twist` and
-        // `slice` were previously written by nothing but the debug panel, so
-        // three of the mirror's five controls were dead in a running show.
-        // Profile path: engage through the same habituated gate at the blended `mirrorEngage`, then sample
-        // mode / segments from the profile's weights (lookPost.mirrorFromProfile). Same hold / dwell / rest
-        // logic above either way; the scene exclusions below are unchanged.
-        const mt = postOn
-          ? mirrorFromProfile(L, p.visualTension, mirrorSeed.current++, mirrorHabituation.current)
-          : mirrorForSection(look, p.visualTension, mirrorSeed.current++, mirrorHabituation.current)
-        mirrorTarget.current = mt
-        mirrorMoodAtPick.current = look
-        mirrorPrimaryAtPick.current = postOn ? L.primary : null
-        mirrorTensionAtPick.current = tensionBucket
-        mirrorPhrasesHeld.current = 0
-        if (mt.mode !== 'off') mirrorOffPhrases.current = 0
-        mirrorHabituation.current = stepHabituation(mirrorHabituation.current, mt.mode !== 'off')
-      }
+    // The mirror is a slow, deliberate state (mirrorGate.ts): a decision is taken only on a beat, only once the
+    // dwell has cleared (an engaged fold holds >= 32 beats, an off one rests >= 16, no two changes closer than 16),
+    // and only for a SECTION boundary or the phrase-edge staleness backstop. The seed is a pure function of (section,
+    // mood, re-decision), so the same section does not flip repeatedly. A mood or tension change no longer re-rolls.
+    const mirrorMoodKey = postOn
+      ? 1 + (L.primary === null ? -1 : CHARACTER_MOODS.indexOf(L.primary))
+      : 32 + MOOD_STATES.indexOf(look)
+    const gate = stepMirrorGate(mirrorGateState.current, {
+      beat: f.beatIndex,
+      beatEdge: f.beat,
+      phraseEdge,
+      fastSectionChange: f.sectionChange,
+      structureValid: f.structureValid,
+      sectionCount: f.songSection.changeCount,
+      moodKey: mirrorMoodKey,
+    })
+    if (gate.decide) {
+      // The whole rack, not just the segment count. Profile path: engage through the same habituated gate at the
+      // blended `mirrorEngage`, then sample mode / segments from the profile's weights (lookPost.mirrorFromProfile).
+      // The scene exclusions below are unchanged.
+      const mt = postOn
+        ? mirrorFromProfile(L, p.visualTension, gate.seed, mirrorHabituation.current)
+        : mirrorForSection(look, p.visualTension, gate.seed, mirrorHabituation.current)
+      const engagedNow = mt.mode !== 'off'
+      // A reshape dips: the old fold fades out (a MIRROR_OFF target keeps its held shape and lets `mix` do the
+      // fading) and the new one is installed below once it is nearly gone. Anything else installs directly.
+      const plan = planMirrorInstall(mirrorPending.current ?? mirrorTarget.current, mt, MIRROR_OFF, p.mirror.mix ?? 0)
+      mirrorTarget.current = plan.target
+      mirrorPending.current = plan.pending
+      commitMirrorDecision(mirrorGateState.current, engagedNow, plan.reshaped, f.beatIndex)
+      mirrorHabituation.current = stepHabituation(mirrorHabituation.current, engagedNow)
     }
     // F237: counts phrases since the lens last got ANY decision opportunity,
     // independent of whether that opportunity changed anything — see
@@ -852,6 +789,12 @@ export function PerformanceStateBridge() {
     // the instant it comes on screen — mid-section, if that is when the scene
     // change lands — rather than waiting out whatever the previous scene's
     // section chose.
+    // Install a pending reshape once the old fold has (nearly) faded out. An excluded scene zeroes the mix at once,
+    // so the swap lands there too.
+    if (mirrorPending.current !== null && mirrorSwapReady(p.mirror.mix ?? 0, mirrorSuppressed)) {
+      mirrorTarget.current = mirrorPending.current
+      mirrorPending.current = null
+    }
     const mt = mirrorTarget.current
     const mirrorVisible = !mirrorSuppressed && mt.mode !== 'off'
     // `segments`/`tiles` still snap rather than ease — that part of the old
@@ -906,9 +849,15 @@ export function PerformanceStateBridge() {
       : approach(
           p.mirror.mix ?? 0,
           mirrorVisible ? (postOn ? mirrorMixFromProfile(L) : 1) : 0,
-          MIRROR_MIX_RATE,
+          mirrorVisible ? MIRROR_MIX_RATE : MIRROR_MIX_FADE_OUT_RATE,
           f.delta,
         )
+    // Once the fold has faded, drop the held counts: PostFXChain's transition rack copies `p.mirror.segments` (and
+    // never sets a mix), so a stale count would show a full-strength fold for the length of a mirror-driven transition.
+    if (!mirrorVisible && (p.mirror.mix ?? 0) < MIRROR_SEGMENTS_ZERO_MIX) {
+      p.mirror.segments = 0
+      p.mirror.tiles = 0
+    }
 
     // --- Debug override ---------------------------------------------------
     // TEMPORARY: lets a human take manual control of ONE post-fx field at a
