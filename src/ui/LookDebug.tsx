@@ -80,8 +80,10 @@ function snapshot(): LookDebugSnapshot {
             gate: armedProbe.armed.gate,
             warm: sceneStreamer.isReady(armedProbe.armed.sceneId),
             trigger: armedProbe.armed.trigger,
+            reason: armedProbe.armed.reason,
           }
         : null,
+      armedFit: armedProbe.fit,
       armedLast: armedProbe.lastOutcome,
     },
     grade: lookDebugProbe,

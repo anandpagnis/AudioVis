@@ -58,7 +58,10 @@ export interface LookDebugApplied {
   bpm: number
   tempoOctaves: number
   tempoRate: number
-  /** The armed drop scene (`engine/armedChange.ts`), or null when nothing is armed. `warm` = compiled and ready. */
+  /**
+   * The armed next scene (`engine/armedChange.ts`), or null when nothing is armed. `warm` = compiled and ready;
+   * `reason` = why this scene (trend / affinity / bpm / look / cost, `armedPick.describeChoice`).
+   */
   armed: {
     sceneId: string
     sinceBeat: number
@@ -66,8 +69,11 @@ export interface LookDebugApplied {
     gate: string
     warm: boolean
     trigger: string
+    reason: string
   } | null
-  /** The last arm outcome (`drop@b140`, `fizzle@b120`, ...), shown while nothing is armed. */
+  /** The armed scene's last fit score vs the best candidate, `0.71/0.80`, or ''. */
+  armedFit: string
+  /** The last arm / confirm outcome (`drop@b140`, `phrase@b152`, `refit@b120`, ...). Always shown. */
   armedLast: string
 }
 
@@ -139,13 +145,17 @@ export function formatLookDebug(s: LookDebugSnapshot): string[] {
     `shot  camera=${a.cameraMode}  transition: requested=${a.transitionStyle} applied=${a.committedTransitionStyle}` +
       `${downgraded ? ' (DOWNGRADED)' : ''}  active=${a.transitionActive} t=${fmt(a.transitionProgress, 2)}`,
   )
-  // The armed drop scene shares the quality line (the overlay is capped at 12 lines): it is the same kind of
-  // fact, what the show is holding back for the machine's sake, and that line is short.
+  lines.push(`quality tier=${a.qualityTier} (wipe needs <= ${a.wipeMaxTier})`)
+  // The armed next scene: what is waiting, whether it is compiled, how well it still fits, why it was chosen, and
+  // what last released or dropped it (the confirm trigger: drop / section / phrase / energy / predicted / age /
+  // mood / boundary / build).
   const arm = a.armed
-  const armText = arm
-    ? `armed ${arm.sceneId} since b${fmt(arm.sinceBeat, 0)} gate=${arm.gate} warm=${arm.warm ? 'y' : 'n'} expires b${fmt(arm.expiresBeat, 0)} trig=${arm.trigger}`
-    : `armed -  last=${a.armedLast}`
-  lines.push(`quality tier=${a.qualityTier} (wipe needs <= ${a.wipeMaxTier})  ${armText}`)
+  const fit = a.armedFit ? ` fit=${a.armedFit}` : ''
+  lines.push(
+    arm
+      ? `armed ${arm.sceneId} b${fmt(arm.sinceBeat, 0)}>b${fmt(arm.expiresBeat, 0)} warm=${arm.warm ? 'y' : 'n'} trig=${arm.trigger}${fit}  why=${arm.reason}  last=${a.armedLast}`
+      : `armed -  last=${a.armedLast}`,
+  )
   lines.push(
     `tempo bpm=${fmt(a.bpm, 0)} oct=${fmtSigned(a.tempoOctaves, 2)} coupling=${fmt(look.tempoCoupling, 2)} -> speed x${fmt(a.tempoRate, 2)}`,
   )

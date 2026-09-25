@@ -3,15 +3,17 @@ import {
   ARM,
   armPlaced,
   armRefused,
+  commitArmed,
   createArmedState,
   dropPickSuppressed,
+  fitCheckDue,
   stepArmed,
   type ArmedAction,
   type ArmedInput,
   type ArmedState,
 } from '../armedChange'
 
-/** A quiet, valid mid-build frame with nothing armed; override what a case cares about. */
+/** A quiet frame, long after the last commit, nothing pending; override what a case cares about. */
 function inp(over: Partial<ArmedInput> = {}): ArmedInput {
   return {
     enabled: true,
@@ -19,7 +21,7 @@ function inp(over: Partial<ArmedInput> = {}): ArmedInput {
     silent: false,
     tier: 0,
     beat: 100,
-    sustain: true,
+    sustain: false,
     buildEdge: false,
     dropEdge: false,
     beatsTillDrop: -1,
@@ -27,282 +29,408 @@ function inp(over: Partial<ArmedInput> = {}): ArmedInput {
     heldSceneId: null,
     sceneId: 'wireframe',
     canDwell: true,
+    lastCommitBeat: 0,
+    sectionEdge: false,
+    phraseStrength: 0,
+    phraseEdge: false,
+    energy: 0.5,
+    transitionActive: false,
+    fit: null,
     ...over,
   }
 }
 
-/** The store's view of a scene held for the drop, for the frames after `armPlaced`. */
+/** The store's view of a scene held for the next change, for the frames after `armPlaced`. */
 const held = (id = 'kifs'): Partial<ArmedInput> => ({ pendingSceneId: id, heldSceneId: id })
 
 /** Step to an armed state at `beat`: the arm action, then the caller placing the scene. */
 function armedAt(beat = 100, beatsTillDrop = -1, id = 'kifs'): ArmedState {
   const st = createArmedState()
   expect(stepArmed(st, inp({ beat, beatsTillDrop }))).toEqual({ type: 'arm' })
-  armPlaced(st, id, null, beat, beatsTillDrop)
+  armPlaced(st, id, null, beat, beatsTillDrop, 'flat aff.9')
   return st
 }
 
 const types = (actions: ArmedAction[]) => actions.map((a) => a.type)
 
-describe('stepArmed: arming', () => {
-  it('arms on a sustained build, but never on the rising-edge frame (that frame belongs to the build switch)', () => {
+describe('ARM constants', () => {
+  it('keep the promises the header makes', () => {
+    expect(ARM.maxTier).toBe(3) // tier 3-4 is where the user runs; tier 3 must arm
+    expect(ARM.repickMinBeats).toBeGreaterThanOrEqual(ARM.fitCheckEveryBeats * 2)
+    expect(ARM.phraseStrong).toBeGreaterThan(ARM.phraseMinStrength)
+    expect(ARM.maxAgeBeats).toBeGreaterThanOrEqual(32) // the dwell floor
+    expect(ARM.expiryBeats).toBeGreaterThan(ARM.maxAgeBeats)
+  })
+})
+
+describe('idle => arm', () => {
+  it('arms on the very first frame automation is allowed: no build, no drop needed', () => {
     const st = createArmedState()
-    expect(stepArmed(st, inp({ buildEdge: true })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 101 }))).toEqual({ type: 'arm' })
+    expect(stepArmed(st, inp())).toEqual({ type: 'arm' })
   })
 
-  it.each([
-    ['the feature is off', { enabled: false }],
-    ['automation is suppressed', { suppressed: true }],
-    ['the music is silent', { silent: true }],
-    ['the quality tier is too high', { tier: ARM.maxTier + 1 }],
-    ['there is no confirmed build', { sustain: false }],
-    ['a scene is already pending', { pendingSceneId: 'plasma' }],
-    ['a drop lands this very frame', { dropEdge: true }],
-  ] as [string, Partial<ArmedInput>][])('does not arm when %s', (_why, over) => {
+  it('arms at tier 3 (the user\'s tier) but never at tier 4', () => {
+    expect(stepArmed(createArmedState(), inp({ tier: 3 }))).toEqual({ type: 'arm' })
+    expect(stepArmed(createArmedState(), inp({ tier: 4 }))).toEqual({ type: 'none' })
+  })
+
+  it('does not arm when off, suppressed, silent, in a transition, or while something is pending', () => {
+    for (const over of [
+      { enabled: false },
+      { suppressed: true },
+      { silent: true },
+      { transitionActive: true },
+      { pendingSceneId: 'plasma' },
+    ] satisfies Partial<ArmedInput>[]) {
+      expect(stepArmed(createArmedState(), inp(over)), JSON.stringify(over)).toEqual({ type: 'none' })
+    }
+  })
+
+  it('does not arm on a build\'s rising edge or a drop frame (those frames belong to the directors)', () => {
+    expect(stepArmed(createArmedState(), inp({ buildEdge: true }))).toEqual({ type: 'none' })
+    expect(stepArmed(createArmedState(), inp({ dropEdge: true }))).toEqual({ type: 'none' })
+  })
+
+  it('waits armAfterCommitBeats after the last commit', () => {
     const st = createArmedState()
-    expect(stepArmed(st, inp(over)).type).toBe('none')
+    expect(stepArmed(st, inp({ beat: 100, lastCommitBeat: 100 - ARM.armAfterCommitBeats + 1 }))).toEqual({ type: 'none' })
+    expect(stepArmed(st, inp({ beat: 101, lastCommitBeat: 101 - ARM.armAfterCommitBeats }))).toEqual({ type: 'arm' })
   })
 
-  it('arms at the highest tier that is still allowed, and not one above it', () => {
-    expect(stepArmed(createArmedState(), inp({ tier: ARM.maxTier })).type).toBe('arm')
-    expect(stepArmed(createArmedState(), inp({ tier: ARM.maxTier + 1 })).type).toBe('none')
-  })
-
-  it('does not require the dwell floor: arming is only a hold', () => {
-    expect(stepArmed(createArmedState(), inp({ canDwell: false })).type).toBe('arm')
-  })
-
-  it('never double-arms: once armed, no frame returns another arm', () => {
+  it('rate-limits arms: one per repickMinBeats', () => {
     const st = armedAt(100)
-    const seen: ArmedAction[] = []
-    for (let b = 101; b < 100 + ARM.expiryBeats - 1; b++) seen.push(stepArmed(st, inp({ beat: b, ...held() })))
-    expect(seen.some((a) => a.type === 'arm')).toBe(false)
+    // The scene was committed (so the slot is free again) and only a few beats passed: no new arm yet.
+    commitArmed(st, 'mood', 104)
+    expect(stepArmed(st, inp({ beat: 110, lastCommitBeat: 104 }))).toEqual({ type: 'none' })
+    expect(stepArmed(st, inp({ beat: 100 + ARM.repickMinBeats, lastCommitBeat: 104 }))).toEqual({ type: 'arm' })
   })
 
-  it('attempts a build once: a refused arm is not retried every frame', () => {
+  it('retries a refused arm after refusedRetryBeats, not immediately and not a whole repick period', () => {
     const st = createArmedState()
-    expect(stepArmed(st, inp()).type).toBe('arm')
+    expect(stepArmed(st, inp({ beat: 100 }))).toEqual({ type: 'arm' })
     armRefused(st, 100)
-    for (let b = 101; b < 140; b++) expect(stepArmed(st, inp({ beat: b })).type).toBe('none')
+    expect(stepArmed(st, inp({ beat: 100 + ARM.refusedRetryBeats - 1 }))).toEqual({ type: 'none' })
+    expect(stepArmed(st, inp({ beat: 100 + ARM.refusedRetryBeats }))).toEqual({ type: 'arm' })
     expect(st.lastOutcome).toBe('refused@b100')
   })
 
-  it('re-arms only for a NEW build: the old one must end first', () => {
-    const st = armedAt(100)
-    expect(stepArmed(st, inp({ beat: 104, dropEdge: true, ...held() })).type).toBe('confirm')
-    // The build is still reported as sustained for a few frames after the drop: no re-arm.
-    for (let b = 105; b < 110; b++) expect(stepArmed(st, inp({ beat: b })).type).toBe('none')
-    // The build ends, then a new one starts.
-    expect(stepArmed(st, inp({ beat: 110, sustain: false })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 150, buildEdge: true })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 151 })).type).toBe('arm')
-  })
-
-  it('records where the drop is projected when the arm is placed', () => {
-    const st = armedAt(100, 12)
-    expect(st.armed?.expectedBeat).toBe(112)
-    expect(st.armed?.expiresAtBeat).toBe(100 + ARM.expiryBeats)
-    expect(st.armed?.gate).toBe('hold')
-    expect(armedAt(100, -1).armed?.expectedBeat).toBe(-1)
-    expect(armedAt(100, NaN).armed?.expectedBeat).toBe(-1)
-  })
-})
-
-describe('stepArmed: confirming on a drop', () => {
-  it('a drop edge cuts to the armed scene NOW (immediate), and clears the record', () => {
-    const st = armedAt(100)
-    const a = stepArmed(st, inp({ beat: 110, dropEdge: true, ...held() }))
-    expect(a).toEqual({ type: 'confirm', trigger: 'drop', immediate: true })
+  it('a new source (the beat counter going backwards) resets every tracker', () => {
+    const st = armedAt(5000)
+    st.suppressDropPickUntil = 5010
+    const a = stepArmed(st, inp({ beat: 3, ...held() }))
+    expect(a).toEqual({ type: 'disarm', reason: 'reset' })
     expect(st.armed).toBeNull()
-    expect(st.lastOutcome).toBe('drop@b110')
-  })
-
-  it('accepts a drop even the beat after arming, ignoring the minimum hold and the dwell floor', () => {
-    const st = armedAt(100)
-    const a = stepArmed(st, inp({ beat: 100, dropEdge: true, canDwell: false, ...held() }))
-    expect(a).toMatchObject({ type: 'confirm', trigger: 'drop', immediate: true })
-  })
-
-  it('accepts a drop during silence (the pre-drop gap) and after the build flag has already dropped', () => {
-    const st = armedAt(100)
-    expect(stepArmed(st, inp({ beat: 108, dropEdge: true, silent: true, sustain: false, ...held() })).type).toBe('confirm')
-  })
-
-  it('does not suppress the normal drop pick after a real drop confirm (the caller handles that frame itself)', () => {
-    const st = armedAt(100)
-    stepArmed(st, inp({ beat: 108, dropEdge: true, ...held() }))
-    expect(dropPickSuppressed(st, 108)).toBe(false)
+    expect(st.suppressDropPickUntil).toBe(Number.NEGATIVE_INFINITY)
+    expect(stepArmed(st, inp({ beat: 10, lastCommitBeat: -Infinity }))).toEqual({ type: 'arm' })
   })
 })
 
-describe('stepArmed: confirming on the predicted drop', () => {
-  const projectedAt = (beat: number) => ({ beat, beatsTillDrop: 112 - beat, ...held() })
-
-  it('waits until one beat before the projected drop, then releases as a normal crossfade (not a hard cut)', () => {
-    const st = armedAt(100, 12)
-    const actions: ArmedAction[] = []
-    for (let b = 101; b <= 111; b++) actions.push(stepArmed(st, inp(projectedAt(b))))
-    expect(types(actions).slice(0, 9)).toEqual(Array(9).fill('none')) // beats 101..109
-    expect(actions[10]).toEqual({ type: 'confirm', trigger: 'predicted', immediate: false }) // beat 111 = 112 - lead
-    expect(st.lastOutcome).toBe('predicted@b111')
-  })
-
-  it('follows a re-projected drop: a later projection postpones the release', () => {
-    const st = armedAt(100, 12)
-    expect(stepArmed(st, inp({ beat: 105, beatsTillDrop: 20, ...held() })).type).toBe('none') // now b125
-    expect(stepArmed(st, inp({ beat: 111, beatsTillDrop: 14, ...held() })).type).toBe('none') // now b125
-    expect(stepArmed(st, inp({ beat: 124, beatsTillDrop: 1, ...held() })).type).toBe('confirm')
-  })
-
-  it('is refused inside the minimum hold after arming', () => {
-    const st = armedAt(100, 2) // projected b102, lead reaches b101, but the arm is 1 beat old
-    expect(stepArmed(st, inp({ beat: 101, beatsTillDrop: 1, ...held() })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 102, beatsTillDrop: -1, ...held() })).type).toBe('confirm')
-  })
-
-  it('is refused while the 32-beat dwell has not elapsed (enforced at confirm), yet a real drop still lands', () => {
-    const st = armedAt(100, 12)
-    for (let b = 101; b < 118; b++) {
-      expect(stepArmed(st, inp({ ...projectedAt(b), canDwell: false })).type).toBe('none')
-    }
-    expect(stepArmed(st, inp({ beat: 118, dropEdge: true, canDwell: false, ...held() })).type).toBe('confirm')
-  })
-
-  it('is refused during silence and without a sustained build', () => {
-    const st = armedAt(100, 12)
-    expect(stepArmed(st, inp({ ...projectedAt(111), silent: true })).type).toBe('none')
-    expect(stepArmed(st, inp({ ...projectedAt(111), sustain: false })).type).toBe('none') // build ended: no veto-free guess
-  })
-
-  it('needs a known projection: an unknown drop beat never releases on prediction', () => {
-    const st = armedAt(100, -1)
-    for (let b = 101; b < 125; b++) expect(stepArmed(st, inp({ beat: b, ...held() })).type).toBe('none')
-  })
-
-  it('suppresses the normal drop pick for a few beats afterwards, so a late real drop does not switch twice', () => {
-    const st = armedAt(100, 12)
-    stepArmed(st, inp(projectedAt(111)))
-    expect(dropPickSuppressed(st, 111)).toBe(true)
-    expect(dropPickSuppressed(st, 111 + ARM.dropSuppressBeats - 1)).toBe(true)
-    expect(dropPickSuppressed(st, 111 + ARM.dropSuppressBeats)).toBe(false)
-    expect(dropPickSuppressed(st, 105)).toBe(false) // before the commit
-  })
-})
-
-describe('stepArmed: disarming', () => {
-  it('expires after ARM.expiryBeats and gives the slot back', () => {
-    const st = armedAt(100)
-    expect(stepArmed(st, inp({ beat: 100 + ARM.expiryBeats - 1, ...held() })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 100 + ARM.expiryBeats, ...held() }))).toEqual({ type: 'disarm', reason: 'expired' })
-    expect(st.armed).toBeNull()
-  })
-
-  it('gives up when the build ends without a drop, after the grace, but not for a one-beat flicker', () => {
-    const st = armedAt(100)
-    expect(stepArmed(st, inp({ beat: 110, sustain: false, ...held() })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 111, sustain: true, ...held() })).type).toBe('none') // flicker over
-    expect(stepArmed(st, inp({ beat: 112, sustain: false, ...held() })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 113, sustain: false, ...held() })).type).toBe('none')
-    expect(stepArmed(st, inp({ beat: 114, sustain: false, ...held() }))).toEqual({ type: 'disarm', reason: 'fizzle' })
-  })
-
-  it('a drop right after the build flag fell (inside the grace) still confirms instead of fizzling', () => {
-    const st = armedAt(100)
-    stepArmed(st, inp({ beat: 110, sustain: false, ...held() }))
-    expect(stepArmed(st, inp({ beat: 111, sustain: false, dropEdge: true, ...held() })).type).toBe('confirm')
+describe('armed: validity', () => {
+  it('records the placement (scene, projected drop, reason, expiry) and starts the fit clock', () => {
+    const st = armedAt(100, 12, 'kifs')
+    expect(st.armed).toMatchObject({ sceneId: 'kifs', armedAtBeat: 100, expectedBeat: 112, gate: 'hold', reason: 'flat aff.9' })
+    expect(st.armed!.expiresAtBeat).toBe(100 + ARM.expiryBeats)
+    expect(fitCheckDue(st, 100)).toBe(false)
+    expect(fitCheckDue(st, 100 + ARM.fitCheckEveryBeats)).toBe(true)
+    expect(fitCheckDue(st, 100, true)).toBe(true) // forced (a build's rising edge)
+    expect(fitCheckDue(createArmedState(), 100, true)).toBe(false) // nothing armed
   })
 
   it.each([
-    ['the feature is switched off', { enabled: false }, 'off'],
-    ['automation becomes suppressed (manual hold, cue, cutaway)', { suppressed: true }, 'suppressed'],
-    ['the quality tier climbs past the limit', { tier: ARM.maxTier + 1 }, 'tier'],
-  ] as [string, Partial<ArmedInput>, string][])('disarms when %s', (_why, over, reason) => {
+    ['off', { enabled: false }],
+    ['suppressed', { suppressed: true }],
+    ['tier', { tier: 4 }],
+  ] as const)('disarms (%s)', (reason, over) => {
     const st = armedAt(100)
-    expect(stepArmed(st, inp({ beat: 105, ...held(), ...over }))).toEqual({ type: 'disarm', reason })
+    expect(stepArmed(st, inp({ beat: 101, ...held(), ...over }))).toEqual({ type: 'disarm', reason })
+    expect(st.armed).toBeNull()
+    expect(st.lastOutcome).toBe(`${reason}@b101`)
   })
 
-  it('does NOT disarm for silence alone: a pre-drop gap must not lose the arm', () => {
+  it('is superseded when someone replaced the pending scene, or the armed scene became the current one', () => {
+    for (const over of [
+      { pendingSceneId: 'plasma', heldSceneId: null },
+      { pendingSceneId: null, heldSceneId: null },
+      { ...held(), sceneId: 'kifs' },
+    ]) {
+      const st = armedAt(100)
+      expect(stepArmed(st, inp({ beat: 101, ...over })), JSON.stringify(over)).toEqual({ type: 'disarm', reason: 'superseded' })
+    }
+  })
+
+  it('a director having released the hold is NOT an error: reported as released (no store action needed)', () => {
     const st = armedAt(100)
-    expect(stepArmed(st, inp({ beat: 105, silent: true, ...held() })).type).toBe('none')
+    expect(stepArmed(st, inp({ beat: 101, pendingSceneId: 'kifs', heldSceneId: null }))).toEqual({
+      type: 'disarm',
+      reason: 'released',
+    })
+    expect(st.lastOutcome).toBe('released@b101')
+  })
+
+  it('expires after expiryBeats so a scene that never fits is not held forever', () => {
+    const st = armedAt(100)
+    expect(stepArmed(st, inp({ beat: 100 + ARM.expiryBeats - 1, ...held() }))).not.toEqual({ type: 'disarm', reason: 'expired' })
+    expect(stepArmed(st, inp({ beat: 100 + ARM.expiryBeats, ...held() }))).toEqual({ type: 'disarm', reason: 'expired' })
+  })
+})
+
+describe('refresh: the armed scene stops fitting', () => {
+  it('re-picks when its fit falls below refitRatio of the best, once it has been held long enough', () => {
+    const st = armedAt(100)
+    const beat = 100 + ARM.repickMinBeats
+    const a = stepArmed(st, inp({ beat, ...held(), fit: { armed: 0.2, best: 1 } }))
+    expect(a).toEqual({ type: 'disarm', reason: 'refit' })
+    expect(st.lastFitArmed).toBe(0.2)
+    expect(st.lastFitBest).toBe(1)
+  })
+
+  it('keeps a scene that still fits (at or above the ratio)', () => {
+    const st = armedAt(100)
+    const beat = 100 + ARM.repickMinBeats
+    expect(stepArmed(st, inp({ beat, ...held(), fit: { armed: ARM.refitRatio, best: 1 } })).type).toBe('none')
     expect(st.armed).not.toBeNull()
   })
 
-  it.each([
-    ['another request replaced the pending scene (a manual pick)', { pendingSceneId: 'plasma', heldSceneId: null }],
-    ['the pending scene was cleared behind its back', { pendingSceneId: null, heldSceneId: 'kifs' }],
-    ['the hold was released by someone else', { pendingSceneId: 'kifs', heldSceneId: null }],
-    ['a different scene is now held', { pendingSceneId: 'kifs', heldSceneId: 'plasma' }],
-    ['the armed scene is already on screen', { pendingSceneId: 'kifs', heldSceneId: 'kifs', sceneId: 'kifs' }],
-  ] as [string, Partial<ArmedInput>][])('is superseded when %s', (_why, over) => {
+  it('RATE LIMIT: never re-picks a scene held for less than repickMinBeats, however bad its fit', () => {
     const st = armedAt(100)
-    expect(stepArmed(st, inp({ beat: 105, ...over }))).toEqual({ type: 'disarm', reason: 'superseded' })
+    for (let b = 101; b < 100 + ARM.repickMinBeats; b += ARM.fitCheckEveryBeats) {
+      const a = stepArmed(st, inp({ beat: b, ...held(), fit: { armed: 0, best: 1 } }))
+      expect(a.type, `beat ${b}`).toBe('none')
+    }
+    expect(st.armed).not.toBeNull()
   })
 
-  it('a new source (beat counter going backwards) disarms and forgets everything', () => {
-    const st = armedAt(5000)
-    st.suppressDropPickUntil = 5100
-    expect(stepArmed(st, inp({ beat: 3, sustain: false }))).toEqual({ type: 'disarm', reason: 'reset' })
-    expect(st.armed).toBeNull()
-    expect(dropPickSuppressed(st, 3)).toBe(false) // a stale window must not silence the next track
-    expect(st.attempted).toBe(false)
+  it('never re-picks during a transition (a compile on top of a crossfade is two heavy scenes at once)', () => {
+    const st = armedAt(100)
+    const a = stepArmed(st, inp({ beat: 100 + ARM.repickMinBeats, ...held(), transitionActive: true, fit: { armed: 0, best: 1 } }))
+    expect(a.type).toBe('none')
   })
 
-  it('a rewind with nothing armed just resets quietly', () => {
-    const st = createArmedState()
-    stepArmed(st, inp({ beat: 500, sustain: false }))
-    st.suppressDropPickUntil = 900
-    expect(stepArmed(st, inp({ beat: 2, sustain: false })).type).toBe('none')
-    expect(dropPickSuppressed(st, 2)).toBe(false)
+  it('a zero or non-finite fit counts as not fitting', () => {
+    for (const armed of [0, NaN]) {
+      const st = armedAt(100)
+      const a = stepArmed(st, inp({ beat: 100 + ARM.repickMinBeats, ...held(), fit: { armed, best: 1 } }))
+      expect(a, String(armed)).toEqual({ type: 'disarm', reason: 'refit' })
+    }
+  })
+
+  it('re-arms on the next frame after a refit (the slot is free and the rate limit has been served)', () => {
+    const st = armedAt(100)
+    const beat = 100 + ARM.repickMinBeats
+    expect(stepArmed(st, inp({ beat, ...held(), fit: { armed: 0, best: 1 } })).type).toBe('disarm')
+    expect(stepArmed(st, inp({ beat: beat + 1 }))).toEqual({ type: 'arm' })
   })
 })
 
-describe('stepArmed: robustness', () => {
-  it('never throws and never leaves an inconsistent record over a long random run', () => {
-    let seed = 12345
-    const rnd = () => {
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
-      return seed / 4294967296
-    }
-    const st = createArmedState()
-    let beat = 0
-    for (let n = 0; n < 5000; n++) {
-      if (rnd() < 0.7) beat += 1
-      if (rnd() < 0.002) beat = Math.floor(rnd() * 50) // a new source
-      const armed = st.armed
-      const action = stepArmed(
-        st,
-        inp({
-          beat,
-          enabled: rnd() > 0.02,
-          suppressed: rnd() < 0.03,
-          silent: rnd() < 0.05,
-          tier: Math.floor(rnd() * 4.2),
-          sustain: rnd() < 0.7,
-          buildEdge: rnd() < 0.05,
-          dropEdge: rnd() < 0.04,
-          beatsTillDrop: rnd() < 0.3 ? -1 : rnd() < 0.05 ? NaN : Math.floor(rnd() * 20),
-          canDwell: rnd() < 0.5,
-          pendingSceneId: armed ? (rnd() < 0.97 ? armed.sceneId : null) : rnd() < 0.1 ? 'plasma' : null,
-          heldSceneId: armed ? (rnd() < 0.97 ? armed.sceneId : null) : null,
-          sceneId: 'wireframe',
-        }),
-      )
-      if (action.type === 'arm') {
-        if (rnd() < 0.8) armPlaced(st, 'kifs', null, beat, 6)
-        else armRefused(st, beat)
+describe('confirm: a real drop', () => {
+  it('cuts NOW (immediate), at any time, even right after arming, inside the dwell, and in silence', () => {
+    const st = armedAt(100)
+    const a = stepArmed(st, inp({ beat: 100, ...held(), dropEdge: true, canDwell: false, silent: true }))
+    expect(a).toEqual({ type: 'confirm', trigger: 'drop', immediate: true })
+    expect(st.armed).toBeNull()
+    expect(st.lastOutcome).toBe('drop@b100')
+  })
+
+  it('takes priority over every other trigger on the same frame', () => {
+    const st = armedAt(100)
+    const a = stepArmed(st, inp({ beat: 110, ...held(), dropEdge: true, sectionEdge: true, phraseStrength: 1 }))
+    expect(a).toEqual({ type: 'confirm', trigger: 'drop', immediate: true })
+  })
+
+  it('does not suppress the ordinary drop pick (only a predicted commit does)', () => {
+    const st = armedAt(100)
+    stepArmed(st, inp({ beat: 110, ...held(), dropEdge: true }))
+    expect(dropPickSuppressed(st, 111)).toBe(false)
+  })
+})
+
+describe('confirm: the other triggers (dwell-gated, beat-locked crossfade)', () => {
+  const at = (over: Partial<ArmedInput>, st = armedAt(100)) =>
+    stepArmed(st, inp({ beat: 100 + ARM.minHoldBeats, ...held(), ...over }))
+
+  it('a latched section boundary', () => {
+    expect(at({ sectionEdge: true })).toEqual({ type: 'confirm', trigger: 'section', immediate: false })
+  })
+
+  it('a strong fast change confirms at once', () => {
+    expect(at({ phraseStrength: ARM.phraseStrong })).toEqual({ type: 'confirm', trigger: 'phrase', immediate: false })
+  })
+
+  it('a moderate fast change is REMEMBERED and confirms at the next phrase edge within the latch', () => {
+    const st = armedAt(100)
+    expect(stepArmed(st, inp({ beat: 110, ...held(), phraseStrength: ARM.phraseMinStrength })).type).toBe('none')
+    // Not on an edge yet.
+    expect(stepArmed(st, inp({ beat: 112, ...held() })).type).toBe('none')
+    // The phrase edge lands inside the latch window: confirm.
+    expect(stepArmed(st, inp({ beat: 110 + ARM.phraseLatchBeats, ...held(), phraseEdge: true }))).toEqual({
+      type: 'confirm',
+      trigger: 'phrase',
+      immediate: false,
+    })
+  })
+
+  it('a moderate fast change is FORGOTTEN once the latch has expired, and a weak one is never remembered', () => {
+    const st = armedAt(100)
+    stepArmed(st, inp({ beat: 110, ...held(), phraseStrength: ARM.phraseMinStrength }))
+    expect(stepArmed(st, inp({ beat: 110 + ARM.phraseLatchBeats + 1, ...held(), phraseEdge: true, lastCommitBeat: 100 })).type).toBe('none')
+    const st2 = armedAt(100)
+    stepArmed(st2, inp({ beat: 110, ...held(), phraseStrength: ARM.phraseMinStrength - 0.05 }))
+    expect(stepArmed(st2, inp({ beat: 111, ...held(), phraseEdge: true, lastCommitBeat: 100 })).type).toBe('none')
+  })
+
+  it('a phrase edge alone (no fast change) does not confirm while the scene on screen is young', () => {
+    expect(at({ phraseEdge: true, lastCommitBeat: 100 })).toEqual({ type: 'none' })
+  })
+
+  it('the projected drop beat, one beat early, with the build still sustained', () => {
+    const st = armedAt(100, 14) // drop projected at b114
+    const early = stepArmed(st, inp({ beat: 112, ...held(), sustain: true, beatsTillDrop: 2 }))
+    expect(early.type).toBe('none')
+    const a = stepArmed(st, inp({ beat: 113, ...held(), sustain: true, beatsTillDrop: 1 }))
+    expect(a).toEqual({ type: 'confirm', trigger: 'predicted', immediate: false })
+    expect(dropPickSuppressed(st, 114)).toBe(true) // the ordinary drop pick is suppressed for a while...
+    expect(dropPickSuppressed(st, 113 + ARM.dropSuppressBeats)).toBe(false) // ...and then released
+  })
+
+  it('the projection needs the build to still be sustained', () => {
+    const st = armedAt(100, 14)
+    expect(stepArmed(st, inp({ beat: 113, ...held(), sustain: false, beatsTillDrop: 1 })).type).toBe('none')
+  })
+
+  it('the projection is re-made every beat: a later projection moves the release', () => {
+    const st = armedAt(100, 14)
+    expect(stepArmed(st, inp({ beat: 110, ...held(), sustain: true, beatsTillDrop: 20 })).type).toBe('none')
+    expect(st.armed!.expectedBeat).toBe(130)
+    expect(stepArmed(st, inp({ beat: 113, ...held(), sustain: true, beatsTillDrop: 17 })).type).toBe('none')
+  })
+
+  it('a sustained energy step (a drop in level as much as a rise)', () => {
+    const st = armedAt(100)
+    // Settle the trackers at a steady level.
+    let beat = 100
+    for (let i = 0; i < 24; i++) stepArmed(st, inp({ beat: ++beat, ...held(), energy: 0.3 }))
+    expect(st.armed).not.toBeNull()
+    // A big jump up held for energyStepBeats beats confirms.
+    const seen: ArmedAction['type'][] = []
+    for (let i = 0; i < 6; i++) {
+      const a = stepArmed(st, inp({ beat: ++beat, ...held(), energy: 0.95 }))
+      seen.push(a.type)
+      if (a.type === 'confirm') {
+        expect(a).toEqual({ type: 'confirm', trigger: 'energy', immediate: false })
+        break
       }
-      // Invariant: an arm request only ever comes with nothing armed.
-      if (action.type === 'arm') expect(armed).toBeNull()
-      // Invariant: confirm and disarm always leave nothing armed.
-      if (action.type === 'confirm' || action.type === 'disarm') expect(st.armed).toBeNull()
+    }
+    expect(seen).toContain('confirm')
+    // ...and not on the first beat of the jump.
+    expect(seen[0]).toBe('none')
+  })
+
+  it('a steady level, or slow drift, is not a step', () => {
+    const st = armedAt(100)
+    let beat = 100
+    for (let i = 0; i < 200; i++) {
+      const a = stepArmed(st, inp({ beat: ++beat, ...held(), energy: 0.4 + 0.15 * Math.sin(i / 40) }))
+      expect(a.type, `beat ${beat}`).not.toBe('confirm')
     }
   })
 
-  it('survives garbage numbers', () => {
-    const st = createArmedState()
-    for (const beat of [NaN, Infinity, -Infinity, 0, -5]) {
-      expect(() => stepArmed(st, inp({ beat, beatsTillDrop: NaN }))).not.toThrow()
+  it('AGE: the scene on screen has run maxAgeBeats and a phrase edge arrives => the show never stagnates', () => {
+    const st = armedAt(100)
+    expect(stepArmed(st, inp({ beat: 100 + ARM.minHoldBeats, ...held(), phraseEdge: true, lastCommitBeat: 100 + ARM.minHoldBeats - ARM.maxAgeBeats + 1 })).type).toBe('none')
+    const a = stepArmed(st, inp({ beat: 104, ...held(), phraseEdge: true, lastCommitBeat: 104 - ARM.maxAgeBeats }))
+    expect(a).toEqual({ type: 'confirm', trigger: 'age', immediate: false })
+  })
+
+  it('every dwell-gated trigger respects the dwell floor', () => {
+    for (const over of [
+      { sectionEdge: true },
+      { phraseStrength: 1 },
+      { phraseEdge: true, lastCommitBeat: -Infinity },
+    ] satisfies Partial<ArmedInput>[]) {
+      expect(at({ ...over, canDwell: false }), JSON.stringify(over)).toEqual({ type: 'none' })
     }
+  })
+
+  it('...and the minimum hold, and silence', () => {
+    const st = armedAt(100)
+    expect(stepArmed(st, inp({ beat: 101, ...held(), sectionEdge: true })).type).toBe('none') // 1 < minHoldBeats
+    const st2 = armedAt(100)
+    expect(stepArmed(st2, inp({ beat: 110, ...held(), sectionEdge: true, silent: true })).type).toBe('none')
+  })
+
+  it('a confirm clears the record so the same trigger cannot fire twice', () => {
+    const st = armedAt(100)
+    expect(at({ sectionEdge: true }, st).type).toBe('confirm')
+    expect(st.armed).toBeNull()
+    expect(stepArmed(st, inp({ beat: 103, sectionEdge: true, pendingSceneId: 'kifs', heldSceneId: null })).type).not.toBe('confirm')
+  })
+})
+
+describe('commitArmed / director commits', () => {
+  it('forgets the armed scene and records who released it', () => {
+    const st = armedAt(100)
+    commitArmed(st, 'mood', 130)
+    expect(st.armed).toBeNull()
+    expect(st.lastOutcome).toBe('mood@b130')
+  })
+
+  it('after a director release the machine reports `released`, not a fault, if it still holds a stale record', () => {
+    const st = armedAt(100)
+    expect(stepArmed(st, inp({ beat: 105, pendingSceneId: 'kifs', heldSceneId: null })).type).toBe('disarm')
+    expect(st.lastOutcome).toBe('released@b105')
+  })
+})
+
+describe('a whole show', () => {
+  it('arms, holds, releases on a phrase change, re-arms, and never arms twice in a row', () => {
+    const st = createArmedState()
+    const log: string[] = []
+    let beat = 0
+    let lastCommit = 0
+    let pending: string | null = null
+    let heldId: string | null = null
+    let current = 'wireframe'
+    for (let i = 0; i < 400; i++) {
+      beat++
+      const a = stepArmed(
+        st,
+        inp({
+          beat,
+          lastCommitBeat: lastCommit,
+          canDwell: beat - lastCommit >= 32,
+          pendingSceneId: pending,
+          heldSceneId: heldId,
+          sceneId: current,
+          phraseStrength: beat % 64 === 40 ? 1 : 0,
+        }),
+      )
+      if (a.type === 'arm') {
+        const id = ['kifs', 'plasma', 'maze', 'chrome'][log.length % 4]
+        pending = heldId = id
+        armPlaced(st, id, null, beat, -1)
+        log.push(`arm ${id}@${beat}`)
+      } else if (a.type === 'confirm') {
+        current = pending as string // SceneManager commits the released scene
+        pending = heldId = null
+        lastCommit = beat
+        log.push(`confirm ${a.trigger}@${beat}`)
+      } else if (a.type === 'disarm') {
+        pending = heldId = null
+        log.push(`disarm ${a.reason}@${beat}`)
+      }
+    }
+    // It armed a scene, released it on the strong phrase change past the dwell, and kept doing so.
+    expect(log.filter((l) => l.startsWith('arm')).length).toBeGreaterThanOrEqual(4)
+    expect(log.filter((l) => l.startsWith('confirm phrase')).length).toBeGreaterThanOrEqual(3)
+    // Never two arms without a confirm / disarm between them.
+    let armed = false
+    for (const l of log) {
+      if (l.startsWith('arm')) {
+        expect(armed, l).toBe(false)
+        armed = true
+      } else armed = false
+    }
+    // The types of everything it ever asked for are all handled kinds.
+    expect(types([{ type: 'none' }])).toEqual(['none'])
   })
 })

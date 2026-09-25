@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
 import { isPhraseEdge } from '../audio/structure/downbeat'
 import type { MoodState } from '../audio/types'
+import { tryCommitArmed } from './armedDirector'
 import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { frameLoad } from './frameLoad'
@@ -328,8 +329,15 @@ export function PerformanceDirector() {
     // Only pick a new primary when one isn't already mid-commit; otherwise we'd
     // fight AutoPilot's in-flight switch. Either way we (re)compose the layers
     // against whichever primary is landing.
-    let primaryId = s.pendingSceneId ?? s.sceneId
-    if (!s.pendingSceneId && primaryCandidates.length > 0) {
+    // A HELD (armed) pending scene is not landing yet: until it is released the current scene is still the subject
+    // the layers must sit on. A boundary is exactly the moment to cut to it (already picked from the music and
+    // compiled, armedDirector.ts); only when it no longer fits does a fresh, cold pick replace it (`requestScene`
+    // clears the hold).
+    const heldPending = s.heldSceneId !== null && s.heldSceneId === s.pendingSceneId
+    let primaryId = s.pendingSceneId && !heldPending ? s.pendingSceneId : s.sceneId
+    const armedTaken = heldPending && tryCommitArmed('boundary', false, f)
+    if (armedTaken) primaryId = s.heldSceneId as string
+    if (!armedTaken && (!s.pendingSceneId || heldPending) && primaryCandidates.length > 0) {
       // Character-driven pick over every primary-capable scene (not just this mood label's pool,
       // which overlaps the others ~90%); null until the character read is ready, then the
       // original mood-label pick runs unchanged.

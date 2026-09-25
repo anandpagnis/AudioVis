@@ -56,6 +56,7 @@ function snap(over: Partial<LookDebugSnapshot> = {}): LookDebugSnapshot {
       tempoOctaves: 0.09,
       tempoRate: 1.06,
       armed: null,
+      armedFit: '',
       armedLast: '-',
     },
     grade: { sat: 1.06, temp: 0.04, contrast: 1.02 },
@@ -118,15 +119,28 @@ describe('formatLookDebug', () => {
     expect(text).toMatch(/active=true t=0\.40/)
     expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\)/)
     expect(text).toMatch(/tempo bpm=128 oct=\+0\.09 coupling=\d\.\d\d -> speed x1\.06/)
-    expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\) {2}armed - {2}last=-/)
+    expect(text).toMatch(/quality tier=1 \(wipe needs <= 1\)/)
+    expect(text).toMatch(/armed - {2}last=-/)
   })
 
-  it('prints the armed drop scene on the quality line, within the width and line caps', () => {
+  it('prints the armed scene with its reason, fit and last outcome, within the width and line caps', () => {
     const s = snap()
-    s.applied.armed = { sceneId: 'kifs', sinceBeat: 128, expiresBeat: 160, gate: 'hold', warm: true, trigger: 'build' }
+    s.applied.armed = {
+      sceneId: 'kifs',
+      sinceBeat: 128,
+      expiresBeat: 224,
+      gate: 'hold',
+      warm: true,
+      trigger: 'idle',
+      reason: 'rise aff.71 bpm+.12 look x1.4 cost x1.3',
+    }
+    s.applied.armedFit = '0.71/0.80'
+    s.applied.armedLast = 'drop@b120'
     const lines = formatLookDebug(s)
-    expect(lines.join('\n')).toMatch(/armed kifs since b128 gate=hold warm=y expires b160 trig=build/)
-    expect(lines.length).toBeLessThanOrEqual(12)
+    expect(lines.join('\n')).toMatch(
+      /armed kifs b128>b224 warm=y trig=idle fit=0\.71\/0\.80 {2}why=rise aff\.71 bpm\+\.12 look x1\.4 cost x1\.3 {2}last=drop@b120/,
+    )
+    expect(lines.length).toBeLessThanOrEqual(13)
     for (const l of lines) expect(l.length).toBeLessThan(140)
     s.applied.armed = { ...s.applied.armed, warm: false }
     expect(formatLookDebug(s).join('\n')).toMatch(/warm=n/)
@@ -134,12 +148,20 @@ describe('formatLookDebug', () => {
 
   it('shows the last outcome while nothing is armed, and never prints NaN for a garbage beat', () => {
     const s = snap()
-    s.applied.armedLast = 'drop@b140'
-    expect(formatLookDebug(s).join('\n')).toMatch(/armed - {2}last=drop@b140/)
-    s.applied.armed = { sceneId: 'kifs', sinceBeat: NaN, expiresBeat: Infinity, gate: 'hold', warm: false, trigger: 'build' }
+    s.applied.armedLast = 'phrase@b140'
+    expect(formatLookDebug(s).join('\n')).toMatch(/armed - {2}last=phrase@b140/)
+    s.applied.armed = {
+      sceneId: 'kifs',
+      sinceBeat: NaN,
+      expiresBeat: Infinity,
+      gate: 'hold',
+      warm: false,
+      trigger: 'idle',
+      reason: '',
+    }
     const text = formatLookDebug(s).join('\n')
     expect(text).not.toMatch(/NaN|Infinity/)
-    expect(text).toMatch(/since b- /)
+    expect(text).toMatch(/armed kifs b->b- /)
   })
 
   it('flags a silent downgrade — the requested style did not actually reach the screen', () => {
@@ -179,7 +201,7 @@ describe('formatLookDebug', () => {
 
   it('is a handful of lines, so it fits a corner', () => {
     const lines = formatLookDebug(snap())
-    expect(lines.length).toBeLessThanOrEqual(12)
+    expect(lines.length).toBeLessThanOrEqual(13)
     for (const l of lines) expect(l.length).toBeLessThan(140)
   })
 })

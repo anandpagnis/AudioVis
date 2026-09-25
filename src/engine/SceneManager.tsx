@@ -705,7 +705,10 @@ export function SceneManager() {
         return
       }
       if (idx >= ids.length) return
-      prewarmScene(ids[idx++], gl)
+      const bootId = ids[idx++]
+      prewarmScene(bootId, gl)
+      // Compiled off to the side: cheap to arm later (armedPick.ts prefers these).
+      sceneStreamer.markCompiled(bootId)
       timer = window.setTimeout(pump, PREWARM_STAGGER_MS)
     }
     timer = window.setTimeout(pump, 0)
@@ -809,6 +812,11 @@ export function SceneManager() {
       ) {
         entriesRef.current.push(makeEntry(pendingSceneId, 'primary', 0))
         force((n) => n + 1)
+        // A constantly ARMED scene mounts on its own schedule, not on a commit: its chunk load + shader compile
+        // (and, without parallel-compile support, its visible warm frames) land as a frame-time spike that is
+        // scheduled work, not load. Without this the governor would read every arm as evidence and demote the
+        // tier, which switches arming off: the feedback loop constant arming must not create.
+        if (held) suspendFrameSampling(WARM_FRAMES * 4 + 30)
       }
 
       const waited = clock.elapsedTime - pendingSince.current
