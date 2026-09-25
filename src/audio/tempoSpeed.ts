@@ -10,7 +10,7 @@
  *  2. {@link tempoRate}: `rate = 2 ** (coupling * octaves)`, i.e. `(bpm / 120) ** coupling`. `coupling` is the
  *     per-mood exponent (`LookRow.tempoCoupling`): 0 ignores tempo entirely, 1 makes motion exactly proportional to
  *     tempo (160 BPM = 1.33x, 80 BPM = 0.67x), values in between soften the effect and values above 1 exaggerate
- *     it (up to 1.5: 160 BPM = 1.54x). The result is clamped to [RATE_MIN, RATE_MAX]. The rate is 1 at 120 BPM for
+ *     it slightly (up to 1.2: 160 BPM = 1.41x). The result is clamped to [RATE_MIN, RATE_MAX]. The rate is 1 at 120 BPM for
  *     every coupling, so mood only changes how far the tempo pulls, never where the neutral point sits.
  *
  * ## Why a power law
@@ -45,9 +45,13 @@ export const REF_BPM = 120
 /** Octave distance is clamped to +-this (60..240 BPM). A misread beyond it must not fling motion around. */
 export const OCTAVES_MAX = 1
 /** Coupling used when there is no valid mood look (warm-up, `?look=off`): the neutral row's value. */
-export const DEFAULT_COUPLING = 0.9
-export const RATE_MIN = 0.5
-export const RATE_MAX = 2
+export const DEFAULT_COUPLING = 0.68
+export const RATE_MIN = 0.6
+export const RATE_MAX = 1.7
+/** The global speed folded into a shader scene's dial is clamped to this range: the raw product (user Speed x mood
+ *  x tempo) spans 0.15..2.2, which read as too much on scenes that never had it. */
+export const FOLD_SPEED_MIN = 0.6
+export const FOLD_SPEED_MAX = 1.5
 /** Below this beat-tracking confidence, the tempo has no effect (octaves = 0). */
 export const CONFIDENCE_FLOOR = 0.15
 /** Above this confidence, the tempo has its full effect. */
@@ -89,11 +93,12 @@ export function speedDialBias(rate: number): number {
 
 /**
  * A scene's 0..1 speed dial with the GLOBAL speed folded in (`getEffectiveParams().speed`: user dial x mood x
- * tempo rate), so `drastic(result) = drastic(dial) * globalSpeed`. For a `tempoLocked` scene (its own motion already
- * follows the beat grid) the tempo `rate` is divided back out, so it gets the user and mood speed but not a second
- * dose of tempo. Pure, no allocation.
+ * tempo rate), so `drastic(result) = drastic(dial) * clamp(globalSpeed)`, the global speed clamped to
+ * [FOLD_SPEED_MIN, FOLD_SPEED_MAX]. A `tempoLocked` scene (its own motion already follows the beat grid, so any
+ * extra multiplier pulls it OFF the beat) gets NO fold at all: its dial is returned untouched. Pure, no allocation.
  */
-export function foldedSpeedDial(dial: number, globalSpeed: number, rate: number, tempoLocked: boolean): number {
-  const g = tempoLocked && Number.isFinite(rate) && rate > 0 ? globalSpeed / rate : globalSpeed
+export function foldedSpeedDial(dial: number, globalSpeed: number, tempoLocked: boolean): number {
+  if (tempoLocked) return dial
+  const g = Number.isFinite(globalSpeed) ? clamp(globalSpeed, FOLD_SPEED_MIN, FOLD_SPEED_MAX) : 1
   return dial + speedDialBias(g)
 }

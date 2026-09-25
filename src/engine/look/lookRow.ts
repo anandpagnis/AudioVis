@@ -115,9 +115,9 @@ export interface LookRow {
 
   // --- tempo coupling ---------------------------------------------------------------------------------
   /**
-   * How strongly the song's BPM sets the rate of motion, 0..1.5: the exponent in `rate = (bpm / 120) ** coupling`
+   * How strongly the song's BPM sets the rate of motion, 0..1.2: the exponent in `rate = (bpm / 120) ** coupling`
    * (`tempoSpeed.ts`). 0 ignores tempo, 1 makes motion proportional to it (160 BPM = 1.33x, 80 BPM = 0.67x), above 1
-   * exaggerates it (1.5: 160 BPM = 1.54x, 80 BPM = 0.54x). Driving and aggressive moods lock hard to the tempo;
+   * exaggerates it slightly (1.2: 160 BPM = 1.41x, 80 BPM = 0.61x). Driving and aggressive moods lock hard to the tempo;
    * serene and dreamy ones stay slow and floaty even on a fast track.
    * Applied on top of the mood's own base speed (`steerSpeed`, `cameraSpeed`), never instead of it.
    */
@@ -245,7 +245,7 @@ export function createNeutralRow(): LookRow {
     mirrorEngage: 0.35, mirrorMode: [0.6, 0.4], mirrorSegments: [0.34, 0.33, 0.33],
     mirrorSpinMin: 0.2, mirrorSpinMax: 0.4, mirrorTwistMax: 1, mirrorMix: 1, mirrorBusyGain: 0.5,
     steerSpeed: 0.52, steerComplexity: 0.52, steerDensity: 0.52, steerFill: 0.52, steerContrast: 0.55,
-    tempoCoupling: 0.9,
+    tempoCoupling: 0.68,
     cameraWeights: [0.3, 0.2, 0.1, 0.05, 0.15, 0.05, 0.02, 0.05, 0.08], cameraSpeed: 1, cameraShake: 0.3, cameraCutRate: 0.5,
     // dissolve, smear, melt, collapse, mosaic, sortSlice, inkDissolve, irisWipe, datamosh (LOOK_TRANSITIONS order).
     transitionWeights: [0.28, 0.16, 0.14, 0.12, 0.1, 0.08, 0.06, 0.04, 0.02],

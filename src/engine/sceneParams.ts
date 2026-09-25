@@ -170,20 +170,20 @@ export function visibleSceneParams(
  * then the user's own dial on top, so the user still wins. Reading the seven dials from `live` is what lets the
  * mood reach factory scenes at all; `base` alone has no steering layer.
  *
- * Then the global speed (user Speed dial x mood x tempo rate) is folded into `speed` as an exact multiplier on
- * `drastic()` (`foldedSpeedDial`). A `tempoLocked` scene gets everything but the tempo.
+ * Then the global speed (user Speed dial x mood x tempo rate, clamped to a moderate range) is folded into `speed`
+ * as an exact multiplier on `drastic()` (`foldedSpeedDial`). A `tempoLocked` scene gets NO fold (beat-locked motion
+ * must stay exactly on the grid).
  */
 export function resolveFactoryDials(
   into: ResolvedSceneParams,
   base: Readonly<ResolvedSceneParams>,
   live: Readonly<Record<SceneParamKey, number>>,
   globalSpeed: number,
-  tempoRate: number,
   tempoLocked: boolean,
 ): void {
   Object.assign(into, base)
   for (const key of SCENE_PARAM_KEYS) into[key] = live[key]
-  into.speed = foldedSpeedDial(live.speed, globalSpeed, tempoRate, tempoLocked)
+  into.speed = foldedSpeedDial(live.speed, globalSpeed, tempoLocked)
 }
 
 /**

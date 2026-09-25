@@ -10,7 +10,6 @@ import { useSceneFrame, type SceneFrame } from './sceneFrame'
 import { resolveFactoryDials, useSceneParams, type ResolvedSceneParams } from './sceneParams'
 import { resourceCache } from './streaming/resourceCache'
 import { prewarmShaders } from './streaming/shaderPrewarm'
-import { currentTempoRate } from './tempoRate'
 
 /**
  * GLSL the factory injects ahead of every scene's fragment source.
@@ -142,8 +141,8 @@ export interface ShaderSceneSpec<S = void> {
   /**
    * True for a scene whose motion is already locked to the beat grid (it advances by `bpm`/beats-per-second
    * itself). The factory folds the global speed (user dial x mood x TEMPO, see {@link ShaderSceneContext.P}) into
-   * every other scene's `P.speed`; for a tempo-locked one it folds in everything EXCEPT the tempo, so the song's
-   * tempo is not applied twice.
+   * every other scene's `P.speed`; a tempo-locked one gets NO fold, because any extra multiplier on beat-locked
+   * motion pulls it off the beat.
    */
   tempoLocked?: boolean
   /**
@@ -406,7 +405,7 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
     // speed into `speed` as an exact multiplier on `drastic()` (tempoSpeed.ts), so every scene that already does
     // `phase += dt * ... * drastic(P.speed)` picks up the user's Speed dial, the mood's speed and the song's tempo
     // with no per-scene edit. A tempo-locked scene gets everything but the tempo (it already follows the beat grid).
-    resolveFactoryDials(P, Pdials, ctx.p, ctx.params.speed, currentTempoRate(), spec.tempoLocked === true)
+    resolveFactoryDials(P, Pdials, ctx.p, ctx.params.speed, spec.tempoLocked === true)
     u.uMode.value = P.modeIndex
 
     if (rendered.current < WARM_RENDERS) rendered.current++

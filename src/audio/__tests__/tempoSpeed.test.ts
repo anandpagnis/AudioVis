@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   CONFIDENCE_CEIL,
   CONFIDENCE_FLOOR,
+  FOLD_SPEED_MAX,
+  FOLD_SPEED_MIN,
   OCTAVES_MAX,
   RATE_MAX,
   RATE_MIN,
@@ -119,34 +121,36 @@ describe('speedDialBias', () => {
   })
 
   it('stays within +-0.25 of the dial across the whole rate range', () => {
-    expect(speedDialBias(RATE_MAX)).toBeCloseTo(0.25, 12)
-    expect(speedDialBias(RATE_MIN)).toBeCloseTo(-0.25, 12)
+    expect(speedDialBias(RATE_MAX)).toBeCloseTo(Math.log2(RATE_MAX) / 4, 12)
+    expect(speedDialBias(RATE_MIN)).toBeCloseTo(Math.log2(RATE_MIN) / 4, 12)
+    expect(Math.abs(speedDialBias(RATE_MAX))).toBeLessThan(0.25)
+    expect(Math.abs(speedDialBias(RATE_MIN))).toBeLessThan(0.25)
   })
 })
 
 describe('foldedSpeedDial', () => {
-  it('multiplies drastic(dial) by the global speed exactly, for any dial and global speed', () => {
+  it('multiplies drastic(dial) by the global speed exactly while it is inside the fold range', () => {
     for (const dial of [0, 0.3, 0.5, 0.8, 1]) {
-      for (const g of [0.3, 0.6, 1, 1.5, 2.2]) {
-        expect(drastic(foldedSpeedDial(dial, g, 1.2, false))).toBeCloseTo(drastic(dial) * g, 9)
+      for (const g of [FOLD_SPEED_MIN, 0.8, 1, 1.2, FOLD_SPEED_MAX]) {
+        expect(drastic(foldedSpeedDial(dial, g, false))).toBeCloseTo(drastic(dial) * g, 9)
       }
     }
   })
 
+  it('clamps an extreme global speed to the fold range (the raw product spans 0.15..2.2)', () => {
+    expect(drastic(foldedSpeedDial(0.5, 2.2, false))).toBeCloseTo(FOLD_SPEED_MAX, 9)
+    expect(drastic(foldedSpeedDial(0.5, 0.15, false))).toBeCloseTo(FOLD_SPEED_MIN, 9)
+  })
+
   it('leaves the dial untouched at a global speed of 1', () => {
-    expect(foldedSpeedDial(0.42, 1, 1, false)).toBe(0.42)
+    expect(foldedSpeedDial(0.42, 1, false)).toBe(0.42)
   })
 
-  it('a tempo-locked scene gets the global speed WITHOUT the tempo rate (no double tempo)', () => {
-    const global = 0.8 * 1.3 // e.g. mood 0.8 x tempo rate 1.3
-    const locked = foldedSpeedDial(0.5, global, 1.3, true)
-    expect(drastic(locked)).toBeCloseTo(0.8, 9)
-    expect(drastic(foldedSpeedDial(0.5, global, 1.3, false))).toBeCloseTo(global, 9)
+  it('a tempo-locked (beat-locked) scene gets NO fold at all, whatever the global speed', () => {
+    for (const g of [0.15, 0.6, 1, 1.5, 2.2, NaN]) expect(foldedSpeedDial(0.37, g, true)).toBe(0.37)
   })
 
-  it('a tempo-locked scene is unaffected by a garbage rate (falls back to the plain global speed)', () => {
-    for (const r of [0, -1, NaN, Infinity]) {
-      expect(drastic(foldedSpeedDial(0.5, 1.4, r, true))).toBeCloseTo(1.4, 9)
-    }
+  it('a non-finite global speed reads as neutral', () => {
+    for (const g of [NaN, Infinity, -Infinity]) expect(foldedSpeedDial(0.5, g, false)).toBeCloseTo(0.5, 9)
   })
 })
