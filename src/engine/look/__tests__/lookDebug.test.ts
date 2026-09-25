@@ -4,10 +4,12 @@ import LOOK_DEBUG_SRC from '../../../ui/LookDebug.tsx?raw'
 import VISUALIZER_SRC from '../../../routes/Visualizer.tsx?raw'
 import {
   formatLookDebug,
+  formatShowLine,
   LOOK_DEBUG_INTERVAL_MS,
   lookDebugProbe,
   mirrorSummary,
   topMoodWeights,
+  type LookDebugShow,
   type LookDebugSnapshot,
 } from '../lookDebug'
 import { createLookProfile, LENS } from '../lookRow'
@@ -140,7 +142,7 @@ describe('formatLookDebug', () => {
     expect(lines.join('\n')).toMatch(
       /armed kifs b128>b224 warm=y trig=idle fit=0\.71\/0\.80 {2}why=rise aff\.71 bpm\+\.12 look x1\.4 cost x1\.3 {2}last=drop@b120/,
     )
-    expect(lines.length).toBeLessThanOrEqual(13)
+    expect(lines.length).toBeLessThanOrEqual(14) // 13 + the show-director line
     for (const l of lines) expect(l.length).toBeLessThan(140)
     s.applied.armed = { ...s.applied.armed, warm: false }
     expect(formatLookDebug(s).join('\n')).toMatch(/warm=n/)
@@ -201,8 +203,53 @@ describe('formatLookDebug', () => {
 
   it('is a handful of lines, so it fits a corner', () => {
     const lines = formatLookDebug(snap())
-    expect(lines.length).toBeLessThanOrEqual(13)
+    expect(lines.length).toBeLessThanOrEqual(14) // 13 + the show-director line
     for (const l of lines) expect(l.length).toBeLessThan(140)
+  })
+})
+
+const SHOW: LookDebugShow = {
+  on: true,
+  kind: 'CUT',
+  reason: 'drop-fast',
+  micro: '',
+  S: 1.12,
+  T: 0.61,
+  age: 6,
+  pressure: 0.4,
+  etaBars: 26,
+  hold: 12,
+  microCount: 5,
+  cut: 3,
+  forced: 1,
+  cutHow: 'armed',
+}
+
+describe('the show-director line', () => {
+  it('prints the last action and reason, S, T_eff, age in bars, pressure, the forced-change ETA and the counts', () => {
+    const line = formatShowLine(SHOW)
+    expect(line).toMatch(/^show {2}CUT drop-fast\(armed\) S=1\.12 T=0\.61 age=6\.0b P=0\.40 next<=26b {2}H12 M5 C3\(f1\)$/)
+  })
+
+  it('names what a MICRO varied and omits the cut method for a non-CUT', () => {
+    const line = formatShowLine({ ...SHOW, kind: 'MICRO', reason: 'below-T', micro: 'palette' })
+    expect(line).toMatch(/^show {2}MICRO:palette below-T S=/)
+    expect(line).not.toMatch(/\(armed\)/)
+    expect(formatShowLine({ ...SHOW, kind: 'HOLD', reason: 'refractory' })).toMatch(/^show {2}HOLD refractory S=/)
+  })
+
+  it('says the director is off under ?director=legacy, and when no show data is supplied', () => {
+    expect(formatShowLine({ ...SHOW, on: false })).toMatch(/director off \(\?director=legacy/)
+    expect(formatShowLine(undefined)).toMatch(/director off/)
+  })
+
+  it('is one more line in the overlay, within the width cap, and never prints NaN', () => {
+    const s = snap({ show: SHOW })
+    const lines = formatLookDebug(s)
+    expect(lines.some((l) => l.startsWith('show '))).toBe(true)
+    for (const l of lines) expect(l.length).toBeLessThan(140)
+    const bad = formatLookDebug(snap({ show: { ...SHOW, S: NaN, T: Infinity, age: NaN, pressure: NaN, etaBars: NaN } }))
+    expect(bad.join('\n')).not.toMatch(/NaN|Infinity/)
   })
 })
 

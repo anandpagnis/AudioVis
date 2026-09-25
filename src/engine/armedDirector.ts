@@ -33,8 +33,15 @@ import { sceneStreamer } from './streaming/sceneStreamer'
 /** `?arm=off`, read once at startup. Off: nothing is ever armed and every director picks a fresh scene as before. */
 export const ARM_ENABLED = !armOff()
 
-/** The one armed state. Module-level so `AutoPilot` (which steps it) and `PerformanceDirector` share it. */
-export const armedRuntime = { state: createArmedState() }
+/**
+ * The one armed state. Module-level so `AutoPilot` (which steps it) and `PerformanceDirector` share it.
+ *
+ * `directorOwns`: the show director decides WHEN the primary scene changes (`engine/show/`, the default; false under
+ * `?director=legacy`). Set by `AutoPilot` each frame from the read-once flag. While true, `tryCommitArmed` refuses every
+ * legacy trigger (mood / boundary / build / stale) so the armed scene can only be released by the director's own
+ * `'show'` CUT. False (its initial value) leaves `tryCommitArmed` exactly as it always was.
+ */
+export const armedRuntime = { state: createArmedState(), directorOwns: false }
 
 /** Hand a director's look, only when it may steer scenes (the same gate the rest of the scene decisions use). */
 export function activeLook() {
@@ -138,6 +145,10 @@ function factsToList(scenes: readonly SceneDef[]): ArmCandidate[] {
  * still held, still fits the music and (unless `immediate`) the 32-beat dwell has elapsed, release it and report
  * true, so the director skips its own cold pick. False = nothing to commit; the director picks as it always did.
  *
+ * The show director's own CUT passes `trigger = 'show'`: it owns pacing, so it skips the dwell check, and it is the
+ * ONLY trigger accepted while `armedRuntime.directorOwns` (every legacy trigger returns false then). `reason` is
+ * stored as the store's `pendingReason` for the logs.
+ *
  * Only a release, never a request: the store's hold is what `SceneManager` waits on, so the commit lands on the
  * next downbeat (or at once when `immediate`) with the shader already compiled.
  */
@@ -146,15 +157,18 @@ export function tryCommitArmed(
   immediate: boolean,
   f: AudioFeatures,
   trend?: ArmTrend,
+  reason?: string,
 ): boolean {
   const st = armedRuntime.state
   const a = st.armed
   if (!ARM_ENABLED || a === null) return false
+  if (armedRuntime.directorOwns && trigger !== 'show') return false
   const s = useStore.getState()
   if (s.heldSceneId !== a.sceneId || s.pendingSceneId !== a.sceneId) return false
-  if (!immediate && !canAutoSwitch(s.lastCommitBeat, f.beatIndex)) return false
+  if (!immediate && trigger !== 'show' && !canAutoSwitch(s.lastCommitBeat, f.beatIndex)) return false
   if (!armedFitNow(f, s, a.sceneId, trend).ok) return false
   if (!s.releaseHold(immediate)) return false
+  if (reason !== undefined) useStore.setState({ pendingReason: reason })
   commitArmed(st, trigger, f.beatIndex)
   return true
 }

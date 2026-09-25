@@ -3,6 +3,7 @@ import { audioEngine } from '../audio/AudioEngine'
 import { armedProbe } from '../engine/armedChange'
 import { performanceState } from '../engine/performanceState'
 import { quality } from '../engine/quality'
+import { showProbe } from '../engine/show/showRuntime'
 import { sceneStreamer } from '../engine/streaming/sceneStreamer'
 import { currentTempoRate } from '../engine/tempoRate'
 import { WIPE_MAX_TIER } from '../engine/transitionWipe'
@@ -87,6 +88,7 @@ function snapshot(): LookDebugSnapshot {
       armedLast: armedProbe.lastOutcome,
     },
     grade: lookDebugProbe,
+    show: showProbe,
   }
 }
 

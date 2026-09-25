@@ -77,12 +77,38 @@ export interface LookDebugApplied {
   armedLast: string
 }
 
+/**
+ * The show director's state (`engine/show/showRuntime.showProbe`). `on` false = `?director=legacy`: the old trigger
+ * blocks run and there is nothing to report.
+ */
+export interface LookDebugShow {
+  on: boolean
+  /** Last decided action `HOLD` / `MICRO` / `CUT`, its reason, and what a MICRO varied ('' otherwise). */
+  kind: string
+  reason: string
+  micro: string
+  /** S, T_eff, scene age in bars, pressure 0..1 and bars until the forced-change ceiling. */
+  S: number
+  T: number
+  age: number
+  pressure: number
+  etaBars: number
+  hold: number
+  microCount: number
+  cut: number
+  forced: number
+  /** How the last CUT was performed: `armed`, `pick`, `busy`, `refused`. */
+  cutHow: string
+}
+
 /** Everything one overlay refresh prints. */
 export interface LookDebugSnapshot {
   look: LookProfile
   character: { valid: boolean; confidence: number }
   applied: LookDebugApplied
   grade: { sat: number; temp: number; contrast: number }
+  /** Absent (older callers, tests) prints the director line as off. */
+  show?: LookDebugShow
 }
 
 /** A number to `d` places, or `-` when it is not finite (a NaN must show up as a dash, never crash the overlay). */
@@ -112,6 +138,21 @@ export function mirrorSummary(segments: number, twist: number, mix: number): str
   if (segments >= 2.5) return `kaleido/${Math.round(segments)}`
   if (Math.abs(twist) > 0.01) return `vortex ${fmtSigned(twist, 2)}`
   return 'off'
+}
+
+/**
+ * The director line: `show CUT drop-fast(armed) S=1.12 T=0.61 age=6.0b P=0.40 next<=26b  H12 M5 C3(f1)`: the last
+ * action and why, the score against the effective threshold, the scene's age in bars, the pressure, the bars until the
+ * forced ceiling, and the running counts of HOLD / MICRO / CUT (f = how many of the cuts were forced).
+ */
+export function formatShowLine(show: LookDebugShow | undefined): string {
+  if (!show || !show.on) return 'show  director off (?director=legacy: the old triggers run)'
+  const how = show.kind === 'CUT' && show.cutHow !== '-' ? `(${show.cutHow})` : ''
+  const what = show.kind === 'MICRO' && show.micro ? `:${show.micro}` : ''
+  return (
+    `show  ${show.kind}${what} ${show.reason}${how} S=${fmt(show.S, 2)} T=${fmt(show.T, 2)} age=${fmt(show.age, 1)}b` +
+    ` P=${fmt(show.pressure, 2)} next<=${fmt(show.etaBars, 0)}b  H${fmt(show.hold, 0)} M${fmt(show.microCount, 0)} C${fmt(show.cut, 0)}(f${fmt(show.forced, 0)})`
+  )
 }
 
 /** The overlay text, one string per line. Total: any snapshot field may be NaN. */
@@ -156,6 +197,7 @@ export function formatLookDebug(s: LookDebugSnapshot): string[] {
       ? `armed ${arm.sceneId} b${fmt(arm.sinceBeat, 0)}>b${fmt(arm.expiresBeat, 0)} warm=${arm.warm ? 'y' : 'n'} trig=${arm.trigger}${fit}  why=${arm.reason}  last=${a.armedLast}`
       : `armed -  last=${a.armedLast}`,
   )
+  lines.push(formatShowLine(s.show))
   lines.push(
     `tempo bpm=${fmt(a.bpm, 0)} oct=${fmtSigned(a.tempoOctaves, 2)} coupling=${fmt(look.tempoCoupling, 2)} -> speed x${fmt(a.tempoRate, 2)}`,
   )

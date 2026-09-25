@@ -336,6 +336,9 @@ interface AppState {
    * describes one pending transition, not persisted state.
    */
   pendingImmediate: boolean
+  /** Why the pending scene was requested (`requestScene`'s `reason`, or the show director on releasing the armed
+   *  scene); null for legacy callers. Read by the logs at commit time. Transient, not persisted. */
+  pendingReason: string | null
   /**
    * The scene AutoPilot has ARMED for the coming drop (`engine/armedChange.ts`): mounted and compiled through
    * the pending slot like any request, but `SceneManager.resolveCommit` will not commit it while this equals
@@ -648,7 +651,17 @@ interface AppState {
   /** Returns false when the request was refused (already current, or the
    *  automatic dwell floor has not elapsed) — callers that act on the
    *  incoming scene must check, not assume. */
-  requestScene: (id: string, opts?: { auto?: boolean; immediate?: boolean }) => boolean
+  requestScene: (
+    id: string,
+    opts?: {
+      auto?: boolean
+      immediate?: boolean
+      /** Why (the show director's reason, for the logs); stored as `pendingReason` until the commit. */
+      reason?: string
+      /** The caller owns pacing (the show director): skip the 32-beat dwell floor. Legacy callers never set it. */
+      bypassDwell?: boolean
+    },
+  ) => boolean
   /**
    * Arm `id` for the coming drop: mount and compile it through the pending slot but HOLD it (`heldSceneId`).
    * Refused (false) when it is the current scene, cannot hold `primary`, or the pending slot is taken. Unlike an
@@ -820,6 +833,7 @@ export const useStore = create<AppState>()(
       sceneId: 'wireframe',
       pendingSceneId: null,
       pendingImmediate: false,
+      pendingReason: null,
       heldSceneId: null,
       recentSceneIds: [],
       lastCommitBeat: -Infinity,
@@ -1160,11 +1174,16 @@ export const useStore = create<AppState>()(
         // Manual picks are exempt (the user asked for it), and so are drops:
         // `immediate` marks the one event whose whole point is landing on the
         // instant, and a drop is worth interrupting a dwell for.
-        if (opts?.auto && !opts.immediate && !canAutoSwitch(get().lastCommitBeat)) return false
+        if (opts?.auto && !opts.immediate && !opts.bypassDwell && !canAutoSwitch(get().lastCommitBeat)) return false
         preloadScene(id) // start fetching the lazy chunk before the downbeat commit
         // Any request other than `armScene` replaces the pending scene outright, so it also drops a hold: a
         // request for the ARMED scene therefore doubles as its confirmation, and a manual pick is never held.
-        set({ pendingSceneId: id, pendingImmediate: opts?.immediate === true, heldSceneId: null })
+        set({
+          pendingSceneId: id,
+          pendingImmediate: opts?.immediate === true,
+          heldSceneId: null,
+          pendingReason: opts?.reason ?? null,
+        })
         return true
       },
 
@@ -1173,7 +1192,7 @@ export const useStore = create<AppState>()(
         if (id === s.sceneId || s.pendingSceneId !== null) return false
         if (!canHoldPrimary(id)) return false
         preloadScene(id) // start fetching the lazy chunk now: the whole point is to be ready long before the drop
-        set({ pendingSceneId: id, pendingImmediate: false, heldSceneId: id })
+        set({ pendingSceneId: id, pendingImmediate: false, heldSceneId: id, pendingReason: null })
         return true
       },
 
@@ -1339,6 +1358,7 @@ export const useStore = create<AppState>()(
             sceneId: pending,
             pendingSceneId: null,
             pendingImmediate: false,
+            pendingReason: null,
             heldSceneId: null,
             recentSceneIds: recent,
             lastCommitBeat: audioEngine.features.beatIndex,

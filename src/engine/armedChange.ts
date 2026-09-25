@@ -45,6 +45,9 @@
  *      age      the scene on screen has run `maxAgeBeats` and a phrase edge arrives (the show never stagnates).
  *  - Mood changes and section-boundary requests come from the directors (`AutoPilot`, `PerformanceDirector`), which
  *    call `commitArmed` through `armedDirector.tryCommitArmed` when the armed scene still fits.
+ *  - The above is the LEGACY release policy (`?director=legacy`). With the show director on (the default,
+ *    `ArmedInput.directorOwns`) NONE of these confirms fire, the drop included: the director's CUT releases the armed
+ *    scene through `tryCommitArmed('show', ...)`, and arming, refit and expiry still run.
  *
  * ## Disarm
  * `off` (flag), `suppressed`, `tier` (> maxTier), `superseded` (someone replaced or committed the pending scene, or
@@ -88,7 +91,7 @@ export const ARM = {
 
 export type ConfirmTrigger = 'drop' | 'predicted' | 'section' | 'phrase' | 'energy' | 'age'
 /** Triggers an external director can commit with (armedDirector.tryCommitArmed). */
-export type DirectorTrigger = 'mood' | 'boundary' | 'build' | 'stale'
+export type DirectorTrigger = 'mood' | 'boundary' | 'build' | 'stale' | 'show'
 export type DisarmReason = 'off' | 'suppressed' | 'tier' | 'superseded' | 'released' | 'expired' | 'refit' | 'reset'
 
 /** What is currently armed. `gate` is always `hold` (held until confirmed). */
@@ -191,6 +194,13 @@ export interface ArmedInput {
   transitionActive: boolean
   /** The armed scene's fit vs the best, or null when no check is due (see `fitCheckDue`). */
   fit: { armed: number; best: number } | null
+  /**
+   * The show director owns scene timing (`engine/show/`): NO signal here may release the armed scene on its own (not
+   * the drop, nor the dwell-gated section / phrase / energy / predicted / age confirms). Arming, the fit refit,
+   * expiry and every disarm still run: the armed scene stays a pick, and the director's CUT releases it
+   * (`tryCommitArmed('show', ...)`). Absent or false = the original behaviour, unchanged (`?director=legacy`).
+   */
+  directorOwns?: boolean
 }
 
 export type ArmedAction =
@@ -342,7 +352,7 @@ export function stepArmed(st: ArmedState, i: ArmedInput): ArmedAction {
   if (reason !== null) return disarm(st, reason, i.beat)
 
   // --- A real drop is the confirmation: cut to the armed scene now. ----------------------------------------
-  if (i.dropEdge) {
+  if (i.dropEdge && i.directorOwns !== true) {
     st.armed = null
     st.lastOutcome = `drop@b${i.beat}`
     return { type: 'confirm', trigger: 'drop', immediate: true }
@@ -361,6 +371,8 @@ export function stepArmed(st: ArmedState, i: ArmedInput): ArmedAction {
 
   // --- Dwell-gated confirms: a normal beat-locked crossfade. ------------------------------------------------
   if (validBeatsTillDrop(i.beatsTillDrop)) a.expectedBeat = i.beat + i.beatsTillDrop
+  // The show director decides WHEN; these confirms are demoted to nothing (pressure and arming are all they feed).
+  if (i.directorOwns === true) return NONE
   const eligible = i.canDwell && !i.silent && i.beat - a.armedAtBeat >= ARM.minHoldBeats
   if (!eligible) return NONE
 

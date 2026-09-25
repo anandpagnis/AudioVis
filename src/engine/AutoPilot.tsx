@@ -49,6 +49,8 @@ import type { LookProfile } from './look/lookRow'
 import { performanceState } from './performanceState'
 import { quality } from './quality'
 import { canAutoSwitch, useStore } from '../store'
+import { DIRECTOR_ON } from './show/directorFlags'
+import { showRuntime } from './show/showRuntime'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
 /**
@@ -134,7 +136,7 @@ const MANUAL_HOLD_SEC = 45 // back off after the DJ touches anything
  * drop pre-arm make. `extraExclude` lets a refused id be skipped on a re-pick; empty, this is exactly the
  * original inline pick.
  */
-function pickHypeScene(
+export function pickHypeScene(
   f: AudioFeatures,
   s: ReturnType<typeof useStore.getState>,
   sceneLook: LookProfile | undefined,
@@ -446,6 +448,9 @@ export function AutoPilot() {
       const armed = armedRuntime.state
       const beat = f.beatIndex
       const sustain = f.structureValid && f.songSection.isSustain
+      // The show director owns WHEN the primary changes (default; `?director=legacy` restores every trigger below):
+      // it tells the armed-scene machine and `tryCommitArmed` to stop releasing the armed scene on its own.
+      armedRuntime.directorOwns = DIRECTOR_ON
       // Re-score the armed scene against the current music every few beats (and at once on a build's rising edge).
       const fit =
         armed.armed !== null && fitCheckDue(armed, beat, buildEdge)
@@ -479,6 +484,7 @@ export function AutoPilot() {
         energy: f.energy,
         transitionActive: performanceState.transition.active,
         fit: fit !== null ? { armed: fit.armed, best: fit.best } : null,
+        directorOwns: DIRECTOR_ON,
       })
       if (action.type === 'disarm') {
         // `released`: a director already released the hold itself, so there is nothing to give back.
@@ -579,7 +585,11 @@ export function AutoPilot() {
       dropEdge && (preArmed.current || armedConfirmedDrop || dropPickSuppressed(armedRuntime.state, f.beatIndex))
     if (dropEdge) preArmed.current = false
 
-    if (dropEdge && !preArmedThisDrop) {
+    if (DIRECTOR_ON) {
+      // The show director owns every scene trigger (the drop pick, the predicted transition, a mood change, a
+      // character shift and the 25 s stale timer below). They are demoted: the mood/character/trend edges feed its
+      // pressure P and the ceiling replaces the stale timer (`engine/show/showAdapter.tsx`). Nothing is picked here.
+    } else if (dropEdge && !preArmedThisDrop) {
       target = m.state === 'aggressive' || m.predictedState === 'aggressive' ? 'aggressive' : 'peak'
       prefetchedFor.current = null
     } else if (dropEdge) {
@@ -646,7 +656,7 @@ export function AutoPilot() {
     const structureRecolour =
       f.structureValid && f.songSection.boundaryChanged && !f.songSection.isBuild
     if (
-      (target !== null || f.sectionChange || structureRecolour) &&
+      (DIRECTOR_ON ? showRuntime.palette : target !== null || f.sectionChange || structureRecolour) &&
       f.time - lastPaletteAt.current >= PALETTE_MIN_SEC
     ) {
       // Excluding what is already showing is the actual fix for "colours never
@@ -722,8 +732,8 @@ export function AutoPilot() {
     // not acted on below.
     if (
       target === null &&
-      !s.pendingSceneId &&
-      (f.sectionChange || structureRecolour) &&
+      (!s.pendingSceneId || (DIRECTOR_ON && s.pendingSceneId === s.heldSceneId)) &&
+      (DIRECTOR_ON ? showRuntime.mode : f.sectionChange || structureRecolour) &&
       f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC
     ) {
       const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++, sceneLook)
@@ -748,6 +758,7 @@ export function AutoPilot() {
     // A refused request (dwell, `canHoldPrimary`, ...) excludes that id and re-picks a bounded number of times
     // (`BUILD_SWITCH.maxRepicks`); it never loops. The whole block is skipped without a valid scene look.
     if (
+      !DIRECTOR_ON &&
       sceneLook !== undefined &&
       shouldSwitchOnBuild({
         lookActive: true,
@@ -810,6 +821,7 @@ export function AutoPilot() {
     // (at the start of the build, so the scene is compiled long before the drop) and this block stays out of its
     // way. Off (`?arm=off`, or a tier above `ARM.maxTier`) it runs exactly as it always did.
     if (
+      !DIRECTOR_ON &&
       !(ARM_ENABLED && quality.tier <= ARM.maxTier) &&
       inSustain &&
       !preArmed.current &&

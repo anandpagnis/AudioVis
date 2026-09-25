@@ -25,6 +25,8 @@ import {
 import { sceneBoost, sceneLookActive } from '../scenes/sceneTraits'
 import { LAYER_ROLES, useStore, type LayerRole } from '../store'
 import { pickByCharacter } from './characterPick'
+import { DIRECTOR_ON } from './show/directorFlags'
+import { LAYERS_CUT, LAYERS_NONE, showRuntime } from './show/showRuntime'
 
 const MANUAL_HOLD_SEC = 45
 const PHRASE_HOLD_BEATS = 16 // fallback recompose cadence when no section fires
@@ -242,7 +244,8 @@ export function PerformanceDirector() {
     // ever promised. Should `dropExpected` gain a source independent of
     // `buildConfirmed`, this keeps holding for the right reason. Same fix
     // applied at AutoPilot.tsx:360, for the identical reason.
-    if (f.structureValid && f.songSection.isSustain && !f.songSection.boundaryChanged) return
+    // (Under the show director the hold is the director's own decision: it simply asks for no recompose mid-riser.)
+    if (!DIRECTOR_ON && f.structureValid && f.songSection.isSustain && !f.songSection.boundaryChanged) return
 
     // With a real structure read, a latched boundary replaces the blind
     // 16-beat timer; without one, the timer is the degraded fallback.
@@ -251,7 +254,12 @@ export function PerformanceDirector() {
     // `beatIndex % 16 === 0` test is only equal to this while the downbeat offset is 0; with an adopted
     // offset it could never be true together with `beatInBar === 0`, silently killing this fallback.
     const phraseFallback = !f.structureValid && isPhraseEdge(f.beat, f.beatInBar, f.bar)
-    const boundary = f.sectionChange || latchedBoundary || phraseFallback
+    // Under the show director (default) `f.sectionChange`, the latched boundary and the blind 16-beat phrase no longer
+    // recompose anything on their own: the layers change only when the director asks (a MICRO for accent / overlay,
+    // a CUT for the background too), through `showRuntime.layers`. `?director=legacy` keeps the three signals.
+    const boundary = DIRECTOR_ON ? showRuntime.layers !== LAYERS_NONE : f.sectionChange || latchedBoundary || phraseFallback
+    // A section-scale recompose (the background too): a section signal, or under the director a CUT.
+    const sectionBoundary = DIRECTOR_ON ? showRuntime.layers === LAYERS_CUT : f.sectionChange || latchedBoundary
     if (!boundary || f.beatIndex === lastBoundaryBeat.current) return
     lastBoundaryBeat.current = f.beatIndex
 
@@ -259,6 +267,7 @@ export function PerformanceDirector() {
     // immediately; only the blind periodic fallback respects the one-phrase
     // spacing so calm stretches aren't over-recomposed.
     if (
+      !DIRECTOR_ON &&
       !f.sectionChange &&
       !latchedBoundary &&
       f.beatIndex - lastSwitchBeat.current < PHRASE_HOLD_BEATS
@@ -295,13 +304,17 @@ export function PerformanceDirector() {
     const inBreakdown = f.structureValid && f.songSection.isBreakdown
     const notHeavy = (scene: SceneDef) => scene.metadata.performanceCost !== 'high'
 
-    const primaryCandidates = inBreakdown
-      ? selectPrimaryCandidates(mood, s.sceneId).filter(notHeavy)
-      : selectPrimaryCandidates(mood, s.sceneId)
+    // Under the show director this hook never picks the primary (an empty list skips the pick below): the director's
+    // CUT does, and this hook only recomposes the layers around whichever primary is landing.
+    const primaryCandidates: SceneDef[] = DIRECTOR_ON
+      ? []
+      : inBreakdown
+        ? selectPrimaryCandidates(mood, s.sceneId).filter(notHeavy)
+        : selectPrimaryCandidates(mood, s.sceneId)
 
     const layerFits = inBreakdown ? [] : getScenesForMood(mood)
 
-    if (primaryCandidates.length === 0 && layerFits.length === 0) return
+    if (!DIRECTOR_ON && primaryCandidates.length === 0 && layerFits.length === 0) return
 
     // Prefer scenes that express the strongest current musical layer — folded
     // into pickVariedScene as a weight boost rather than a hard sort, so it
@@ -383,8 +396,7 @@ export function PerformanceDirector() {
     // ground that changes every 16 beats is just a second primary. Holding the
     // previous pick means passing an empty pool, which composeLayers reads as
     // "leave it alone".
-    const backgroundPool =
-      (f.sectionChange || latchedBoundary) && !inBreakdown ? forRole('background') : []
+    const backgroundPool = sectionBoundary && !inBreakdown ? forRole('background') : []
 
     const slots = composeLayers({
       primaryId,
@@ -427,7 +439,7 @@ export function PerformanceDirector() {
     })
     // Background is preserved across non-section recomposes; the other two are
     // always written, since nothing else clears them.
-    if (f.sectionChange || latchedBoundary) s.setLayer('background', slots.background, { auto: true })
+    if (sectionBoundary) s.setLayer('background', slots.background, { auto: true })
     s.setLayer('accent', slots.accent, { auto: true })
     s.setLayer('overlay', slots.overlay, { auto: true })
     lastSwitchBeat.current = f.beatIndex
