@@ -96,9 +96,11 @@ export const TRANSITION_STYLES = [
   /** Dissolve while the lens rack quantizes both scenes into an LED-style mosaic — a ramp style, same
    *  mechanism as `melt`/`collapse`, riding the `pixels` lens material. Rhythmic, beat-locked read. */
   'mosaic',
-  /** Dissolve while the lens rack drags a directional pixel-sort streak across the frame, amount driven
-   *  purely by transition progress (never re-seeded per frame) — a ramp style riding the `pixel-sort`
-   *  lens material. Harsh but spatial, not temporal: no flicker risk. */
+  /** Dissolve while the lens rack slices the frame into hard fluted strips, amount driven purely by
+   *  transition progress — a ramp style riding the `ribs` lens material. Harsh but spatial, not temporal: no
+   *  flicker risk. (It rode `pixel-sort` until 2026-09-25: a 14-tap dependent loop with a per-tap hash, ~17
+   *  taps and ~28 `sin` per pixel at FULL resolution, far the priciest lens material. `ribs` is 3 taps and no
+   *  loop. The id `sortSlice` is kept so mood rows, cues and saved presets keep resolving.) */
   'sortSlice',
   /** A true two-texture wipe (see `TransitionCapture`/`WipeCompositorPass`): a soft, feathered noise
    *  threshold reveals the incoming scene through the outgoing one. The gentler, organic alternative to
@@ -607,11 +609,13 @@ export function transitionRack(style: TransitionStyle, t: number): TransitionRac
       // as chunky and beat-locked rather than liquid (`melt`) or folded (`collapse`).
       return { ...NO_RACK, lensAmount: arc * 0.6, lensStyle: LENS.pixels }
     case 'sortSlice':
-      // Rides `pixel-sort`, amount on the same `arc`. The material's own kick/beat-gated re-seed of its
-      // streak DIRECTION (`uSeed` in LensPass.ts) is untouched by this — `transitionRack` only ever sets
-      // `lensAmount`/`lensStyle`, never a seed, so the streak's AMOUNT stays driven purely by transition
-      // progress while its direction keeps re-rolling on the beat exactly as it does outside a transition.
-      return { ...NO_RACK, lensAmount: arc * 0.65, lensStyle: LENS.pixelSort }
+      // Rides `ribs` (hard glass flutes: the frame reads as sliced into vertical strips), amount on the same
+      // `arc`. Was `pixel-sort`, whose 14-tap dependent loop was the most expensive lens material by a wide
+      // margin (see the style's doc above); `ribs` keeps the harsh, spatial, non-flickering read at a fraction of
+      // the per-pixel cost. `transitionRack` only ever sets `lensAmount`/`lensStyle`, never a seed, so the strip
+      // amount stays driven purely by transition progress. 0.9 rather than the old 0.65: a flute's refraction at a
+      // given amount is gentler than a sort streak's, so the amount is raised to keep the transition's peak read.
+      return { ...NO_RACK, lensAmount: arc * 0.9, lensStyle: LENS.ribs }
     default:
       return NO_RACK
   }

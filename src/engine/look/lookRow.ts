@@ -34,7 +34,8 @@ export const LOOK_CAMERA_MODES = ['orbit', 'hover', 'push', 'pull', 'spiral', 'h
  * `collapse`) — cheap, no new render targets, always available.
  *
  * `mosaic` and `sortSlice` are also ramp styles (same triangular-arc mechanism, riding the `pixels` and
- * `pixel-sort` lens materials respectively) — cheap, no new render targets.
+ * `ribs` lens materials respectively; `sortSlice` rode `pixel-sort` until it was found to be the priciest lens
+ * material, a 14-tap loop at full resolution) — cheap, no new render targets.
  *
  * `inkDissolve`, `irisWipe` and `datamosh` are "wipe" styles: a real two-texture cross-blend between the
  * outgoing and incoming scene, captured to their own render targets (`TransitionCapture`/

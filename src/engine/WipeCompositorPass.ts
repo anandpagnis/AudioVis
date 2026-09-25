@@ -1,7 +1,13 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
 import { FULLSCREEN_VERT } from './glsl'
-import { WIPE_STYLE_INDEX, type WipeStyle } from './transitionWipe'
+import {
+  buildWipeNoise,
+  WIPE_NOISE_CELLS,
+  WIPE_NOISE_SIZE,
+  WIPE_STYLE_INDEX,
+  type WipeStyle,
+} from './transitionWipe'
 
 /**
  * Composites the two `TransitionCapture` textures back into the frame through
@@ -53,6 +59,16 @@ import { WIPE_STYLE_INDEX, type WipeStyle } from './transitionWipe'
  *    keeps a hard block-glitch style from ever reading as a brightness flash
  *    the way an uncomplemented pair of masks could.
  *
+ * ## Cost discipline (this pass runs at FULL display resolution, so per-pixel work is the cost)
+ *
+ *  - **Divergence early-outs, exact.** `maskIn` is exactly 0 or 1 outside the feather band (`smoothstep`), and
+ *    the band is a thin, spatially coherent strip, so most pixels need ONE capture tap, not two. Same output
+ *    as sampling both and mixing, at roughly half the taps for ink/iris and a sixth for datamosh (which sampled
+ *    both captures for each of three channels, six taps, and now takes one tap per block away from a reveal
+ *    seam and two at the seam).
+ *  - **Baked noise.** `inkDissolve`'s field is static in space, so it is a small tiled texture built once
+ *    (`buildWipeNoise`, two taps) instead of two hashed value noises per pixel per frame (~8 `sin` plus dots).
+ *
  * ## Mirrors `transitionWipe.ts`'s pure math, not the other way round
  *
  * Every formula below has a comment pointing at the pure JS function it
@@ -76,11 +92,19 @@ import { WIPE_STYLE_INDEX, type WipeStyle } from './transitionWipe'
  */
 export const DATAMOSH_BLOCK_COUNT = 16
 
+/** Shader constants derived from the baked field's period, so the shader and `buildWipeNoise` cannot drift: the
+ *  field tiles every WIPE_NOISE_CELLS cells, so 6 and 13 cells per frame are uv * 6/N and uv * 13/N. */
+const NOISE_CELL_INV = (1 / WIPE_NOISE_CELLS).toFixed(8)
+const NOISE_OCTAVE_1 = (6 / WIPE_NOISE_CELLS).toFixed(8)
+const NOISE_OCTAVE_2 = (13 / WIPE_NOISE_CELLS).toFixed(8)
+
 const WIPE_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
   uniform sampler2D uCaptureOut;
   uniform sampler2D uCaptureIn;
+  // Baked, tiling value-noise field (R and G are independent lattices) — see buildWipeNoise().
+  uniform sampler2D uNoise;
   // Style index as a FLOAT compared with half-integer thresholds, matching
   // this codebase's existing enum-uniform convention (see LensPass.ts's own
   // uStyle) rather than a GLSL int uniform — the values are exactly
@@ -94,17 +118,6 @@ const WIPE_FRAG = /* glsl */ `
   uniform float uBlockCount;
   varying vec2 vUv;
 
-  vec2 hash2(vec2 p) {
-    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
-  }
-  float vnoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(
-      mix(hash2(i).x, hash2(i + vec2(1.0, 0.0)).x, f.x),
-      mix(hash2(i + vec2(0.0, 1.0)).x, hash2(i + vec2(1.0, 1.0)).x, f.x), f.y);
-  }
-
   // Ported from transitionWipe.ts's hash01(x, y) — same sin/fract formula,
   // same argument order. Keep the two in sync if either changes; they are
   // not expected to ever agree bit-for-bit (see this file's header).
@@ -113,18 +126,29 @@ const WIPE_FRAG = /* glsl */ `
     return s - floor(s);
   }
 
+  // out * (1 - m) + in * m, taking only the taps the mask needs: smoothstep is EXACTLY 0 / 1 outside the
+  // feather band, so away from the seam this is one tap instead of two, with an identical result.
+  vec3 pickOrMix(vec2 uv, float m) {
+    if (m <= 0.0) return texture2D(uCaptureOut, uv).rgb;
+    if (m >= 1.0) return texture2D(uCaptureIn, uv).rgb;
+    return mix(texture2D(uCaptureOut, uv).rgb, texture2D(uCaptureIn, uv).rgb, m);
+  }
+
   void main() {
     vec4 base = texture2D(tDiffuse, vUv);
     vec3 wipeColor = vec3(0.0);
 
     if (uStyle < 0.5) {
       // inkDissolve — mirrors transitionWipe.ts's inkMaskValue(noise01, progress, feather). Two octaves of
-      // value noise (same vnoise/hash2 idiom LensPass.ts's melt material already uses) stand in for the
-      // "static per-pixel noise field" the pure function assumes; uSeed offsets it so different transitions
-      // don't all wipe through the identical pattern.
-      float n = vnoise(vUv * 6.0 + uSeed) * 0.6 + vnoise(vUv * 13.0 + uSeed * 1.7 + 4.2) * 0.4;
+      // value noise stand in for the "static per-pixel noise field" the pure function assumes: 6 and ~13
+      // lattice cells across the frame, read from the baked tiling field (period WIPE_NOISE_CELLS cells).
+      // uSeed offsets it, in whole-cell units, so different transitions don't all wipe through the identical
+      // pattern.
+      vec2 so1 = vec2(fract(uSeed * ${NOISE_CELL_INV}));
+      vec2 so2 = vec2(fract((uSeed * 1.7 + 4.2) * ${NOISE_CELL_INV}));
+      float n = texture2D(uNoise, vUv * ${NOISE_OCTAVE_1} + so1).r * 0.6 + texture2D(uNoise, vUv * ${NOISE_OCTAVE_2} + so2).g * 0.4;
       float maskIn = smoothstep(n - uFeather, n + uFeather, uProgress);
-      wipeColor = texture2D(uCaptureOut, vUv).rgb * (1.0 - maskIn) + texture2D(uCaptureIn, vUv).rgb * maskIn;
+      wipeColor = pickOrMix(vUv, maskIn);
     } else if (uStyle < 1.5) {
       // irisWipe — mirrors transitionWipe.ts's irisMaskValue(radiusFromCenter01, progress, feather).
       // Aspect-corrected UV, same (uv - 0.5) * vec2(aspect, 1.0) convention MirrorPass.ts's twist and
@@ -133,7 +157,7 @@ const WIPE_FRAG = /* glsl */ `
       float maxR = length(vec2(uAspect, 1.0) * 0.5); // aspect-corrected corner distance: radius01 reaches 1 there
       float radius01 = length(p) / max(maxR, 1e-4);
       float maskIn = smoothstep(radius01 - uFeather, radius01 + uFeather, uProgress);
-      wipeColor = texture2D(uCaptureOut, vUv).rgb * (1.0 - maskIn) + texture2D(uCaptureIn, vUv).rgb * maskIn;
+      wipeColor = pickOrMix(vUv, maskIn);
     } else {
       // datamosh — mirrors transitionWipe.ts's datamoshBlockOffset(seed, blockIndex, progress) and
       // datamoshChannelOffset(reveal, progress). Grid sized in SCREEN space (aspect-corrected row count),
@@ -162,11 +186,18 @@ const WIPE_FRAG = /* glsl */ `
       bool revealR = hr < (uProgress + chOffset);
       bool revealB = hr < (uProgress - chOffset);
 
-      // Each channel independently samples ONE capture texture, never a blend of both — the per-channel
-      // complementary property this file's header describes.
-      wipeColor.r = revealR ? texture2D(uCaptureIn, dispUv).r : texture2D(uCaptureOut, dispUv).r;
-      wipeColor.g = revealG ? texture2D(uCaptureIn, dispUv).g : texture2D(uCaptureOut, dispUv).g;
-      wipeColor.b = revealB ? texture2D(uCaptureIn, dispUv).b : texture2D(uCaptureOut, dispUv).b;
+      // Each channel independently takes ONE capture texture, never a blend of both — the per-channel
+      // complementary property this file's header describes. A block whose three channels agree (all of them
+      // but the few sitting on a reveal seam) needs a single tap; only a seam block takes both.
+      if (revealR && revealG && revealB) {
+        wipeColor = texture2D(uCaptureIn, dispUv).rgb;
+      } else if (!revealR && !revealG && !revealB) {
+        wipeColor = texture2D(uCaptureOut, dispUv).rgb;
+      } else {
+        vec3 o = texture2D(uCaptureOut, dispUv).rgb;
+        vec3 i = texture2D(uCaptureIn, dispUv).rgb;
+        wipeColor = vec3(revealR ? i.r : o.r, revealG ? i.g : o.g, revealB ? i.b : o.b);
+      }
     }
 
     gl_FragColor = vec4(base.rgb + wipeColor, 1.0);
@@ -178,6 +209,8 @@ export class WipeCompositorPass extends Pass {
   private readonly fsScene: THREE.Scene
   private readonly quadGeometry: THREE.PlaneGeometry
   private readonly orthoCamera: THREE.OrthographicCamera
+  /** The baked `inkDissolve` noise field, built on the first ink wipe (not at mount: most sessions never need it). */
+  private noiseTexture: THREE.DataTexture | null = null
 
   constructor() {
     super('WipeCompositorPass')
@@ -197,6 +230,7 @@ export class WipeCompositorPass extends Pass {
         tDiffuse: { value: null },
         uCaptureOut: { value: null },
         uCaptureIn: { value: null },
+        uNoise: { value: null },
         uStyle: { value: 0 },
         uProgress: { value: 0 },
         uFeather: { value: 0.1 },
@@ -230,6 +264,17 @@ export class WipeCompositorPass extends Pass {
     captureIn: THREE.Texture | null,
   ): void {
     const u = this.material.uniforms
+    if (style === 'inkDissolve' && this.noiseTexture === null) {
+      const tex = new THREE.DataTexture(buildWipeNoise(), WIPE_NOISE_SIZE, WIPE_NOISE_SIZE, THREE.RGBAFormat, THREE.UnsignedByteType)
+      tex.wrapS = THREE.RepeatWrapping
+      tex.wrapT = THREE.RepeatWrapping
+      tex.minFilter = THREE.LinearFilter
+      tex.magFilter = THREE.LinearFilter
+      tex.generateMipmaps = false
+      tex.needsUpdate = true
+      this.noiseTexture = tex
+      u.uNoise.value = tex
+    }
     u.uStyle.value = WIPE_STYLE_INDEX[style]
     u.uProgress.value = progress
     u.uFeather.value = feather
@@ -254,6 +299,8 @@ export class WipeCompositorPass extends Pass {
   }
 
   dispose(): void {
+    this.noiseTexture?.dispose()
+    this.noiseTexture = null
     this.material.dispose()
     this.quadGeometry.dispose()
     super.dispose()
