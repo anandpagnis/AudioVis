@@ -41,6 +41,8 @@ import { sampleAnalytics } from './analyticsMetrics'
 import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
 import { sceneStreamer } from './streaming/sceneStreamer'
 import { prewarmShaders } from './streaming/shaderPrewarm'
+import { isCommitBarLine } from './show/commitBarLine'
+import { EVENTS_V2 } from './show/directorFlags'
 
 /** Every slot a mounted scene instance can occupy. */
 export type SlotName = 'primary' | LayerRole | 'effect'
@@ -820,7 +822,9 @@ export function SceneManager() {
       }
 
       const waited = clock.elapsedTime - pendingSince.current
-      const onDownbeat = f.beat && f.beatInBar === 0
+      // The bar line a pending scene commits on: `f.beatInBar === 0`, or with `?events=v2` the boundary-anchored grid's (the one
+      // the show adapter requests its cuts against) while it is confident. Legacy mode passes no grid: exactly the old test.
+      const onDownbeat = isCommitBarLine(f, EVENTS_V2 ? audioEngine.events : null)
       const gridTrusted = f.confidence > 0.25 && !f.silence
 
       // Drop-triggered switches do NOT wait for the next downbeat.

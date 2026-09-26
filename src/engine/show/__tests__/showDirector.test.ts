@@ -100,6 +100,27 @@ describe('showPolicy formulas', () => {
     expect(eventScore('change', 5, 5)).toBeCloseTo(1) // factors are clamped to 0..1
   })
 
+  it('the v2 gain scales ONLY live change / breakdown events: legacy events, drops and the weight-0 types are untouched', () => {
+    expect(SHOW.liveGain).toBeGreaterThan(1) // tuned in lane W3 (director-vs-silver.md)
+    const g = SHOW.liveGain
+    expect(eventScore('change', 0.6, 0.7, 'live')).toBeCloseTo(0.42 * g)
+    expect(eventScore('breakdown', 0.6, 0.7, 'live')).toBeCloseTo(0.6 * 0.9 * 0.7 * g)
+    // no source, or a legacy / plan source: the plain score
+    expect(eventScore('change', 0.6, 0.7)).toBeCloseTo(0.42)
+    expect(eventScore('change', 0.6, 0.7, 'legacy')).toBeCloseTo(0.42)
+    expect(eventScore('change', 0.6, 0.7, 'plan')).toBeCloseTo(0.42)
+    // drops keep their own weighting even from the live layer; fills / gains / build starts stay 0
+    expect(eventScore('drop', 1, 0.5, 'live')).toBeCloseTo(0.625)
+    for (const t of ['fill', 'gain', 'buildStart'] as const) expect(eventScore(t, 1, 1, 'live')).toBe(0)
+  })
+
+  it('a live change of typical size (strength 0.6, confidence 0.7) cuts a 9-bar-old scene that the same legacy-source event only tweaks', () => {
+    // 9 bars into the scene (120 BPM): T(9) = 0.525; S = 0.42 for a legacy-source event, 0.42 * liveGain for a live one
+    const kindOf = (source: SectionEvent['source']): string => run(fresh(), at(9, { event: ev({ strength: 0.6, confidence: 0.7, source }) })).kind
+    expect(kindOf('legacy')).toBe('MICRO')
+    expect(kindOf('live')).toBe('CUT')
+  })
+
   it('T(a) = 0.30 + 0.60 * clamp((12 - a) / 8, 0, 1): 0.90 at 4 bars, falling to 0.30 at 12 (tuned on the real tracks)', () => {
     expect(ageThreshold(4)).toBeCloseTo(0.9)
     expect(ageThreshold(8)).toBeCloseTo(0.6)

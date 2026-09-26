@@ -70,13 +70,14 @@ import {
  *            otherwise `pickByCharacter` over the character candidates with the mood-label `pickVariedScene`
  *            fallback, restricted to non-heavy scenes in a breakdown) requested with `{ auto, immediate: drop,
  *            bypassDwell, reason }`. The director owns pacing, so the store's 32-beat dwell must not refuse it.
- *            SceneManager still commits on the next downbeat (`f.beat && f.beatInBar === 0`, else its 2.5 s
- *            backstop), so a CUT waits at most one bar; a drop is an immediate hard cut.
+ *            SceneManager still commits on the next bar line (`commitBarLine.ts` `isCommitBarLine`: `f.beat && f.beatInBar === 0`,
+ *            or in v2 mode the anchored grid's while it is confident; else its 2.5 s backstop), so a CUT waits at most one
+ *            bar; a drop is an immediate hard cut.
  *  - MICRO-> palette / mode: a flag in `showRuntime` that `AutoPilot` (which owns the palette and mode refs and their
  *            cadence floors) acts on this same frame; layers: a flag `PerformanceDirector` acts on; effect: the same
  *            pure `advanceEffects` the `EffectDirector` uses, fired as a `sectionChange` punctuation.
  *
- * EVENT SOURCE (`?events=v2|legacy`, `directorFlags.ts`, read once; the default is `legacy` until the acceptance gates are shown):
+ * EVENT SOURCE (`?events=v2|legacy`, `directorFlags.ts`, read once; the default is `v2`, `?events=legacy` is the fallback; see directorFlags.ts for the evidence):
  *  - `legacy`: today's mapping (`legacyEvents.ts`): `f.sectionChange`, the analyser's kind-change boundaries, drops and
  *            build starts. Bit-for-bit the Phase-1 behaviour: the v2 layer is only drained (and logged).
  *  - `v2`:     the bar-synchronous live change scorer (`audioEngine.events`, `audio/events/EventLayer.ts`) supplies
@@ -84,8 +85,8 @@ import {
  *            `drop` and `buildStart` events are kept (its sectionChange- and boundary-derived `change` and `breakdown`
  *            events are dropped, and its sectionChange / non-drop boundary signals are not fed to it, so they cannot
  *            corroborate a drop either). The forced-cut / CUT alignment uses the boundary-anchored bar grid when it is
- *            confident (`EventLayer.beatsToBarLine`), else `f.beatInBar`. SceneManager still commits on
- *            `f.beatInBar === 0`.
+ *            confident (`EventLayer.beatsToBarLine`), else `f.beatInBar`; SceneManager commits on the SAME anchored grid
+ *            (`isCommitBarLine`), so a request made on the last beat of an anchored bar lands on its downbeat.
  * The v2 layer is drained EVERY frame in both modes and each event is recorded in the `?structurelog` (in legacy mode
  * flagged `shadow`), so tap logs can score v2 against the taps while the show still runs on the legacy events.
  *

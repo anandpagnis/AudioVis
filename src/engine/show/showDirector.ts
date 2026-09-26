@@ -429,7 +429,7 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
     evaluated = true
     // A drop is weighted by how rare the detector's own drops are (a detector that fires constantly says little).
     const cred = ev.type === 'drop' ? creditDrop(st, ev, beat, time, i.inBuild || i.inBreakdown) : 1
-    const S = eventScore(ev.type, ev.strength, ev.confidence) * cred
+    const S = eventScore(ev.type, ev.strength, ev.confidence, ev.source) * cred
     // Remember it for the forced cut's "best event of the last 4 bars".
     if (S > 0) {
       const k = st.ringPos

@@ -36,6 +36,8 @@
  * Pure and deterministic. Offline-evaluation tooling: nothing in the shipped app imports it.
  */
 import type { EventType, SectionEvent } from '../events/types'
+import { EventLayer, type EventLayerConfig } from '../events/EventLayer'
+import { maskLegacyInputForV2, mergeLiveWithLegacy } from '../events/eventMux'
 import { createLegacyEventState, stepLegacyEvents, type LegacyInput } from '../events/legacyEvents'
 import {
   ackCut,
@@ -45,8 +47,10 @@ import {
   type ShowActionKind,
   type ShowInput,
 } from '../../engine/show/showDirector'
+import { isCommitBarLine } from '../../engine/show/commitBarLine'
 import { beatTimes, alignTimes, seededRng } from './cadenceMetrics'
 import { Q10, Q8, STRENGTH_SCALE, type CadenceTrace } from './cadenceTrace'
+import { copyEvent, type EventCellRecord } from './eventReplay'
 import {
   LEGACY as LEGACY_TRIGGERS,
   resolveOptions,
@@ -63,6 +67,106 @@ export interface DirectorReplayOptions {
   characterShift?: boolean
   /** Feed the mood / trend pressure sources. Default true. */
   pressure?: boolean
+  /**
+   * `?events=v2`: the live event layer's stream (see {@link prepareLiveStream}). The legacy mapper is masked and merged
+   * exactly as `showAdapter.tsx` does (`eventMux.ts`: only its drop / buildStart events survive, the live change / fill /
+   * gain / breakdown events are appended), and the CUT alignment (`barLine`) uses the anchored grid while it is
+   * confident. Absent: the legacy event source, bit-identical to before this option existed.
+   */
+  live?: LiveStream
+  /**
+   * Where SceneManager commits a pending non-drop scene. `legacy` (default): `f.beat && f.beatInBar === 0`. `anchored`
+   * (needs `live`): `isCommitBarLine`, the anchored grid's bar line while it is confident, else the same fallback.
+   */
+  commitGrid?: 'legacy' | 'anchored'
+  /** Replay only the first `endSec` seconds of the trace (the cached event cells may cover less than the trace). */
+  endSec?: number
+}
+
+/**
+ * The live event layer's output over one trace, placed on trace FRAMES so `simulateDirector` can deliver each event on the
+ * frame the engine would have (the analyser closes a beat cell on a beat frame and `EventLayer.push` runs inside the same
+ * engine update, before any director).
+ */
+export interface LiveStream {
+  /** Frame -> the events the layer delivered on that frame (copies). */
+  byFrame: Map<number, SectionEvent[]>
+  /** Every event with the frame it was delivered on, in order. */
+  events: Array<{ frame: number; event: SectionEvent }>
+  /** Per frame: beats to the next bar line of the anchored grid on a BEAT frame (0 = this beat is one), -1 = not confident or not a beat frame. */
+  toLine: Int8Array
+  /** Cells placed on a trace frame whose beat index agrees with the trace's / placed with a disagreeing beat / not placeable. */
+  cells: { matched: number; mismatched: number; unplaced: number }
+  /** Last trace frame that a cell was delivered on (the stream says nothing after it). */
+  lastFrame: number
+}
+
+/** `scripts/calibrate/events-cache.calib.ts` stamps a cell at (window start + FFT_SIZE / sampleRate): undo that to find the frame. */
+export const EVENT_CELL_FFT_SIZE = 2048
+
+/**
+ * Run a fresh `EventLayer` over the recorded beat `cells` of a track, frame by frame against `trace`, and record what it
+ * delivered and where its anchored bar grid put the bar lines. `cells` are the cached `EventCellRecord`s (times already
+ * shifted onto the audio clock), `sampleRate` the run's. Pure and deterministic.
+ */
+export function prepareLiveStream(
+  trace: CadenceTrace,
+  cells: readonly EventCellRecord[],
+  sampleRate: number,
+  cfg: Partial<EventLayerConfig> = {},
+): LiveStream {
+  const { cols, n, frameRate } = trace
+  const off = EVENT_CELL_FFT_SIZE / sampleRate
+  const layer = new EventLayer(cfg)
+  const byFrame = new Map<number, SectionEvent[]>()
+  const events: Array<{ frame: number; event: SectionEvent }> = []
+  const toLine = new Int8Array(n).fill(-1)
+  const stats = { matched: 0, mismatched: 0, unplaced: 0 }
+
+  // Place every cell on a frame: the frame whose window start is the cell's time, nudged (+-3 frames) to the one that
+  // carries the same beat index when the clocks differ by a frame.
+  const placed: Array<{ frame: number; r: EventCellRecord }> = []
+  for (const r of cells) {
+    const f0 = Math.round((r.time - off) * frameRate)
+    if (f0 < 0 || f0 >= n) {
+      stats.unplaced++
+      continue
+    }
+    let f = f0
+    if (cols.beatIndex[f0] === r.beat) stats.matched++
+    else {
+      let hit = -1
+      for (let d = 1; d <= 3 && hit < 0; d++) {
+        if (f0 - d >= 0 && cols.beatIndex[f0 - d] === r.beat) hit = f0 - d
+        else if (f0 + d < n && cols.beatIndex[f0 + d] === r.beat) hit = f0 + d
+      }
+      if (hit >= 0) {
+        f = hit
+        stats.matched++
+      } else stats.mismatched++
+    }
+    placed.push({ frame: f, r })
+  }
+  placed.sort((a, b) => a.frame - b.frame)
+
+  let k = 0
+  let lastFrame = -1
+  for (let i = 0; i < n; i++) {
+    while (k < placed.length && placed[k].frame <= i) {
+      const { frame, r } = placed[k++]
+      const out = layer.push(r.cell, r.beat, r.time, r.bpm, { locked: r.locked, offset: r.offset })
+      lastFrame = frame
+      for (const e of out) {
+        const ev = copyEvent(e)
+        events.push({ frame, event: ev })
+        const list = byFrame.get(frame)
+        if (list) list.push(ev)
+        else byFrame.set(frame, [ev])
+      }
+    }
+    if (cols.beat[i] === 1) toLine[i] = layer.beatsToBarLine(cols.beatIndex[i])
+  }
+  return { byFrame, events, toLine, cells: stats, lastFrame }
 }
 
 /** One evaluated director decision (an event, or a forced cut with no event). */
@@ -153,6 +257,7 @@ interface PendingScene {
 }
 
 const RANK: Record<ShowActionKind, number> = { HOLD: 0, MICRO: 1, CUT: 2 }
+const NO_LIVE: readonly SectionEvent[] = []
 
 /** Replay the real director over `trace`. Deterministic: the same trace and options always give the same result. */
 export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOptions = {}): DirectorReplayResult {
@@ -160,10 +265,16 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
   const useCharacter = options.characterShift ?? true
   const usePressure = options.pressure ?? true
   const c = trace.cols
-  const n = trace.n
+  const n = options.endSec === undefined ? trace.n : Math.max(0, Math.min(trace.n, Math.floor(options.endSec * trace.frameRate)))
   const dt = 1 / trace.frameRate
   const sections = trace.enums.sections
   const moods = trace.enums.moods
+  const live = options.live ?? null
+  const anchoredCommit = live !== null && options.commitGrid === 'anchored'
+  // `isCommitBarLine`'s grid for this frame: the live stream's per-frame answer of `beatsToBarLine`.
+  let frameToLine = -1
+  const commitGrid = { beatsToBarLine: (): number => frameToLine }
+  const commitFrame = { beat: false, beatInBar: 0, beatIndex: 0 }
 
   const show = createShowState()
   const legacy = createLegacyEventState()
@@ -234,7 +345,15 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
       const p: PendingScene = pending
       const waited = now - p.sinceSec
       const trusted = gridTrust === 'always' ? true : c.confidence[i] / Q8 > LEGACY_TRIGGERS.gridTrustConfidence && !silence
-      if (!trusted || (isBeat && beatInBar === 0) || p.immediate || waited > LEGACY_TRIGGERS.commitBackstopSec) {
+      let onDownbeat = isBeat && beatInBar === 0
+      if (anchoredCommit) {
+        frameToLine = (live as LiveStream).toLine[i]
+        commitFrame.beat = isBeat
+        commitFrame.beatInBar = beatInBar
+        commitFrame.beatIndex = beat
+        onDownbeat = isCommitBarLine(commitFrame, commitGrid)
+      }
+      if (!trusted || onDownbeat || p.immediate || waited > LEGACY_TRIGGERS.commitBackstopSec) {
         commits.push({
           frame: i,
           beat,
@@ -269,8 +388,12 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
     li.beatsInSection = c.beatsInSection[i]
     li.isSustain = c.isSustain[i] === 1
     li.inBreakdown = valid && c.isBreakdown[i] === 1
+    // `?events=v2`: the legacy mapping is still stepped (its drop / build state must not freeze) but is not fed the
+    // sectionChange / non-drop boundary signals, and the live events are merged after its own (see `eventMux.ts`).
+    if (live !== null) maskLegacyInputForV2(li)
     events.length = 0
     stepLegacyEvents(legacy, li, events)
+    if (live !== null) mergeLiveWithLegacy(events, live.byFrame.get(i) ?? NO_LIVE)
 
     // CharacterShiftTrigger.observe + take(now, -Infinity): a latched change of the primary between two valid reads.
     let characterShift = false
@@ -304,7 +427,13 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
     inp.bpm = c.bpm10[i] / 10
     inp.sceneStartBeat = lastCommitBeat
     inp.sceneStartTime = sceneStartTime === Number.NEGATIVE_INFINITY ? 0 : sceneStartTime
-    inp.barLine = isBeat && beatInBar === 3
+    // (v2: the anchored grid's last beat of a bar while it is confident, as the adapter does)
+    let barLine = isBeat && beatInBar === 3
+    if (live !== null && isBeat) {
+      const toLine = live.toLine[i]
+      if (toLine >= 0) barLine = toLine === 1
+    }
+    inp.barLine = barLine
     inp.inBreakdown = valid && c.isBreakdown[i] === 1
     inp.inBuild = sustain
     inp.moodChanged =

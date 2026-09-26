@@ -49,6 +49,22 @@ export const SHOW = {
     fill: 0,
     gain: 0,
   } as const satisfies Record<EventType, number>,
+  /**
+   * v2 EVENT GAIN. A live (`source: 'live'`, `?events=v2`) `change` / `breakdown` event has its own calibrated strength
+   * (median 0.60, p90 0.90 over the 98 real tracks, `EventLayer.STRENGTH_ANCHORS`) and arrives ~1.3 times a minute, where
+   * the legacy mapping's `sectionChange` edges arrive ~3.8 times a minute with their median at 0.30 (its strength map is
+   * anchored to a noisy detector). Each v2 event therefore carries more information, and at gain 1 a typical one
+   * (S ~ 0.4) had to wait for a scene of ~10 bars before it could cut, so many scenes ran to the forced ceiling.
+   * The gain multiplies S of those events only; the legacy events, drops and everything else are untouched.
+   *
+   * Tuned in lane W3 (`corpus/structure/director-vs-silver.md`, sweep over the 98 cached tracks, split-half by even / odd
+   * track): 1 -> 1.75 takes the forced-ceiling share 26% -> 21% (even 30% -> 23%, odd 22% -> 19%), cuts/min 1.62 -> 1.80,
+   * the median scene 16.0 -> 14.0 bars, and the share of strong silver boundaries with a cut in [-1, +4] bars 45% -> 51%
+   * (chance-corrected lift 0.23 -> 0.30, even 0.19 -> 0.27, odd 0.28 -> 0.33). Above ~2.5 every v2 event already cuts at
+   * the minimum age (T(4) = 0.9 vs S ~ 0.42 x 2.5), so nothing more is gained. One constant, monotone in every metric, read
+   * off the corpus the v2 strength curve was itself anchored on: relative evidence, not a validated optimum.
+   */
+  liveGain: 1.75,
   beatsPerBar: 4,
 
   /** T(a) = floor + span * clamp((rampEndBars - a) / rampBars, 0, 1). */
@@ -110,12 +126,16 @@ export const SHOW = {
   barSecMax: 3.0,
 } as const
 
-/** S = strength * typeWeight * confidence, each factor clamped to its range; non-finite reads as 0. */
-export function eventScore(type: EventType, strength: number, confidence: number): number {
+/**
+ * S = strength * typeWeight * confidence, each factor clamped to its range; non-finite reads as 0. A live (v2) `change` /
+ * `breakdown` event is scaled by {@link SHOW.liveGain}; pass the event's `source` to get that (omitted: the legacy score).
+ */
+export function eventScore(type: EventType, strength: number, confidence: number, source?: 'live' | 'plan' | 'legacy'): number {
   const w = SHOW.typeWeight[type] ?? 0
   const s = Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : 0
   const c = Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0
-  return s * w * c
+  const gain = source === 'live' && (type === 'change' || type === 'breakdown') ? SHOW.liveGain : 1
+  return s * w * c * gain
 }
 
 /** Rarity weight of a drop when `others` other drop events were seen inside the window (1 = fully credible). */
