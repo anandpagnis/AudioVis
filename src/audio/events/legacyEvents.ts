@@ -60,8 +60,14 @@ import type { EventType, SectionEvent } from './types'
 
 export const LEGACY = {
   /** Novelty -> strength: 0 at `sectionFloor`, 1 at `sectionCeil`. */
-  sectionFloor: 0.425,
-  sectionCeil: 0.94,
+  // MORE SENSITIVE (user, after watching it live: legacy events are the default and "more sensitive pls"). Re-anchored
+  // together with PhraseDetector's THRESHOLD 0.45 -> 0.30 (a novelty below the floor is strength 0, an event that
+  // can never act). Was 0.425 / 0.94, where the median real edge (novelty 0.58) was strength 0.30 (S 0.29: a tweak at
+  // best) and waited ~12 bars. Now it is ~0.84 (S ~0.80: cuts a scene of ~5 bars), a weak edge (novelty 0.32) is
+  // ~0.33 (a tweak straight away) and the p90 edge (0.89) saturates at 1 (S 0.95: cuts at the minimum age). Drops are
+  // untouched (their own confidence grading), so churn from the ~250/h drop detector does not come back.
+  sectionFloor: 0.15,
+  sectionCeil: 0.66,
   sectionConfidence: 0.95,
   /** Strength of a latched-analyser boundary, by what it committed. */
   boundaryChange: 0.75,

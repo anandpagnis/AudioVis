@@ -18,8 +18,13 @@ import type { AudioFeatures } from './types'
 const SAMPLE_INTERVAL = 0.1
 const HISTORY = 7 // seconds
 const RECENT_WINDOW = 1.2
-const WEIGHTS = [1.25, 1.0, 1.0, 0.8] // bass shifts matter most
-const THRESHOLD = 0.45
+// Bass shifts matter most, but the high band is weighted up (was 0.8): on the first tapped songs the scene changes
+// were hi-hats and upper layers entering, a small ABSOLUTE move of a quiet band that 0.8 hid.
+const WEIGHTS = [1.25, 1.0, 1.0, 1.2]
+// Was 0.45. Lowered so quieter section changes (a verse to a chorus at similar loudness) register; a real boundary
+// still needs a sustained shift on a downbeat, and the one-per-6-beats cooldown below keeps a noisy passage from
+// firing every bar.
+const THRESHOLD = 0.3
 
 interface Profile {
   t: number
@@ -80,8 +85,8 @@ export class PhraseDetector {
         if (novelty > THRESHOLD) {
           f.sectionChange = true
           this.phraseStartBeat = f.beatIndex
-          // At most one boundary per 8 beats.
-          this.cooldownUntil = now + (60 / f.bpm) * 8
+          // At most one boundary per 6 beats (was 8).
+          this.cooldownUntil = now + (60 / f.bpm) * 6
         }
       }
     }

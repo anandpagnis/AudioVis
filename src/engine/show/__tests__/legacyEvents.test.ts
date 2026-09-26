@@ -33,25 +33,29 @@ function frame(st: ReturnType<typeof createLegacyEventState>, beat: number, over
 }
 
 describe('sectionStrength', () => {
-  // Re-anchored on the 98 real tracks (1362 sectionChange edges): p10 0.47, p50 0.58, p90 0.89, p99 1.46. The first
-  // mapping (0.40..1.20) had been fitted to an earlier sample (p50 0.64, p90 1.11) and put the real p90 at 0.61.
-  it('maps the measured novelty percentiles of the real tracks into 0..1: median a tweak, p90 a real change', () => {
-    expect(sectionStrength(0.425)).toBe(0)
-    expect(sectionStrength(0.4)).toBe(0)
-    expect(sectionStrength(0.45)).toBeCloseTo(0.0485, 3) // the firing floor
-    expect(sectionStrength(0.47)).toBeCloseTo(0.087, 2) // p10
-    expect(sectionStrength(0.58)).toBeCloseTo(0.301, 2) // p50: a tweak, not a scene change
-    expect(sectionStrength(0.89)).toBeCloseTo(0.903, 2) // p90: a real change
-    expect(sectionStrength(0.94)).toBe(1)
+  // Measured on the 98 real tracks (1362 sectionChange edges at the OLD 0.45 firing threshold): p10 0.47, p50 0.58,
+  // p90 0.89, p99 1.46. MORE SENSITIVE mapping (user request after watching it live): the floor / ceiling moved
+  // 0.425 / 0.94 -> 0.15 / 0.66 together with PhraseDetector's THRESHOLD 0.45 -> 0.30, so the median edge is a
+  // real change (it was a tweak) and a weak edge just above the new firing floor is a tweak straight away.
+  it('maps the novelty range into 0..1: a weak edge a tweak, the median edge a scene change, p90 saturated', () => {
+    expect(sectionStrength(0.15)).toBe(0)
+    expect(sectionStrength(0.1)).toBe(0)
+    expect(sectionStrength(0.3)).toBeCloseTo(0.294, 3) // the new firing floor
+    expect(sectionStrength(0.47)).toBeCloseTo(0.627, 2) // old p10
+    expect(sectionStrength(0.58)).toBeCloseTo(0.843, 2) // old p50: was a tweak, now a scene change
+    expect(sectionStrength(0.66)).toBe(1)
+    expect(sectionStrength(0.89)).toBe(1) // old p90
     expect(sectionStrength(1.46)).toBe(1) // p99
     expect(sectionStrength(5)).toBe(1)
   })
 
-  it('most edges are noise-like: the median edge scores below the MICRO floor and the p75 below any early threshold', () => {
+  it('edges are graded: a weak one is a tweak, a typical one cuts a scene of ~5 bars, a strong one cuts at the minimum age', () => {
     const S = (novelty: number) => sectionStrength(novelty) * LEGACY.sectionConfidence // x the change weight 1.0
-    expect(S(0.58)).toBeLessThan(0.3) // p50
-    expect(S(0.71)).toBeLessThan(0.6) // p75: waits for a scene of ~8 bars
-    expect(S(0.89)).toBeGreaterThan(0.8) // p90: a strong change
+    expect(S(0.3)).toBeLessThan(0.3) // just above the firing floor: MICRO at most
+    expect(S(0.3)).toBeGreaterThanOrEqual(0.25) // ...but it IS a tweak now (MICRO floor 0.25)
+    expect(S(0.58)).toBeGreaterThan(0.75) // old p50: cuts once the scene is ~5-6 bars old
+    expect(S(0.58)).toBeLessThan(0.95)
+    expect(S(0.89)).toBeGreaterThan(0.9) // old p90: a strong change
   })
 
   it('is total: non-finite and negative read as 0', () => {
@@ -82,7 +86,7 @@ describe('legacy -> SectionEvent mapping', () => {
   })
 
   it('a section-change flag whose novelty is below the mapping floor is not an event', () => {
-    expect(frame(createLegacyEventState(), 40, { sectionChange: true, sectionChangeStrength: 0.3 })).toEqual([])
+    expect(frame(createLegacyEventState(), 40, { sectionChange: true, sectionChangeStrength: 0.12 })).toEqual([])
     expect(frame(createLegacyEventState(), 40, { sectionChange: true, sectionChangeStrength: NaN })).toEqual([])
   })
 

@@ -139,15 +139,15 @@ describe('simulateDirector: the commit path', () => {
     expect(r.outcomes.drop.events).toBe(0)
   })
 
-  it('a change event is scored against the age threshold: an S = 0.8 event is a MICRO at 5 bars, and mood pressure tips it to a CUT', () => {
+  it('a change event is scored against the age threshold: an S = 0.7 event is a MICRO at 5 bars, and mood pressure tips it to a CUT', () => {
     const base = makeTrace(30)
-    sectionChangeAt(base, 10, 0.86) // novelty 0.86 -> strength 0.85 -> S 0.81, at 5 bars (T = 0.825)
+    sectionChangeAt(base, 10, 0.53) // novelty 0.53 -> strength 0.745 -> S 0.71, at 5 bars (T = 0.825)
     const alone = simulateDirector(base)
     expect(alone.commits).toHaveLength(0)
     expect(alone.decisions.find((d) => d.eventType === 'change')?.kind).toBe('MICRO')
 
     const pressed = makeTrace(30)
-    sectionChangeAt(pressed, 10, 0.86)
+    sectionChangeAt(pressed, 10, 0.53)
     pressed.cols.moodChanged[f(9.9)] = 1
     for (let i = 0; i < pressed.n; i++) {
       pressed.cols.moodConfidence[i] = 230
@@ -177,7 +177,7 @@ describe('simulateDirector: the commit path', () => {
 describe('simulateDirector: outcome tallies', () => {
   it('counts each distinct event once, by its final type and best outcome', () => {
     const t = makeTrace(60)
-    sectionChangeAt(t, 12, 0.5) // a weak change: HOLD
+    sectionChangeAt(t, 12, 0.2) // a weak change (novelty just above the mapping floor): S 0.09, HOLD
     sectionChangeAt(t, 40, 1.2) // a strong one at a mature age: CUT
     const r = simulateDirector(t)
     expect(r.outcomes.change.events).toBe(2)

@@ -832,11 +832,13 @@ export const SCENES: SceneDef[] = [
           contrast: 'glow',
         },
         },
-        // The mood director may drive `shape` (symmetry: the wedge count, 3..12 via `Math.round(3 + shape*9)`).
-        // Flat 2D fractal, no camera; the count is eased by `slew` at FOLD_STEP_RATE (~100 ms), so each integer
-        // step morphs rather than pops. The steer must move it slowly (it is an integer under a round, so a
-        // value wobbling across a .5 boundary would flicker between two wedge counts).
-        directorSteers: ['shape'],
+        // No director steer of `shape` any more (it used to drive the wedge count, 3..12). Every wedge-count change
+        // re-buckets the whole kaleidoscope, which is what read as the rose bouncing; the count now moves only
+        // with the user's dial.
+        // `fill` (zoom) and `complexity` (fold iterations) are exempt from the mood steer too: `fill` swung the
+        // mandala ~1.9x in scale between moods (and within a beat on a drop) and `complexity` re-solved the fold
+        // with fewer / more iterations, both of which read as the picture bouncing in and out of frame.
+        steerExempt: ['fill', 'complexity'],
       },
       roles: ['primary'],
       // `kaleido`'s range (groove/building/peak) plus `aggressive`: the
@@ -916,8 +918,13 @@ export const SCENES: SceneDef[] = [
       // Ported from the lilim branch, which declared `params` and
       // `paramLabels` as flat metadata. Same fields, same values, wrapped in
       // the versioned envelope this side uses — see ./contract.ts.
+      //
+      // `complexity` is 0.7: two nesting levels. The third (CELL/9) needs > 0.75 and at 0.8 the maze ran ~50 fps on the user's machine, so it stays off by default (the slider still reaches it). The mood steer used to drag
+      // `complexity` / `density` / `fill` (the FOV) to 0.25-0.5 in quiet moods, which is the corridor going
+      // sparse and shallow: it is exempt from that steer (`steerExempt`) so the authored maze is what plays.
       contract: {
         version: 1,
+        steerExempt: ['complexity', 'density', 'fill'],
         params: {
           speed: 0.5,
           shape: 0.82,
@@ -968,6 +975,9 @@ export const SCENES: SceneDef[] = [
         // leaving a performer to guess what "shape" does here.
         '*': { shape: 'orbit', complexity: 'detail', fill: 'zoom' },
         },
+        // The mood steer eased `fill` (the zoom) ~1.9x between moods and, on a drop, within a beat: the whole
+        // frame scaled like a video being punched in. The zoom stays at the dial; the beat lives in the motion.
+        steerExempt: ['fill'],
       },
       roles: ['primary'],
       // Built to be "dancy": the zoom breathes on the beat-subdivision pulse

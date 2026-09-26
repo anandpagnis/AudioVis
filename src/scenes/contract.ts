@@ -145,6 +145,15 @@ export interface SceneContract {
    * can safely drive (e.g. 4D angle, symmetry) opts in here. The dial must also be declared in `params`.
    */
   directorSteers?: readonly ('shape' | 'tilt')[]
+
+  /**
+   * Dials the mood director must NOT steer in this scene, out of the five it steers by default. The scene keeps
+   * its authored default (and whatever the user dials). For a dial whose steered motion reads as a defect here:
+   * a zoom (`fill`) that swings ~1.9x between moods and eases in within a beat on a drop reads as the picture
+   * bouncing in and out of frame, and a structural dial (`complexity`, `density`) that the steer pulls below the
+   * scene's authored look reads as the scene getting simpler.
+   */
+  steerExempt?: readonly ('speed' | 'complexity' | 'density' | 'fill' | 'contrast')[]
 }
 
 /** Neutral position for every parameter: natural rate, no offset, mid range. */
@@ -309,7 +318,9 @@ export function resolveSteeredParams(
       // `shape` / `tilt` are steered only for scenes that opted in (`directorSteers`). The steer block is one
       // object shared by every scene, including the outgoing one during a crossfade, so a value steered for an
       // opted-in scene must not leak into a scene that merely declares the same dial.
-      const steerable = (k !== 'shape' && k !== 'tilt') || (c.directorSteers?.includes(k) ?? false)
+      const steerable =
+        ((k !== 'shape' && k !== 'tilt') || (c.directorSteers?.includes(k) ?? false)) &&
+        !((c.steerExempt as readonly string[] | undefined)?.includes(k) ?? false)
       const s = steerable ? steer?.[k] : undefined
       if (typeof s === 'number' && isFinite(s)) v = s
       const u = user?.[k]

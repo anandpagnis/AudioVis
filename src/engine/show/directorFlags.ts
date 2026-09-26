@@ -42,7 +42,11 @@ export const DIRECTOR_ON: boolean = !directorLegacy()
 /**
  * `?events=v2|legacy`: which source feeds the director's `change` / `fill` / `gain` / `breakdown` events.
  *
- *  - `v2` (the DEFAULT): the bar-synchronous live change scorer (`audio/events/EventLayer.ts`) supplies them; the legacy
+ * LEGACY IS THE DEFAULT (flipped back by the user after watching all three live: "events=legacy looks the best").
+ * v2 measured better offline (below) but was watched to detect sections poorly and late, and it emits ~1.3 events a
+ * minute, so most of the show sat in one scene. `?events=v2` opts in; nothing else does.
+ *
+ *  - `v2` (opt-in, `?events=v2`): the bar-synchronous live change scorer (`audio/events/EventLayer.ts`) supplies them; the legacy
  *    mapping keeps only its `drop` and `buildStart` events (the sectionChange- and boundary-derived `change` events are
  *    dropped: v2 replaces them). Made the default after `corpus/structure/director-vs-silver.md`: on the synthetic suite
  *    v2 finds 84% of real changes within a bar against 24% for `f.sectionChange`, with 0.30 vs 2.11 false alarms/min and 0
@@ -54,10 +58,10 @@ export const DIRECTOR_ON: boolean = !directorLegacy()
  *  - `legacy`: today's Phase-1 mapping. `f.sectionChange` and the analyser's kind-change boundaries become `change`
  *    events (`audio/events/legacyEvents.ts`), exactly as before. `0|false|off|no` count as legacy too.
  *
- * Read ONCE at module load like `DIRECTOR_ON`, so the whole session runs one source. Only an explicit legacy value selects
- * legacy: anything else, including a typo, is v2.
+ * Read ONCE at module load like `DIRECTOR_ON`, so the whole session runs one source. Only an explicit `v2` selects
+ * v2: anything else, including a typo or a legacy value, is legacy.
  */
-const LEGACY_VALUES: readonly string[] = ['legacy', ...OFF_VALUES]
+const V2_VALUES: readonly string[] = ['v2']
 
 export type EventsSource = 'v2' | 'legacy'
 
@@ -66,11 +70,11 @@ export function eventsSource(search?: string): EventsSource {
   try {
     raw = new URLSearchParams(readSearch(search)).get('events')
   } catch {
-    return 'v2'
+    return 'legacy'
   }
-  if (raw === null) return 'v2'
-  return LEGACY_VALUES.includes(raw.trim().toLowerCase()) ? 'legacy' : 'v2'
+  if (raw === null) return 'legacy'
+  return V2_VALUES.includes(raw.trim().toLowerCase()) ? 'v2' : 'legacy'
 }
 
-/** The v2 event layer feeds the director this session (read once). */
+/** The v2 event layer feeds the director this session (read once; opt-in with `?events=v2`). */
 export const EVENTS_V2: boolean = eventsSource() === 'v2'

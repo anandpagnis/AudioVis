@@ -17,30 +17,26 @@ import { showProbe } from '../showRuntime'
 const adapter = (ADAPTER_SRC as string).replace(/\r\n/g, '\n')
 
 describe('?events flag', () => {
-  it('is v2 by default and for anything that is not an explicit legacy value', () => {
-    expect(eventsSource('')).toBe('v2')
-    expect(eventsSource('?')).toBe('v2')
-    expect(eventsSource('?events')).toBe('v2')
+  it('is legacy by default and for anything that is not an explicit v2 value', () => {
+    expect(eventsSource('')).toBe('legacy')
+    expect(eventsSource('?')).toBe('legacy')
+    expect(eventsSource('?events')).toBe('legacy')
+    expect(eventsSource('?events=v3')).toBe('legacy')
+    expect(eventsSource('?event=v2')).toBe('legacy')
+    expect(eventsSource('?events=legacy')).toBe('legacy')
+    for (const off of ['0', 'false', 'off', 'no', 'on', '1', 'true', 'live']) expect(eventsSource(`?events=${off}`)).toBe('legacy')
+  })
+
+  it('is v2 only for ?events=v2, among other parameters', () => {
     expect(eventsSource('?events=v2')).toBe('v2')
     expect(eventsSource('?events=V2')).toBe('v2')
-    expect(eventsSource('?events=v3')).toBe('v2')
-    expect(eventsSource('?event=legacy')).toBe('v2')
-    expect(eventsSource('?events=legacyx')).toBe('v2')
+    expect(eventsSource('events=v2')).toBe('v2')
     expect(eventsSource('?lookdebug&events=v2&director=legacy')).toBe('v2')
-    for (const on of ['on', '1', 'true', 'yes', 'live']) expect(eventsSource(`?events=${on}`)).toBe('v2')
   })
 
-  it('is legacy for ?events=legacy (and 0 / false / off / no), among other parameters', () => {
-    expect(eventsSource('?events=legacy')).toBe('legacy')
-    expect(eventsSource('?events=LEGACY')).toBe('legacy')
-    expect(eventsSource('events=legacy')).toBe('legacy')
-    expect(eventsSource('?lookdebug&events=legacy&director=legacy')).toBe('legacy')
-    for (const off of ['0', 'false', 'off', 'no']) expect(eventsSource(`?events=${off}`)).toBe('legacy')
-  })
-
-  it('with no location (node, workers) it answers v2, the default', () => {
-    expect(eventsSource()).toBe('v2')
-    expect(EVENTS_V2).toBe(true)
+  it('with no location (node, workers) it answers legacy, the default', () => {
+    expect(eventsSource()).toBe('legacy')
+    expect(EVENTS_V2).toBe(false)
   })
 })
 

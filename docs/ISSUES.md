@@ -13295,3 +13295,110 @@ per-frame canvas heavy enough to distort the reading.
       constants (needs songs with drops other than Floated By); whether release-backed legacy drops
       should be dropped entirely; whether breakdown starts should cut or hold; the fill-typing
       threshold (0.3 vs 0.8); a real test of the phrase prior. **Nothing here has been watched live.**
+
+- [x] **F268 · Watched live for the first time: legacy events back as default; rose, maze and wingfold fixed** —
+      Watching the app (dev server :5183) the user found `?events=legacy` and `?director=legacy` both
+      looked better than the v2 default ("it doesn't detect sections at all"), so `?events=legacy` is the
+      default again and `?events=v2` is the opt-in (`directorFlags.ts`). Offline v2 numbers were not
+      contradicted, only outweighed: v2 emits ~1.3 events/min, so most of a show sat in one scene.
+
+      **Root cause of three scene complaints: the mood steer added on 2026-09-25 (bcc651b) reaches every
+      shader-factory scene.** It overrode each scene's authored `complexity` / `density` / `fill` with a
+      per-mood value (0.25-0.8), eased at 6/s on a drop. New contract field `steerExempt` (per scene, out
+      of the five steered dials); `resolveSteeredParams` honours it.
+      - **Fractal Rose Window bounced in and out:** the steer moved `fill` (the zoom) ~1.9x between moods and
+        within a beat on a drop, and steered `shape` (wedge count, an integer under a round). Now exempt
+        (`fill`, `complexity`), no `directorSteers`. Also removed: the per-bar step of wedge count and fold
+        config (a stepped input to a chaotic Kaliset map swings its extent however it is eased) -> the fold
+        config is a slow continuous wave over 4 bars; the 2% bar zoom breath. The beat now reaches the rose
+        as a pure, eased rotation (cannot change the extent). `tempoLocked`.
+      - **Maze Flight simpler than it was:** exempt (`complexity`, `density`, `fill`); `complexity` default
+        tried 0.8 (third nesting level on) and it ran ~50 fps on the user's machine, so it is back at
+        0.7 (two levels, the authored look); the slider still reaches the third level.
+      - **Wingfold Julia looked like an mp4:** wall-clock phase plus kick-triggered whole-frame zoom pulses
+        and a randomly gated `c` leap. Rebuilt around `engine/beatMotion.ts` (new, pure, tested): `c` steps
+        along its orbit once per beat on an eased curve (front-loaded, settles before the next beat), bar
+        accent pattern, a bigger step on the first downbeat of every 4th bar, a smooth per-beat swell of orbit
+        radius / wing seam, no zoom pulse at all, `fill` exempt. Free-runs at the tempo when no grid is
+        delivered. `tempoLocked`.
+
+      **Not watched after these changes** (no browser in the session): the three scenes' new motion, and
+      Maze's frame cost at complexity 0.8, are unverified by eye. The v2 director/events code is untouched.
+
+- [x] **F269 · Section-change detection made more sensitive (legacy events, the live default)** —
+      User, after watching it live: "make the section change threshold and analysis more sensitive".
+      Three changes, all on the legacy `f.sectionChange` path; the director's thresholds, the drop
+      grading and v2 are untouched (lowering the director's threshold would also have let lone drops,
+      ~250/h, cut scenes again, so the sensitivity is put in the event, not the director).
+      - `PhraseDetector`: firing threshold 0.45 -> 0.30; high band weight 0.8 -> 1.2 (the tapped songs'
+        changes were hi-hats / upper layers entering, a small absolute move of a quiet band); cooldown
+        8 -> 6 beats.
+      - `legacyEvents`: novelty -> strength re-anchored 0.425..0.94 -> 0.15..0.66. Median real edge
+        (novelty 0.58) went strength 0.30 (a tweak) -> 0.84 (S ~0.80: cuts a scene of ~5 bars); a weak
+        edge (0.3) is S ~0.28, a tweak straight away; a p90 edge cuts at the minimum age.
+      **Measured (98 cached traces, threshold replay with the old weights, so a floor on the effect):**
+      events/min 5.6 at 0.45 -> 9.2 at 0.30 (x1.6); downbeat novelty p50 0.25, p75 0.40, p90 0.58.
+      **Costs, accepted:** more cuts, less precise ones (cadence-sim hit rate ~0.81 -> ~0.67, cuts/min
+      ~2.7 vs the old <= 3 ceiling still holding); a steady synthetic four-on-floor now fires one section
+      change (start-up), which softens the key tracker (`chromaKey.soften(0.35)`), so the `four_on_floor`
+      golden digest was re-recorded (only sectionChange*, phrase and the key fields moved). Cadence-sim
+      bounds loosened with comments (hit rate 0.75 -> 0.6, 2x -> 1.6x fewer cuts than legacy, ...). Floors
+      that guard regressions are kept: zero cuts on an event-free stream, no hard cut on a lone drop.
+      **Not watched live.** If it strobes: raise `THRESHOLD` in `PhraseDetector.ts` toward 0.38 first.
+
+- [x] **F270 · How to map a song by hand (the tap tool) and score the detectors against it** —
+      *Instructions, written 2026-09-27 after F268/F269 were watched live. The taps are still the ONLY human
+      ground truth; every detector number in this ledger is relative evidence until ~10 songs exist. The
+      most valuable next step is more tapped songs: several with clear drops, some drumless/ambient, and
+      some where `N` (small change) is tapped.* `src/ui/StructureLog.tsx`, `src/engine/structureLog.ts`,
+      `src/engine/structureLogHotkeys.ts`, `src/audio/eval/tapEval.ts`, `scripts/calibrate/tap-eval.calib.ts`
+
+      **1. Record a song.**
+      1. Start the dev server (`npm run dev`, or `npx vite --port 5183`) and open the OUTPUT window (the
+         one that runs the engine) with `?structurelog` on the URL, e.g. `http://localhost:5183/?structurelog`.
+         The overlay (bottom-right, yellow on black) appears only with the flag and only in that window; turn
+         the flag off before any screen recording. It works with either event source (`?events=v2` is
+         recorded as a shadow stream when the show runs on legacy events), so tap on the default URL.
+      2. Click the output window once so it has keyboard focus.
+      3. Type the SONG NAME into the overlay's name field BEFORE pressing play. It becomes the file name
+         (`structurelog-<name>.json`); an unnamed log falls back to `structurelog-YYYYMMDD-HHMMSS.json`.
+      4. Start the audio (file, mic, or system capture; a Spotify / YouTube capture is fine, the log stores
+         per-beat feature cells so no audio file is needed later).
+      5. While it plays, tap keys at the moment you HEAR a change:
+         - **`M` or `Space`: BIG change**, one you would want a NEW SCENE for (verse to chorus, a drop,
+           a breakdown starting, a new layer group).
+         - **`N`: SMALL change**, one where colours or effects should react but the scene should stay
+           (a hi-hat or extra layer entering, a fill).
+         - **`U`: undo** the most recent tap of either kind.
+         Tap when you hear it, not early; the tool measures your lag against the audio, so do not try to
+         compensate. Tap every real change through the whole song, and do not tap noise.
+      6. Press **`E` twice** at the end: it downloads the JSON (to your browser's download folder,
+         normally `C:\Users\aryan\Downloads`) and starts the next track. A finished segment with taps is
+         archived (last 5 kept), so a forgotten export can still be re-downloaded from the overlay.
+      The recorder is bounded (rings with a `dropped` counter, ~35 KB per minute of cells) and costs one
+      boolean check when the flag is off.
+
+      **2. Score the detectors against the taps.**
+      ```
+      TAPLOG_DIR=C:\Users\aryan\Downloads node --max-old-space-size=3072 ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/tap-eval.calib.ts --reporter=verbose
+      ```
+      It reads every `structurelog-*.json` in `TAPLOG_DIR` (default `C:\Users\aryan\Downloads`; the logs are
+      NEVER copied into the repo) and writes `corpus/structure/tap-eval.md` (gitignored). Sections: the
+      songs; the measured human lag per mark (tap minus audio onset); every detector at several windows,
+      per song and pooled, M marks vs N marks, next to the score of the same stream shifted (chance); which
+      signals respond at each mark kind; what the director did; the v2 layer with each candidate config
+      (leave-one-song-out from two songs up). With no logs it skips. The machine is memory-tight (~1 GB
+      free): run it alone, and use targeted test runs.
+
+      **3. Rules for using the results.** Nothing here is a target. With n songs small every number carries a
+      wide interval (Wilson 95% shown). Do not hard-code anything derived from one song (a period, a tempo,
+      a per-song threshold, a fixed human lag), and do not ship a change that helped only one song in the
+      leave-one-song-out check. Files already recorded: `structurelog-floated-by-pcrc.json` (12 M, 5 N) and
+      `structurelog-hrt-girls-ritual.json` (5 M, 2 N).
+
+      **This session (F268, F269, one push).** Watched live for the first time: legacy events are the default
+      again (`?events=v2` opts in); rose window bounce, maze complexity and wingfold's mp4 feel were the mood
+      steer (`steerExempt`, new `engine/beatMotion.ts`); Maze `complexity` is 0.7 (0.8 ran ~50 fps); section
+      detection made more sensitive (F269). Still open: the detector needs ~6 beats to notice a change; the
+      EDM event machine; migrating DjCam / Limitless / mirrorGate / PerformanceStateBridge / EffectDirector
+      off raw `f.sectionChange`; the wired phrase prior; the forcing DJ-cam / Limitless cutaway auto-release.

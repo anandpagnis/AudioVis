@@ -10,6 +10,10 @@ import { COLUMN_NAMES } from '../cadenceTrace'
  *
  * The GOLDEN digest below was recorded from the UNMODIFIED `features.ts` (per-field sums over the frames, booleans
  * as 0/1, string fields as a hash of their first characters) on the two fixtures used here.
+ *
+ * RE-RECORDED once, after PhraseDetector was made more sensitive (THRESHOLD 0.45 -> 0.30, high band weighted up, 6-beat
+ * cooldown): `sectionChangeStrength`, `sectionChange` and `phrase` moved, and on `four_on_floor` a section change now
+ * fires once, which softens the key tracker (`keyValid`, `key*`). Every other field is byte-identical.
  */
 
 const TIMEOUT = 60_000
@@ -50,7 +54,7 @@ const GOLDEN = {
       mid: 240.74992, presence: 216.99576, high: 162.670618, vocal: 306.756096, air: 162.643497, sparkle: 153.537075,
       centroid: 457.030104, spectralFlatness: 287.665127, spectralRolloff: 291.201876, crestFactor: 966.827526,
       flux: 35.3143191, transient: 52.5500584, bpm: 71886.7158, confidence: 16.6455861, beatGridAccuracy: 70.2223054,
-      octaveCorrection: 581.5, beat: 21, phrase: 0, sectionChange: 2, sectionChangeStrength: 257.129082, drop: 36,
+      octaveCorrection: 581.5, beat: 21, phrase: 0, sectionChange: 2, sectionChangeStrength: 277.0879712153116, drop: 36,
       buildUp: 0, silence: 48, moodConfidence: 242.734777, moodAmbiguity: 286.910087, moodChanged: 3, moodLevel: 204.743468,
       energyVel: -99.7007977, keyValid: 0, keyModeStrength: 0, keyConfidence: 0, harmonicTensionValid: 537,
       harmonicTension: 175.232848, harmonicTonalness: 218.515227, harmonicRoughness: 186.809564,
@@ -64,17 +68,19 @@ const GOLDEN = {
     runs: 0,
     salience: 16,
     sums: {
-      t: 1892.1, rms: 128.345018, loudness: 454.724653, energy: 195.364508, sub: 162.380672, bass: 114.342283,
-      mid: 309.328026, presence: 246.599687, high: 98.1646762, vocal: 327.232786, air: 97.9052583, sparkle: 96.2551293,
-      centroid: 388.005374, spectralFlatness: 176.977756, spectralRolloff: 172.814394, crestFactor: 1071.28909,
-      flux: 69.1690987, transient: 103.256138, bpm: 58998.9338, confidence: 74.9346022, beatGridAccuracy: 157.078868,
-      octaveCorrection: 477, beat: 16, phrase: 15, sectionChange: 0, sectionChangeStrength: 62.635212, drop: 0,
-      buildUp: 0, silence: 0, moodConfidence: 170.409497, moodAmbiguity: 279.742313, moodChanged: 1, moodLevel: 164.020452,
-      energyVel: -109.833437, keyValid: 48, keyModeStrength: 42.4621717, keyConfidence: 7.07193186,
-      harmonicTensionValid: 417, harmonicTension: 171.371219, harmonicTonalness: 235.266488,
-      harmonicRoughness: 217.619131, harmonicDissonance: 101.449114, structureBuildActive: 0,
+      t: 1892.1000000000001, rms: 128.34501827425566, loudness: 454.7246527940977, energy: 195.3645084267424,
+      sub: 162.38067225242375, bass: 114.34228342481317, mid: 309.3280260499175, presence: 246.59968654852796,
+      high: 98.16467623989368, vocal: 327.2327860742805, air: 97.90525830349456, sparkle: 96.25512927870649,
+      centroid: 388.00537445486043, spectralFlatness: 176.97775634216043, spectralRolloff: 172.81439383812776, crestFactor: 1071.2890929389187,
+      flux: 69.16909865307593, transient: 103.25613758081482, bpm: 58998.93375198087, confidence: 74.93460215952697,
+      beatGridAccuracy: 157.07886768807967, octaveCorrection: 477, beat: 16, phrase: 0,
+      sectionChange: 1, sectionChangeStrength: 92.28798093004049, drop: 0, buildUp: 0,
+      silence: 0, moodConfidence: 170.40949654307886, moodAmbiguity: 279.74231301064805, moodChanged: 1,
+      moodLevel: 164.02045193374343, energyVel: -109.83343654916509, keyValid: 0, keyModeStrength: 0,
+      keyConfidence: 0, harmonicTensionValid: 417, harmonicTension: 171.3712186525655, harmonicTonalness: 235.2664883935678,
+      harmonicRoughness: 217.61913128108705, harmonicDissonance: 101.4491141480695, structureBuildActive: 0,
     },
-    strHash: { moodState: 519522977, key: -1492034195, scale: -70724243 },
+    strHash: {moodState: 519522977, key: -1485826707, scale: -1485826707},
   },
 } as const
 
