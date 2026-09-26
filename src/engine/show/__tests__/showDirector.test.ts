@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { LEGACY } from '../../../audio/events/legacyEvents'
 import type { EventType, SectionEvent } from '../../../audio/events/types'
 import {
   ackCut,
@@ -11,7 +12,7 @@ import {
   type ShowInput,
   type ShowState,
 } from '../showDirector'
-import { SHOW, ageThreshold, barsBetween, effectiveThreshold, eventScore } from '../showPolicy'
+import { SHOW, ageThreshold, barsBetween, dropCredibility, effectiveThreshold, eventScore } from '../showPolicy'
 
 /** 120 BPM: a beat is 0.5 s, a bar 2 s. Scenes start at beat 0 / time 0 unless a case says otherwise. */
 let nextId = 1
@@ -65,6 +66,7 @@ interface Snap {
   T: number
   age: number
   pressure: number
+  credibility: number
   micro: ShowAction['micro']
   immediate: boolean
   forced: boolean
@@ -79,6 +81,7 @@ function run(st: ShowState, i: ShowInput): Snap {
     T: a.T,
     age: a.age,
     pressure: a.pressure,
+    credibility: a.credibility,
     micro: a.micro,
     immediate: a.immediate,
     forced: a.forced,
@@ -97,11 +100,12 @@ describe('showPolicy formulas', () => {
     expect(eventScore('change', 5, 5)).toBeCloseTo(1) // factors are clamped to 0..1
   })
 
-  it('T(a) = 0.35 + 0.55 * clamp((16 - a) / 12, 0, 1): 0.90 at 4 bars, falling to 0.35 at 16', () => {
+  it('T(a) = 0.30 + 0.60 * clamp((12 - a) / 8, 0, 1): 0.90 at 4 bars, falling to 0.30 at 12 (tuned on the real tracks)', () => {
     expect(ageThreshold(4)).toBeCloseTo(0.9)
-    expect(ageThreshold(10)).toBeCloseTo(0.625)
-    expect(ageThreshold(16)).toBeCloseTo(0.35)
-    expect(ageThreshold(40)).toBeCloseTo(0.35)
+    expect(ageThreshold(8)).toBeCloseTo(0.6)
+    expect(ageThreshold(10)).toBeCloseTo(0.45)
+    expect(ageThreshold(12)).toBeCloseTo(0.3)
+    expect(ageThreshold(40)).toBeCloseTo(0.3)
     expect(ageThreshold(0)).toBeCloseTo(0.9) // clamped: never above the 4-bar value
     let prev = Infinity
     for (let a = 0; a <= 20; a += 0.5) {
@@ -129,7 +133,7 @@ describe('showPolicy formulas', () => {
 
 describe('showDirector.step: the age-decaying threshold', () => {
   it('holds a marginal event young and cuts on it once the threshold has fallen', () => {
-    // S = 0.6: above T(a) only from a = 16 - 12 * (0.6 - 0.35) / 0.55 = 10.5 bars.
+    // S = 0.6: above T(a) only from a = 12 - 8 * (0.6 - 0.3) / 0.6 = 8 bars.
     const young = run(fresh(), at(6, { event: ev({ S: 0.6 }) }))
     expect(young.kind).toBe('MICRO')
     expect(young.reason).toBe('below-T')
@@ -151,7 +155,7 @@ describe('showDirector.step: the age-decaying threshold', () => {
     const ages = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.36].map(firstCutAge)
     for (let k = 1; k < ages.length; k++) expect(ages[k]).toBeGreaterThanOrEqual(ages[k - 1])
     expect(ages[0]).toBeCloseTo(4, 1)
-    expect(firstCutAge(0.34)).toBe(Infinity) // below the floor T = 0.35: never a cut on its own
+    expect(firstCutAge(0.29)).toBe(Infinity) // below the floor T = 0.30: never a cut on its own
   })
 
   it('a strong, real change is cut on at the first allowed moment', () => {
@@ -185,8 +189,10 @@ describe('showDirector.step: drops', () => {
     const lone = ev({ type: 'drop', strength: 1, confidence: 0.7 }) // S = 0.875
     expect(run(fresh(), at(3, { event: lone })).kind).toBe('MICRO')
     const later = run(fresh(), at(6, { event: ev({ type: 'drop', strength: 1, confidence: 0.7 }) }))
-    expect(later.kind).toBe('CUT') // S 0.875 >= T(6) = 0.81
-    expect(later.immediate).toBe(true)
+    expect(later.kind).toBe('CUT') // S 0.875 >= T(6) = 0.75
+    // Changed with the false-drop lane: only the FAST lane is a hard cut. Any other drop that clears the threshold
+    // waits for the bar line like an ordinary change (a false drop mid-bar must not cut mid-bar).
+    expect(later.immediate).toBe(false)
   })
 
   it('a drop younger than 2 bars with no build behind it and no second signal downgrades to a MICRO', () => {
@@ -219,6 +225,147 @@ describe('showDirector.step: drops', () => {
     const r = run(st, { ...at(3, { event: merged }), beat: 13, time: 6.5 })
     expect(r.kind).toBe('CUT')
     expect(r.reason).toBe('drop-fast')
+  })
+})
+
+describe('showDirector.step: a lone drop (no build, no breakdown, no second signal)', () => {
+  const lone = (over: Partial<SectionEvent> = {}) => ev({ type: 'drop', strength: 1, confidence: LEGACY.dropConfidence, ...over }) // S = 0.4375
+
+  it('scores below the age threshold for a long while: a MICRO, however young the scene, until ~10 bars', () => {
+    for (const bars of [2, 3, 4, 6, 8, 10]) {
+      const r = run(fresh(), at(bars, { event: lone() }))
+      expect(r.S, `age ${bars}`).toBeCloseTo(1.25 * LEGACY.dropConfidence)
+      expect(r.kind, `age ${bars}`).toBe('MICRO')
+      expect(r.immediate).toBe(false)
+    }
+    expect(run(fresh(), at(10, { event: lone() })).S).toBeLessThan(ageThreshold(10)) // T(10) = 0.45
+  })
+
+  it('contributes to a CUT only once the scene is genuinely old, and then on the bar line, not as a hard cut', () => {
+    // S = 0.4375 = T(a) at a = 12 - 8 * (0.4375 - 0.3) / 0.6 = 10.2 bars.
+    const old = run(fresh(), at(10.5, { event: lone() }))
+    expect(old.kind).toBe('CUT')
+    expect(old.reason).toBe('event')
+    expect(old.immediate).toBe(false)
+    expect(old.forced).toBe(false)
+  })
+
+  it('never takes the fast lane, whatever the age: only a release (build / breakdown) or a strong source does', () => {
+    for (const bars of [2, 5, 9, 20]) {
+      const r = run(fresh(), at(bars, { event: lone() }))
+      expect(r.reason, `age ${bars}`).not.toBe('drop-fast')
+    }
+  })
+
+  it('a second signal (corroborated, +0.1 confidence) lets it cut ~2 bars earlier, still not as a hard cut', () => {
+    const corr = () => lone({ confidence: LEGACY.dropConfidence + LEGACY.corroborationBonus, corroborated: true }) // S = 0.5625
+    expect(run(fresh(), at(8, { event: corr() })).kind).toBe('MICRO') // T(8) = 0.60
+    const r = run(fresh(), at(9, { event: corr() })) // T(9) = 0.525
+    expect(r.kind).toBe('CUT')
+    expect(r.immediate).toBe(false)
+  })
+})
+
+describe("showDirector.step: drop credibility (rarity weighting by the detector's own firing rate)", () => {
+  const drop = (over: Partial<SectionEvent> = {}) => ev({ type: 'drop', strength: 1, confidence: LEGACY.dropConfidence, ...over })
+
+  it('policy: 1 for the first drop in the window, then 0.9 / 0.75 / 0.5 for the 1st / 2nd / 3rd-or-more other drop', () => {
+    expect([0, 1, 2, 3, 4, 40].map(dropCredibility)).toEqual([1, 0.9, 0.75, 0.5, 0.5, 0.5])
+    expect(dropCredibility(NaN)).toBe(1)
+    expect(dropCredibility(-2)).toBe(1)
+  })
+
+  it('discounts later drops as the detector keeps firing: S falls with the number of other drops in the last 32 bars', () => {
+    const st = fresh()
+    const seen = [4, 5, 6, 7, 8].map((bars) => run(st, at(bars, { event: drop() })))
+    expect(seen.map((r) => r.credibility)).toEqual([1, 0.9, 0.75, 0.5, 0.5])
+    seen.forEach((r) => expect(r.S).toBeCloseTo(1.25 * LEGACY.dropConfidence * r.credibility, 6))
+    // a detector this busy carries little information: the drop is held, with the reason on the record
+    const last = seen[4]
+    expect(last.kind).toBe('HOLD')
+    expect(last.reason).toBe('drop-noisy')
+    expect(last.evaluated).toBe(true)
+  })
+
+  it('a train of lone drops (one every 2 bars) never cuts a scene before the forced ceiling', () => {
+    const st = fresh()
+    for (let bars = 4; bars <= 28; bars += 2) {
+      // the first one (age 4, S = 0.44) is a MICRO; every later one is discounted below the age threshold
+      const r = run(st, at(bars, { event: drop() }))
+      expect(r.kind, `bar ${bars}`).not.toBe('CUT')
+    }
+  })
+
+  it('the window forgets: a drop 33 bars after the last one is credible again', () => {
+    const st = fresh()
+    const cred = (bars: number) => run(st, at(bars, { event: drop() })).credibility
+    expect(cred(40)).toBe(1)
+    expect(cred(41)).toBeCloseTo(0.9) // one other drop, 1 bar ago
+    expect(cred(74)).toBe(1) // 33 bars after the previous one: outside the window
+  })
+
+  it('a re-delivered (merged) drop is one physical drop: it is not counted against itself or against the next one', () => {
+    const st = fresh()
+    const first = drop()
+    const a = run(st, at(5, { event: first }))
+    const b = run(st, at(5.25, { event: { ...first, confidence: 0.45, corroborated: true } })) // same id, merged
+    expect(a.credibility).toBe(1)
+    expect(b.credibility).toBe(1)
+    expect(run(st, at(6, { event: drop() })).credibility).toBeCloseTo(0.9) // ONE other drop, not two
+  })
+
+  it('a rare drop right after a real build is not discounted, and keeps the fast hard-cut lane', () => {
+    const st = fresh()
+    run(st, at(9, { event: ev({ type: 'buildStart', strength: 0.6, confidence: 0.8 }) }))
+    const r = run(st, at(10, { event: drop({ confidence: LEGACY.dropBuildConfidence }) }))
+    expect(r.credibility).toBe(1)
+    expect(r).toMatchObject({ kind: 'CUT', reason: 'drop-fast', immediate: true })
+  })
+
+  it('a drop that releases a build is never discounted, even inside a train of false drops', () => {
+    const st = fresh()
+    for (let bars = 4; bars <= 8; bars++) run(st, at(bars, { event: drop() })) // the detector has fired 5 times
+    // a confirmed build runs, then the drop
+    for (let k = 0; k < 8; k++) step(st, at(9 + k * 0.25, { inBuild: true }))
+    const r = run(st, at(11, { inBuild: true, event: drop({ confidence: LEGACY.dropBuildConfidence }) }))
+    expect(r.credibility).toBe(1)
+    expect(r).toMatchObject({ kind: 'CUT', reason: 'drop-fast', immediate: true })
+  })
+
+  it('the build may have ended up to 4 bars ago (and no more): a stale build does not rescue a drop', () => {
+    const within = fresh()
+    for (let bars = 4; bars <= 8; bars++) run(within, at(bars, { event: drop() }))
+    step(within, at(9, { inBuild: true }))
+    expect(run(within, at(12.9, { event: drop({ confidence: LEGACY.dropBuildConfidence }) })).credibility).toBe(1) // 3.9 bars later
+    const stale = fresh()
+    for (let bars = 4; bars <= 8; bars++) run(stale, at(bars, { event: drop() }))
+    step(stale, at(9, { inBuild: true }))
+    const r = run(stale, at(13.5, { event: drop({ confidence: LEGACY.dropBuildConfidence }) })) // 4.5 bars later
+    expect(r.credibility).toBeLessThan(1)
+    expect(r.reason).not.toBe('drop-fast')
+  })
+
+  it('a drop after a breakdown (the bass return) is a release too', () => {
+    const st = fresh()
+    for (let bars = 4; bars <= 8; bars++) run(st, at(bars, { event: drop() }))
+    step(st, at(9, { inBreakdown: true }))
+    const r = run(st, at(10, { event: drop({ confidence: LEGACY.dropReleaseConfidence }) })) // 1 bar after the breakdown
+    expect(r.credibility).toBe(1)
+    expect(r).toMatchObject({ kind: 'CUT', reason: 'drop-fast' })
+  })
+
+  it('only drops are weighted: a change event keeps credibility 1 however many drops came before', () => {
+    const st = fresh()
+    for (let bars = 4; bars <= 8; bars++) run(st, at(bars, { event: drop() }))
+    const c = run(st, at(9, { event: ev({ S: 0.5 }) }))
+    expect(c.credibility).toBe(1)
+    expect(c.S).toBeCloseTo(0.5)
+  })
+
+  it('the credibility state is forgotten with the source (a new track starts with a clean detector history)', () => {
+    const st = fresh()
+    for (let bars = 20; bars <= 24; bars++) run(st, at(bars, { event: drop() }))
+    expect(run(st, at(6, { event: drop() })).credibility).toBe(1) // the clocks went backwards: a new source
   })
 })
 
@@ -265,19 +412,19 @@ describe('showDirector.step: the forced-change ceiling', () => {
 
   it('takes the best-scoring event of the last 4 bars when there is one, cutting at once', () => {
     const st = fresh()
-    // Two sub-threshold events at 27 and 28.5 bars (MICROs), the better one first.
-    run(st, at(27, { event: ev({ S: 0.33 }) }))
-    run(st, at(28.5, { event: ev({ S: 0.28 }) }))
+    // Two sub-threshold events at 27 and 28.5 bars (below the floor T = 0.30: a MICRO and a cooldown), the better one first.
+    run(st, at(27, { event: ev({ S: 0.29 }) }))
+    run(st, at(28.5, { event: ev({ S: 0.26 }) }))
     const cut = run(st, at(30))
     expect(cut.kind).toBe('CUT')
     expect(cut.reason).toBe('forced-best')
     expect(cut.forced).toBe(true)
-    expect(cut.S).toBeCloseTo(0.33) // the best S in the window, not the latest
+    expect(cut.S).toBeCloseTo(0.29) // the best S in the window, not the latest
   })
 
   it('ignores events older than 4 bars: it falls back to the next bar line', () => {
     const st = fresh()
-    run(st, at(20, { event: ev({ S: 0.3 }) })) // a MICRO 10 bars before the ceiling
+    run(st, at(20, { event: ev({ S: 0.28 }) })) // a MICRO 10 bars before the ceiling
     expect(run(st, at(30)).reason).toBe('forced-wait')
     expect(run(st, at(30, { barLine: true })).reason).toBe('forced-bar')
   })
@@ -306,7 +453,7 @@ describe('showDirector.step: pressure', () => {
   })
 
   it('tips a marginal event over the threshold', () => {
-    // At 5 bars T = 0.854. S = 0.8 is marginal: a MICRO alone, a CUT with the full 0.15 (T_eff = 0.704).
+    // At 5 bars T = 0.825. S = 0.8 is marginal: a MICRO alone, a CUT with the full 0.15 (T_eff = 0.675).
     const alone = run(fresh(), at(5, { event: ev({ S: 0.8 }) }))
     expect(alone.kind).toBe('MICRO')
     const pressed = run(fresh(), at(5, { moodChanged: true, event: ev({ S: 0.8 }) }))
@@ -358,7 +505,7 @@ describe('showDirector.step: breakdown', () => {
   it('a breakdown event itself is weighted 0.9', () => {
     const r = run(fresh(), at(6, { event: ev({ type: 'breakdown', strength: 1, confidence: 1 }) }))
     expect(r.S).toBeCloseTo(0.9)
-    expect(r.kind).toBe('CUT') // 0.9 >= T(6) = 0.81
+    expect(r.kind).toBe('CUT') // 0.9 >= T(6) = 0.75
   })
 })
 
@@ -385,12 +532,12 @@ describe('showDirector.step: through a build', () => {
 describe('showDirector.step: MICRO', () => {
   it('is a tweak for 0.25 <= S < T_eff, with a 4-bar cooldown', () => {
     const st = fresh()
-    expect(run(st, at(8, { event: ev({ S: 0.3 }) })).kind).toBe('MICRO')
-    const again = run(st, at(9, { event: ev({ S: 0.3 }) }))
+    expect(run(st, at(8, { event: ev({ S: 0.28 }) })).kind).toBe('MICRO')
+    const again = run(st, at(9, { event: ev({ S: 0.28 }) }))
     expect(again.kind).toBe('HOLD')
     expect(again.reason).toBe('micro-cooldown')
-    expect(run(st, at(11.75, { event: ev({ S: 0.3 }) })).reason).toBe('micro-cooldown')
-    expect(run(st, at(12, { event: ev({ S: 0.3 }) })).kind).toBe('MICRO')
+    expect(run(st, at(11.75, { event: ev({ S: 0.28 }) })).reason).toBe('micro-cooldown')
+    expect(run(st, at(12, { event: ev({ S: 0.28 }) })).kind).toBe('MICRO') // still under T = 0.30
   })
 
   it('needs S >= 0.25', () => {

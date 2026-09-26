@@ -10,6 +10,7 @@ import {
   type LegacyInput,
 } from '../../audio/events/legacyEvents'
 import type { SectionEvent } from '../../audio/events/types'
+import { structureLog } from '../structureLog'
 import {
   getCharacterCandidates,
   getEffectScenes,
@@ -39,7 +40,7 @@ import { performanceState } from '../performanceState'
 import { selectPrimaryCandidates } from '../PerformanceDirector'
 import { quality } from '../quality'
 import { renderScale } from '../renderScale'
-import { DIRECTOR_ON } from './directorFlags'
+import { DIRECTOR_ON, EVENTS_V2 } from './directorFlags'
 import {
   ackCut,
   createShowState,
@@ -59,8 +60,7 @@ import {
 /**
  * The thin `useFrame` adapter between the live app and the pure show director (`showDirector.ts`).
  *
- * Each frame it (1) clears the one-frame mailbox, (2) turns today's signals into `SectionEvent`s
- * (`legacyEvents.ts`; the new detector replaces this one input later), (3) gathers the director's inputs from
+ * Each frame it (1) clears the one-frame mailbox, (2) turns the music into `SectionEvent`s, (3) gathers the director's inputs from
  * `audioEngine.features`, the store and `performanceState`, (4) calls `step`, and (5) performs the action through the
  * machinery that already exists. It owns no policy: every number lives in `showPolicy.ts`.
  *
@@ -74,6 +74,19 @@ import {
  *  - MICRO-> palette / mode: a flag in `showRuntime` that `AutoPilot` (which owns the palette and mode refs and their
  *            cadence floors) acts on this same frame; layers: a flag `PerformanceDirector` acts on; effect: the same
  *            pure `advanceEffects` the `EffectDirector` uses, fired as a `sectionChange` punctuation.
+ *
+ * EVENT SOURCE (`?events=v2|legacy`, `directorFlags.ts`, read once; the default is `legacy` until the acceptance gates are shown):
+ *  - `legacy`: today's mapping (`legacyEvents.ts`): `f.sectionChange`, the analyser's kind-change boundaries, drops and
+ *            build starts. Bit-for-bit the Phase-1 behaviour: the v2 layer is only drained (and logged).
+ *  - `v2`:     the bar-synchronous live change scorer (`audioEngine.events`, `audio/events/EventLayer.ts`) supplies
+ *            `change` / `fill` / `gain` / `breakdown`. The legacy mapping is still stepped every frame but only its
+ *            `drop` and `buildStart` events are kept (its sectionChange- and boundary-derived `change` and `breakdown`
+ *            events are dropped, and its sectionChange / non-drop boundary signals are not fed to it, so they cannot
+ *            corroborate a drop either). The forced-cut / CUT alignment uses the boundary-anchored bar grid when it is
+ *            confident (`EventLayer.grid.beatsToBarLine`), else `f.beatInBar`. SceneManager still commits on
+ *            `f.beatInBar === 0`.
+ * The v2 layer is drained EVERY frame in both modes and each event is recorded in the `?structurelog` (in legacy mode
+ * flagged `shadow`), so tap logs can score v2 against the taps while the show still runs on the legacy events.
  *
  * It bails out on exactly the conditions AutoPilot / PerformanceDirector bail out on (autopilot off, not running,
  * silence, authored cues, a DJ-cam / Limitless cutaway, the 45 s manual hold), consuming edges while it does so.
@@ -89,6 +102,8 @@ interface AdapterCtx {
   legacyIn: LegacyInput
   input: ShowInput
   events: SectionEvent[]
+  /** Scratch for `audioEngine.events.drain` (emptied every frame). */
+  live: SectionEvent[]
   charShift: CharacterShiftTrigger
   effectFiredAt: Map<string, number>
   /** Cached `trendOf(f) === 'rising'`, refreshed on beats (it builds a small object). */
@@ -134,6 +149,7 @@ function createCtx(): AdapterCtx {
       trendRising: false,
     },
     events: [],
+    live: [],
     charShift: new CharacterShiftTrigger(),
     effectFiredAt: new Map(),
     trendRising: false,
@@ -297,9 +313,21 @@ export function ShowAdapter() {
     // The one-frame mailbox always starts empty, so a request nobody consumed can never fire late.
     clearShowRuntime()
     showProbe.on = DIRECTOR_ON
-    if (!DIRECTOR_ON) return
+    showProbe.src = EVENTS_V2 ? 'v2' : 'legacy'
     const ctx = ctxRef.current as AdapterCtx
     const f = audioEngine.features
+    // The live event layer is drained EVERY frame, in both modes and even under `?director=legacy`, so its ring never
+    // goes stale. What it delivers only reaches the director in v2 mode; otherwise it is recorded as a SHADOW event in
+    // the `?structurelog` so a tap log can score v2 while the show still runs on the legacy events.
+    ctx.live.length = 0
+    audioEngine.events.drain(ctx.live)
+    const feedV2 = EVENTS_V2 && DIRECTOR_ON
+    for (let k = 0; k < ctx.live.length; k++) {
+      const e = ctx.live[k]
+      showProbe.lastEvent = `${e.type} ${e.strength.toFixed(2)}${e.sim ? ' sim' : ''}`
+      if (!feedV2) structureLog.noteSectionEvent(e, { shadow: true })
+    }
+    if (!DIRECTOR_ON) return
     const m = f.mood
     const s = useStore.getState()
 
@@ -319,8 +347,27 @@ export function ShowAdapter() {
     li.sectionConfidence = f.songSection.sectionConfidence
     li.beatsInSection = f.songSection.beatsInSection
     li.isSustain = f.songSection.isSustain
+    li.inBreakdown = f.structureValid && f.songSection.isBreakdown
+    if (EVENTS_V2) {
+      // v2 replaces the sectionChange- and boundary-derived `change` / `breakdown` events: only the drop / build
+      // boundaries stay in the legacy mapping's input, and `f.sectionChange` is not fed at all (so it cannot
+      // corroborate a drop either).
+      li.sectionChange = false
+      li.boundaryChanged = f.songSection.boundaryChanged && (f.songSection.section === 'drop' || f.songSection.section === 'build')
+    }
     ctx.events.length = 0
     stepLegacyEvents(ctx.legacy, li, ctx.events)
+    if (EVENTS_V2) {
+      // Keep the legacy drop / buildStart events, then append the live ones (a drop is seen before the change that
+      // follows it, so the director can corroborate it).
+      let w = 0
+      for (let k = 0; k < ctx.events.length; k++) {
+        const e = ctx.events[k]
+        if (e.type === 'drop' || e.type === 'buildStart') ctx.events[w++] = e
+      }
+      ctx.events.length = w
+      for (let k = 0; k < ctx.live.length; k++) ctx.events.push(ctx.live[k])
+    }
 
     // Off with the rest of the character path under `?scenepick=legacy`.
     if (characterPickEnabled()) ctx.charShift.observe(f.character)
@@ -344,6 +391,8 @@ export function ShowAdapter() {
       performanceState.limitless.active ||
       f.time - s.lastManualAt < MANUAL_HOLD_SEC
     if (suppressed) {
+      // The events were consumed (an edge is never late), but say so in the log.
+      if (feedV2) for (let k = 0; k < ctx.live.length; k++) structureLog.noteSectionEvent(ctx.live[k], { decision: 'suppressed' })
       publish(ctx, null)
       return
     }
@@ -355,8 +404,15 @@ export function ShowAdapter() {
     inp.bpm = f.bpm
     inp.sceneStartBeat = s.lastCommitBeat
     inp.sceneStartTime = ctx.sceneStartTime
-    // The last beat of a bar: a request made now commits on the very next downbeat (see `ShowInput.barLine`).
-    inp.barLine = f.beat && f.beatInBar === 3
+    // The last beat of a bar: a request made now commits on the very next downbeat (see `ShowInput.barLine`). In v2
+    // mode the bar lines are the boundary-anchored grid's while it is confident (the music's, not an arbitrary
+    // `beatIndex % 4`); otherwise, and always in legacy mode, it is `f.beatInBar`.
+    let barLine = f.beat && f.beatInBar === 3
+    if (EVENTS_V2 && f.beat) {
+      const toLine = audioEngine.events.beatsToBarLine(f.beatIndex)
+      if (toLine >= 0) barLine = toLine === 1
+    }
+    inp.barLine = barLine
     inp.inBreakdown = f.structureValid && f.songSection.isBreakdown
     inp.inBuild = f.structureValid && f.songSection.isSustain
     inp.moodChanged = m.changed && m.confidence >= MOOD_CHANGE_MIN_CONFIDENCE && m.ambiguity <= MOOD_CHANGE_MAX_AMBIGUITY
@@ -379,6 +435,9 @@ export function ShowAdapter() {
     for (let k = 0; k < Math.max(1, n); k++) {
       inp.event = k < n ? ctx.events[k] : null
       const a = step(ctx.show, inp)
+      if (inp.event !== null && inp.event.source === 'live') {
+        structureLog.noteSectionEvent(inp.event, { S: a.S, T: a.T, decision: `${a.kind}:${a.reason}` })
+      }
       if (a.kind === 'CUT') showProbe.cutHow = performCut(ctx, f, a)
       else if (a.kind === 'MICRO') performMicro(ctx, f, a)
       publish(ctx, a)

@@ -8,7 +8,7 @@ import type { EventType } from '../../audio/events/types'
  * Scene changes are decided by ONE score against ONE threshold that falls with how long the scene has been on:
  *
  *   S      = strength * typeWeight * confidence                    (how much the music just changed)
- *   T(a)   = 0.35 + 0.55 * clamp((16 - a) / 12, 0, 1)              (a = scene age in BARS; 0.90 at 4 bars -> 0.35 at 16)
+ *   T(a)   = 0.30 + 0.60 * clamp((12 - a) / 8, 0, 1)               (a = scene age in BARS; 0.90 at 4 bars -> 0.30 at 12)
  *   T_eff  = T(a) - 0.15 * P                                       (P = pressure 0..1; it only tips marginal events)
  *   CUT    when age >= minimum and S >= T_eff (a strong drop may cut from 2 bars);
  *   MICRO  when 0.25 <= S < T_eff (a proportionate tweak: palette / mode / layer / effect);
@@ -18,6 +18,17 @@ import type { EventType } from '../../audio/events/types'
  * changed scene at the first opportunity after the dwell, uncorrelated with the music. Here a strong change cuts
  * EARLY (its S clears a high threshold at a young age), weak ones wait for the threshold to fall, and a
  * forced ceiling guarantees the show never stagnates.
+ *
+ * ## Tuned on the real tracks (lane W2-B, `corpus/structure/director-replay.md`)
+ * The first version (T ramp 16 bars, floor 0.35, no drop weighting) was replayed over the 98 cached real traces: the
+ * toy simulation had used sectionChange-style noise only and no realistic false drops, and `f.drop` fires ~250 times an
+ * hour there (median track 150/h) with only ~6% of the edges behind a build, so the director still cut on ~72% of
+ * its cuts at a drop (a lone drop's confidence, the tracker's own drop echo and a coincident section change's constant
+ * 0.95 each lifted lone drops into the fast lane: 531 hard cuts where only ~105 drops had a build behind them).
+ * Now a drop is scored by what stands behind it (`legacyEvents.ts`: a build / breakdown release keeps the fast lane, a
+ * lone drop starts at S = 0.44) and by how RARE the detector's drops are (`dropCredibility`: one of many in 32 bars
+ * carries little information). The ramp was shortened to 12 bars / floor 0.30 so the show
+ * still changes every 8-16 bars on the events it does trust, and the forced-ceiling share stays under 15%.
  *
  * ## Tempo robustness
  * Ages and cooldowns are measured in BARS (the musical unit) but clamped in SECONDS: the bar length used for the
@@ -41,10 +52,10 @@ export const SHOW = {
   beatsPerBar: 4,
 
   /** T(a) = floor + span * clamp((rampEndBars - a) / rampBars, 0, 1). */
-  thresholdFloor: 0.35,
-  thresholdSpan: 0.55,
-  rampEndBars: 16,
-  rampBars: 12,
+  thresholdFloor: 0.3,
+  thresholdSpan: 0.6,
+  rampEndBars: 12,
+  rampBars: 8,
 
   /** No cut before this many bars on screen (a strong drop excepted, below). */
   minCutBars: 4,
@@ -55,6 +66,19 @@ export const SHOW = {
   dropFastMinS: 1.0,
   /** A drop earns a scene change only with this much history: a preceding build within this many bars. */
   buildMemoryBars: 16,
+  /**
+   * DROP CREDIBILITY (rarity weighting). On the 98 real tracks `f.drop` fires ~250 times an hour (the densest 10% of
+   * tracks about once every 6 s) and only ~6% of the edges have a build behind them: a detector that fires constantly
+   * carries little information per firing. A drop's score is multiplied by `dropCredibility[min(n, 3)]`, n = the OTHER
+   * drop events seen in the last `dropWindowBars` bars (each physical drop counted once, however often it is
+   * re-delivered). A drop that RELEASES a build or a breakdown (one running, or ended within `dropReleaseBars`) is
+   * never discounted: it keeps its fast hard-cut lane.
+   */
+  dropWindowBars: 32,
+  dropCredibility: [1, 0.9, 0.75, 0.5] as readonly number[],
+  dropReleaseBars: 4,
+  /** true: only the fast lane (a release-backed drop) is an IMMEDIATE hard cut; any other drop cut waits for the bar line. */
+  dropImmediateOnlyFast: true,
   /** Two events this many beats apart are one physical change (drop + boundary). */
   corroborateBeats: 2,
 
@@ -92,6 +116,13 @@ export function eventScore(type: EventType, strength: number, confidence: number
   const s = Number.isFinite(strength) ? Math.min(1, Math.max(0, strength)) : 0
   const c = Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0
   return s * w * c
+}
+
+/** Rarity weight of a drop when `others` other drop events were seen inside the window (1 = fully credible). */
+export function dropCredibility(others: number): number {
+  const t = SHOW.dropCredibility
+  const k = Number.isFinite(others) ? Math.min(t.length - 1, Math.max(0, Math.floor(others))) : 0
+  return t[k]
 }
 
 /** The age threshold T(a), a in bars. Non-finite or negative ages read as a fresh scene (the highest threshold). */

@@ -49,6 +49,10 @@ export const showProbe = {
   microCount: 0,
   cut: 0,
   forced: 0,
+  /** Which event source feeds the director: `v2` (the live bar-synchronous change scorer) or `legacy` (`?events=`). */
+  src: 'legacy',
+  /** The last v2 event delivered (`type S=... lag=...b`), or '-': lets the overlay show what the scorer just saw. */
+  lastEvent: '-',
   /** The last CUT: how it was performed (`armed`, `pick`, `refused`) - for "why did it (not) change". */
   cutHow: '-',
 }

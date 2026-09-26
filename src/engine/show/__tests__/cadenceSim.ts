@@ -8,13 +8,22 @@ import { createShowState, step, type ShowInput } from '../showDirector'
  *
  * Stream (120 BPM by default, one step per beat):
  *  - NOISE: PhraseDetector-style change events arrive as a Poisson process, ~1 per 8 s (`noiseGapSec`), with the
- *    measured `sectionChangeStrength` distribution (p10 0.48, p50 0.64, p90 1.11, floor 0.45) pushed through the real
- *    legacy mapping (`sectionStrength`, `LEGACY.sectionConfidence`). They carry no musical meaning for a scene change.
+ *    novelty distribution MEASURED on 98 real tracks (1362 edges: p10 0.47, p50 0.58, p90 0.89, p99 1.46, floor 0.45)
+ *    pushed through the real legacy mapping (`sectionStrength`, `LEGACY.sectionConfidence`). They carry no musical
+ *    meaning for a scene change. (The real detector fires every ~16 s: use `noiseGapSec: 16` for that.)
  *  - TRUE: a strong change every 16-32 bars (novelty 1.1-1.6), through the same mapping. These are the changes a
- *    viewer would expect the scene to follow.
+ *    viewer would expect the scene to follow. (Optimistic: in the real data novelty >= 1.06 is only the top 5% of edges.)
+ *  - FALSE DROPS (`dropsPerMin`, default 0): `f.drop` edges as a Poisson process, no build behind them (real tracks:
+ *    ~4 per minute overall, median track 2.5, densest 10% over 10, and only ~6% behind a build). Each is a `drop`
+ *    event with the real legacy mapping's LONE confidence (`LEGACY.dropConfidence`), and `dropCorroboratedShare` of them
+ *    also carry a second signal (`corroborated`, +`LEGACY.corroborationBonus`). This is the input the first version of
+ *    this simulation lacked: with it, a drop that scored 0.875 alone cut the scene at nearly every edge after ~5 bars.
+ *  - REAL DROPS (`realDropEveryBars`, default 0): a confirmed build (`inBuild` for `buildBars` bars, a `buildStart`
+ *    event at its start) that ends in a drop with the build-backed confidence (`LEGACY.dropBuildConfidence`).
  *
  * Commit model (both shows): a scene request commits on the next bar line strictly after it (the SceneManager downbeat
- * gate, which runs before the directors within a frame); a drop is immediate (none appear in this stream).
+ * gate, which runs before the directors within a frame); a drop CUT of the director's fast lane, and any drop for the
+ * legacy show (the only dwell bypass), is immediate.
  */
 
 export interface SimOptions {
@@ -22,6 +31,14 @@ export interface SimOptions {
   beats?: number
   seed?: number
   noiseGapSec?: number
+  /** False drops per minute (no build behind them). Default 0. */
+  dropsPerMin?: number
+  /** Share of the false drops that carry a second signal. Default 0.3. */
+  dropCorroboratedShare?: number
+  /** A real build + drop every N..1.5N bars (0 = none). Default 0. */
+  realDropEveryBars?: number
+  /** Length of a real build, bars. Default 8. */
+  buildBars?: number
 }
 
 export interface SimStream {
@@ -31,6 +48,11 @@ export interface SimStream {
   byBeat: Map<number, SectionEvent[]>
   /** The beats of the TRUE strong events. */
   trueBeats: number[]
+  /** Beats of the false drops and of the real (build-backed) drops. */
+  falseDropBeats: number[]
+  realDropBeats: number[]
+  /** Beat ranges [start, end) during which a confirmed build runs (`inBuild`). */
+  buildSpans: Array<[number, number]>
 }
 
 export function rng(seed: number): () => number {
@@ -43,13 +65,17 @@ export function rng(seed: number): () => number {
   }
 }
 
-/** PhraseDetector novelty quantiles (p, novelty): measured p10 0.48, p50 0.64, p90 1.11; 0.45 is the firing floor. */
+/** PhraseDetector novelty quantiles (p, novelty), measured on the 98 real tracks; 0.45 is the firing floor. */
 const NOVELTY_Q: readonly (readonly [number, number])[] = [
   [0, 0.45],
-  [0.1, 0.48],
-  [0.5, 0.64],
-  [0.9, 1.11],
-  [0.99, 1.6],
+  [0.05, 0.46],
+  [0.1, 0.47],
+  [0.25, 0.5],
+  [0.5, 0.58],
+  [0.75, 0.71],
+  [0.9, 0.89],
+  [0.95, 1.06],
+  [0.99, 1.46],
   [1, 2.2],
 ]
 
@@ -70,6 +96,39 @@ function legacyChange(id: number, beat: number, spb: number, novelty: number): S
     type: 'change',
     strength: sectionStrength(novelty),
     confidence: LEGACY.sectionConfidence,
+    boundaryBeat: beat,
+    boundaryTime: beat * spb,
+    detectedAtBeat: beat,
+    detectedAtTime: beat * spb,
+    source: 'legacy',
+    phase: beat % 4,
+    feats: { level: 0, low: 0, timbre: 0, harmony: 0, rhythm: 0 },
+  }
+}
+
+function legacyDrop(id: number, beat: number, spb: number, confidence: number, corroborated: boolean): SectionEvent {
+  return {
+    id,
+    type: 'drop',
+    strength: LEGACY.dropStrength,
+    confidence,
+    boundaryBeat: beat,
+    boundaryTime: beat * spb,
+    detectedAtBeat: beat,
+    detectedAtTime: beat * spb,
+    source: 'legacy',
+    phase: beat % 4,
+    feats: { level: 0, low: 0, timbre: 0, harmony: 0, rhythm: 0 },
+    corroborated,
+  }
+}
+
+function buildStartEvent(id: number, beat: number, spb: number): SectionEvent {
+  return {
+    id,
+    type: 'buildStart',
+    strength: LEGACY.buildStrength,
+    confidence: LEGACY.buildConfidence,
     boundaryBeat: beat,
     boundaryTime: beat * spb,
     detectedAtBeat: beat,
@@ -101,7 +160,50 @@ export function makeStream(o: SimOptions = {}): SimStream {
     trueBeats.push(bar)
     add(bar, legacyChange(id++, bar, spb, 1.1 + rnd() * 0.5))
   }
-  return { bpm, beats, byBeat, trueBeats }
+  // False drops (drawn after everything else, so a stream without them is unchanged for a given seed).
+  const falseDropBeats: number[] = []
+  const dropP = o.dropsPerMin ? (o.dropsPerMin * spb) / 60 : 0
+  const corrShare = o.dropCorroboratedShare ?? 0.3
+  if (dropP > 0) {
+    for (let b = 1; b < beats; b++) {
+      if (rnd() < dropP) {
+        const corr = rnd() < corrShare
+        const conf = Math.min(1, LEGACY.dropConfidence + (corr ? LEGACY.corroborationBonus : 0))
+        add(b, legacyDrop(id++, b, spb, conf, corr))
+        falseDropBeats.push(b)
+      }
+    }
+  }
+  // Real builds that end in a drop.
+  const realDropBeats: number[] = []
+  const buildSpans: Array<[number, number]> = []
+  const every = o.realDropEveryBars ?? 0
+  const buildBeats = 4 * (o.buildBars ?? 8)
+  if (every > 0) {
+    for (let b = 4 * 40 + Math.floor(rnd() * 64); b < beats; b += 4 * (every + Math.floor(rnd() * (every / 2 + 1)))) {
+      const bar = b - (b % 4)
+      buildSpans.push([bar - buildBeats, bar])
+      add(bar - buildBeats, buildStartEvent(id++, bar - buildBeats, spb))
+      add(bar, legacyDrop(id++, bar, spb, LEGACY.dropBuildConfidence, true))
+      realDropBeats.push(bar)
+    }
+    // A false-drop edge inside a real build (or right after it) IS that build's release to the real mapper (it grades
+    // the edge by the build behind it), so the generator does not also emit it as a lone drop.
+    for (const [from, to] of buildSpans) {
+      for (let b = from; b <= to + LEGACY.buildLookbackBeats; b++) {
+        const list = byBeat.get(b)
+        if (!list) continue
+        const keep = list.filter((e) => e.type !== 'drop' || e.confidence >= LEGACY.dropBuildConfidence)
+        if (keep.length !== list.length) {
+          if (keep.length) byBeat.set(b, keep)
+          else byBeat.delete(b)
+          const k = falseDropBeats.indexOf(b)
+          if (k >= 0) falseDropBeats.splice(k, 1)
+        }
+      }
+    }
+  }
+  return { bpm, beats, byBeat, trueBeats, falseDropBeats, realDropBeats, buildSpans }
 }
 
 export interface SimResult {
@@ -143,7 +245,10 @@ export function runDirector(stream: SimStream): SimResult {
   let pendingReason = ''
   let forced = 0
   let sceneStart = Number.NEGATIVE_INFINITY
+  let span = 0
   for (let b = 0; b < stream.beats; b++) {
+    while (span < stream.buildSpans.length && stream.buildSpans[span][1] <= b) span++
+    inp.inBuild = span < stream.buildSpans.length && b >= stream.buildSpans[span][0]
     if (pendingCommit === b) {
       sceneStart = b
       commits.push(b)
@@ -182,7 +287,7 @@ export function runDirector(stream: SimStream): SimResult {
  * a trigger is honoured only when the 32-beat dwell since the last commit has elapsed, and is otherwise CONSUMED and
  * discarded. The level-type triggers survive the dwell: the 25 s stale timer (since the last request) and the armed
  * scene's age trigger (48 beats on screen, at a phrase edge = beat % 16 === 0). A honoured trigger commits on the next
- * bar line.
+ * bar line. A drop is the only dwell bypass: it commits at once, whatever the dwell says.
  */
 export function runLegacy(stream: SimStream): SimResult {
   const spb = 60 / stream.bpm
@@ -197,7 +302,15 @@ export function runLegacy(stream: SimStream): SimResult {
       commits.push(b)
       pendingCommit = -1
     }
-    let trigger = stream.byBeat.has(b)
+    const evs = stream.byBeat.get(b)
+    if (evs && evs.some((e) => e.type === 'drop')) {
+      lastTrigger = b
+      lastCommit = b
+      commits.push(b)
+      pendingCommit = -1
+      continue
+    }
+    let trigger = evs !== undefined
     if (!trigger && b - lastTrigger >= staleBeats) trigger = true
     if (!trigger && b % 16 === 0 && b - lastCommit >= 48) trigger = true
     if (!trigger) continue

@@ -7,13 +7,15 @@ import type { EventType, SectionEvent } from './types'
  *
  * ## The signals and how each becomes an event
  *  - `f.sectionChange` (one frame, PhraseDetector: only on a downbeat, novelty above 0.45): type `change`.
- *      strength   = clamp01((novelty - 0.40) / 0.80). Measured `sectionChangeStrength` percentiles: p10 0.48,
- *                   p50 0.64, p90 1.11, so a median event maps to 0.30 (a tweak: it never clears the director's
- *                   floor of T = 0.35), p90 to 0.89 (a real change) and novelty >= 1.2 to 1.0.
+ *      strength   = clamp01((novelty - 0.425) / 0.515). Measured on the 98 real tracks (1362 edges)
+ *                   `sectionChangeStrength` percentiles: p10 0.47, p50 0.58, p90 0.89 (the first mapping, 0.40..1.20,
+ *                   had been fitted to an earlier sample with p90 1.11 and put the real p90 at only 0.61). Now the
+ *                   median edge maps to 0.30 (S = 0.29: a tweak at most, never a cut before the threshold has
+ *                   relaxed), p90 to 0.90 (a real change) and novelty >= 0.94 to 1.0.
  *      confidence = 0.95, constant: PhraseDetector emits only above its 0.45 threshold and on a downbeat and gives no
  *                   probability, so "this happened" is near-certain and the SIZE lives in the strength. Chosen with the
  *                   cadence simulation (`show/__tests__/cadenceSim.ts`): 0.85 left too many real changes below the
- *                   age threshold (hit rate 0.70), 0.95 answers 0.8-0.86 of them within a bar at a 12-bar median.
+ *                   age threshold (hit rate 0.70), 0.95 answers 0.8-0.86 of them within a bar.
  *  - `songSection.boundaryChanged` (one frame, the latched analyser section): `change`, or `breakdown` when the new
  *    section is a breakdown, or `drop` when it resolves a build (see below), or `buildStart` when it commits a build (a
  *    build is a riser beginning, not a scene change). A settle back to a plain section right after a drop is NOT a
@@ -30,10 +32,14 @@ import type { EventType, SectionEvent } from './types'
  *    32 bars, 8% a breakdown within 4 bars): it is mostly a loud-transient detector, so its confidence is graded by the
  *    evidence behind the edge: {@link LEGACY.dropBuildConfidence} 0.90 when a build was running or ended within
  *    {@link LEGACY.buildLookbackBeats} (4 bars), {@link LEGACY.dropReleaseConfidence} 0.85 when a breakdown did (the
- *    bass-return release), {@link LEGACY.dropMidConfidence} 0.60 when a build ended within
- *    {@link LEGACY.buildMemoryBeats} (32 bars), else {@link LEGACY.dropConfidence} 0.40 (a LONE drop). S = 1.25 * conf:
- *    1.125 / 1.06 clear the director's fast lane (S >= 1.0, a hard cut), 0.75 waits for ~7 bars, a lone drop's 0.50 for
- *    ~13 bars, and the director's rarity weighting (`showPolicy.dropCredibility`) lowers a drop that is one of many.
+ *    bass-return release), {@link LEGACY.dropMidConfidence} 0.55 when a build ended within
+ *    {@link LEGACY.buildMemoryBeats} (32 bars), else {@link LEGACY.dropConfidence} 0.35 (a LONE drop). S = 1.25 * conf:
+ *    1.125 / 1.06 clear the director's fast lane (S >= 1.0, a hard cut), 0.69 waits for ~7.5 bars, a lone drop's 0.44
+ *    for ~10 bars (and a corroborated one's 0.56 for ~8.5), and the director's rarity weighting
+ *    (`showPolicy.dropCredibility`) lowers a drop that is one of many.
+ *    A drop merged with a non-drop signal (a section change beside it) keeps the DROP's own confidence plus the
+ *    corroboration bonus: taking the maximum would hand it the section change's constant 0.95 and lift every lone drop
+ *    that fires PhraseDetector too (the usual case: one loud transient fires both) into the fast lane.
  *  - `songSection.boundaryChanged` with the section `drop` is NOT independent evidence: SectionTracker commits its
  *    drop section from the very same `f.drop` edge (same frame, no hold), so on 571 of 1505 drop edges the "drop
  *    boundary" was an echo that used to merge in as a corroboration (+0.1 confidence, the tracker's 0.6-0.9 confidence
@@ -54,8 +60,8 @@ import type { EventType, SectionEvent } from './types'
 
 export const LEGACY = {
   /** Novelty -> strength: 0 at `sectionFloor`, 1 at `sectionCeil`. */
-  sectionFloor: 0.4,
-  sectionCeil: 1.2,
+  sectionFloor: 0.425,
+  sectionCeil: 0.94,
   sectionConfidence: 0.95,
   /** Strength of a latched-analyser boundary, by what it committed. */
   boundaryChange: 0.75,
@@ -63,12 +69,24 @@ export const LEGACY = {
   boundaryDrop: 1.0,
   boundaryBuild: 0.6,
   dropStrength: 1.0,
-  dropConfidence: 0.7,
+  /** A LONE drop: no build within {@link LEGACY.buildMemoryBeats}, no breakdown release. */
+  dropConfidence: 0.35,
+  /** A build ended within {@link LEGACY.buildMemoryBeats} (but not within the lookback). */
+  dropMidConfidence: 0.55,
+  /** A build was running, or ended within {@link LEGACY.buildLookbackBeats}: the release of a real build. */
   dropBuildConfidence: 0.9,
+  /** A breakdown was on, or ended within {@link LEGACY.buildLookbackBeats}: the bass-return release. */
+  dropReleaseConfidence: 0.85,
   buildStrength: 0.6,
   buildConfidence: 0.8,
-  /** A build that ended this many beats ago still counts as "a build was running" for a drop. */
-  buildLookbackBeats: 8,
+  /** A build that ended this many beats ago (4 bars) still counts as "a build was running" for a drop. */
+  buildLookbackBeats: 16,
+  /** A build that ended this many beats ago (32 bars) lifts a drop out of "lone". */
+  buildMemoryBeats: 128,
+  /** false: a `drop` section boundary that echoes an `f.drop` edge is ignored; true (the old behaviour) merges it in as a corroboration. */
+  echoCorroborates: false,
+  /** true: a drop merged with a non-drop signal keeps the drop's own confidence; false (the old behaviour) takes the maximum. */
+  dropKeepsOwnConfidence: true,
   /** Signals this many beats apart are one physical change. */
   mergeBeats: 2,
   corroborationBonus: 0.1,
@@ -100,6 +118,12 @@ export interface LegacyInput {
   beatsInSection: number
   /** `songSection.isSustain`: a confirmed build (or drop expected). */
   isSustain: boolean
+  /**
+   * OPTIONAL: `f.structureValid && songSection.isBreakdown`. A drop right after a breakdown is the bass-return release
+   * and earns {@link LEGACY.dropReleaseConfidence}. Absent (false) reads as "no breakdown known": the drop is graded
+   * on builds alone.
+   */
+  inBreakdown?: boolean
 }
 
 export interface LegacyEventState {
@@ -110,6 +134,8 @@ export interface LegacyEventState {
   prevSustain: boolean
   /** Beat a build was last running (`isSustain` or `buildUp`), -Infinity = never. */
   lastBuildBeat: number
+  /** Beat a breakdown was last on (`inBreakdown`), -Infinity = never. */
+  lastBreakdownBeat: number
   /** The event last delivered, open to merging for `mergeBeats`; `openId < 0` = none. */
   openId: number
   openType: EventType
@@ -128,6 +154,7 @@ export function createLegacyEventState(): LegacyEventState {
     prevBuildUp: false,
     prevSustain: false,
     lastBuildBeat: Number.NEGATIVE_INFINITY,
+    lastBreakdownBeat: Number.NEGATIVE_INFINITY,
     openId: -1,
     openType: 'change',
     openStrength: 0,
@@ -151,9 +178,14 @@ function signal(
 ): void {
   const near = st.openId >= 0 && beat >= st.openBeat && beat - st.openBeat <= LEGACY.mergeBeats
   if (near) {
+    // A drop merged with a NON-drop signal keeps the DROP's own confidence (+ the bonus): a section change's constant
+    // 0.95 would otherwise lift a lone drop (0.35) to 1.0, i.e. into the director's fast lane, on every coincidence
+    // (the loud transient that fires f.drop usually fires PhraseDetector too).
+    const dropVsOther = LEGACY.dropKeepsOwnConfidence && (st.openType === 'drop') !== (type === 'drop')
+    const base = dropVsOther ? (st.openType === 'drop' ? st.openConfidence : confidence) : Math.max(st.openConfidence, confidence)
     if (PRECEDENCE[type] > PRECEDENCE[st.openType]) st.openType = type
     st.openStrength = Math.max(st.openStrength, strength)
-    st.openConfidence = Math.min(1, Math.max(st.openConfidence, confidence) + LEGACY.corroborationBonus)
+    st.openConfidence = Math.min(1, base + LEGACY.corroborationBonus)
     st.openBoundaryBeat = Math.min(st.openBoundaryBeat, boundaryBeat)
     st.openCorroborated = true
     return
@@ -182,6 +214,7 @@ export function stepLegacyEvents(st: LegacyEventState, i: LegacyInput, out: Sect
     st.prevBuildUp = false
     st.prevSustain = false
     st.lastBuildBeat = Number.NEGATIVE_INFINITY
+    st.lastBreakdownBeat = Number.NEGATIVE_INFINITY
   }
   st.lastBeat = beat
 
@@ -193,9 +226,13 @@ export function stepLegacyEvents(st: LegacyEventState, i: LegacyInput, out: Sect
   st.prevBuildUp = i.buildUp
   st.prevSustain = sustain
 
-  // Was a build running (or just ended)? Read BEFORE this frame's own signals so a drop's edge sees the build behind it.
+  // Was a build (or a breakdown) running or just ended? Read BEFORE this frame's own signals so a drop's edge sees the
+  // release behind it. A build that ended within 32 bars grades a drop as "mid" (see the header).
   const buildBehind = sustain || i.buildUp || beat - st.lastBuildBeat <= LEGACY.buildLookbackBeats
+  const breakdownBehind = i.inBreakdown === true || beat - st.lastBreakdownBeat <= LEGACY.buildLookbackBeats
+  const buildMid = beat - st.lastBuildBeat <= LEGACY.buildMemoryBeats
   if (sustain || i.buildUp) st.lastBuildBeat = beat
+  if (i.inBreakdown === true) st.lastBreakdownBeat = beat
 
   let touched = false
 
@@ -212,8 +249,13 @@ export function stepLegacyEvents(st: LegacyEventState, i: LegacyInput, out: Sect
     const back = Math.min(16, Math.max(0, Number.isFinite(i.beatsInSection) ? i.beatsInSection : 0))
     const boundaryBeat = beat - back
     if (i.section === 'drop') {
-      signal(st, beat, 'drop', LEGACY.boundaryDrop, conf, boundaryBeat)
-      touched = true
+      // The tracker commits its drop section from the SAME f.drop edge (same frame): an echo, not a second witness.
+      const echo = dropEdge || (st.openId >= 0 && st.openType === 'drop' && beat - st.openBeat <= LEGACY.mergeBeats)
+      if (!echo || LEGACY.echoCorroborates) {
+        // With no edge of its own it is the tracker resolving a build at an analyser boundary: build-backed.
+        signal(st, beat, 'drop', LEGACY.boundaryDrop, echo ? conf : Math.max(conf, LEGACY.dropBuildConfidence), boundaryBeat)
+        touched = true
+      }
     } else if (i.section === 'breakdown') {
       signal(st, beat, 'breakdown', LEGACY.boundaryBreakdown, conf, boundaryBeat)
       touched = true
@@ -228,7 +270,14 @@ export function stepLegacyEvents(st: LegacyEventState, i: LegacyInput, out: Sect
   }
 
   if (dropEdge) {
-    signal(st, beat, 'drop', LEGACY.dropStrength, buildBehind ? LEGACY.dropBuildConfidence : LEGACY.dropConfidence, beat)
+    const dropConf = buildBehind
+      ? LEGACY.dropBuildConfidence
+      : breakdownBehind
+        ? LEGACY.dropReleaseConfidence
+        : buildMid
+          ? LEGACY.dropMidConfidence
+          : LEGACY.dropConfidence
+    signal(st, beat, 'drop', LEGACY.dropStrength, dropConf, beat)
     touched = true
   }
 

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { LEGACY } from '../../../audio/events/legacyEvents'
+import { SHOW } from '../showPolicy'
 import {
   gapPercentile,
   hitRate,
@@ -37,9 +39,10 @@ describe('cadence simulation, 120 BPM, noise ~1 per 8 s + a true strong change e
       expect(Math.max(...gaps)).toBeLessThanOrEqual(32)
     }
     // the novelty sampler reproduces the measured percentiles
-    expect(sampleNovelty(0.1)).toBeCloseTo(0.48)
-    expect(sampleNovelty(0.5)).toBeCloseTo(0.64)
-    expect(sampleNovelty(0.9)).toBeCloseTo(1.11)
+    // (re-measured on the 98 real tracks: the toy had used an earlier sample, p50 0.64 and p90 1.11)
+    expect(sampleNovelty(0.1)).toBeCloseTo(0.47)
+    expect(sampleNovelty(0.5)).toBeCloseTo(0.58)
+    expect(sampleNovelty(0.9)).toBeCloseTo(0.89)
   })
 
   it('median scene interval is 8-16 bars, with 90% of intervals inside 4-32 bars', () => {
@@ -119,5 +122,155 @@ describe('cadence simulation, other tempos and noise rates', () => {
     const d = runDirector(stream)
     expect(medianBars(d.commits)).toBeGreaterThanOrEqual(8)
     expect(gapPercentile(d.commits, 0)).toBeGreaterThanOrEqual(4)
+  })
+})
+
+/**
+ * The input the first version of this simulation lacked: FALSE DROPS at the rate the real detector produces them.
+ * On the 98 real tracks `f.drop` fires ~250 times an hour (median track 150/h, the densest 10% about once every 6 s)
+ * and only ~6% of the edges have a build behind them; `f.sectionChange` fires every ~16 s. With a lone drop scoring
+ * S = 0.875 the director cut at nearly every drop after ~5 bars (a measured 3.0 cuts/min, 7 bars median on the real
+ * traces, against 1.9 cuts/min and 14 bars after this lane); the noise-only stream above could not show it.
+ */
+const minutesOf = (stream: { beats: number; bpm: number }): number => (stream.beats * (60 / stream.bpm)) / 60
+const cutsPerMin = (commits: readonly number[], stream: { beats: number; bpm: number }): number => commits.length / minutesOf(stream)
+
+/** The constants of the director as first committed (7793d77), before the false-drop lane; put back for one run. */
+function withFirstCommitPolicy<T>(fn: () => T): T {
+  const over: Array<[object, Record<string, unknown>]> = [
+    [
+      LEGACY,
+      {
+        sectionFloor: 0.4,
+        sectionCeil: 1.2,
+        dropConfidence: 0.7,
+        dropMidConfidence: 0.7,
+        dropReleaseConfidence: 0.7,
+        buildLookbackBeats: 8,
+        echoCorroborates: true,
+        dropKeepsOwnConfidence: false,
+      },
+    ],
+    [SHOW, { dropCredibility: [1, 1, 1, 1], dropImmediateOnlyFast: false, thresholdFloor: 0.35, thresholdSpan: 0.55, rampEndBars: 16, rampBars: 12 }],
+  ]
+  const saved = over.map(([o, v]) => [o, Object.fromEntries(Object.keys(v).map((k) => [k, (o as Record<string, unknown>)[k]]))] as const)
+  for (const [o, v] of over) Object.assign(o, v)
+  try {
+    return fn()
+  } finally {
+    for (const [o, v] of saved) Object.assign(o, v)
+  }
+}
+
+describe('cadence simulation with realistic FALSE DROPS: ~4 drops/min mixed with sectionChange noise (~1 per 16 s)', () => {
+  const runs = SEEDS.map((seed) => {
+    const stream = makeStream({ seed, bpm: 120, beats: 24000, noiseGapSec: 16, dropsPerMin: 4 })
+    return { stream, director: runDirector(stream), legacy: runLegacy(stream) }
+  })
+
+  it('the stream is what it says it is: ~4 lone drops a minute, none behind a build', () => {
+    for (const { stream } of runs) {
+      const perMin = stream.falseDropBeats.length / minutesOf(stream)
+      expect(perMin).toBeGreaterThan(3.4)
+      expect(perMin).toBeLessThan(4.6)
+      expect(stream.realDropBeats).toHaveLength(0)
+      for (const list of stream.byBeat.values()) {
+        for (const e of list) if (e.type === 'drop') expect(e.confidence).toBeLessThan(LEGACY.dropMidConfidence)
+      }
+    }
+  })
+
+  it('targets on the real-trace criteria: <= 3 cuts/min, median >= 8 bars, >= 80% of intervals in 4-32 bars, few forced cuts', () => {
+    for (const { stream, director } of runs) {
+      expect(cutsPerMin(director.commits, stream)).toBeLessThanOrEqual(3)
+      expect(medianBars(director.commits)).toBeGreaterThanOrEqual(8)
+      const gaps = director.commits.slice(1).map((c, k) => (c - director.commits[k]) / 4)
+      expect(gaps.filter((g) => g >= 4 && g <= 32).length / gaps.length).toBeGreaterThanOrEqual(0.8)
+      expect(director.forced / director.commits.length).toBeLessThanOrEqual(0.25)
+    }
+  })
+
+  it('lone drops are not a fast lane: no hard cut is ever made on a false drop', () => {
+    for (const { director } of runs) expect(director.reasons).not.toContain('drop-fast')
+  })
+
+  it('a small share of the false drops become scene changes (the rest are MICRO or HOLD), where the legacy show cuts on every one', () => {
+    for (const { stream, director, legacy } of runs) {
+      const drops = new Set(stream.falseDropBeats)
+      // a cut at (or one bar line after) a drop's beat, judged loosely: at most 1 in 4 false drops is answered
+      const near = (commits: readonly number[]) => stream.falseDropBeats.filter((b) => commits.some((c) => c >= b && c <= b + 4)).length
+      expect(near(director.commits) / drops.size).toBeLessThan(0.25)
+      expect(near(legacy.commits) / drops.size).toBeGreaterThan(0.9) // the legacy dwell bypass: every drop cuts
+    }
+  })
+
+  it('cuts at least 2x less often than the legacy show, which (with the drop bypass) churns at 4+ cuts/min', () => {
+    for (const { stream, director, legacy } of runs) {
+      expect(cutsPerMin(legacy.commits, stream)).toBeGreaterThan(4)
+      expect(cutsPerMin(director.commits, stream) * 2).toBeLessThan(cutsPerMin(legacy.commits, stream))
+    }
+  })
+
+  it('the SAME stream exposes the first-commit director: ~1.5x the cuts and a much shorter median (so this test cannot hide it again)', () => {
+    // (measured on the 98 real traces: 3.04 cuts/min and 7.3 bars, against 1.9 / 14 after the false-drop lane)
+    withFirstCommitPolicy(() => {
+      for (const { seed, director } of SEEDS.map((seed, k) => ({ seed, director: runs[k].director }))) {
+        const stream = makeStream({ seed, bpm: 120, beats: 24000, noiseGapSec: 16, dropsPerMin: 4 })
+        const old = runDirector(stream)
+        expect(cutsPerMin(old.commits, stream), `seed ${seed}`).toBeGreaterThan(1.4 * cutsPerMin(director.commits, stream))
+        expect(cutsPerMin(old.commits, stream), `seed ${seed}`).toBeGreaterThan(2.5)
+        expect(medianBars(old.commits), `seed ${seed}`).toBeLessThan(0.75 * medianBars(director.commits))
+      }
+    })
+  })
+
+  it('a DENSE detector (10 drops/min, the densest 10% of the real tracks) does not strobe either: rarity weighting silences it', () => {
+    for (const seed of SEEDS) {
+      const stream = makeStream({ seed, bpm: 120, beats: 24000, noiseGapSec: 16, dropsPerMin: 10 })
+      const d = runDirector(stream)
+      expect(cutsPerMin(d.commits, stream), `seed ${seed}`).toBeLessThanOrEqual(3)
+      expect(medianBars(d.commits), `seed ${seed}`).toBeGreaterThanOrEqual(8)
+      expect(d.reasons).not.toContain('drop-fast')
+    }
+  })
+
+  it('still answers the true strong changes (a hit within one bar) far more often than the legacy show', () => {
+    let d = 0
+    let l = 0
+    for (const { stream, director, legacy } of runs) {
+      d += hitRate(director.commits, stream.trueBeats)
+      l += hitRate(legacy.commits, stream.trueBeats)
+    }
+    expect(d / runs.length).toBeGreaterThan(0.6)
+    expect(d).toBeGreaterThan(l)
+  })
+})
+
+describe('cadence simulation: real builds that end in a drop, among false drops', () => {
+  const runs = SEEDS.map((seed) => {
+    const stream = makeStream({ seed, bpm: 120, beats: 24000, noiseGapSec: 16, dropsPerMin: 4, realDropEveryBars: 40 })
+    return { stream, director: runDirector(stream) }
+  })
+
+  it('has real drops to find', () => {
+    for (const { stream } of runs) expect(stream.realDropBeats.length).toBeGreaterThan(8)
+  })
+
+  it('a drop that follows a real build keeps its fast hard-cut lane: an immediate cut ON the drop\'s beat, at least 90% of the time', () => {
+    for (const { stream, director } of runs) {
+      let hard = 0
+      for (const b of stream.realDropBeats) {
+        const k = director.commits.indexOf(b)
+        if (k >= 0 && director.reasons[k] === 'drop-fast') hard++
+      }
+      expect(hard / stream.realDropBeats.length).toBeGreaterThanOrEqual(0.9)
+    }
+  })
+
+  it('and the false drops around them still do not churn the show', () => {
+    for (const { stream, director } of runs) {
+      expect(cutsPerMin(director.commits, stream)).toBeLessThanOrEqual(3)
+      expect(medianBars(director.commits)).toBeGreaterThanOrEqual(8)
+    }
   })
 })

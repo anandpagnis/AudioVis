@@ -33,14 +33,25 @@ function frame(st: ReturnType<typeof createLegacyEventState>, beat: number, over
 }
 
 describe('sectionStrength', () => {
-  it('maps the measured novelty percentiles into 0..1', () => {
+  // Re-anchored on the 98 real tracks (1362 sectionChange edges): p10 0.47, p50 0.58, p90 0.89, p99 1.46. The first
+  // mapping (0.40..1.20) had been fitted to an earlier sample (p50 0.64, p90 1.11) and put the real p90 at 0.61.
+  it('maps the measured novelty percentiles of the real tracks into 0..1: median a tweak, p90 a real change', () => {
+    expect(sectionStrength(0.425)).toBe(0)
     expect(sectionStrength(0.4)).toBe(0)
-    expect(sectionStrength(0.45)).toBeCloseTo(0.0625)
-    expect(sectionStrength(0.48)).toBeCloseTo(0.1) // p10
-    expect(sectionStrength(0.64)).toBeCloseTo(0.3) // p50: a tweak, not a scene change
-    expect(sectionStrength(1.11)).toBeCloseTo(0.8875) // p90: a real change
-    expect(sectionStrength(1.2)).toBe(1)
+    expect(sectionStrength(0.45)).toBeCloseTo(0.0485, 3) // the firing floor
+    expect(sectionStrength(0.47)).toBeCloseTo(0.087, 2) // p10
+    expect(sectionStrength(0.58)).toBeCloseTo(0.301, 2) // p50: a tweak, not a scene change
+    expect(sectionStrength(0.89)).toBeCloseTo(0.903, 2) // p90: a real change
+    expect(sectionStrength(0.94)).toBe(1)
+    expect(sectionStrength(1.46)).toBe(1) // p99
     expect(sectionStrength(5)).toBe(1)
+  })
+
+  it('most edges are noise-like: the median edge scores below the MICRO floor and the p75 below any early threshold', () => {
+    const S = (novelty: number) => sectionStrength(novelty) * LEGACY.sectionConfidence // x the change weight 1.0
+    expect(S(0.58)).toBeLessThan(0.3) // p50
+    expect(S(0.71)).toBeLessThan(0.6) // p75: waits for a scene of ~8 bars
+    expect(S(0.89)).toBeGreaterThan(0.8) // p90: a strong change
   })
 
   it('is total: non-finite and negative read as 0', () => {
@@ -139,24 +150,48 @@ describe('legacy -> SectionEvent mapping', () => {
     expect(frame(st, 80, { drop: true })).toHaveLength(1) // a new drop is a new edge
   })
 
-  it('a lone drop is less trusted than one with a build behind it', () => {
+  it('a lone drop is far less trusted than one with a build behind it (graded by the evidence: lone < mid < release)', () => {
     const [lone] = frame(createLegacyEventState(), 60, { drop: true })
     expect(lone.type).toBe('drop')
     expect(lone.strength).toBe(LEGACY.dropStrength)
     expect(lone.confidence).toBe(LEGACY.dropConfidence)
+    // Changed with the false-drop lane: a lone drop's S = 1.25 * 0.35 = 0.44 (was 0.875). It can no longer reach the
+    // director's fast lane (S >= 1.0) or clear the age threshold before the scene is ~10 bars old.
+    expect(1.25 * lone.strength * lone.confidence).toBeLessThan(0.5)
+    expect(LEGACY.dropConfidence).toBeLessThan(LEGACY.dropMidConfidence)
+    expect(LEGACY.dropMidConfidence).toBeLessThan(LEGACY.dropBuildConfidence)
     // a build running
     const running = createLegacyEventState()
     frame(running, 50, { structureValid: true, isSustain: true })
     expect(frame(running, 60, { drop: true, structureValid: true, isSustain: true })[0].confidence).toBe(
       LEGACY.dropBuildConfidence,
     )
-    // a build that ended just before the drop still counts, a stale one does not
+    // a build that ended within 4 bars of the drop still counts (a release)...
     const st = createLegacyEventState()
     frame(st, 50, { structureValid: true, isSustain: true })
     expect(frame(st, 55, { drop: true })[0].confidence).toBe(LEGACY.dropBuildConfidence)
+    const edge = createLegacyEventState()
+    frame(edge, 50, { structureValid: true, isSustain: true })
+    expect(frame(edge, 50 + LEGACY.buildLookbackBeats, { drop: true })[0].confidence).toBe(LEGACY.dropBuildConfidence)
+    // ...one that ended within 32 bars is the middle tier, an older one (or none) leaves the drop lone
+    const mid = createLegacyEventState()
+    frame(mid, 30, { structureValid: true, isSustain: true })
+    expect(frame(mid, 55, { drop: true })[0].confidence).toBe(LEGACY.dropMidConfidence)
     const old = createLegacyEventState()
     frame(old, 30, { structureValid: true, isSustain: true })
-    expect(frame(old, 55, { drop: true })[0].confidence).toBe(LEGACY.dropConfidence)
+    expect(frame(old, 30 + LEGACY.buildMemoryBeats + 4, { drop: true })[0].confidence).toBe(LEGACY.dropConfidence)
+  })
+
+  it('a drop right after a breakdown (the bass return) is a release; without the flag the drop is graded on builds alone', () => {
+    const st = createLegacyEventState()
+    frame(st, 50, { structureValid: true, inBreakdown: true })
+    expect(frame(st, 58, { drop: true })[0].confidence).toBe(LEGACY.dropReleaseConfidence)
+    expect(1.25 * LEGACY.dropStrength * LEGACY.dropReleaseConfidence).toBeGreaterThanOrEqual(1) // the fast lane
+    const old = createLegacyEventState()
+    frame(old, 50, { structureValid: true, inBreakdown: true })
+    expect(frame(old, 50 + LEGACY.buildLookbackBeats + 2, { drop: true })[0].confidence).toBe(LEGACY.dropConfidence)
+    // (an adapter that does not pass the optional flag simply gets the lone grade)
+    expect(frame(createLegacyEventState(), 58, { drop: true })[0].confidence).toBe(LEGACY.dropConfidence)
   })
 
   it('the rising edge of a confirmed build (or the fast buildUp flag) -> a buildStart, once per build', () => {
@@ -180,28 +215,68 @@ describe('legacy -> SectionEvent mapping', () => {
 })
 
 describe('legacy events: no double counting', () => {
-  it('a drop and the analyser\'s drop boundary within 2 beats are ONE event: re-delivered with the same id, merged', () => {
+  it('a drop and the tracker\'s drop boundary are ONE event, and the boundary is an ECHO, not a corroboration', () => {
+    // SectionTracker commits its drop section from the very same f.drop edge (same frame): on the real tracks that
+    // echo appeared on 571 of 1505 drop edges and used to lift a lone drop into the director's fast lane.
+    const boundary = {
+      structureValid: true,
+      boundaryChanged: true,
+      section: 'drop',
+      previousSection: 'section',
+      sectionConfidence: 0.9,
+      beatsInSection: 1,
+    }
+    // (a) on the same frame as the edge
+    const same = frame(createLegacyEventState(), 100, { drop: true, ...boundary })
+    expect(same).toHaveLength(1)
+    expect(same[0].type).toBe('drop')
+    expect(same[0].corroborated).toBe(false)
+    expect(same[0].confidence).toBe(LEGACY.dropConfidence) // not the tracker's 0.9, no +0.1
+    // (b) a frame or two later: the open drop event is not re-delivered, amended or corroborated
     const st = createLegacyEventState()
     const first = frame(st, 100, { drop: true })
     expect(first).toHaveLength(1)
-    const merged = frame(st, 101, {
-      drop: true,
+    expect(frame(st, 101, { drop: true, ...boundary })).toHaveLength(0)
+    expect(frame(st, 102, { drop: true, ...boundary })).toHaveLength(0)
+    // (c) the old behaviour is still one switch away (this is what the "before" replay uses)
+    const legacyConstants = LEGACY as unknown as { echoCorroborates: boolean }
+    legacyConstants.echoCorroborates = true
+    try {
+      const st2 = createLegacyEventState()
+      const a = frame(st2, 100, { drop: true })
+      const merged = frame(st2, 101, { drop: true, ...boundary })
+      expect(merged).toHaveLength(1)
+      expect(merged[0].id).toBe(a[0].id)
+      expect(merged[0].corroborated).toBe(true)
+      expect(merged[0].confidence).toBeCloseTo(Math.min(1, 0.9 + LEGACY.corroborationBonus))
+    } finally {
+      legacyConstants.echoCorroborates = false
+    }
+  })
+
+  it('a drop boundary with no edge of its own (the tracker resolving a build at an analyser boundary) is a real, build-backed drop', () => {
+    const [e] = frame(createLegacyEventState(), 100, {
       structureValid: true,
       boundaryChanged: true,
       section: 'drop',
       previousSection: 'build',
       sectionConfidence: 0.6,
-      beatsInSection: 1,
+      beatsInSection: 2,
     })
-    expect(merged).toHaveLength(1)
-    expect(merged[0].id).toBe(first[0].id)
-    expect(merged[0].type).toBe('drop')
-    expect(merged[0].strength).toBe(1)
-    expect(merged[0].corroborated).toBe(true)
-    // confidence: the stronger of the two, lifted by the corroboration bonus, capped at 1
-    expect(merged[0].confidence).toBeCloseTo(Math.min(1, LEGACY.dropConfidence + LEGACY.corroborationBonus))
-    expect(merged[0].detectedAtBeat).toBe(100) // the first detection stays the detection
-    expect(merged[0].boundaryBeat).toBe(100) // the earliest boundary
+    expect(e.type).toBe('drop')
+    expect(e.strength).toBe(LEGACY.boundaryDrop)
+    expect(e.confidence).toBe(LEGACY.dropBuildConfidence) // max(section confidence, build confidence)
+    expect(e.boundaryBeat).toBe(98)
+  })
+
+  it('a section change beside a drop still corroborates it (a real second detector), lifting a lone drop by +0.1 only', () => {
+    const st = createLegacyEventState()
+    const first = frame(st, 100, { drop: true })[0]
+    const merged = frame(st, 101, { sectionChange: true, sectionChangeStrength: 0.7 })[0]
+    expect(merged.id).toBe(first.id)
+    expect(merged.corroborated).toBe(true)
+    expect(merged.confidence).toBeCloseTo(LEGACY.dropConfidence + LEGACY.corroborationBonus)
+    expect(1.25 * merged.strength * merged.confidence).toBeLessThan(1) // still not the fast lane
   })
 
   it('keeps the strongest strength and the dominant type whichever signal came first', () => {

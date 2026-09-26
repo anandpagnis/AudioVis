@@ -86,22 +86,39 @@ export interface DirectorDecision {
   refused: boolean
 }
 
-export interface DropOutcomes {
-  /** Distinct drop events (by id; the LAST delivery's type decides). */
+export interface EventOutcomes {
+  /** Distinct events (by id; the LAST delivery's type decides). */
   events: number
-  /** Their best outcome: a CUT dominates a MICRO dominates a HOLD. */
+  /** Their best outcome over all deliveries: a CUT dominates a MICRO dominates a HOLD. */
   cut: number
   micro: number
   hold: number
 }
 
+export interface ReleaseDropOutcomes extends EventOutcomes {
+  /** Of the cuts, how many were the fast lane (`drop-fast`: an immediate hard cut). */
+  fast: number
+  /** Of the HOLDs, how many were held by the 4-bar refractory (a scene had just been cut: not a lost drop). */
+  refractory: number
+}
+
+/** How many beats before a drop edge a build / breakdown may have run for it to count as a RELEASE (4 bars). */
+export const RELEASE_LOOKBACK_BEATS = 16
+
 export interface DirectorReplayResult extends LegacyResult {
   decisions: DirectorDecision[]
   /** The director's own counters at the end of the track. */
   stats: { hold: number; micro: number; cut: number; forced: number }
-  drops: DropOutcomes
-  /** Distinct events by final type (`change`, `drop`, ...). */
-  eventsByType: Record<EventType, number>
+  /** What became of the distinct events of each final type. */
+  outcomes: Record<EventType, EventOutcomes>
+  /** `outcomes.drop`: the drop events (kept as a shorthand). */
+  drops: EventOutcomes
+  /**
+   * The drops with a build (`isSustain` / `buildUp`) or a breakdown running, or ended within
+   * {@link RELEASE_LOOKBACK_BEATS} beats, judged from the TRACE (independently of the director's own memory): the
+   * releases that must keep their fast hard-cut lane.
+   */
+  releaseDrops: ReleaseDropOutcomes
 }
 
 /** Copy of `armedPick.ts` `armTrend`'s rising test (that module pulls in the scene registry): see the header. */
@@ -188,6 +205,11 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
   const decisions: DirectorDecision[] = []
   const finalType = new Map<number, EventType>()
   const bestOutcome = new Map<number, ShowActionKind>()
+  const releaseId = new Set<number>()
+  const fastId = new Set<number>()
+  const refractoryId = new Set<number>()
+  let lastBuildBeat = Number.NEGATIVE_INFINITY
+  let lastBreakdownBeat = Number.NEGATIVE_INFINITY
 
   let pending: PendingScene | null = null
   let lastCommitBeat = Number.NEGATIVE_INFINITY
@@ -204,6 +226,8 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
     const silence = c.silence[i] === 1
     const valid = c.structureValid[i] === 1
     const sustain = valid && c.isSustain[i] === 1
+    if (sustain || c.buildUp[i] === 1) lastBuildBeat = beat
+    if (valid && c.isBreakdown[i] === 1) lastBreakdownBeat = beat
 
     // --- SceneManager (priority -100): a pending scene commits before the directors of this frame ---
     if (pending !== null) {
@@ -244,6 +268,7 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
     li.sectionConfidence = c.sectionConfidence[i] / Q8
     li.beatsInSection = c.beatsInSection[i]
     li.isSustain = c.isSustain[i] === 1
+    li.inBreakdown = valid && c.isBreakdown[i] === 1
     events.length = 0
     stepLegacyEvents(legacy, li, events)
 
@@ -333,6 +358,15 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
         })
         if (a.eventId >= 0 && ev !== null) {
           finalType.set(a.eventId, ev.type)
+          if (
+            ev.type === 'drop' &&
+            !releaseId.has(a.eventId) &&
+            (beat - lastBuildBeat <= RELEASE_LOOKBACK_BEATS || beat - lastBreakdownBeat <= RELEASE_LOOKBACK_BEATS)
+          ) {
+            releaseId.add(a.eventId)
+          }
+          if (a.kind === 'CUT' && !refused && a.reason === 'drop-fast') fastId.add(a.eventId)
+          if (a.reason === 'refractory') refractoryId.add(a.eventId)
           const prev = bestOutcome.get(a.eventId)
           const kind: ShowActionKind = refused ? 'HOLD' : a.kind
           if (prev === undefined || RANK[kind] > RANK[prev]) bestOutcome.set(a.eventId, kind)
@@ -342,16 +376,30 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
     inp.event = null
   }
 
-  const drops: DropOutcomes = { events: 0, cut: 0, micro: 0, hold: 0 }
-  const eventsByType: Record<EventType, number> = { change: 0, drop: 0, buildStart: 0, breakdown: 0, fill: 0, gain: 0 }
+  const blank = (): EventOutcomes => ({ events: 0, cut: 0, micro: 0, hold: 0 })
+  const outcomes: Record<EventType, EventOutcomes> = {
+    change: blank(),
+    drop: blank(),
+    buildStart: blank(),
+    breakdown: blank(),
+    fill: blank(),
+    gain: blank(),
+  }
+  const releaseDrops: ReleaseDropOutcomes = { ...blank(), fast: 0, refractory: 0 }
+  const tally = (o: EventOutcomes, k: ShowActionKind): void => {
+    o.events++
+    if (k === 'CUT') o.cut++
+    else if (k === 'MICRO') o.micro++
+    else o.hold++
+  }
   for (const [id, ty] of finalType) {
-    eventsByType[ty]++
-    if (ty !== 'drop') continue
-    drops.events++
-    const o = bestOutcome.get(id) ?? 'HOLD'
-    if (o === 'CUT') drops.cut++
-    else if (o === 'MICRO') drops.micro++
-    else drops.hold++
+    const k = bestOutcome.get(id) ?? 'HOLD'
+    tally(outcomes[ty], k)
+    if (ty === 'drop' && releaseId.has(id)) {
+      tally(releaseDrops, k)
+      if (fastId.has(id)) releaseDrops.fast++
+      if (k === 'HOLD' && refractoryId.has(id)) releaseDrops.refractory++
+    }
   }
   return {
     requests,
@@ -361,8 +409,9 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
     options: resolveOptions({}),
     decisions,
     stats: { ...show.stats },
-    drops,
-    eventsByType,
+    outcomes,
+    drops: outcomes.drop,
+    releaseDrops,
   }
 }
 

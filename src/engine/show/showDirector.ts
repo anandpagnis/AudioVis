@@ -4,6 +4,7 @@ import {
   barsBetween,
   barsToCeiling,
   ceilingReached,
+  dropCredibility,
   effectiveThreshold,
   eventScore,
   minCutBars,
@@ -99,6 +100,7 @@ export interface ShowStats {
 }
 
 const RING = 8
+const DROP_RING = 8
 const BUMPS = 4
 const BUMP_MOOD = 0
 const BUMP_CHARACTER = 1
@@ -129,6 +131,14 @@ export interface ShowState {
   lastBuildBeat: number
   lastBuildTime: number
   lastChangeBeat: number
+  /** The last frame a breakdown was on (`input.inBreakdown`): a drop right after it is a release. */
+  lastBreakdownBeat: number
+  lastBreakdownTime: number
+  /** Ring of the last drop EVENTS (id, beat, time) for the rarity weighting; ids are NaN when empty. */
+  dropId: Float64Array
+  dropBeat: Float64Array
+  dropTime: Float64Array
+  dropPos: number
   /** Rotation for MICRO picks when an event has no per-channel feats. */
   microRot: number
   /** The armed scene still fits the music (the adapter keeps this current); copied into `CUT.useArmed`. */
@@ -181,6 +191,12 @@ export function createShowState(): ShowState {
     lastBuildBeat: NEVER,
     lastBuildTime: NEVER,
     lastChangeBeat: NEVER,
+    lastBreakdownBeat: NEVER,
+    lastBreakdownTime: NEVER,
+    dropId: new Float64Array(DROP_RING).fill(NaN),
+    dropBeat: new Float64Array(DROP_RING),
+    dropTime: new Float64Array(DROP_RING),
+    dropPos: 0,
     microRot: 0,
     armedFitOk: false,
     stats: { hold: 0, micro: 0, cut: 0, forced: 0 },
@@ -209,6 +225,10 @@ export function resetShow(st: ShowState): void {
   st.lastBuildBeat = NEVER
   st.lastBuildTime = NEVER
   st.lastChangeBeat = NEVER
+  st.lastBreakdownBeat = NEVER
+  st.lastBreakdownTime = NEVER
+  st.dropId.fill(NaN)
+  st.dropPos = 0
   st.armedFitOk = false
 }
 
@@ -258,6 +278,40 @@ function hasFeats(f: SectionEvent['feats'] | undefined): boolean {
   return (
     (Math.abs(f.level) || 0) + (Math.abs(f.low) || 0) + (Math.abs(f.timbre) || 0) + (Math.abs(f.harmony) || 0) + (Math.abs(f.rhythm) || 0) > 0
   )
+}
+
+/** The reasons a rarity-discounted drop's verdict is relabelled `drop-noisy` (the others are about timing, not credibility). */
+const DISCOUNTED_REASONS: readonly string[] = ['weak', 'below-T', 'min-age', 'breakdown-min', 'drop-gated']
+
+/**
+ * The rarity weight of a drop event (`showPolicy.dropCredibility`), and its entry in the ring of recent drops (once per
+ * event id: a re-delivered, merged event is the same physical drop). `playing` = a build or breakdown is on right now.
+ * A drop that releases a build or a breakdown (on, or ended within `dropReleaseBars`) is never discounted.
+ */
+function creditDrop(st: ShowState, ev: SectionEvent, beat: number, time: number, playing: boolean): number {
+  let others = 0
+  let known = false
+  for (let k = 0; k < DROP_RING; k++) {
+    const id = st.dropId[k]
+    if (id !== id) continue // an empty slot
+    if (id === ev.id) {
+      known = true
+      continue
+    }
+    if (barsBetween(st.dropBeat[k], st.dropTime[k], beat, time) <= SHOW.dropWindowBars) others++
+  }
+  if (!known) {
+    const k = st.dropPos
+    st.dropId[k] = ev.id
+    st.dropBeat[k] = beat
+    st.dropTime[k] = time
+    st.dropPos = (k + 1) % DROP_RING
+  }
+  const released =
+    playing ||
+    barsBetween(st.lastBuildBeat, st.lastBuildTime, beat, time) <= SHOW.dropReleaseBars ||
+    barsBetween(st.lastBreakdownBeat, st.lastBreakdownTime, beat, time) <= SHOW.dropReleaseBars
+  return released ? 1 : dropCredibility(others)
 }
 
 const ROTATION: readonly MicroKind[] = ['palette', 'layer', 'mode', 'effect']
@@ -349,6 +403,10 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
     st.lastBuildBeat = beat
     st.lastBuildTime = time
   }
+  if (i.inBreakdown) {
+    st.lastBreakdownBeat = beat
+    st.lastBreakdownTime = time
+  }
 
   const age = barsBetween(startBeat, startTime, beat, time)
   const pressure = pressureAt(st, beat, time)
@@ -369,7 +427,9 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
   // --- Decide the event ---------------------------------------------------------------------------------------
   if (ev !== null) {
     evaluated = true
-    const S = eventScore(ev.type, ev.strength, ev.confidence)
+    // A drop is weighted by how rare the detector's own drops are (a detector that fires constantly says little).
+    const cred = ev.type === 'drop' ? creditDrop(st, ev, beat, time, i.inBuild || i.inBreakdown) : 1
+    const S = eventScore(ev.type, ev.strength, ev.confidence) * cred
     // Remember it for the forced cut's "best event of the last 4 bars".
     if (S > 0) {
       const k = st.ringPos
@@ -379,6 +439,7 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
       st.ringPos = (k + 1) % RING
     }
     emit(out, 'HOLD', 'weak', S, T, age, pressure, ev, true)
+    out.credibility = cred
 
     if (ev.type === 'buildStart') {
       // A riser starting: arms and applies pressure, never cuts (weight 0).
@@ -401,6 +462,8 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
         if (S > 0) st.lastChangeBeat = beat
       }
       decideWeighted(st, i, ev, S, T, age, out, refractory, microReady)
+      // A discounted drop that did not cut says so (the overlay shows the reason).
+      if (cred < 1 && out.kind !== 'CUT' && DISCOUNTED_REASONS.includes(out.reason)) out.reason = 'drop-noisy'
     }
   }
 
@@ -478,7 +541,7 @@ function decideWeighted(
   if (dropFast || (age >= minBars && S >= T)) {
     out.kind = 'CUT'
     out.reason = dropFast ? 'drop-fast' : 'event'
-    out.immediate = isDrop
+    out.immediate = SHOW.dropImmediateOnlyFast ? dropFast : isDrop
     return
   }
   const why = age < minBars ? (i.inBreakdown && age >= SHOW.minCutBars ? 'breakdown-min' : 'min-age') : 'below-T'
