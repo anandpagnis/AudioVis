@@ -13161,3 +13161,58 @@ per-frame canvas heavy enough to distort the reading.
       flake, first seen in F258). An external "Changes" snapshot commit (`b038766`, made by the
       user's tooling, pushed to `origin/feat/structure-tempo`) captured half-finished lane work
       mid-way; everything in it was finished or removed in later commits.
+
+- [x] **F266 · Why nothing reacted to section changes: a two-clock bug silenced all
+      automation; the forced-change timer and the 10 s / 20 s colour and mode floors
+      removed** — *2026-09-26, user report ("its not reacting, like on the actual section
+      changes? not even colour ... is there a timer or something? we shouldn't force scenes by
+      implementing timers, that is completely against the idea of the project")*
+      `src/store.ts`, `src/engine/{AutoPilot,PerformanceDirector}.tsx`,
+      `src/engine/show/{showDirector,showPolicy,showAdapter,showRuntime}.ts*`
+
+      **Root cause of "not reacting, not even colour".** The manual back-off ("the DJ touched
+      something, stay out of the way for 45 s") was stamped and compared on two different clocks.
+      `features.time` is `performance.now()/1000` while idle but `AudioContext.currentTime`
+      (0 at context creation) while audio runs, and `setSceneMode` stamped
+      `lastManualAt = performance.now()/1000` while AutoPilot, PerformanceDirector and the show
+      director compared `f.time - lastManualAt < 45`. After one click on a scene-mode button the
+      audio clock (small) minus a page-uptime stamp (large) was hugely negative, so ALL
+      automation, palette changes included, stayed off until the audio clock caught up with the
+      page's uptime (minutes); and `lastManualAt` started at 0, so every session had no
+      automation for its first 45 s. Fixed: `lastManualAt` lives only on the wall clock
+      (`store.wallSeconds`), starts at -1e9, every stamp uses it, and every director calls
+      `manualHoldActive()`; a regression test pins it. This predates the redesign (it silenced
+      the old triggers too), but event-driven reaction made it fatal.
+
+      **Timers removed (user principle: the visuals change only in response to the music).**
+      - The show director's forced-change ceiling (`min(32 bars, 60 s)`, 48 bars / 90 s in a
+        breakdown) is gone, with `forced-best/-bar/-wait`, `ShowAction.forced`, `stats.forced`,
+        `etaBars` and the best-score ring. I had built it ("so the show never stagnates") and it
+        made 15-21% of cuts in the replay. Under the director a scene now changes only when a real
+        event clears `T_eff`; an older scene is easier to change (threshold falls with age), but
+        nothing changes without an event. The overlay's show line prints `no timer`.
+      - AutoPilot's 10 s palette floor (`PALETTE_MIN_SEC`) and 20 s mode floor
+        (`MODE_VARY_MIN_SEC`) are off under the director (kept for `?director=legacy`): they
+        DROPPED, not delayed, a real reaction that came soon after the last tweak.
+      - **Still there (musical, in bars):** no cut in a scene's first 4 bars (a strong drop after
+        a build may cut from 2), a 4-bar refractory after a cut, a 4-bar MICRO cooldown. They stop
+        one real change (reported a few beats apart) causing a burst of reactions, but they can
+        also swallow a real change 3 bars after a cut. Their size is a judgement for the user's
+        ears.
+      - **Audit (director on):** the 25 s stale timer, the blind 16-beat phrase fallback, the
+        armed scene's age confirm and the old mood/character/build triggers are legacy-only
+        (`?director=legacy`) or unreachable under `directorOwns`; the SceneManager 2.5 s commit
+        backstop only lands an already-requested scene. **One genuine forcing timer remains, not
+        removed:** the DJ-cam / Limitless auto-cutaway RELEASE (`*_AUTO_HOLD_CEILING_BEATS` 64 /
+        `*_SEC` 45, `DjCamDirector.tsx` ~269, `LimitlessDirector.tsx` ~246): a cutaway enters on
+        an event but is force-released to the previous scene after 64 beats / 45 s if no boundary
+        arrives. It is opt-in and once per source; removing it risks stranding the show on the
+        camera, so it is left for a decision.
+
+      **Consequence of no timer (98 real tracks, replay, no musical ground truth).** Director with
+      v2 events: 1.50 cuts/min (was 1.80), interval median 12.8 bars / 20.9 s, p90 63 s; 5
+      intervals over 64 bars and 4 over 120 s; 9 of 98 tracks under 0.5 cuts/min (other 4,
+      electronic 2), the longest scene 268 s. No genre goes static, but quiet or event-poor
+      tracks hold a scene for minutes. Event-driven remedies NOT implemented: lower `T(age)`'s
+      floor for scenes over ~32 bars, cut on a strong-but-below-T event on an old scene instead
+      of a MICRO, more MICROs for medium events. Nothing here has been watched live.
