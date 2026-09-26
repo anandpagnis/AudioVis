@@ -13045,3 +13045,119 @@ per-frame canvas heavy enough to distort the reading.
       watched live** (no browser/GPU). Every constant (arm thresholds and weights, the
       mirror gate's holds, the 40 ms lead, the acquisition gain, the coupling values)
       is a reasoned starting point; the listed by-ear checks are in each commit message.
+
+- [x] **F265 · Section-change detection and scene switching redesigned top-down:
+      a pure show director, a bar-synchronous live event layer, a tap-to-mark
+      ground-truth tool, synthetic and whole-song evaluation, and the false-drop
+      churn fixed** — *2026-09-26, user report ("it doesn't feel like it identifies
+      section changes at all, it just keeps changing scenes and misses the actual
+      changes ... it currently looks horrible ... deep dive, compare against state of
+      the art, plan improvements or a top-down rewrite")* `src/engine/show/`,
+      `src/audio/events/`, `src/audio/plan/`, `src/audio/eval/`,
+      `src/engine/{structureLog,AutoPilot,PerformanceDirector,SceneManager,armedChange}.ts*`,
+      `src/audio/{AudioEngine.ts,structure/StructureAnalyzer.ts}`, `scripts/calibrate/`
+
+      **Diagnosis (evidence in the plan and the F265 commits).** Two design faults
+      compounded, and tuning detector constants (F261-F264) could not fix either.
+      1. *The deciding layer had no notion of change strength versus scene age.* Every
+         non-drop trigger was an OR feeding one 32-beat dwell; edges that arrived during
+         the dwell were discarded (86% of `f.sectionChange` and 90% of `boundaryChanged`
+         edges on 98 real tracks), so only level-type triggers survived and the change
+         landed at the first opportunity after the dwell. Replay of 98 real tracks
+         (`corpus/structure/baseline-cadence.md`): 6.35 scene changes/min, median gap
+         6.7 s = 4 bars, and 65% of commits were DROP-triggered: `f.drop` fires ~250/hr and
+         is the only trigger that bypasses the dwell, so false drops set the cadence.
+         (F262's "every 17-25 s" figure only held with drops removed.)
+      2. *The detector reported real changes in a form nothing listened to.*
+         `SectionTracker` fired `boundaryChanged` only when the section KIND changed, and
+         the analyser only produces intro/outro/breakdown/"section", so verse->chorus was
+         swallowed. On the synthetic suite `f.sectionChange` caught 24% of real changes
+         within a bar, 0/2 equal-loudness changes (key change, verse->chorus, for EVERY
+         detector), and fired near 10 of 22 negatives (fills, a +-6 dB volume step, a
+         silence gap).
+
+      **What was built (plan phases, all committed on `feat/structure-tempo`).**
+      - *Phase 0A, `?structurelog`:* an output-window overlay + hotkeys (`M`/Space at every
+        real section change, `U` undo, `E` twice to finish and download) that logs the
+        user's taps next to every detector edge and scene commit on the audio clock (JSON,
+        versioned schema). **The user must tap ~10 songs: it is the only human ground truth.**
+      - *Phase 0B:* 12 synthetic songs of known structure with the NEGATIVES a scene
+        detector must not act on (fills, volume steps, silence gaps, gradual morphs;
+        equal-loudness verse/chorus and key change verified equal in RMS, different in
+        chroma/bands), spliced-real-audio stimuli, and boundary metrics.
+      - *Phase 0C:* the offline harness now runs `SectionTracker` and caches per-frame
+        traces; `legacyCadence.ts` models the old show (a MODEL, not the running code).
+      - *Phase 1, the show director (`engine/show/`), on by default, `?director=legacy`
+        restores the old triggers bit-for-bit:* one pure `step(state, input)` owns WHEN the
+        visuals change. Score `S = strength * typeWeight * confidence` against a threshold
+        `T(age)` that falls with the scene's age in tempo-robust bars (`0.30 + 0.60 *
+        clamp((12-a)/8)`), pressure from mood/character/trend lowering it by up to 0.15
+        (pressure never cuts alone), a 4-bar refractory, a forced-change ceiling of
+        min(32 bars, 60 s), longer holds in breakdowns and through a confirmed build, and
+        three outcomes: HOLD (a logged decision), MICRO (a palette/mode/layer/effect
+        tweak) and CUT (a new scene on the coming bar line). Mood change, predicted
+        transition, character shift, the stale timer, the build one-shot, the armed
+        scene's confirm triggers and PerformanceDirector's `sectionChange`/16-beat-phrase
+        triggers no longer switch scenes: they feed pressure or arming.
+      - *False-drop fix (W2-B):* drops are graded by evidence (build within 4 bars 0.90,
+        breakdown 0.85, build within 32 bars 0.55, lone 0.35), the tracker's drop-section
+        echo is no longer counted as corroboration, drops are discounted by the detector's
+        own recent firing rate (rarity), and only the fast lane hard-cuts. Real-trace replay
+        of the director on the 98 cached tracks: 2.03 cuts/min (was 6.35), median 13.5 bars
+        (was 4.0), 92% of intervals in [4,32] bars (was 53%), forced 14.6% (electronic 21%),
+        96% of drops that follow a build still hard-cut. Tuned on the same tracks
+        (split-half stable), no held-out set.
+      - *Phase 2, the live event layer (`audio/events/`), the default source (`?events=v2`,
+        `?events=legacy` is the fallback):* bar-synchronous change scoring on every beat
+        (newest 4 beats vs the previous 16 over 8 channels, robust-z by MAD against
+        per-track noise floors, a gain-invariant raw-dB level tap so a volume-knob turn is
+        typed `gain` and never cuts, an 8-beat harmony window, a boundary-anchored bar
+        grid), typed change / fill / gain / breakdown, `sim` for returns to earlier
+        material. Synthetic suite: recall within +-1 bar 84% (88% excl. the gradual morph)
+        vs 24% for `sectionChange`; false alarms 0.30/min vs 2.11; 0 events near any of the
+        22 negatives; equal-loudness verse->chorus 3/3 and key change 2/2; median lag 2.9 s.
+        Real tracks: 1.31 scene events/min (electronic 1.74). Not detected: drumless
+        ambient 0/3; chord-only changes confirm ~7 s late.
+      - *Phase 4, a whole-song non-causal analyser (`audio/plan/`)*: the evaluation
+        reference (and, later, file-playback foresight). Synthetic recall within +-1 bar
+        0.96, tempo within 1%; real corpus 98 tracks at 0.7 s/track, median section 15
+        bars, 68% of boundaries on the dominant 4-bar phase (chance 25%). Downbeat
+        confidence is low on 28/98 tracks; circular with the live detector until taps
+        validate it.
+      - *W3:* `director-vs-silver` scoring of three shows against the whole-song
+        boundaries with a random-phase chance control; SceneManager commits on the v2
+        layer's anchored bar line when that grid is confident (else exactly
+        `f.beatInBar === 0`).
+
+      **Three-way result on the same 98 tracks** (legacy model / director + legacy events
+      / director + v2 events): cuts/min 6.42 / 2.04 / 1.80; interval median 4.0 / 13.3 /
+      14.0 bars; forced share 11% / 13% / 21%; strong-boundary coverage lift .24 / .17 /
+      .28; cuts 0-2 bars after a reference boundary 10% / 16% / 21% (chance 9%); v2 event F3
+      vs the reference .386 (pooled) vs .287 for `sectionChange`. **The default of
+      `?events` flipped to v2 against the lane's own decision** because the acceptance
+      criterion "cuts within +-1 bar of a reference boundary" cannot be met by a causal show
+      (it cuts ~1.7 bars after the change: 12% vs 12%); re-read lag-aware it is 2.1x. All
+      reference-based numbers are RELATIVE evidence (the reference is unvalidated and shares
+      features with the live detector; the constants were tuned on the same corpus).
+
+      **Not done / open.** Phase 3 (EDM event machine: build -> gap -> drop; the rarity
+      weighting above is the interim fix for the drop source); Phase 5 (file-playback
+      foresight: whole-song analysis before/while playing, round two); Phase 6 (cutover:
+      DjCam/Limitless cutaways, `mirrorGate`, `PerformanceStateBridge` still read
+      `f.sectionChange`/`songSection` directly; delete the legacy trigger blocks). `EffectDirector`
+      still fires its own raw `sectionChange` flare. Ambient/drumless material is at chance.
+      Commit lag: an event is detected ~6 beats (~3 s) after the change and a cut waits for the
+      bar line. **Nothing here has been watched live** (no browser/GPU).
+
+      **What the user must do.** Play with `?lookdebug` (the `show` line prints the last action,
+      S, T_eff, age, pressure, event source, time to the forced ceiling and HOLD/MICRO/CUT
+      counts), A/B against `?director=legacy` and `?events=legacy`, and TAP ~10 songs with
+      `?structurelog` (M/Space at every real change, E twice to save). Tap logs score the whole
+      chain via `structureLogToTruth` and are the only way to tune the pressure sizes, the
+      4-bar minimum, `liveGain` 1.75, the drop confidences and the event thresholds for real.
+
+      **Verification.** typecheck (both configs), lint, build and the licence gate pass; 3523
+      of 3526 tests pass (sole failure the pre-existing, unrelated `checkDistLicences.test.ts`
+      flake, first seen in F258). An external "Changes" snapshot commit (`b038766`, made by the
+      user's tooling, pushed to `origin/feat/structure-tempo`) captured half-finished lane work
+      mid-way; everything in it was finished or removed in later commits.
