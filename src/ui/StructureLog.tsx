@@ -133,6 +133,8 @@ export function StructureLog() {
   useEffect(() => {
     if (!enabled) return
     structureLog.enabled = true
+    // Feed the per-beat feature cells into the log so a retuned detector can be replayed on this song without its audio.
+    audioEngine.setCellSink((c, f) => structureLog.noteCell(c, f))
     const gate = createHotkeyGate()
     let lastFrameWall = performance.now()
     let statusUntil = 0
@@ -264,6 +266,7 @@ export function StructureLog() {
       window.removeEventListener('beforeunload', onBeforeUnload)
       window.clearInterval(id)
       actionsRef.current = null
+      audioEngine.setCellSink(null)
       structureLog.enabled = false
     }
   }, [enabled])

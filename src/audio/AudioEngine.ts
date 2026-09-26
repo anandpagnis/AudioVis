@@ -28,6 +28,7 @@ import { TimbreDescriptors } from './TimbreDescriptors'
 import { createEmptyFeatures, type AudioFeatures } from './types'
 import { DropStateMachine } from './structure/dropStateMachine'
 import { StructureAnalyzer, type StructureAnalyzerStatus } from './structure/StructureAnalyzer'
+import type { BeatCell } from './essentia/structureDsp'
 import { structureOff } from './structure/structureFlags'
 import { EventLayer } from './events/EventLayer'
 import { RawTap } from './events/rawTap'
@@ -429,12 +430,21 @@ class AudioEngine {
   private readonly structureAnalyzer = new StructureAnalyzer({
     disabled: structureOff(),
     // The live event layer (`?events=v2`) rides the analyser's freshly folded beat cells: no second feature extraction.
-    onCell: (cell, f) =>
+    onCell: (cell, f) => {
       this.events.push(cell, f.beatIndex, f.time, f.bpm, {
         locked: f.downbeatLocked,
         offset: (((f.beatIndex - f.beatInBar) % 4) + 4) % 4,
-      }),
+      })
+      this.cellSink?.(cell, f)
+    },
   })
+  /** Optional observer of every freshly folded beat cell: the `?structurelog` recorder (`engine/structureLog.ts`) uses it
+   *  so a tapped song can be replayed through a retuned event layer without its audio. Null (the default) costs one
+   *  null check per beat; see `setCellSink`. */
+  private cellSink: ((cell: BeatCell, f: AudioFeatures) => void) | null = null
+  setCellSink(fn: ((cell: BeatCell, f: AudioFeatures) => void) | null): void {
+    this.cellSink = fn
+  }
   /** Raw (un-normalised) dB tap: 6 bands + RMS, written beside the band normaliser and averaged into the beat cell. */
   private readonly rawTap = new RawTap()
   /** Bar-synchronous change events (`audio/events`): `events.drain(out)` is the allocation-free read. Silent under `?structure=off`. */
