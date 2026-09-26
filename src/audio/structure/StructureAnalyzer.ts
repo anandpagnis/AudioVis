@@ -10,6 +10,7 @@ import {
 import type { StructureBuild, StructureRaw, StructureSegment } from '../essentia/structureProtocol'
 import type { AudioFeatures } from '../types'
 import { quality } from '../../engine/quality'
+import { RAW_CHANNELS, type RawTap } from '../events/rawTap'
 import { OnsetDensityTracker } from './onsetDensity'
 import { melBands } from './timbreBands'
 
@@ -185,6 +186,13 @@ export interface StructureAnalyzerStatus {
 export interface StructureAnalyzerOptions {
   /** Wired from `structureOff()` by the caller (`AudioEngine`). Default false (analyzer on). */
   disabled?: boolean
+  /**
+   * ADDITIVE hook for the live event layer (`audio/events/EventLayer.ts`): called once per freshly folded beat cell,
+   * right after it is buffered, with the frame that closed it. The cell is the SAME object the analyser keeps (do not
+   * mutate it), so the event layer needs no feature extraction of its own. A throwing listener is swallowed: it can
+   * never disturb the segmentation. Not called when the analyser is disabled.
+   */
+  onCell?: (cell: BeatCell, f: AudioFeatures) => void
 }
 
 /** Placeholder ETA shown before any history exists, so `status.nextBatchEtaSec` stays a finite,
@@ -208,6 +216,7 @@ function freshStatus(enabled: boolean): StructureAnalyzerStatus {
 
 export class StructureAnalyzer {
   private readonly disabled: boolean
+  private readonly onCell: ((cell: BeatCell, f: AudioFeatures) => void) | null
   private readonly chroma: ChromaKeyEstimator
   private readonly onset = new OnsetDensityTracker()
 
@@ -227,6 +236,10 @@ export class StructureAnalyzer {
   private highSum = 0
   private onsetSum = 0
   private frameCount = 0
+  /** Raw-dB tap accumulators (`events/rawTap.ts`): running sums since the last fold, and the frames flagged silent. */
+  private readonly rawAcc = new Float64Array(RAW_CHANNELS)
+  private rawFrames = 0
+  private silentFrames = 0
 
   private cells: BeatCell[] = []
   private startedAt = -1
@@ -250,6 +263,7 @@ export class StructureAnalyzer {
 
   constructor(opts: StructureAnalyzerOptions = {}) {
     this.disabled = opts.disabled ?? false
+    this.onCell = opts.onCell ?? null
     this.chroma = new ChromaKeyEstimator({ tauSec: FAST_CHROMA_TAU_SEC })
     this.status = freshStatus(!this.disabled)
   }
@@ -282,10 +296,10 @@ export class StructureAnalyzer {
    * beats) — the same return contract `MusicIntelProvider.updateStructure()` has, so `AudioEngine`'s
    * single integration line can `??` between them.
    */
-  update(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number): StructureRaw | null {
+  update(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number, raw?: RawTap | null): StructureRaw | null {
     if (this.disabled) return null
     try {
-      return this.updateInner(f, lowFreqDb, sampleRate)
+      return this.updateInner(f, lowFreqDb, sampleRate, raw ?? null)
     } catch {
       // Never throws past this point — a malformed frame degrades to "no read this frame", the same
       // as any other slow/failed structure read `SectionTracker` already tolerates.
@@ -293,8 +307,8 @@ export class StructureAnalyzer {
     }
   }
 
-  private updateInner(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number): StructureRaw | null {
-    this.accumulateFrame(f, lowFreqDb, sampleRate)
+  private updateInner(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number, raw: RawTap | null): StructureRaw | null {
+    this.accumulateFrame(f, lowFreqDb, sampleRate, raw)
     const folded = f.beat && this.foldBeat(f)
 
     if (this.startedAt < 0) this.startedAt = f.time
@@ -312,7 +326,7 @@ export class StructureAnalyzer {
     return null
   }
 
-  private accumulateFrame(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number): void {
+  private accumulateFrame(f: AudioFeatures, lowFreqDb: Float32Array, sampleRate: number, raw: RawTap | null): void {
     this.chroma.update(lowFreqDb, sampleRate, f.delta)
     const chroma = this.chroma.read().chroma
     for (let i = 0; i < 12; i++) this.hpcpAcc[i] += chroma[i]
@@ -340,6 +354,11 @@ export class StructureAnalyzer {
     this.bassSum += f.bass
     this.midSum += f.mid
     this.highSum += f.high
+    if (raw !== null && raw.written) {
+      for (let i = 0; i < RAW_CHANNELS; i++) this.rawAcc[i] += raw.db[i]
+      this.rawFrames++
+    }
+    if (f.silence) this.silentFrames++
     this.frameCount++
   }
 
@@ -356,6 +375,9 @@ export class StructureAnalyzer {
     this.midSum = 0
     this.highSum = 0
     this.onsetSum = 0
+    this.rawAcc.fill(0)
+    this.rawFrames = 0
+    this.silentFrames = 0
     this.frameCount = 0
   }
 
@@ -382,10 +404,22 @@ export class StructureAnalyzer {
       high: clamp01(this.highSum * inv),
       onsetDensity: clamp01(this.onsetSum * inv),
     }
+    if (this.rawFrames > 0) {
+      const rinv = 1 / this.rawFrames
+      cell.raw = Array.from(this.rawAcc, (v) => v * rinv)
+    }
+    cell.silent = this.silentFrames * inv
     this.cells.push(cell)
     if (this.cells.length > WINDOW_BEATS) this.cells.shift()
     if (this.firstCellAt < 0) this.firstCellAt = f.time
     this.resetAccumulator()
+    if (this.onCell !== null) {
+      try {
+        this.onCell(cell, f)
+      } catch {
+        // the event layer must never be able to disturb the segmentation
+      }
+    }
     return true
   }
 

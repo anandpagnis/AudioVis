@@ -44,6 +44,10 @@ import { PhraseDetector } from '../../src/audio/PhraseDetector'
 import { SectionTracker } from '../../src/audio/SectionTracker'
 import { CadenceTraceBuilder, type CadenceTrace } from '../../src/audio/eval/cadenceTrace'
 import { DropStateMachine } from '../../src/audio/structure/dropStateMachine'
+import type { EventCellRecord } from '../../src/audio/eval/eventReplay'
+import { EventLayer, type EventLayerConfig } from '../../src/audio/events/EventLayer'
+import { RawTap } from '../../src/audio/events/rawTap'
+import type { SectionEvent } from '../../src/audio/events/types'
 import { computeLowBands, computeSpectralBands, writeLinearSpectrum } from '../../src/audio/spectralFeatures'
 import { evictExpired, fftAdvanced, makeWaveProbe } from '../../src/audio/frameGating'
 import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
@@ -105,6 +109,13 @@ export interface StepHooks {
   /** Return `TrackRunResult.trace`: a compact columnar per-frame record of everything the scene-change trigger
    *  logic reads (`src/audio/eval/cadenceTrace.ts`). Default OFF. */
   trace?: boolean
+  /**
+   * Step the LIVE EVENT LAYER (`src/audio/events`, `?events=v2`) exactly as `AudioEngine` does: the analyser's per-beat
+   * cell (with the raw-dB tap) feeds `EventLayer.push`. `true` = default config, or a partial config to override.
+   * Fills `TrackRunResult.events` and `.cells`. Times are on this harness's clock (window START, like `FrameSample.t`).
+   * Default OFF; the raw tap itself is always written (it changes no other output).
+   */
+  events?: boolean | Partial<EventLayerConfig>
 }
 
 /** The hooks that make `runTrack` mirror the LIVE engine's trigger inputs as closely as this harness can. */
@@ -149,6 +160,10 @@ export interface TrackRunResult {
    *  includes `SectionTracker`'s output (`songSection`, `structureValid`), which `runTrack` now steps after
    *  `StructureAnalyzer` exactly as `AudioEngine.update()` does. */
   trace?: CadenceTrace
+  /** Present only when `hooks.events` was set: every event the live event layer delivered (copies), in order. */
+  events?: SectionEvent[]
+  /** Present only when `hooks.events` was set: the beat cells the layer was fed, for offline re-tuning (`replayCells`). */
+  cells?: EventCellRecord[]
 }
 
 /** The subset of `AudioFeatures` the calibration reports read, per frame. */
@@ -249,7 +264,22 @@ export function runTrack(
   // Always-on, non-Essentia structure segmentation — the same class AudioEngine.ts falls back to in
   // every real build (see its header). NOT disabled: this harness wants its live reads, not the
   // `?structure=off` kill-switch path.
-  const structureAnalyzer = new StructureAnalyzer({ disabled: hooks.skipStructure ?? false })
+  const eventLayer = hooks.events ? new EventLayer(typeof hooks.events === 'object' ? hooks.events : {}) : null
+  const eventLog: SectionEvent[] = []
+  const cellLog: EventCellRecord[] = []
+  const rawTap = new RawTap()
+  const structureAnalyzer = new StructureAnalyzer({
+    disabled: hooks.skipStructure ?? false,
+    onCell: eventLayer
+      ? (cell, fr) => {
+          const locked = fr.downbeatLocked
+          const offset = (((fr.beatIndex - fr.beatInBar) % 4) + 4) % 4
+          cellLog.push({ cell, beat: fr.beatIndex, time: fr.time, bpm: fr.bpm, locked, offset })
+          const evs = eventLayer.push(cell, fr.beatIndex, fr.time, fr.bpm, { locked, offset })
+          for (const e of evs) eventLog.push({ ...e, feats: { ...e.feats }, ...(e.sim ? { sim: { ...e.sim } } : {}) })
+        }
+      : undefined,
+  })
   const structureRuns: StructureRaw[] = []
   // `SectionTracker` fuses the analyzer's segmentation with the fast `f.drop` / `f.buildUp` / `f.sectionChange`
   // flags into `f.songSection` + `f.structureValid`, which every director reads. AudioEngine steps it right
@@ -365,6 +395,8 @@ export function runTrack(
     f.vocal = norm(bands.vocal, spectral.vocal)
     f.air = norm(bands.air, spectral.air)
     f.sparkle = norm(bands.sparkle, spectral.sparkle)
+    // AudioEngine's raw dB tap (events/rawTap.ts): read straight off the same locals, before any normalisation.
+    rawTap.write(spectral, lowSub, rmsRaw)
     f.flux = norm(bands.flux, spectral.bassFlux)
     // K-weighted momentary loudness -> BandNormalizer, mirroring AudioEngine's
     // `f.loudness = norm(bands.loudness, sqrt(lastLoudMsMom))`. `end` is the
@@ -590,7 +622,7 @@ export function runTrack(
     // `f.beatIndex` (advanceGrid, above), the percussion triggers (above) and `f.spectrum` (this
     // frame's spectrum write, above); it doesn't read mood/character at all, so exact placement
     // relative to those two blocks doesn't affect its output, only the ordering convention. ---
-    const structureRaw = structureAnalyzer.update(f, lowFreqDb, sampleRate)
+    const structureRaw = structureAnalyzer.update(f, lowFreqDb, sampleRate, rawTap)
     if (structureRaw) {
       structureRuns.push(structureRaw)
       traceBuilder?.noteBoundaries(i, structureRaw.boundaries)
@@ -661,7 +693,8 @@ export function runTrack(
     salience: salienceLog,
     structureStatus: structureAnalyzer.status,
     ...(traceBuilder ? { trace: traceBuilder.finish() } : {}),
+    ...(eventLayer ? { events: eventLog, cells: cellLog } : {}),
   }
 }
 
-export type { AudioFeatures }
+export type { AudioFeatures, EventCellRecord }

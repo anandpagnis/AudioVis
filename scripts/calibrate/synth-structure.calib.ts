@@ -14,6 +14,9 @@
  *   structure.boundaries StructureAnalyzer boundaries as first PUBLISHED (claimed time = the boundary's beat,
  *                        detected-at = the batch that first reported it)
  *   songSection.boundary SectionTracker `boundaryChanged` (kind-change only: verse->chorus is silent by design)
+ *   events.v2            the LIVE bar-synchronous change scorer (`src/audio/events/EventLayer.ts`, `?events=v2`), scene-class
+ *                        events only (`change` + `breakdown`; fills and gain steps are typed and reported separately):
+ *                        claimed time = the event's snapped `boundaryTime`, detected-at = when it was confirmed
  *   mood.changed         f.mood.changed (one of the independent scene-switch triggers today; informational)
  *   buildUp / structure.build / songSection.isBuild   build flags, scored per true build window (buildStart -> drop)
  *
@@ -72,7 +75,7 @@ const MIN_DET_SEC = 1
 /** `runTrack` reports frame time as the analysis window START; the audio clock is `FFT_SIZE / sampleRate` later. */
 const FFT_SIZE = 2048
 /** `SectionTracker` is stepped by `runTrack` (phase 0C); `trace` exposes its per-frame output. */
-const HOOKS = { dropStateMachine: true, trace: true } as const
+const HOOKS = { dropStateMachine: true, trace: true, events: true } as const
 
 /* ------------------------------------------------------------------------------------------------
  * Detector extraction
@@ -127,6 +130,18 @@ function extractDetectors(run: TrackRunResult, sr: number): DetectorTrace[] {
   }
   flag('sectionChange', 'f.sectionChange edges', (i) => frames[i].sectionChange)
   flag('drop', 'f.drop edges (vs drop truth)', (i) => frames[i].drop, ['drop'])
+  // The live event layer (phase 2). runTrack stamps events on the frame clock (window START): shift onto the audio clock.
+  if (run.events) {
+    const scene = run.events.filter((e) => (e.type === 'change' || e.type === 'breakdown') && e.detectedAtTime + off >= MIN_DET_SEC)
+    out.push({
+      id: 'events.v2',
+      label: 'EventLayer v2: change + breakdown (claimed = boundaryTime)',
+      kind: 'point',
+      claims: scene.map((e) => e.boundaryTime + off),
+      ats: scene.map((e) => e.detectedAtTime + off),
+      available: true,
+    })
+  }
 
   const tr = run.trace
   // StructureAnalyzer boundaries as first published.

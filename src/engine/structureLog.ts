@@ -57,6 +57,9 @@ export const STRUCTURE_LOG_EVENT_KINDS = [
   'tempo',
   'sceneRequest',
   'sceneWithdrawn',
+  // ADDITIVE (phase 2): one record per `SectionEvent` the show director was fed (v2 live change events, or the legacy
+  // mapping's), with the director's score S / threshold T / decision when known: see `noteSectionEvent`.
+  'sectionEvent',
 ] as const
 export type StructureLogEventKind = (typeof STRUCTURE_LOG_EVENT_KINDS)[number]
 
@@ -403,6 +406,7 @@ const EVENT_SHORT: ReadonlyArray<readonly [StructureLogEventKind, string]> = [
   ['character', 'chr'],
   ['downbeatLock', 'lock'],
   ['downbeatShift', 'shift'],
+  ['sectionEvent', 'ev'],
 ]
 
 /** The overlay text (pure, so it is tested and the component only writes `textContent`). */
@@ -631,6 +635,55 @@ export class StructureLog {
     this.reasonTrigger = trig
     this.reasonDetail = detail ?? null
     this.reasonT = this.lastT
+  }
+
+  /**
+   * A `SectionEvent` the show director was (or, in shadow mode, would have been) fed: its type, calibrated strength and
+   * confidence, where the change musically began (`boundaryBeat`/`boundaryTime`, on the source's bar grid: `phase`),
+   * when the source knew (`detectedAt*`, so the lag is in the log) and, when the caller has them, the director's score
+   * `S = strength * typeWeight * confidence`, the effective threshold `T` and its decision (`HOLD`/`MICRO`/`CUT`).
+   * `source` is `live` (the v2 event layer), `legacy` or `plan`; `shadow` marks a v2 event that was only recorded
+   * (`?events=legacy`). Free when the log is disabled.
+   */
+  noteSectionEvent(
+    ev: {
+      id: number
+      type: string
+      strength: number
+      confidence: number
+      boundaryBeat: number
+      boundaryTime: number
+      detectedAtBeat: number
+      detectedAtTime: number
+      source: string
+      phase: number
+      sim?: { boundaryBeat: number; similarity: number }
+    },
+    extra: { S?: number; T?: number; decision?: string; shadow?: boolean } = {},
+  ): void {
+    if (!this.enabled) return
+    const data: Record<string, number | string | boolean | null> = {
+      id: Math.trunc(fin(ev.id, 0)),
+      type: String(ev.type),
+      source: String(ev.source),
+      strength: r3(fin(ev.strength, 0)),
+      confidence: r3(fin(ev.confidence, 0)),
+      boundaryBeat: Math.trunc(fin(ev.boundaryBeat, 0)),
+      boundaryT: r3(fin(ev.boundaryTime, 0)),
+      detectedBeat: Math.trunc(fin(ev.detectedAtBeat, 0)),
+      detectedT: r3(fin(ev.detectedAtTime, 0)),
+      lagBeats: Math.trunc(fin(ev.detectedAtBeat, 0) - fin(ev.boundaryBeat, 0)),
+      phase: Math.trunc(fin(ev.phase, 0)),
+    }
+    if (ev.sim) {
+      data.simBeat = Math.trunc(fin(ev.sim.boundaryBeat, 0))
+      data.simSimilarity = r3(fin(ev.sim.similarity, 0))
+    }
+    if (extra.S !== undefined) data.S = r3(fin(extra.S, 0))
+    if (extra.T !== undefined) data.T = r3(fin(extra.T, 0))
+    if (extra.decision !== undefined) data.decision = extra.decision
+    if (extra.shadow) data.shadow = true
+    this.emit('sectionEvent', data)
   }
 
   // ------------------------------------------------------------------------------------------- per frame

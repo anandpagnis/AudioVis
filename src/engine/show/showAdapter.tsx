@@ -9,6 +9,7 @@ import {
   type LegacyEventState,
   type LegacyInput,
 } from '../../audio/events/legacyEvents'
+import { maskLegacyInputForV2, mergeLiveWithLegacy } from '../../audio/events/eventMux'
 import type { SectionEvent } from '../../audio/events/types'
 import { structureLog } from '../structureLog'
 import {
@@ -83,7 +84,7 @@ import {
  *            `drop` and `buildStart` events are kept (its sectionChange- and boundary-derived `change` and `breakdown`
  *            events are dropped, and its sectionChange / non-drop boundary signals are not fed to it, so they cannot
  *            corroborate a drop either). The forced-cut / CUT alignment uses the boundary-anchored bar grid when it is
- *            confident (`EventLayer.grid.beatsToBarLine`), else `f.beatInBar`. SceneManager still commits on
+ *            confident (`EventLayer.beatsToBarLine`), else `f.beatInBar`. SceneManager still commits on
  *            `f.beatInBar === 0`.
  * The v2 layer is drained EVERY frame in both modes and each event is recorded in the `?structurelog` (in legacy mode
  * flagged `shadow`), so tap logs can score v2 against the taps while the show still runs on the legacy events.
@@ -347,27 +348,14 @@ export function ShowAdapter() {
     li.sectionConfidence = f.songSection.sectionConfidence
     li.beatsInSection = f.songSection.beatsInSection
     li.isSustain = f.songSection.isSustain
+    // The mapper grades a drop that follows a breakdown as the bass-return release it is (`LegacyInput.inBreakdown`).
     li.inBreakdown = f.structureValid && f.songSection.isBreakdown
-    if (EVENTS_V2) {
-      // v2 replaces the sectionChange- and boundary-derived `change` / `breakdown` events: only the drop / build
-      // boundaries stay in the legacy mapping's input, and `f.sectionChange` is not fed at all (so it cannot
-      // corroborate a drop either).
-      li.sectionChange = false
-      li.boundaryChanged = f.songSection.boundaryChanged && (f.songSection.section === 'drop' || f.songSection.section === 'build')
-    }
+    // v2 replaces the sectionChange- and boundary-derived `change` / `breakdown` events (`eventMux.ts`): the legacy
+    // mapping is still stepped, but is not fed those signals, and only its drop / buildStart events are kept.
+    if (EVENTS_V2) maskLegacyInputForV2(li)
     ctx.events.length = 0
     stepLegacyEvents(ctx.legacy, li, ctx.events)
-    if (EVENTS_V2) {
-      // Keep the legacy drop / buildStart events, then append the live ones (a drop is seen before the change that
-      // follows it, so the director can corroborate it).
-      let w = 0
-      for (let k = 0; k < ctx.events.length; k++) {
-        const e = ctx.events[k]
-        if (e.type === 'drop' || e.type === 'buildStart') ctx.events[w++] = e
-      }
-      ctx.events.length = w
-      for (let k = 0; k < ctx.live.length; k++) ctx.events.push(ctx.live[k])
-    }
+    if (EVENTS_V2) mergeLiveWithLegacy(ctx.events, ctx.live)
 
     // Off with the rest of the character path under `?scenepick=legacy`.
     if (characterPickEnabled()) ctx.charShift.observe(f.character)

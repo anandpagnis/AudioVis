@@ -29,6 +29,8 @@ import { createEmptyFeatures, type AudioFeatures } from './types'
 import { DropStateMachine } from './structure/dropStateMachine'
 import { StructureAnalyzer, type StructureAnalyzerStatus } from './structure/StructureAnalyzer'
 import { structureOff } from './structure/structureFlags'
+import { EventLayer } from './events/EventLayer'
+import { RawTap } from './events/rawTap'
 import {
   BeatSalienceGatherer,
   DownbeatEstimator,
@@ -424,7 +426,19 @@ class AudioEngine {
    * a fresh read; see the `sectionTracker.update` call below). `structureOff()` is read once here,
    * matching how other URL-flag-gated behaviour in this codebase is read once at construction rather
    * than polled every frame (e.g. `characterLookOn` just below). */
-  private readonly structureAnalyzer = new StructureAnalyzer({ disabled: structureOff() })
+  private readonly structureAnalyzer = new StructureAnalyzer({
+    disabled: structureOff(),
+    // The live event layer (`?events=v2`) rides the analyser's freshly folded beat cells: no second feature extraction.
+    onCell: (cell, f) =>
+      this.events.push(cell, f.beatIndex, f.time, f.bpm, {
+        locked: f.downbeatLocked,
+        offset: (((f.beatIndex - f.beatInBar) % 4) + 4) % 4,
+      }),
+  })
+  /** Raw (un-normalised) dB tap: 6 bands + RMS, written beside the band normaliser and averaged into the beat cell. */
+  private readonly rawTap = new RawTap()
+  /** Bar-synchronous change events (`audio/events`): `events.drain(out)` is the allocation-free read. Silent under `?structure=off`. */
+  readonly events = new EventLayer()
   /** Read-only view of the fallback structure analyzer's live diagnostics — `DebugPanel`'s "structure
    *  not yet valid" row reads this in every real (non-Essentia) build, where `structureBridge.status`
    *  is permanently uninformative (Essentia's provider never runs there). */
@@ -901,6 +915,8 @@ class AudioEngine {
     this.chromaKey.reset()
     this.harmTension.reset()
     this.structureAnalyzer.reset()
+    this.events.reset()
+    this.rawTap.reset()
     this.emotion.reset()
     this.characterClassifier.reset()
     this.timbre.reset()
@@ -1004,6 +1020,8 @@ class AudioEngine {
     f.vocal = norm(this.bands.vocal, spectral.vocal)
     f.air = norm(this.bands.air, spectral.air)
     f.sparkle = norm(this.bands.sparkle, spectral.sparkle)
+    // Raw dB tap for the event layer (before any normalisation; used only through differences).
+    this.rawTap.write(spectral, subRaw, rmsRaw)
     // BS.1770 K-weighting loudness (issue 12). `f.loudness` is the momentary
     // (~400 ms) K-weighted RMS through a BandNormalizer, so it is
     // loudness-invariant and on the same 0..1 scale as the bands.
@@ -1170,7 +1188,7 @@ class AudioEngine {
     // args rather than read off `f`. ---
     this.sectionTracker.update(
       f,
-      this.intel.updateStructure(f) ?? this.structureAnalyzer.update(f, this.lowFreqDb, ctx.sampleRate),
+      this.intel.updateStructure(f) ?? this.structureAnalyzer.update(f, this.lowFreqDb, ctx.sampleRate, this.rawTap),
     )
   }
 

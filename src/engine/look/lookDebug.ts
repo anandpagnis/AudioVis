@@ -99,6 +99,9 @@ export interface LookDebugShow {
   forced: number
   /** How the last CUT was performed: `armed`, `pick`, `busy`, `refused`. */
   cutHow: string
+  /** OPTIONAL: the event source (`v2` | `legacy`, `?events=`) and the last v2 event, printed at the end of the line. */
+  src?: string
+  lastEvent?: string
 }
 
 /** Everything one overlay refresh prints. */
@@ -151,7 +154,8 @@ export function formatShowLine(show: LookDebugShow | undefined): string {
   const what = show.kind === 'MICRO' && show.micro ? `:${show.micro}` : ''
   return (
     `show  ${show.kind}${what} ${show.reason}${how} S=${fmt(show.S, 2)} T=${fmt(show.T, 2)} age=${fmt(show.age, 1)}b` +
-    ` P=${fmt(show.pressure, 2)} next<=${fmt(show.etaBars, 0)}b  H${fmt(show.hold, 0)} M${fmt(show.microCount, 0)} C${fmt(show.cut, 0)}(f${fmt(show.forced, 0)})`
+    ` P=${fmt(show.pressure, 2)} next<=${fmt(show.etaBars, 0)}b  H${fmt(show.hold, 0)} M${fmt(show.microCount, 0)} C${fmt(show.cut, 0)}(f${fmt(show.forced, 0)})` +
+    (show.src ? `  ev=${show.src}${show.lastEvent && show.lastEvent !== '-' ? ` [${show.lastEvent}]` : ''}` : '')
   )
 }
 

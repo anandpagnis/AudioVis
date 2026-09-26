@@ -32,11 +32,14 @@ export const RAW_RMS = 6
 /** Floor of the dB scale: digital silence and analyser noise floors read as this, never -Infinity / NaN. */
 export const RAW_DB_FLOOR = -120
 
-/** 20 log10 of a linear magnitude, floored at {@link RAW_DB_FLOOR} (non-finite and non-positive read as the floor). */
+/** Ceiling of the dB scale (a hot master can read a little over 0 dBFS; anything absurd is clamped, never Infinity). */
+export const RAW_DB_CEIL = 60
+
+/** 20 log10 of a linear magnitude, clamped to [{@link RAW_DB_FLOOR}, {@link RAW_DB_CEIL}] (NaN and non-positive read as the floor). */
 export function linToDb(lin: number): number {
   if (!(lin > 1e-6)) return RAW_DB_FLOOR
   const db = 20 * Math.log10(lin)
-  return db > RAW_DB_FLOOR ? db : RAW_DB_FLOOR
+  return db > RAW_DB_CEIL ? RAW_DB_CEIL : db > RAW_DB_FLOOR ? db : RAW_DB_FLOOR
 }
 
 /** The band magnitudes the tap reads (linear, as `computeSpectralBands` returns them). */
