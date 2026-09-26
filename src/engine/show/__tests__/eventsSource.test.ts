@@ -198,16 +198,14 @@ describe('showAdapter: ?events=legacy keeps the Phase-1 event source; v2 is an o
       T: 0.5,
       age: 3,
       pressure: 0,
-      etaBars: 20,
       hold: 1,
       microCount: 0,
       cut: 0,
-      forced: 0,
       cutHow: '-',
     }
     // absent: the line is exactly the Phase-1 one
-    expect(formatShowLine(base)).toMatch(/C0\(f0\)$/)
-    expect(formatShowLine({ ...base, src: 'v2' })).toMatch(/C0\(f0\) {2}ev=v2$/)
+    expect(formatShowLine(base)).toMatch(/C0$/)
+    expect(formatShowLine({ ...base, src: 'v2' })).toMatch(/C0 {2}ev=v2$/)
     expect(formatShowLine({ ...base, src: 'v2', lastEvent: 'change 0.82' })).toMatch(/ev=v2 \[change 0\.82\]$/)
     expect(formatShowLine({ ...base, src: 'legacy', lastEvent: '-' })).toMatch(/ev=legacy$/)
     expect(LOOKDEBUG_SRC).toContain('ev=${show.src}')

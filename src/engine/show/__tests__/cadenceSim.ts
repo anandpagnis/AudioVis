@@ -211,7 +211,6 @@ export interface SimResult {
   commits: number[]
   /** The director's CUT reasons (or 'legacy'), aligned with `commits`. */
   reasons: string[]
-  forced: number
 }
 
 /**
@@ -227,7 +226,6 @@ export function runDirector(stream: SimStream): SimResult {
   const inp: ShowInput = {
     beat: 0,
     time: 0,
-    bpm: stream.bpm,
     sceneStartBeat: Number.NEGATIVE_INFINITY,
     sceneStartTime: Number.NEGATIVE_INFINITY,
     event: null,
@@ -243,7 +241,6 @@ export function runDirector(stream: SimStream): SimResult {
   const reasons: string[] = []
   let pendingCommit = -1
   let pendingReason = ''
-  let forced = 0
   let sceneStart = Number.NEGATIVE_INFINITY
   let span = 0
   for (let b = 0; b < stream.beats; b++) {
@@ -268,7 +265,6 @@ export function runDirector(stream: SimStream): SimResult {
       if (a.kind === 'CUT' && pendingCommit < 0) {
         pendingCommit = a.immediate ? b : nextBar(b)
         pendingReason = a.reason
-        if (a.forced) forced++
         if (pendingCommit === b) {
           sceneStart = b
           commits.push(b)
@@ -278,7 +274,7 @@ export function runDirector(stream: SimStream): SimResult {
       }
     }
   }
-  return { commits, reasons, forced }
+  return { commits, reasons }
 }
 
 /**
@@ -325,7 +321,7 @@ export function runLegacy(stream: SimStream): SimResult {
       }
     }
   }
-  return { commits, reasons: commits.map(() => 'legacy'), forced: 0 }
+  return { commits, reasons: commits.map(() => 'legacy') }
 }
 
 /** Median of the gaps between consecutive commits, in bars. */

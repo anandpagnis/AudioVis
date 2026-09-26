@@ -30,7 +30,7 @@
  * the next downbeat, a request on a downbeat frame waits a whole bar, and a drop lands on the next frame.
  *
  * The output is a `LegacyResult`-shaped object (commits carry `trigger` = `<eventType>:<reason>`, e.g. `drop:drop-fast`,
- * `change:event`, `forced:forced-bar`), so `cadenceOfTrack` / `aggregateCadence` score both shows identically, plus the
+ * `change:event`; there is no timer, so every trigger is an event), so `cadenceOfTrack` / `aggregateCadence` score both shows identically, plus the
  * director's own decision log. `edges` is empty (the dwell does not exist here).
  *
  * Pure and deterministic. Offline-evaluation tooling: nothing in the shipped app imports it.
@@ -169,7 +169,7 @@ export function prepareLiveStream(
   return { byFrame, events, toLine, cells: stats, lastFrame }
 }
 
-/** One evaluated director decision (an event, or a forced cut with no event). */
+/** One evaluated director decision (an event; a frame with none is not a decision). */
 export interface DirectorDecision {
   frame: number
   timeSec: number
@@ -184,7 +184,6 @@ export interface DirectorDecision {
   age: number
   /** Drop credibility 0..1 the director applied (1 for a non-drop). */
   credibility: number
-  forced: boolean
   immediate: boolean
   /** A CUT that the adapter model refused (a scene was already landing). */
   refused: boolean
@@ -212,7 +211,7 @@ export const RELEASE_LOOKBACK_BEATS = 16
 export interface DirectorReplayResult extends LegacyResult {
   decisions: DirectorDecision[]
   /** The director's own counters at the end of the track. */
-  stats: { hold: number; micro: number; cut: number; forced: number }
+  stats: { hold: number; micro: number; cut: number }
   /** What became of the distinct events of each final type. */
   outcomes: Record<EventType, EventOutcomes>
   /** `outcomes.drop`: the drop events (kept as a shorthand). */
@@ -253,7 +252,6 @@ interface PendingScene {
   requestBeat: number
   immediate: boolean
   trigger: string
-  forced: boolean
 }
 
 const RANK: Record<ShowActionKind, number> = { HOLD: 0, MICRO: 1, CUT: 2 }
@@ -297,7 +295,6 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
   const inp: ShowInput = {
     beat: 0,
     time: 0,
-    bpm: 120,
     sceneStartBeat: Number.NEGATIVE_INFINITY,
     sceneStartTime: Number.NEGATIVE_INFINITY,
     event: null,
@@ -359,7 +356,7 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
           beat,
           timeSec: now,
           trigger: p.trigger as LegacyTrigger,
-          kind: p.forced ? 'level' : 'event',
+          kind: 'event',
           via: 'cold',
           immediate: p.immediate,
           requestFrame: p.requestFrame,
@@ -424,7 +421,6 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
     const moodAmb = c.moodAmbiguity[i] / Q8
     inp.beat = beat
     inp.time = now
-    inp.bpm = c.bpm10[i] / 10
     inp.sceneStartBeat = lastCommitBeat
     inp.sceneStartTime = sceneStartTime === Number.NEGATIVE_INFINITY ? 0 : sceneStartTime
     // (v2: the anchored grid's last beat of a bar while it is confident, as the adapter does)
@@ -462,9 +458,9 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
           refused = true
           requests.push({ frame: i, beat, timeSec: now, trigger: `${a.eventType || 'none'}:busy` as LegacyTrigger, kind: 'event', via: 'cold', immediate: false, outcome: 'refusedDwell' })
         } else {
-          const trigger = a.forced ? `forced:${a.reason}` : `${a.eventType || 'none'}:${a.reason}`
-          pending = { sinceSec: now, requestFrame: i, requestBeat: beat, immediate: a.immediate, trigger, forced: a.forced }
-          requests.push({ frame: i, beat, timeSec: now, trigger: trigger as LegacyTrigger, kind: a.forced ? 'level' : 'event', via: 'cold', immediate: a.immediate, outcome: 'accepted' })
+          const trigger = `${a.eventType || 'none'}:${a.reason}`
+          pending = { sinceSec: now, requestFrame: i, requestBeat: beat, immediate: a.immediate, trigger }
+          requests.push({ frame: i, beat, timeSec: now, trigger: trigger as LegacyTrigger, kind: 'event', via: 'cold', immediate: a.immediate, outcome: 'accepted' })
         }
       }
       if (a.evaluated) {
@@ -481,7 +477,6 @@ export function simulateDirector(trace: CadenceTrace, options: DirectorReplayOpt
           T: a.T,
           age: a.age,
           credibility: a.credibility,
-          forced: a.forced,
           immediate: a.immediate,
           refused,
         })

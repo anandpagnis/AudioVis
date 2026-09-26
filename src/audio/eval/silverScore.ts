@@ -12,7 +12,7 @@
  *  - {@link scoreTrackCuts}: SCENE CUTS against the silver boundaries. Share of cuts within +-1 bar / +-2 s of a boundary
  *    (nearest one, not one-to-one), COVERAGE (the share of boundaries that have a cut in [-1, +4] bars around them: what a
  *    show that follows the music must do), the lag from the preceding boundary to the cut, plus the cadence numbers
- *    (cuts per minute, interval distribution in bars, forced share) so a system cannot look aligned by cutting constantly.
+ *    (cuts per minute, interval distribution in bars, the legacy model's level-timer share) so a system cannot look aligned by cutting constantly.
  *  - {@link scoreEventsVsSilver}: an EVENT DETECTOR's boundary times against the silver boundaries: precision / recall
  *    within +-1 bar and +-3 s, and the literature's F0.5 / F3 (`mirEvalStyleDetectionF`, one-to-one, no trimming: silver
  *    events are interior boundaries).
@@ -225,7 +225,7 @@ export interface CutList {
   times: number[]
   /** The app's beat counter at each cut (for the interval in app bars, as `cadenceMetrics` counts them). */
   beats: number[]
-  /** Made by the director's forced ceiling (or, for the legacy model, its level-type timers). */
+  /** Made by a level-type TIMER: only the legacy model has these; the director has no timer, so its list is all false. */
   forced: boolean[]
 }
 

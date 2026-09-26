@@ -16,8 +16,8 @@ import type { EventType } from '../../audio/events/types'
  *
  * The legacy show gave every non-drop trigger the same 32-beat dwell and discarded edges that arrived during it, so it
  * changed scene at the first opportunity after the dwell, uncorrelated with the music. Here a strong change cuts
- * EARLY (its S clears a high threshold at a young age), weak ones wait for the threshold to fall, and a
- * forced ceiling guarantees the show never stagnates.
+ * EARLY (its S clears a high threshold at a young age), weak ones wait for the threshold to fall. There is NO timer:
+ * a scene never changes without a musical event of enough strength (an old scene is only EASIER to change).
  *
  * ## Tuned on the real tracks (lane W2-B, `corpus/structure/director-replay.md`)
  * The first version (T ramp 16 bars, floor 0.35, no drop weighting) was replayed over the 98 cached real traces: the
@@ -28,13 +28,13 @@ import type { EventType } from '../../audio/events/types'
  * Now a drop is scored by what stands behind it (`legacyEvents.ts`: a build / breakdown release keeps the fast lane, a
  * lone drop starts at S = 0.44) and by how RARE the detector's drops are (`dropCredibility`: one of many in 32 bars
  * carries little information). The ramp was shortened to 12 bars / floor 0.30 so the show
- * still changes every 8-16 bars on the events it does trust, and the forced-ceiling share stays under 15%.
+ * still changes every 8-16 bars on the events it does trust.
  *
  * ## Tempo robustness
  * Ages and cooldowns are measured in BARS (the musical unit) but clamped in SECONDS: the bar length used for the
  * conversion is bounded to [{@link SHOW.barSecMin}, {@link SHOW.barSecMax}] (160..80 BPM). At 60 BPM a bar is 4 s, so
  * bars alone would hold a scene for over a minute before the threshold relaxes; at 200 BPM a bar is 1.2 s and 4 bars
- * would be a 5 s scene. The clamp keeps both sane. The forced ceiling is the smaller of a bar count and a wall-clock.
+ * would be a 5 s scene. The clamp keeps both sane.
  *
  * Pure: no React, store or three imports.
  */
@@ -54,7 +54,7 @@ export const SHOW = {
    * (median 0.60, p90 0.90 over the 98 real tracks, `EventLayer.STRENGTH_ANCHORS`) and arrives ~1.3 times a minute, where
    * the legacy mapping's `sectionChange` edges arrive ~3.8 times a minute with their median at 0.30 (its strength map is
    * anchored to a noisy detector). Each v2 event therefore carries more information, and at gain 1 a typical one
-   * (S ~ 0.4) had to wait for a scene of ~10 bars before it could cut, so many scenes ran to the forced ceiling.
+   * (S ~ 0.4) had to wait for a scene of ~10 bars before it could cut, so many scenes waited a long time.
    * The gain multiplies S of those events only; the legacy events, drops and everything else are untouched.
    *
    * Tuned in lane W3 (`corpus/structure/director-vs-silver.md`, sweep over the 98 cached tracks, split-half by even / odd
@@ -97,14 +97,6 @@ export const SHOW = {
   dropImmediateOnlyFast: true,
   /** Two events this many beats apart are one physical change (drop + boundary). */
   corroborateBeats: 2,
-
-  /** Forced change ceiling: min(32 bars, 60 s), and 48 bars / 90 s inside a breakdown. */
-  ceilingBars: 32,
-  ceilingSec: 60,
-  breakdownCeilingBars: 48,
-  breakdownCeilingSec: 90,
-  /** The forced cut prefers the best-scoring event seen in this many trailing bars, else waits for the next bar line. */
-  bestWindowBars: 4,
 
   /** Minimum bars between two CUTs (covers a request that has not committed yet). */
   refractoryBars: 4,
@@ -179,22 +171,4 @@ export function barsBetween(beat0: number, time0: number, beat: number, time: nu
 /** The minimum scene age before a non-drop CUT is allowed. */
 export function minCutBars(inBreakdown: boolean): number {
   return inBreakdown ? SHOW.breakdownMinCutBars : SHOW.minCutBars
-}
-
-/** Has the forced-change ceiling been reached? min(bars, seconds), on the RAW bar count (not the clamped age). */
-export function ceilingReached(ageBeats: number, ageSec: number, inBreakdown: boolean): boolean {
-  const bars = inBreakdown ? SHOW.breakdownCeilingBars : SHOW.ceilingBars
-  const sec = inBreakdown ? SHOW.breakdownCeilingSec : SHOW.ceilingSec
-  return ageBeats / SHOW.beatsPerBar >= bars || ageSec >= sec
-}
-
-/** Bars until the forced ceiling given the current raw age (0 once reached). For the overlay's ETA. */
-export function barsToCeiling(ageBeats: number, ageSec: number, bpm: number, inBreakdown: boolean): number {
-  const bars = inBreakdown ? SHOW.breakdownCeilingBars : SHOW.ceilingBars
-  const sec = inBreakdown ? SHOW.breakdownCeilingSec : SHOW.ceilingSec
-  const byBars = bars - ageBeats / SHOW.beatsPerBar
-  const barSec = Number.isFinite(bpm) && bpm > 0 ? (SHOW.beatsPerBar * 60) / bpm : 2
-  const bySec = (sec - ageSec) / Math.max(SHOW.barSecMin, Math.min(SHOW.barSecMax, barSec))
-  const eta = Math.min(byBars, bySec)
-  return Number.isFinite(eta) ? Math.max(0, eta) : 0
 }

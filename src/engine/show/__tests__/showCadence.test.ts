@@ -55,9 +55,16 @@ describe('cadence simulation, 120 BPM, noise ~1 per 8 s + a true strong change e
     }
   })
 
-  it('at most 25% of the cuts are forced by the ceiling (the rest follow the music)', () => {
-    for (const { director } of runs) {
-      expect(director.forced / director.commits.length).toBeLessThanOrEqual(0.25)
+  it('every cut follows a real event: its reason is an event verdict and an event sits at or just before its request', () => {
+    for (const { stream, director } of runs) {
+      for (let k = 0; k < director.commits.length; k++) {
+        expect(['event', 'drop-fast'], `commit ${k}`).toContain(director.reasons[k])
+        const c = director.commits[k]
+        // a request commits on the next bar line (<= 4 beats later) or at once for a drop
+        let found = false
+        for (let b = c - 4; b <= c && !found; b++) found = stream.byBeat.has(b)
+        expect(found, `commit at beat ${c} has no event within 4 beats before it`).toBe(true)
+      }
     }
   })
 
@@ -105,16 +112,23 @@ describe('cadence simulation, other tempos and noise rates', () => {
       const secPerBar = 240 / bpm
       const medSec = medianBars(d.commits) * secPerBar
       expect(medSec, `${bpm} BPM`).toBeGreaterThan(14) // never a strobe...
-      expect(medSec, `${bpm} BPM`).toBeLessThan(48) // ...never a stall (the 60 s ceiling still binds)
+      expect(medSec, `${bpm} BPM`).toBeLessThan(48) // ...never a stall (only events change a scene)
       expect(hitRate(d.commits, stream.trueBeats), `${bpm} BPM`).toBeGreaterThan(0.6)
     }
   })
 
-  it('a quiet song (few noise events) still changes: the ceiling catches it, and the forced share stays small', () => {
+  it('a quiet song (few noise events) has no timer behind it: every cut is on an event, and it may hold a scene for a long time', () => {
     const stream = makeStream({ seed: 3, bpm: 120, beats: 24000, noiseGapSec: 30 })
     const d = runDirector(stream)
-    expect(d.forced / d.commits.length).toBeLessThanOrEqual(0.25)
-    expect(gapPercentile(d.commits, 1)).toBeLessThanOrEqual(34) // nothing stays past the ceiling (plus a bar to commit)
+    for (const r of d.reasons) expect(['event', 'drop-fast']).toContain(r)
+    expect(d.commits.length).toBeGreaterThan(0)
+  })
+
+  it('an event-free stream produces ZERO cuts, however long it runs (no timer, no ceiling)', () => {
+    for (const bpm of [60, 120, 170]) {
+      const stream = { ...makeStream({ seed: 1, bpm, beats: 24000 }), byBeat: new Map() }
+      expect(runDirector(stream).commits, `${bpm} BPM`).toHaveLength(0)
+    }
   })
 
   it('a noisy song (an event every 4 s) does not strobe: the intervals stay long', () => {
@@ -180,13 +194,12 @@ describe('cadence simulation with realistic FALSE DROPS: ~4 drops/min mixed with
     }
   })
 
-  it('targets on the real-trace criteria: <= 3 cuts/min, median >= 8 bars, >= 80% of intervals in 4-32 bars, few forced cuts', () => {
+  it('targets on the real-trace criteria: <= 3 cuts/min, median >= 8 bars, >= 80% of intervals in 4-32 bars', () => {
     for (const { stream, director } of runs) {
       expect(cutsPerMin(director.commits, stream)).toBeLessThanOrEqual(3)
       expect(medianBars(director.commits)).toBeGreaterThanOrEqual(8)
       const gaps = director.commits.slice(1).map((c, k) => (c - director.commits[k]) / 4)
       expect(gaps.filter((g) => g >= 4 && g <= 32).length / gaps.length).toBeGreaterThanOrEqual(0.8)
-      expect(director.forced / director.commits.length).toBeLessThanOrEqual(0.25)
     }
   })
 

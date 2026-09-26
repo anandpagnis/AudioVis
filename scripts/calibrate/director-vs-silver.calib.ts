@@ -164,7 +164,7 @@ const LEVEL_TRIGGERS = ['stale', 'phraseFallback', 'armed:age']
 
 interface CutRun {
   list: CutList
-  /** The trigger string of each cut (`change:event`, `drop:drop-fast`, `forced:forced-bar`, or the legacy model's). */
+  /** The trigger string of each cut (`change:event`, `drop:drop-fast`, or the legacy model's). */
   triggers: string[]
   /** v2 director only, for cuts made by a v2 change / breakdown event: cut time minus the event's claimed boundary time / fire time (s), and the claimed lag in silver bars. */
   claimLagSec: number[]
@@ -200,7 +200,7 @@ function runSystem(d: TrackData, key: SystemKey): CutRun {
     list: {
       times: kept.map((c) => c.timeSec),
       beats: kept.map((c) => c.beat),
-      forced: kept.map((c) => (key === 'legacy' ? LEVEL_TRIGGERS.includes(c.trigger) : String(c.trigger).startsWith('forced:'))),
+      forced: kept.map((c) => (key === 'legacy' ? LEVEL_TRIGGERS.includes(c.trigger) : false)),
     },
     triggers: kept.map((c) => String(c.trigger)),
     claimLagSec,
@@ -213,14 +213,13 @@ const scoreRun = (d: TrackData, run: CutRun, copies: number): TrackSilverScore =
   scoreTrackCuts(d.id, d.family, d.ref, run.list, d.horizon, { chanceCopies: copies, seed: SEED })
 
 /** Coarse trigger bucket of a director cut. */
-function bucketOf(trigger: string): 'event' | 'drop' | 'forced' {
-  if (trigger.startsWith('forced:')) return 'forced'
+function bucketOf(trigger: string): 'event' | 'drop' {
   if (trigger.startsWith('drop:')) return 'drop'
   return 'event'
 }
 
 /** A run restricted to the cuts of one bucket. */
-function subRun(run: CutRun, bucket: 'event' | 'drop' | 'forced'): CutList {
+function subRun(run: CutRun, bucket: 'event' | 'drop'): CutList {
   const idx = run.triggers.map((tr, k) => (bucketOf(tr) === bucket ? k : -1)).filter((k) => k >= 0)
   return { times: idx.map((k) => run.list.times[k]), beats: idx.map((k) => run.list.beats[k]), forced: idx.map((k) => run.list.forced[k]) }
 }
@@ -265,7 +264,7 @@ function systemTable(cols: Array<{ title: string; s: SystemSummary }>): string[]
     row('interval, silver bars: median / p10 / p90', (s) => `${f1(s.intervalBarsSilver.median)} / ${f1(s.intervalBarsSilver.p10)} / ${f1(s.intervalBarsSilver.p90)}`),
     row('**intervals in [4, 32] bars (app)** (below 4 / above 32)', (s) => `${pct(s.intervalBarsApp.in4to32)} (${pct(s.intervalBarsApp.below4)} / ${pct(s.intervalBarsApp.above32)})`),
     row('interval, seconds: median / p10 / p90', (s) => `${f1(s.intervalSec.median)} / ${f1(s.intervalSec.p10)} / ${f1(s.intervalSec.p90)}`),
-    row('**forced (ceiling / level-timer) cuts**', (s) => pct(s.forcedShare)),
+    row('**level-timer cuts** (legacy model only; the director has no timer)', (s) => pct(s.forcedShare)),
     row('**cuts within +-1 bar of a silver boundary** (cuts after 5 s)', (s) => lift(s.post.within1Bar)),
     row('... within +-1 bar, every cut incl. startup', (s) => lift(s.all.within1Bar)),
     row('cuts within +-2 s of a silver boundary', (s) => lift(s.post.within2s)),
@@ -362,7 +361,7 @@ describe.skipIf(!existsSync(TRACE_DIR) || !existsSync(SILVER_DIR) || !existsSync
           ok: C.intervalBarsApp.median >= 8 && C.intervalBarsApp.median <= 16 && C.intervalBarsApp.in4to32 >= 0.8,
           value: `${f1(C.intervalBarsApp.median)} bars, ${pct(C.intervalBarsApp.in4to32)} in [4,32]`,
         },
-        { name: '(iv) forced-cut share <= 25%', ok: C.forcedShare <= 0.25, value: pct(C.forcedShare) },
+        { name: '(iv) no timer: 0 forced cuts (every cut on an event)', ok: C.forcedShare === 0, value: pct(C.forcedShare) },
         {
           name: '(v) coverage of strong silver boundaries not worse than director+legacy\'s',
           ok: C.post.coverStrong.real >= B.post.coverStrong.real,
@@ -445,11 +444,16 @@ describe.skipIf(!existsSync(TRACE_DIR) || !existsSync(SILVER_DIR) || !existsSync
       }
 
       L.push('## Per genre family', '')
-      L.push('| family | tracks | system | cuts/min | median bars (app) | in [4,32] | forced | +-1 bar aligned (chance, lift) | strong coverage (chance, lift) |', '|---|---|---|---|---|---|---|---|---|')
+      L.push('| family | tracks | system | cuts/min | median bars (app) | in [4,32] | scenes > 64 bars | scenes > 120 s | tracks < 0.5 cuts/min | +-1 bar aligned (chance, lift) | strong coverage (chance, lift) |', '|---|---|---|---|---|---|---|---|---|---|---|')
       for (const fm of families) {
         for (const s of main) {
           const x = summ(s.key, (t) => t.family === fm)
-          L.push(`| ${fm} | ${x.tracks} | ${s.title} | ${f2(x.cutsPerMin)} | ${f1(x.intervalBarsApp.median)} | ${pct(x.intervalBarsApp.in4to32)} | ${pct(x.forcedShare)} | ${pct(x.post.within1Bar.real)} (${pct(x.post.within1Bar.chance)}, ${f2(x.post.within1Bar.lift)}) | ${pct(x.post.coverStrong.real)} (${pct(x.post.coverStrong.chance)}, ${f2(x.post.coverStrong.lift)}) |`)
+          const ts = scores[s.key].filter((t) => t.family === fm)
+          const n64 = ts.reduce((a, t) => a + t.intervalsBarsApp.filter((v) => v > 64).length, 0)
+          const n120 = ts.reduce((a, t) => a + t.intervalsSec.filter((v) => v > 120).length, 0)
+          const nIv = ts.reduce((a, t) => a + t.intervalsSec.length, 0)
+          const quiet = ts.filter((t) => t.cutsAll / (t.horizonSec / 60) < 0.5).length
+          L.push(`| ${fm} | ${x.tracks} | ${s.title} | ${f2(x.cutsPerMin)} | ${f1(x.intervalBarsApp.median)} | ${pct(x.intervalBarsApp.in4to32)} | ${n64} (${pct(n64 / Math.max(1, nIv))}) | ${n120} (${pct(n120 / Math.max(1, nIv))}) | ${quiet} | ${pct(x.post.within1Bar.real)} (${pct(x.post.within1Bar.chance)}, ${f2(x.post.within1Bar.lift)}) | ${pct(x.post.coverStrong.real)} (${pct(x.post.coverStrong.chance)}, ${f2(x.post.coverStrong.lift)}) |`)
         }
       }
       L.push('')
@@ -491,12 +495,12 @@ describe.skipIf(!existsSync(TRACE_DIR) || !existsSync(SILVER_DIR) || !existsSync
       L.push('| system | trigger | cuts | share | +-1 bar aligned (chance) | inside [-1, +4] bars after a boundary (chance) | median lag, preceding boundary -> cut (s) |', '|---|---|---|---|---|---|---|')
       for (const s of main.slice(1)) {
         const total = runs[s.key].reduce((a, r) => a + r.list.times.length, 0)
-        for (const bucket of ['event', 'drop', 'forced'] as const) {
+        for (const bucket of ['event', 'drop'] as const) {
           const sub = data.map((d, k) =>
             scoreTrackCuts(d.id, d.family, d.ref, subRun(runs[s.key][k], bucket), d.horizon, { chanceCopies: COPIES, seed: SEED }),
           )
           const x = summarizeSystem(sub)
-          const label = bucket === 'event' ? (s.key === 'dirV2' ? 'v2 change / breakdown event' : 'legacy change / breakdown event') : bucket === 'drop' ? 'drop' : 'forced ceiling'
+          const label = bucket === 'event' ? (s.key === 'dirV2' ? 'v2 change / breakdown event' : 'legacy change / breakdown event') : 'drop'
           L.push(`| ${s.title} | ${label} | ${x.cuts} | ${pct(x.cuts / total)} | ${pct(x.post.within1Bar.real)} (${pct(x.post.within1Bar.chance)}) | ${pct(x.post.followsBoundary.real)} (${pct(x.post.followsBoundary.chance)}) | ${f1(x.post.sinceMedian.real)} |`)
         }
       }

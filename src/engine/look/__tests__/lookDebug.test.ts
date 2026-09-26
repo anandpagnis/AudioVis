@@ -217,18 +217,16 @@ const SHOW: LookDebugShow = {
   T: 0.61,
   age: 6,
   pressure: 0.4,
-  etaBars: 26,
   hold: 12,
   microCount: 5,
   cut: 3,
-  forced: 1,
   cutHow: 'armed',
 }
 
 describe('the show-director line', () => {
-  it('prints the last action and reason, S, T_eff, age in bars, pressure, the forced-change ETA and the counts', () => {
+  it('prints the last action and reason, S, T_eff, age in bars, pressure, `no timer` and the counts', () => {
     const line = formatShowLine(SHOW)
-    expect(line).toMatch(/^show {2}CUT drop-fast\(armed\) S=1\.12 T=0\.61 age=6\.0b P=0\.40 next<=26b {2}H12 M5 C3\(f1\)$/)
+    expect(line).toMatch(/^show {2}CUT drop-fast\(armed\) S=1\.12 T=0\.61 age=6\.0b P=0\.40 no timer {2}H12 M5 C3$/)
   })
 
   it('names what a MICRO varied and omits the cut method for a non-CUT', () => {
@@ -248,7 +246,7 @@ describe('the show-director line', () => {
     const lines = formatLookDebug(s)
     expect(lines.some((l) => l.startsWith('show '))).toBe(true)
     for (const l of lines) expect(l.length).toBeLessThan(140)
-    const bad = formatLookDebug(snap({ show: { ...SHOW, S: NaN, T: Infinity, age: NaN, pressure: NaN, etaBars: NaN } }))
+    const bad = formatLookDebug(snap({ show: { ...SHOW, S: NaN, T: Infinity, age: NaN, pressure: NaN } }))
     expect(bad.join('\n')).not.toMatch(/NaN|Infinity/)
   })
 })

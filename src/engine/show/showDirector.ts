@@ -2,8 +2,6 @@ import type { EventType, SectionEvent } from '../../audio/events/types'
 import {
   SHOW,
   barsBetween,
-  barsToCeiling,
-  ceilingReached,
   dropCredibility,
   effectiveThreshold,
   eventScore,
@@ -15,14 +13,17 @@ import {
  *
  * No React, store, three or audio-engine imports: `showAdapter.tsx` gathers the live inputs and performs the action
  * through the existing machinery; the tests drive this module directly with synthetic event streams. See
- * `showPolicy.ts` for the constants and the reasoning (score S, age threshold T(a), pressure, refractory, ceiling).
+ * `showPolicy.ts` for the constants and the reasoning (score S, age threshold T(a), pressure, refractory).
  *
  * Three outcomes, not two: `HOLD` (staying put is a decision, logged with its reason and numbers), `MICRO` (a
  * proportionate tweak: palette, mode, layer or effect) and `CUT` (a new scene, committed on the next bar line; a drop
  * is an immediate hard cut).
  *
- * Through a confirmed build (`input.inBuild`) every discretionary change is held (`build-hold`) and the ceiling waits,
+ * Through a confirmed build (`input.inBuild`) every discretionary change is held (`build-hold`),
  * exactly as the old directors held the look until the drop; a drop is the one thing that still cuts.
+ *
+ * There is NO timer: a scene changes only on a real event whose score clears the (age-lowered) threshold. A stream
+ * with no events never cuts, however long the scene has been on screen.
  *
  * Allocation-light: `step` reads one reused input object and returns ONE reused action object (`state.out`), valid
  * until the next `step` on the same state; copy what you need. All per-source memory is in fixed typed arrays.
@@ -34,7 +35,7 @@ export type MicroKind = 'mode' | 'layer' | 'palette' | 'effect'
 
 export interface ShowAction {
   kind: ShowActionKind
-  /** Short constant-string reason, e.g. `weak`, `min-age`, `below-T`, `refractory`, `event`, `drop-fast`, `forced-best`. */
+  /** Short constant-string reason, e.g. `weak`, `min-age`, `below-T`, `refractory`, `event`, `drop-fast`. */
   reason: string
   /** The score of the event acted on (0 for an idle frame). */
   S: number
@@ -53,11 +54,9 @@ export interface ShowAction {
   micro: MicroKind | null
   /** CUT only: a drop's hard cut, landing now rather than on the next bar line. */
   immediate: boolean
-  /** CUT only: the forced-change ceiling made this cut, not an event's own score. */
-  forced: boolean
   /** CUT only: the armed scene still fits (a hint; the adapter re-verifies with the real fit check). */
   useArmed: boolean
-  /** True when an event (or the ceiling) was actually decided, false for an idle frame (not counted in the stats). */
+  /** True when an event was actually decided, false for an idle frame (not counted in the stats). */
   evaluated: boolean
 }
 
@@ -66,15 +65,13 @@ export interface ShowInput {
   /** `f.beatIndex` and `f.time`. A clock going backwards is a new source: the state resets. */
   beat: number
   time: number
-  /** `f.bpm`, only to express the forced-ceiling ETA in bars for the overlay (non-finite reads as 120). */
-  bpm: number
   /** The beat and audio time the scene now on screen was committed (the store's `lastCommitBeat`). */
   sceneStartBeat: number
   sceneStartTime: number
-  /** At most one event per call; null on a frame with none (the ceiling and the pressure still advance). */
+  /** At most one event per call; null on a frame with none (the pressure still advances). */
   event: SectionEvent | null
   /**
-   * A cut requested on THIS frame lands on the coming bar line: where a forced cut with no candidate event goes. The
+   * A cut requested on THIS frame lands on the coming bar line (kept for CUT commit alignment). The
    * adapter passes the last beat of a bar (`f.beat && f.beatInBar === 3`), not the downbeat frame itself: SceneManager
    * checks for a pending scene before the directors run, so a request made ON the downbeat frame would wait a whole
    * further bar for the next one.
@@ -95,11 +92,8 @@ export interface ShowStats {
   hold: number
   micro: number
   cut: number
-  /** Of the cuts, how many were forced by the ceiling. */
-  forced: number
 }
 
-const RING = 8
 const DROP_RING = 8
 const BUMPS = 4
 const BUMP_MOOD = 0
@@ -122,11 +116,6 @@ export interface ShowState {
   bumpV: Float64Array
   bumpBeat: Float64Array
   bumpTime: Float64Array
-  /** Ring of the last events' scores (0 = empty slot): the best S of the last 4 bars for the forced cut. */
-  ringS: Float64Array
-  ringBeat: Float64Array
-  ringTime: Float64Array
-  ringPos: number
   /** The last build seen (a `buildStart` event, or a build running) and the last change/breakdown event. */
   lastBuildBeat: number
   lastBuildTime: number
@@ -148,7 +137,6 @@ export interface ShowState {
   age: number
   pressure: number
   threshold: number
-  etaBars: number
   out: ShowAction
 }
 
@@ -165,7 +153,6 @@ function makeAction(): ShowAction {
     eventType: '',
     micro: null,
     immediate: false,
-    forced: false,
     useArmed: false,
     evaluated: false,
   }
@@ -184,10 +171,6 @@ export function createShowState(): ShowState {
     bumpV: new Float64Array(BUMPS),
     bumpBeat: new Float64Array(BUMPS),
     bumpTime: new Float64Array(BUMPS),
-    ringS: new Float64Array(RING),
-    ringBeat: new Float64Array(RING),
-    ringTime: new Float64Array(RING),
-    ringPos: 0,
     lastBuildBeat: NEVER,
     lastBuildTime: NEVER,
     lastChangeBeat: NEVER,
@@ -199,11 +182,10 @@ export function createShowState(): ShowState {
     dropPos: 0,
     microRot: 0,
     armedFitOk: false,
-    stats: { hold: 0, micro: 0, cut: 0, forced: 0 },
+    stats: { hold: 0, micro: 0, cut: 0 },
     age: 0,
     pressure: 0,
     threshold: 0,
-    etaBars: 0,
     out: makeAction(),
   }
   return st
@@ -220,8 +202,6 @@ export function resetShow(st: ShowState): void {
   st.lastMicroBeat = NEVER
   st.lastMicroTime = NEVER
   st.bumpV.fill(0)
-  st.ringS.fill(0)
-  st.ringPos = 0
   st.lastBuildBeat = NEVER
   st.lastBuildTime = NEVER
   st.lastChangeBeat = NEVER
@@ -235,7 +215,7 @@ export function resetShow(st: ShowState): void {
 /**
  * The adapter's report on a CUT it was asked to perform. A refused request (the scene was the current one, the
  * store refused the id, something else was mid-commit) must not leave the refractory running as if the show had
- * changed: it is shortened so the director retries in about two beats, on the next event or the ceiling.
+ * changed: it is shortened so the director retries in about two beats, on the next event.
  */
 export function ackCut(st: ShowState, accepted: boolean, beat: number, time: number): void {
   if (accepted) return
@@ -260,17 +240,6 @@ export function pressureAt(st: ShowState, beat: number, time: number): number {
     if (f > 0 && v * f > p) p = v * f
   }
   return p > 1 ? 1 : p
-}
-
-/** The best score among events seen in the last `bestWindowBars` bars (0 when none). */
-function bestRecent(st: ShowState, beat: number, time: number): number {
-  let best = 0
-  for (let k = 0; k < RING; k++) {
-    const s = st.ringS[k]
-    if (s <= best) continue
-    if (barsBetween(st.ringBeat[k], st.ringTime[k], beat, time) <= SHOW.bestWindowBars) best = s
-  }
-  return best
 }
 
 function hasFeats(f: SectionEvent['feats'] | undefined): boolean {
@@ -363,7 +332,6 @@ function emit(
   out.eventType = ev ? ev.type : ''
   out.micro = null
   out.immediate = false
-  out.forced = false
   out.useArmed = false
   out.evaluated = evaluated
   return out
@@ -371,7 +339,7 @@ function emit(
 
 /**
  * Advance the director by one call. Mutates `st`; returns `st.out`, filled with what the caller must do. Call it every
- * frame (with `event: null` when there is none) so pressure decays and the forced ceiling can fire; on a frame with
+ * frame (with `event: null` when there is none) so pressure decays; on a frame with
  * several events call it once per event.
  */
 export function step(st: ShowState, i: ShowInput): ShowAction {
@@ -411,14 +379,11 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
   const age = barsBetween(startBeat, startTime, beat, time)
   const pressure = pressureAt(st, beat, time)
   const T = effectiveThreshold(age, pressure)
-  const rawBeats = beat - startBeat
-  const rawSec = time - startTime
   const refractory = barsBetween(st.lastCutBeat, st.lastCutTime, beat, time) < SHOW.refractoryBars
   const microReady = barsBetween(st.lastMicroBeat, st.lastMicroTime, beat, time) >= SHOW.microCooldownBars
   st.age = age
   st.pressure = pressure
   st.threshold = T
-  st.etaBars = barsToCeiling(rawBeats, rawSec, i.bpm, i.inBreakdown)
 
   const ev = i.event
   let evaluated = false
@@ -430,14 +395,6 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
     // A drop is weighted by how rare the detector's own drops are (a detector that fires constantly says little).
     const cred = ev.type === 'drop' ? creditDrop(st, ev, beat, time, i.inBuild || i.inBreakdown) : 1
     const S = eventScore(ev.type, ev.strength, ev.confidence, ev.source) * cred
-    // Remember it for the forced cut's "best event of the last 4 bars".
-    if (S > 0) {
-      const k = st.ringPos
-      st.ringS[k] = S
-      st.ringBeat[k] = beat
-      st.ringTime[k] = time
-      st.ringPos = (k + 1) % RING
-    }
     emit(out, 'HOLD', 'weak', S, T, age, pressure, ev, true)
     out.credibility = cred
 
@@ -467,30 +424,12 @@ export function step(st: ShowState, i: ShowInput): ShowAction {
     }
   }
 
-  // --- The forced-change ceiling: min(32 bars, 60 s) on screen (48 / 90 s in a breakdown) ------------------------
-  if (out.kind !== 'CUT' && !refractory && !i.inBuild && ceilingReached(rawBeats, rawSec, i.inBreakdown)) {
-    const best = bestRecent(st, beat, time)
-    if (best >= SHOW.microMinS) {
-      emit(out, 'CUT', 'forced-best', best, T, age, pressure, ev, true)
-      out.forced = true
-      evaluated = true
-    } else if (i.barLine) {
-      emit(out, 'CUT', 'forced-bar', 0, T, age, pressure, ev, true)
-      out.forced = true
-      evaluated = true
-    } else if (!evaluated) {
-      out.reason = 'forced-wait'
-    }
-  }
-
   // --- Bookkeeping for what was decided -----------------------------------------------------------------------
   if (out.kind === 'CUT') {
     st.lastCutBeat = beat
     st.lastCutTime = time
-    st.ringS.fill(0) // the events that led here are spent
     out.useArmed = st.armedFitOk
     st.stats.cut++
-    if (out.forced) st.stats.forced++
   } else if (out.kind === 'MICRO') {
     st.lastMicroBeat = beat
     st.lastMicroTime = time
@@ -520,7 +459,7 @@ function decideWeighted(
   }
   const isDrop = ev.type === 'drop'
   // Through a confirmed build the look stays put until the drop (the old directors' rule, kept): every discretionary
-  // change is held, tweaks included. The drop itself is the exception, and the ceiling waits for the build to end.
+  // change is held, tweaks included. The drop itself is the exception,
   if (i.inBuild && !isDrop) {
     out.reason = 'build-hold'
     return

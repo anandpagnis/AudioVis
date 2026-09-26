@@ -37,13 +37,11 @@ function ev(over: Partial<SectionEvent> & { S?: number } = {}): SectionEvent {
   }
 }
 
-const BPM = 120
 /** A frame `bars` bars into the scene that started at beat 0 (120 BPM). */
 function at(bars: number, over: Partial<ShowInput> = {}): ShowInput {
   return {
     beat: Math.round(bars * 4),
     time: bars * 2,
-    bpm: BPM,
     sceneStartBeat: 0,
     sceneStartTime: 0,
     event: null,
@@ -69,7 +67,6 @@ interface Snap {
   credibility: number
   micro: ShowAction['micro']
   immediate: boolean
-  forced: boolean
   evaluated: boolean
 }
 function run(st: ShowState, i: ShowInput): Snap {
@@ -84,7 +81,6 @@ function run(st: ShowState, i: ShowInput): Snap {
     credibility: a.credibility,
     micro: a.micro,
     immediate: a.immediate,
-    forced: a.forced,
     evaluated: a.evaluated,
   }
 }
@@ -169,7 +165,7 @@ describe('showDirector.step: the age-decaying threshold', () => {
     const firstCutAge = (S: number) => {
       for (let a = 4; a <= 30; a += 0.25) {
         const r = run(fresh(), at(a, { event: ev({ S }) }))
-        if (r.kind === 'CUT' && !r.forced) return a
+        if (r.kind === 'CUT') return a
       }
       return Infinity
     }
@@ -268,7 +264,6 @@ describe('showDirector.step: a lone drop (no build, no breakdown, no second sign
     expect(old.kind).toBe('CUT')
     expect(old.reason).toBe('event')
     expect(old.immediate).toBe(false)
-    expect(old.forced).toBe(false)
   })
 
   it('never takes the fast lane, whatever the age: only a release (build / breakdown) or a strong source does', () => {
@@ -308,7 +303,7 @@ describe("showDirector.step: drop credibility (rarity weighting by the detector'
     expect(last.evaluated).toBe(true)
   })
 
-  it('a train of lone drops (one every 2 bars) never cuts a scene before the forced ceiling', () => {
+  it('a train of lone drops (one every 2 bars) never cuts a scene, however old it gets', () => {
     const st = fresh()
     for (let bars = 4; bars <= 28; bars += 2) {
       // the first one (age 4, S = 0.44) is a MICRO; every later one is discounted below the age threshold
@@ -417,49 +412,41 @@ describe('showDirector.step: refractory', () => {
   })
 })
 
-describe('showDirector.step: the forced-change ceiling', () => {
-  it('fires at min(32 bars, 60 s): 60 s (30 bars) at 120 BPM, waiting for the next bar line when nothing scored', () => {
+describe('showDirector.step: no timer (a scene changes only on a musical event)', () => {
+  it('an idle stream never cuts, however old the scene gets (every frame for 400 bars, barLine on every bar)', () => {
     const st = fresh()
-    expect(run(st, at(29.75)).kind).toBe('HOLD')
-    const wait = run(st, at(30))
-    expect(wait.kind).toBe('HOLD')
-    expect(wait.reason).toBe('forced-wait')
-    expect(wait.evaluated).toBe(false)
-    const cut = run(st, at(30, { barLine: true }))
-    expect(cut.kind).toBe('CUT')
-    expect(cut.reason).toBe('forced-bar')
-    expect(cut.forced).toBe(true)
+    for (let bars = 0; bars <= 400; bars += 0.25) {
+      const r = run(st, at(bars, { barLine: Number.isInteger(bars + 0.25) }))
+      expect(r.kind, `bar ${bars}`).toBe('HOLD')
+      expect(r.reason).toBe('idle')
+      expect(r.evaluated).toBe(false)
+    }
+    expect(st.stats).toEqual({ hold: 0, micro: 0, cut: 0 })
   })
 
-  it('takes the best-scoring event of the last 4 bars when there is one, cutting at once', () => {
+  it('the same holds in a breakdown, and through a build', () => {
     const st = fresh()
-    // Two sub-threshold events at 27 and 28.5 bars (below the floor T = 0.30: a MICRO and a cooldown), the better one first.
-    run(st, at(27, { event: ev({ S: 0.29 }) }))
-    run(st, at(28.5, { event: ev({ S: 0.26 }) }))
-    const cut = run(st, at(30))
-    expect(cut.kind).toBe('CUT')
-    expect(cut.reason).toBe('forced-best')
-    expect(cut.forced).toBe(true)
-    expect(cut.S).toBeCloseTo(0.29) // the best S in the window, not the latest
+    for (let bars = 0; bars <= 200; bars += 0.5) {
+      expect(run(st, at(bars, { inBreakdown: true, barLine: true })).kind).toBe('HOLD')
+      expect(run(st, at(bars + 0.25, { inBuild: true, barLine: true })).kind).toBe('HOLD')
+    }
+    expect(st.stats.cut).toBe(0)
   })
 
-  it('ignores events older than 4 bars: it falls back to the next bar line', () => {
-    const st = fresh()
-    run(st, at(20, { event: ev({ S: 0.28 }) })) // a MICRO 10 bars before the ceiling
-    expect(run(st, at(30)).reason).toBe('forced-wait')
-    expect(run(st, at(30, { barLine: true })).reason).toBe('forced-bar')
+  it('an event below T(age) never cuts at any age; T never falls below the floor', () => {
+    const below = ageThreshold(1000) - 0.01 // just under the floor T = 0.30
+    for (const bars of [4, 12, 32, 64, 200, 1000]) {
+      const r = run(fresh(), at(bars, { event: ev({ S: below }) }))
+      expect(r.kind, `age ${bars}`).not.toBe('CUT')
+    }
   })
 
-  it('is lengthened in a breakdown: 48 bars / 90 s (45 bars at 120 BPM)', () => {
-    const st = fresh()
-    expect(run(st, at(44, { inBreakdown: true, barLine: true })).kind).toBe('HOLD')
-    expect(run(st, at(45, { inBreakdown: true, barLine: true })).kind).toBe('CUT')
-  })
-
-  it('does not fire again within the refractory', () => {
-    const st = fresh()
-    expect(run(st, at(30, { barLine: true })).kind).toBe('CUT')
-    expect(run(st, at(31, { barLine: true })).kind).toBe('HOLD')
+  it('a strong event still cuts, and an old scene is easier to change (the threshold falls, no forced cut)', () => {
+    expect(run(fresh(), at(5, { event: ev({ S: 0.9 }) })).kind).toBe('CUT')
+    expect(run(fresh(), at(5, { event: ev({ S: 0.35 }) })).kind).toBe('MICRO')
+    const old = run(fresh(), at(100, { event: ev({ S: 0.35 }) }))
+    expect(old.kind).toBe('CUT')
+    expect(old.reason).toBe('event')
   })
 })
 
@@ -542,12 +529,6 @@ describe('showDirector.step: through a build', () => {
     const r = run(fresh(), at(10, { inBuild: true, event: ev({ type: 'drop', strength: 1, confidence: 0.9 }) }))
     expect(r).toMatchObject({ kind: 'CUT', immediate: true })
   })
-
-  it('the forced ceiling waits for the build to end', () => {
-    const st = fresh()
-    expect(run(st, at(31, { inBuild: true, barLine: true })).kind).toBe('HOLD')
-    expect(run(st, at(32, { barLine: true })).kind).toBe('CUT')
-  })
 })
 
 describe('showDirector.step: MICRO', () => {
@@ -609,18 +590,17 @@ describe('showDirector.step: HOLD is a decision with a reason', () => {
     const st = fresh()
     const idle = run(st, at(8))
     expect(idle).toMatchObject({ kind: 'HOLD', reason: 'idle', evaluated: false })
-    expect(st.stats).toEqual({ hold: 0, micro: 0, cut: 0, forced: 0 })
+    expect(st.stats).toEqual({ hold: 0, micro: 0, cut: 0 })
   })
 
-  it('counts HOLD, MICRO and CUT decisions and the forced share', () => {
+  it('counts HOLD, MICRO and CUT decisions', () => {
     const st = fresh()
     run(st, at(8, { event: ev({ S: 0.1 }) })) // HOLD
     run(st, at(8.5, { event: ev({ S: 0.3 }) })) // MICRO
     run(st, at(12, { event: ev({ S: 0.9 }) })) // CUT
-    expect(st.stats).toEqual({ hold: 1, micro: 1, cut: 1, forced: 0 })
-    run(st, at(30, { barLine: true })) // forced (the first cut left the refractory long ago; scene never committed)
-    expect(st.stats.cut).toBe(2)
-    expect(st.stats.forced).toBe(1)
+    expect(st.stats).toEqual({ hold: 1, micro: 1, cut: 1 })
+    run(st, at(30, { barLine: true })) // an idle frame is not counted
+    expect(st.stats).toEqual({ hold: 1, micro: 1, cut: 1 })
   })
 
   it('build starts, gain steps and fills never cut', () => {
@@ -647,7 +627,7 @@ describe('showDirector.step: tempo robustness', () => {
     const spb = 60 / bpm
     const st = fresh()
     return run(st, {
-      ...at(0, { bpm, event: ev({ S: 0.95 }) }),
+      ...at(0, { event: ev({ S: 0.95 }) }),
       beat: beats,
       time: beats * spb,
     }).kind
@@ -661,18 +641,6 @@ describe('showDirector.step: tempo robustness', () => {
   it('170 BPM: 4 bars of beats is only 5.6 s; the clamp holds the scene to ~6 s', () => {
     expect(cutAt(170, 16)).toBe('MICRO') // 16 beats = 5.65 s
     expect(cutAt(170, 18)).toBe('CUT') // 6.35 s
-  })
-
-  it('the forced ceiling is min(32 bars, 60 s): 60 s at 60 BPM, 45 s (32 bars) at 170 BPM', () => {
-    const forcedAt = (bpm: number, seconds: number) => {
-      const st = fresh()
-      const spb = 60 / bpm
-      return run(st, { ...at(0, { bpm, barLine: true }), beat: Math.round(seconds / spb), time: seconds }).kind
-    }
-    expect(forcedAt(60, 59)).toBe('HOLD')
-    expect(forcedAt(60, 60)).toBe('CUT')
-    expect(forcedAt(170, 44)).toBe('HOLD')
-    expect(forcedAt(170, 46)).toBe('CUT')
   })
 
   it('a frozen beat counter still ages the scene by the clock', () => {

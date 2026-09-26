@@ -53,20 +53,12 @@ function range(t: CadenceTrace, col: 'isSustain' | 'isBreakdown' | 'silence', fr
 }
 
 describe('simulateDirector: the commit path', () => {
-  it('a quiet track changes scene once, at the forced ceiling (60 s at 120 BPM), on the first downbeat after it', () => {
-    const t = makeTrace(90)
+  it('a quiet track (no events) never changes scene: there is no timer, however long it plays', () => {
+    const t = makeTrace(300)
     const r = simulateDirector(t)
-    expect(r.commits).toHaveLength(1)
-    const c = r.commits[0]
-    expect(c.trigger).toBe('forced:forced-bar')
-    expect(c.immediate).toBe(false)
-    expect(c.kind).toBe('level')
-    // requested on the last beat of a bar (beat 123, 61.5 s), committed on the next downbeat (beat 124 = 62 s)
-    expect(c.requestBeat).toBe(123)
-    expect(c.beat).toBe(124)
-    expect(c.beat % 4).toBe(0)
-    expect(c.timeSec).toBeCloseTo(62, 1)
-    expect(r.stats.forced).toBe(1)
+    expect(r.commits).toHaveLength(0)
+    expect(r.requests).toEqual([])
+    expect(r.stats).toEqual({ hold: 0, micro: 0, cut: 0 })
     expect(r.edges).toEqual([])
   })
 
@@ -312,9 +304,10 @@ describe('simulateDirector: the v2 event source (options.live)', () => {
 
   it('endSec stops the replay: nothing after it is decided', () => {
     const t = makeTrace(90)
+    sectionChangeAt(t, 60, 1.2) // a strong change at a mature age: a CUT
     const full = simulateDirector(t)
     const cut = simulateDirector(t, { endSec: 30 })
-    expect(full.commits).toHaveLength(1) // the forced ceiling at ~62 s
+    expect(full.commits).toHaveLength(1)
     expect(cut.commits).toHaveLength(0)
   })
 })

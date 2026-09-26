@@ -41,14 +41,12 @@ export const showProbe = {
   micro: '',
   S: 0,
   T: 0,
-  /** Scene age in bars, pressure 0..1, and bars until the forced-change ceiling. */
+  /** Scene age in bars, pressure 0..1, (no timer, so no time-to-change). */
   age: 0,
   pressure: 0,
-  etaBars: 0,
   hold: 0,
   microCount: 0,
   cut: 0,
-  forced: 0,
   /** Which event source feeds the director: `v2` (the live bar-synchronous change scorer) or `legacy` (`?events=`). */
   src: 'legacy',
   /** The last v2 event delivered (`type S=... lag=...b`), or '-': lets the overlay show what the scorer just saw. */

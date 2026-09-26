@@ -107,7 +107,6 @@ interface Run {
   hold: number
   micro: number
   cut: number
-  forced: number
   outcomes: DirectorReplayResult['outcomes'] | null
   release: ReleaseDropOutcomes | null
   /** |commit - nearest structural event| samples, real and chance. */
@@ -118,15 +117,32 @@ interface Run {
 const BUCKETS = ['drop', 'change', 'breakdown', 'forced', 'build', 'other'] as const
 type Bucket = (typeof BUCKETS)[number]
 
-/** `forced` = the director's ceiling; for the legacy model the nearest analogue, the level-type timers. */
+/** `forced` = the LEGACY model's level-type timers (stale / phrase fallback / armed age); the director has no timer, so it never lands here. */
 function bucketOf(trigger: string): Bucket {
-  if (trigger.startsWith('forced:')) return 'forced'
   if (trigger.startsWith('drop:') || trigger === 'drop' || trigger === 'armed:drop' || trigger === 'dropPreArm') return 'drop'
   if (trigger.startsWith('breakdown:')) return 'breakdown'
   if (trigger.startsWith('change:') || ['sectionChange', 'latchedBoundary', 'armed:section', 'armed:phrase'].includes(trigger)) return 'change'
   if (['stale', 'phraseFallback', 'armed:age'].includes(trigger)) return 'forced'
   if (trigger === 'buildSwitch') return 'build'
   return 'other'
+}
+
+/** Scenes (inter-cut intervals) longer than 64 bars / 120 s / 300 s over a set of runs. */
+function longStats(rs: readonly Run[]): { n: number; bars64: number; sec120: number; sec300: number; tracks64: number } {
+  let n = 0
+  let bars64 = 0
+  let sec120 = 0
+  let sec300 = 0
+  let tracks64 = 0
+  for (const r of rs) {
+    n += r.cad.intervalsBars.length
+    const b = r.cad.intervalsBars.filter((x) => x > 64).length
+    bars64 += b
+    if (b > 0) tracks64++
+    sec120 += r.cad.intervalsSec.filter((x) => x > 120).length
+    sec300 += r.cad.intervalsSec.filter((x) => x > 300).length
+  }
+  return { n, bars64, sec120, sec300, tracks64 }
 }
 
 const emptyBuckets = (): Record<Bucket, number> => ({ drop: 0, change: 0, breakdown: 0, forced: 0, build: 0, other: 0 })
@@ -162,7 +178,6 @@ function runOne(item: Item, trace: ReturnType<typeof unpackTrace>, variant: 'leg
     hold: d?.stats.hold ?? 0,
     micro: d?.stats.micro ?? 0,
     cut: d?.stats.cut ?? 0,
-    forced: d?.stats.forced ?? 0,
     outcomes: d?.outcomes ?? null,
     release: d?.releaseDrops ?? null,
     structReal: sa.real,
@@ -198,13 +213,11 @@ function aggregate(runs: Run[]): Agg {
   let hold = 0
   let micro = 0
   let cut = 0
-  let forcedCuts = 0
   for (const r of runs) {
     for (const b of BUCKETS) buckets[b] += r.buckets[b]
     hold += r.hold
     micro += r.micro
     cut += r.cut
-    forcedCuts += r.forced
   }
   const total = BUCKETS.reduce((s, b) => s + buckets[b], 0)
   const bucketShare = emptyBuckets()
@@ -293,7 +306,7 @@ function buildReport(
     ['cuts per minute <= ~3 (legacy model 6.35)', cur.cutsPerMin <= 3.05, f2(cur.cutsPerMin)],
     ['median interval >= 8 bars (legacy model 4.0)', cur.cad.intervalBars.median >= 8, f1(cur.cad.intervalBars.median)],
     ['>= 80% of intervals inside [4, 32] bars (legacy model 53%)', cur.cad.shareBars.in4to32 >= 0.8, pct(cur.cad.shareBars.in4to32)],
-    ['forced cuts < 15% of cuts', cur.forcedShare < 0.15, pct(cur.forcedShare)],
+    ['NO timer: every director cut is an event verdict (0 timer cuts)', cur.buckets.forced === 0 && cur.cad.triggers.every((t) => /^(drop|change|breakdown):/.test(t.trigger)), `${cur.buckets.forced} timer cuts`],
     [
       'drops that follow a build/breakdown still hard-cut (fast lane on >= 80% of those not held by the 4-bar refractory)',
       cur.release !== null && cur.release.events - cur.release.refractory > 0 && cur.release.fast / (cur.release.events - cur.release.refractory) >= 0.8,
@@ -334,7 +347,7 @@ function buildReport(
   L.push(row('**share of intervals in [4, 32] bars**', vs, (a) => `${pct(a.cad.shareBars.in4to32)} (below 4: ${pct(a.cad.shareBars.below4)}, above 32: ${pct(a.cad.shareBars.above32)})`))
   L.push(row('per-track cuts/min: p10 / median / p90 / max', vs, (a) => `${f2(a.perTrackCutsPerMin.p10)} / ${f2(a.perTrackCutsPerMin.median)} / ${f2(a.perTrackCutsPerMin.p90)} / ${f2(a.perTrackCutsPerMin.max)}`))
   L.push(row('per-track median interval, bars: p10 / median / p90', vs, (a) => `${f1(a.perTrackMedianBars.p10)} / ${f1(a.perTrackMedianBars.median)} / ${f1(a.perTrackMedianBars.p90)}`))
-  L.push(row('**forced (ceiling) cuts** (legacy: level-type timers)', vs, (a) => pct(a.forcedShare)))
+  L.push(row('**level-type timer cuts** (legacy model only; the director has no timer)', vs, (a) => pct(a.forcedShare)))
   L.push(row('HOLD / MICRO / CUT decisions (director only)', vs, (a) => (a.cut + a.micro + a.hold ? `${a.hold} / ${a.micro} / ${a.cut}` : '-')))
   L.push(
     row('cuts within +-2 s of a structural event (sectionChange, latched boundary, analyser boundary)', vs, (a) => `${pct(a.struct2s.real)} (chance ${pct(a.struct2s.chance)})`),
@@ -345,7 +358,7 @@ function buildReport(
   L.push('')
 
   L.push('## Which trigger produced each cut', '', `| bucket | ${vs.map((v) => v.title).join(' | ')} |`, `|---|${vs.map(() => '---').join('|')}|`)
-  for (const b of BUCKETS) L.push(row(b === 'forced' ? 'forced / level-type timers' : b, vs, (a) => `${a.buckets[b]} (${pct(a.bucketShare[b])})`))
+  for (const b of BUCKETS) L.push(row(b === 'forced' ? 'legacy level-type timers' : b, vs, (a) => `${a.buckets[b]} (${pct(a.bucketShare[b])})`))
   L.push('', 'Director trigger strings (variant `director`):', '', '| trigger | cuts | share |', '|---|---|---|')
   for (const t of cur.cad.triggers) L.push(`| ${t.trigger} | ${t.count} | ${pct(t.share)} |`)
   L.push('')
@@ -389,38 +402,59 @@ function buildReport(
   L.push('')
 
   L.push('## Per genre family (variant `director` vs `directorCommitted` vs `legacy`)', '')
-  L.push('| family | tracks | legacy cuts/min | first-commit cuts/min | tuned cuts/min | legacy median bars | first-commit | tuned | tuned in [4,32] | tuned forced | tuned struct <=2 s (chance) | tuned p90 track cuts/min |', '|---|---|---|---|---|---|---|---|---|---|---|---|')
+  L.push('| family | tracks | legacy cuts/min | first-commit cuts/min | tuned cuts/min | legacy median bars | first-commit | tuned | tuned in [4,32] | tuned scenes > 64 bars | tuned scenes > 120 s | tuned struct <=2 s (chance) | tuned p90 track cuts/min |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   for (const fam of families) {
     const sel = (rs: Run[]) => aggregate(rs.filter((r) => r.family === fam))
     const a = sel(all.legacy)
     const b = sel(all.directorCommitted)
     const c = sel(all.director)
     L.push(
-      `| ${fam} | ${c.runs.length} | ${f2(a.cutsPerMin)} | ${f2(b.cutsPerMin)} | ${f2(c.cutsPerMin)} | ${f1(a.cad.intervalBars.median)} | ${f1(b.cad.intervalBars.median)} | ${f1(c.cad.intervalBars.median)} | ${pct(c.cad.shareBars.in4to32)} | ${pct(c.forcedShare)} | ${pct(c.struct2s.real)} (${pct(c.struct2s.chance)}) | ${f2(c.perTrackCutsPerMin.p90)} |`,
+      `| ${fam} | ${c.runs.length} | ${f2(a.cutsPerMin)} | ${f2(b.cutsPerMin)} | ${f2(c.cutsPerMin)} | ${f1(a.cad.intervalBars.median)} | ${f1(b.cad.intervalBars.median)} | ${f1(c.cad.intervalBars.median)} | ${pct(c.cad.shareBars.in4to32)} | ${longStats(c.runs).bars64} (${pct(longStats(c.runs).bars64 / Math.max(1, longStats(c.runs).n))}) | ${longStats(c.runs).sec120} (${pct(longStats(c.runs).sec120 / Math.max(1, longStats(c.runs).n))}) | ${pct(c.struct2s.real)} (${pct(c.struct2s.chance)}) | ${f2(c.perTrackCutsPerMin.p90)} |`,
     )
   }
   L.push('')
 
   // Split-half: the constants were tuned on all these tracks, so at least show the result does not hinge on a subset.
   L.push('### Split-half stability (variant `director`, tracks alternately assigned by sorted id)', '')
-  L.push('| half | tracks | cuts/min | median bars | in [4,32] | forced | struct <=2 s (chance) |', '|---|---|---|---|---|---|---|')
+  L.push('| half | tracks | cuts/min | median bars | in [4,32] | struct <=2 s (chance) |', '|---|---|---|---|---|---|')
   for (const half of [0, 1]) {
     const h = aggregate(all.director.filter((_, k) => k % 2 === half))
-    L.push('| ' + (half === 0 ? 'even' : 'odd') + ' | ' + h.runs.length + ' | ' + f2(h.cutsPerMin) + ' | ' + f1(h.cad.intervalBars.median) + ' | ' + pct(h.cad.shareBars.in4to32) + ' | ' + pct(h.forcedShare) + ' | ' + pct(h.struct2s.real) + ' (' + pct(h.struct2s.chance) + ') |')
+    L.push('| ' + (half === 0 ? 'even' : 'odd') + ' | ' + h.runs.length + ' | ' + f2(h.cutsPerMin) + ' | ' + f1(h.cad.intervalBars.median) + ' | ' + pct(h.cad.shareBars.in4to32) + ' | ' + pct(h.struct2s.real) + ' (' + pct(h.struct2s.chance) + ') |')
   }
   L.push('')
 
   L.push('## Per track (variant `director`)', '')
-  L.push('| id | family | min | drops/h | cuts/min (legacy) | median bars | forced | drop cuts | change cuts | breakdown cuts | HOLD/MICRO/CUT |', '|---|---|---|---|---|---|---|---|---|---|---|')
+  L.push('| id | family | min | drops/h | cuts/min (legacy) | median bars | longest scene (bars / s) | drop cuts | change cuts | breakdown cuts | HOLD/MICRO/CUT |', '|---|---|---|---|---|---|---|---|---|---|---|')
   for (let k = 0; k < all.director.length; k++) {
     const r = all.director[k]
     const lg = all.legacy[k]
     const dropsPerHour = r.cad.detector.drop / (r.minutes / 60)
     L.push(
-      `| ${r.id} | ${r.family} | ${r.minutes.toFixed(1)} | ${dropsPerHour.toFixed(0)} | ${f2(r.cad.commits / r.minutes)} (${f2(lg.cad.commits / lg.minutes)}) | ${f1(distStats(r.cad.intervalsBars).median)} | ${r.buckets.forced} | ${r.buckets.drop} | ${r.buckets.change} | ${r.buckets.breakdown} | ${r.hold}/${r.micro}/${r.cut} |`,
+      `| ${r.id} | ${r.family} | ${r.minutes.toFixed(1)} | ${dropsPerHour.toFixed(0)} | ${f2(r.cad.commits / r.minutes)} (${f2(lg.cad.commits / lg.minutes)}) | ${f1(distStats(r.cad.intervalsBars).median)} | ${f1(Math.max(0, ...r.cad.intervalsBars))} / ${f1(Math.max(0, ...r.cad.intervalsSec))} | ${r.buckets.drop} | ${r.buckets.change} | ${r.buckets.breakdown} | ${r.hold}/${r.micro}/${r.cut} |`,
     )
   }
   L.push('')
+
+  // The real consequence of having no timer: how long a scene can be held when no event of enough strength arrives.
+  {
+    const ls = longStats(all.director)
+    L.push('## Long scenes (variant `director`: no timer, so a scene lives until a strong enough event)', '')
+    L.push(`- ${ls.n} intervals; ${ls.bars64} (${pct(ls.bars64 / Math.max(1, ls.n))}) are longer than 64 bars, ${ls.sec120} (${pct(ls.sec120 / Math.max(1, ls.n))}) longer than 120 s, ${ls.sec300} longer than 300 s.`)
+    L.push(`- Tracks with at least one scene > 64 bars: ${ls.tracks64} of ${all.director.length}; tracks whose cuts/min is < 0.5 (visually near-static): ${all.director.filter((r) => r.cad.commits / r.minutes < 0.5).length}.`, '')
+    L.push('| family | tracks | intervals | > 64 bars | > 120 s | tracks < 0.5 cuts/min | tracks with 0 cuts | longest scene (s) |', '|---|---|---|---|---|---|---|---|')
+    for (const fam of families) {
+      const rs = all.director.filter((r) => r.family === fam)
+      const l = longStats(rs)
+      L.push(`| ${fam} | ${rs.length} | ${l.n} | ${l.bars64} | ${l.sec120} | ${rs.filter((r) => r.cad.commits / r.minutes < 0.5).length} | ${rs.filter((r) => r.cad.commits === 0).length} | ${f1(Math.max(0, ...rs.flatMap((r) => r.cad.intervalsSec)))} |`)
+    }
+    L.push('', 'Longest scenes:', '', '| id | family | seconds | bars | track min |', '|---|---|---|---|---|')
+    const top = all.director
+      .flatMap((r) => r.cad.intervalsSec.map((sec, k) => ({ r, sec, bars: r.cad.intervalsBars[k] })))
+      .sort((a, b) => b.sec - a.sec)
+      .slice(0, 15)
+    for (const t of top) L.push(`| ${t.r.id} | ${t.r.family} | ${f1(t.sec)} | ${f1(t.bars)} | ${f1(t.r.minutes)} |`)
+    L.push('')
+  }
 
   const constantsOf = (o: object, keys: string[]) => Object.fromEntries(keys.map((k) => [k, (o as Record<string, unknown>)[k]]))
   const liveLegacy = constantsOf(LEGACY, Object.keys(COMMITTED.legacy))

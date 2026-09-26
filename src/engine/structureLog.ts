@@ -618,7 +618,7 @@ export class StructureLog {
   // --------------------------------------------------------------------------------------- show director
 
   /**
-   * The show director's reason for a scene change: `trigger` (`'drop'`, `'change'`, `'forced'`, ...) and free
+   * The show director's reason for a scene change: `trigger` (`'drop'`, `'change'`, ...) and free
    * `detail` (scores, thresholds). Call it when the change is requested or right after it commits: a reason
    * younger than 20 audio-seconds is attached to the next commit, and a call within 0.5 s after an `unknown`
    * commit patches that commit. Free when the log is disabled.

@@ -84,7 +84,7 @@ import {
  *            `change` / `fill` / `gain` / `breakdown`. The legacy mapping is still stepped every frame but only its
  *            `drop` and `buildStart` events are kept (its sectionChange- and boundary-derived `change` and `breakdown`
  *            events are dropped, and its sectionChange / non-drop boundary signals are not fed to it, so they cannot
- *            corroborate a drop either). The forced-cut / CUT alignment uses the boundary-anchored bar grid when it is
+ *            corroborate a drop either). The CUT alignment uses the boundary-anchored bar grid when it is
  *            confident (`EventLayer.beatsToBarLine`), else `f.beatInBar`; SceneManager commits on the SAME anchored grid
  *            (`isCommitBarLine`), so a request made on the last beat of an anchored bar lands on its downbeat.
  * The v2 layer is drained EVERY frame in both modes and each event is recorded in the `?structurelog` (in legacy mode
@@ -138,7 +138,6 @@ function createCtx(): AdapterCtx {
     input: {
       beat: 0,
       time: 0,
-      bpm: 120,
       sceneStartBeat: Number.NEGATIVE_INFINITY,
       sceneStartTime: Number.NEGATIVE_INFINITY,
       event: null,
@@ -293,11 +292,9 @@ function publish(ctx: AdapterCtx, a: ShowAction | null): void {
   const st = ctx.show
   showProbe.age = st.age
   showProbe.pressure = st.pressure
-  showProbe.etaBars = st.etaBars
   showProbe.hold = st.stats.hold
   showProbe.microCount = st.stats.micro
   showProbe.cut = st.stats.cut
-  showProbe.forced = st.stats.forced
   if (a !== null && a.evaluated) {
     showProbe.kind = a.kind
     showProbe.reason = a.reason
@@ -390,7 +387,6 @@ export function ShowAdapter() {
     const inp = ctx.input
     inp.beat = f.beatIndex
     inp.time = f.time
-    inp.bpm = f.bpm
     inp.sceneStartBeat = s.lastCommitBeat
     inp.sceneStartTime = ctx.sceneStartTime
     // The last beat of a bar: a request made now commits on the very next downbeat (see `ShowInput.barLine`). In v2

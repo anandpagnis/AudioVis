@@ -87,16 +87,14 @@ export interface LookDebugShow {
   kind: string
   reason: string
   micro: string
-  /** S, T_eff, scene age in bars, pressure 0..1 and bars until the forced-change ceiling. */
+  /** S, T_eff, scene age in bars and pressure 0..1 (there is no timer: no time-to-change is shown). */
   S: number
   T: number
   age: number
   pressure: number
-  etaBars: number
   hold: number
   microCount: number
   cut: number
-  forced: number
   /** How the last CUT was performed: `armed`, `pick`, `busy`, `refused`. */
   cutHow: string
   /** OPTIONAL: the event source (`v2` | `legacy`, `?events=`) and the last v2 event, printed at the end of the line. */
@@ -144,9 +142,9 @@ export function mirrorSummary(segments: number, twist: number, mix: number): str
 }
 
 /**
- * The director line: `show CUT drop-fast(armed) S=1.12 T=0.61 age=6.0b P=0.40 next<=26b  H12 M5 C3(f1)`: the last
- * action and why, the score against the effective threshold, the scene's age in bars, the pressure, the bars until the
- * forced ceiling, and the running counts of HOLD / MICRO / CUT (f = how many of the cuts were forced).
+ * The director line: `show CUT drop-fast(armed) S=1.12 T=0.61 age=6.0b P=0.40 no timer  H12 M5 C3`: the last
+ * action and why, the score against the effective threshold, the scene's age in bars, the pressure, `no timer` (a scene
+ * changes only on a musical event) and the running counts of HOLD / MICRO / CUT.
  */
 export function formatShowLine(show: LookDebugShow | undefined): string {
   if (!show || !show.on) return 'show  director off (?director=legacy: the old triggers run)'
@@ -154,7 +152,7 @@ export function formatShowLine(show: LookDebugShow | undefined): string {
   const what = show.kind === 'MICRO' && show.micro ? `:${show.micro}` : ''
   return (
     `show  ${show.kind}${what} ${show.reason}${how} S=${fmt(show.S, 2)} T=${fmt(show.T, 2)} age=${fmt(show.age, 1)}b` +
-    ` P=${fmt(show.pressure, 2)} next<=${fmt(show.etaBars, 0)}b  H${fmt(show.hold, 0)} M${fmt(show.microCount, 0)} C${fmt(show.cut, 0)}(f${fmt(show.forced, 0)})` +
+    ` P=${fmt(show.pressure, 2)} no timer  H${fmt(show.hold, 0)} M${fmt(show.microCount, 0)} C${fmt(show.cut, 0)}` +
     (show.src ? `  ev=${show.src}${show.lastEvent && show.lastEvent !== '-' ? ` [${show.lastEvent}]` : ''}` : '')
   )
 }
