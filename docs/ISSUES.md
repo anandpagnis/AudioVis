@@ -13216,3 +13216,82 @@ per-frame canvas heavy enough to distort the reading.
       tracks hold a scene for minutes. Event-driven remedies NOT implemented: lower `T(age)`'s
       floor for scenes over ~32 bars, cut on a strong-but-below-T event on an old scene instead
       of a MICRO, more MICROs for medium events. Nothing here has been watched live.
+
+- [x] **F267 · First human ground truth: two tapped songs, and what they changed** —
+      *2026-09-26, user taps of "Floated By" (PCRC, 12 M + 5 N marks) and "HRT" (Girls Ritual,
+      5 M + 2 N marks) with `?structurelog`; instruction: "use my data as a reference, not a
+      hard set rule"* `src/audio/events/{EventLayer,changeScorer,eventMux,gapDrop,phrasePrior}.ts`,
+      `src/audio/structure/dropStateMachine.ts`, `src/audio/eval/{tapEval,tapDirector}.ts`,
+      `scripts/calibrate/tap-eval.calib.ts`
+
+      **n = 2 songs, 23 merged marks (16 M, 7 N): everything below is an indication, not a
+      validation.** The data was used to CHECK mechanisms, never as numbers to fit: nothing
+      derived from these two songs (no 21 s / 22 s period, no tempo, no per-song threshold, no
+      fixed human lag) is hard-coded; a tweak that helped only one song in the
+      leave-one-song-out check was not shipped.
+
+      **What the taps showed (measured).**
+      - *Human lag is small and varies per song:* tap minus audio onset (found in the log's
+        raw-dB cells) median +0.27 s on Floated By, -0.04 s on HRT (12 marks have no level/low/high
+        step at all). A fixed 0.5 s would over-correct HRT, so lag only sizes evaluation
+        windows.
+      - *Scene taps are very regular* (~21 s and ~22 s gaps: 8-bar phrases), but the detector
+        cannot yet use that: confirmed boundaries are too irregular to learn the period from
+        (a soft phrase-length prior, `phrasePrior.ts`, rescued 0 of 17 near-misses and is built
+        but NOT wired in).
+      - *Floated By's scene changes are drops after a bass/level dropout* (sub and level fall
+        ~10-30 dB for 4-8 s, then snap back at the tap). The legacy `f.drop` fires within
+        0.1-0.4 s of those taps, but ALSO fired 37 times in 277 s (12 scene taps), including a
+        cluster of 14 in 28 s in a pumping/sidechained passage.
+      - *In that log 8 of 12 scene commits fired on lone legacy drops:* a lone drop scored S
+        0.44, above the director's age-decayed floor of 0.30, so it acted like a timer, which is
+        why commits missed the taps.
+      - *HRT's changes are hi-hats/upper layers entering* (high band +8..+25 dB) with the
+        overall level barely moving. Legacy `sectionChange` fired 0.1-3.2 s after all 7 taps
+        (recall 94% within [-1.5,+4] s, precision 33%, 5.0 false alarms/min); v2 saw most changes
+        but typed the first hump `fill` and reported the `change` 2-4 s late.
+      - *No channel tells a small (N) tap from a big (M) one* (median score/threshold 0.56 vs
+        0.55), and nothing beats chance at N marks except legacy `sectionChange` (71% vs 64%), so
+        there is currently no basis for a "small change" event source: N marks got 0/7 cuts and
+        0/7 MICROs.
+
+      **What changed (v2 events, the default).**
+      1. *Fill vs change typing:* persistence was a ratio to a saturating peak, so a real change's
+         first hump read as a fill. A candidate is now a fill only if it also drops back under
+         0.8 of the threshold; ambiguous ones are held 2 beats and typed 4 beats after the peak
+         (0.8 is the smallest value that keeps 0/22 synthetic negatives). Taps: scene-class F1
+         unchanged; 98 real tracks: v2 F3 vs the whole-song reference 0.386 -> 0.409.
+      2. *Gap drop (`gapDrop.ts`, wired into the layer):* sub+bass at least 10 dB under its frozen
+         trailing median for >= 4 beats and >= 1.75 s, then whole again (within 6 dB), 6 s
+         refractory. On the taps: 6 drops, all near a mark, none on HRT (no drops there); on the
+         synthetic drops 2 of 4 (legacy 4 of 4), 0/22 negatives. Under `?events=v2` lone legacy
+         drops are now demoted (`MUX.legacyDrops = 'release'`: only drops the mapper graded as a
+         build/breakdown release still pass); `'all'` / `'none'` are one-line alternatives.
+      3. *`dropStateMachine.ts`:* 4 s refractory plus a repeat guard (each fire in the last 20 s
+         adds one dip-minimum to the next), to stop the pumping-cluster repeats. Not replayable on
+         the logs (no 60 Hz sub/bass/flux in them): verified by unit tests only.
+      4. *Tooling:* `tapEval.ts`, `tapDirector.ts` (the real `showDirector.step` over the logged
+         cells), `tap-eval.calib.ts` (`TAPLOG_DIR`, writes `corpus/structure/tap-eval.md`), with
+         leave-one-song-out and periodicity sections, ready for more songs.
+
+      **Result on the taps (director replay, 13 cuts, 1.75/min), scene taps cut within 4 s:**
+      v2 before 2/16 (cuts at a scene tap 17%), legacy events 4/16 (25%), v2 now 6/16 (46%); within
+      6 s 8/16 (62%). Small taps: 0/7.
+
+      **Regression gates held:** synthetic suite (v2 recall within +-1 bar 84%, 0.30 false
+      alarms/min, 0/22 events near negatives, identical fired set), legacy-event director replay on
+      98 tracks (identical: 1.84 cuts/min, 13.0 bars median), director-vs-silver with v2 (1.50 ->
+      1.37 cuts/min, median 11.6 bars, strong-boundary coverage 49 -> 55%, cuts within +-1 bar of a
+      boundary 13 -> 16%).
+
+      **Deliberately not changed (data did not support it):** the director; the phrase-periodicity
+      prior (built, not wired); build-hold (it blocked HRT's strongest change but that is one
+      song); breakdown cuts (2 of 3 breakdown CUTs sat at N marks; n=3); `MUX = 'none'` (better on
+      the taps but the synthetic build-then-drop needs the legacy drop); `fillRecentFrac` 0.3
+      (helped only Floated By, fails the synthetic negatives). `?events=legacy` and
+      `?director=legacy` untouched.
+
+      **More tapped songs would settle:** whether N and M differ in any channel; the gap-drop
+      constants (needs songs with drops other than Floated By); whether release-backed legacy drops
+      should be dropped entirely; whether breakdown starts should cut or hold; the fill-typing
+      threshold (0.3 vs 0.8); a real test of the phrase prior. **Nothing here has been watched live.**
