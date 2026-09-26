@@ -29,8 +29,19 @@ export interface PlanDiagnostics {
   tempo: { initialBpm: number; acf: number; confidence: number; candidates: Array<{ bpm: number; score: number; acf: number }> }
   /** Mean onset strength on tracked beats over the mean everywhere (1 = beats sit on no more onset than average). */
   beatOnsetRatio: number
+  /** No clear pulse (low tempo confidence and beats on no stronger onsets than elsewhere): drumless / ambient music.
+   *  The bar grid is then an arbitrary uniform grid and the events are low-trust. */
+  beatless: boolean
   /** Downbeat: confidence 0..1 of the chosen phase, per-phase scores, and how it was decided. */
-  downbeat: { confidence: number; scores: number[]; salienceConfidence: number; structureConfidence: number }
+  downbeat: {
+    confidence: number
+    scores: number[]
+    salienceConfidence: number
+    structureConfidence: number
+    alignmentConfidence: number
+    /** At least two of the three independent cues chose the reported phase. */
+    methodsAgree: boolean
+  }
   /** Boundary grid prior: dominant boundary position mod 4 bars and mod 8 bars (or -1 when there is none). */
   grid: { phase4: number; phase8: number; share4: number }
   /** Combined bar-boundary novelty (z-score) per boundary index `i` (between bar i-1 and bar i); index 0 is 0. */

@@ -8,11 +8,14 @@
  *     sub+bass and high-band energy, and log-mel spectral-flux onset envelopes (`dsp.ts`);
  *  2. tempo by autocorrelation of the onset envelope with a log-normal prior; Ellis dynamic-programming beat
  *     tracker; BPM re-derived from the tracked beats (`tempo.ts`);
- *  3. downbeat / bar phase from per-phase salience and structural change accumulated over the WHOLE song, with a
- *     confidence (`downbeat.ts`);
- *  4. bar-synchronous summaries, bar-level self-similarity, two-scale symmetric Foote novelty, adaptive peak
- *     picking with a soft 4/8-bar grid prior and an absolute distance floor (`structure.ts`);
- *  5. segments labelled by repetition (A B A ...), boundaries typed change | drop | buildStart | breakdown.
+ *  3. downbeat / bar phase from three cues accumulated over the WHOLE song (per-phase onset / harmony salience,
+ *     the boundary-structure vote, and how sharply bars cut at each phase resolve section steps), with a confidence
+ *     (`downbeat.ts`, `phaseAlignment` in `structure.ts`);
+ *  4. bar-synchronous summaries, bar-level self-similarity on mean-centred features (cosine), symmetric Foote
+ *     novelty at 2 / 4 / 8 bars each side (plus a chroma-only 8-bar harmony channel), adaptive peak picking with a
+ *     soft 4/8-bar grid prior, an absolute feature-shift floor and a dominance rule (`structure.ts`);
+ *  5. segments labelled by repetition (A B A ...), boundaries typed change | drop | buildStart | breakdown, and a
+ *     riser's internal steps merged into one build.
  *
  * `SongPlan.events` are `SectionEvent`s with `source: 'plan'`. A plan has no detection latency: `detectedAt*`
  * equals `boundary*` (the plan is known before playback); a consumer that cares about when the plan became
@@ -22,19 +25,21 @@
  */
 import type { SectionEvent } from '../events/types'
 import { aggregate, clamp } from './aggregate'
-import { decimate, extractFrames, onsetEnvelopes, toDb } from './dsp'
+import { decimate, extractFrames, MEL_BANDS, onsetEnvelopes, toDb } from './dsp'
 import { estimateDownbeat } from './downbeat'
-import { channelZ, computeNovelty, labelSegments, mergeBuilds, pickPeaks, typeBoundary, type Peak } from './structure'
+import { channelZ, computeNovelty, labelSegments, mergeBuilds, phaseAlignment, pickPeaks, typeBoundary, type Peak } from './structure'
 import { estimateTempo, foldPeriod, meanBeatPeriod, trackBeats } from './tempo'
 import type { AnalyzeOptions, PlanSegment, SongPlan } from './types'
 import { featureVectors, VEC_DIM } from './vectors'
-import { MEL_BANDS } from './dsp'
 
 export type { AnalyzeOptions, PlanDiagnostics, PlanSegment, SongPlan } from './types'
 
-/** Seconds subtracted from every frame-derived time (systematic STFT-flux delay; measured on the synthetic suite). */
-const FRAME_TIME_OFFSET_SEC = 0
-
+/**
+ * Weight of the bass-band onset envelope next to the broadband one for tempo / beat tracking. Kicks must outvote
+ * off-beat hats when the two compete for the beat (a 1.0 weight still tracked the hats in one synthetic song).
+ * Beat times are the frame-centre times of the flux peaks; measured on the synthetic suite they sit a median 1-11 ms
+ * EARLY of the true beat, far inside any tolerance, so no correction is applied.
+ */
 const LOW_ONSET_WEIGHT = 1.5
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
@@ -55,7 +60,8 @@ function emptyPlan(durationSec: number, sr: number, fps: number, nFrames: number
       nBars: 0,
       tempo: { initialBpm: 0, acf: 0, confidence: 0, candidates: [] },
       beatOnsetRatio: 0,
-      downbeat: { confidence: 0, scores: [0, 0, 0, 0], salienceConfidence: 0, structureConfidence: 0 },
+      beatless: false,
+      downbeat: { confidence: 0, scores: [0, 0, 0, 0], salienceConfidence: 0, structureConfidence: 0, alignmentConfidence: 0, methodsAgree: false },
       grid: { phase4: -1, phase8: -1, share4: 0 },
       novelty: [],
       distance: [],
@@ -99,14 +105,14 @@ export function analyzeSong(pcm: Float32Array, sampleRate: number, opts: Analyze
     p.diagnostics.tempo = { initialBpm: tempo.bpm, acf: tempo.acf, confidence: tempo.confidence, candidates: tempo.candidates }
     return p
   }
-  const beats = beatFrames.map((f) => f * frames.hopSec - FRAME_TIME_OFFSET_SEC)
+  const beats = beatFrames.map((f) => f * frames.hopSec)
   const period = meanBeatPeriod(beats)
   const bpm = period > 0 ? 60 / period : tempo.bpm
 
   // ---- downbeat ------------------------------------------------------------------------------------
   const beatAgg = aggregate(frames, env, beatFrames)
   const beatVec = featureVectors(beatAgg)
-  const down = estimateDownbeat(beatFrames, env, beatAgg, beatVec)
+  const down = estimateDownbeat(beatFrames, env, beatAgg, beatVec, phaseAlignment(frames, env, beatFrames))
   const phase = down.phase
   const nBars = Math.floor((beats.length - 1 - phase) / 4)
   const bars: number[] = []
@@ -128,10 +134,12 @@ export function analyzeSong(pcm: Float32Array, sampleRate: number, opts: Analyze
   const { vecMain, chromaVec } = splitChannels(vec, nBars)
   const minSpacing = opts.minSectionBars ?? 4
   const floor = opts.distanceFloor ?? 1.6
+  const beatless = tempo.confidence < 0.3 && track.onsetRatio < 3.5
   const nov = computeNovelty(vecMain, chromaVec, nBars, {
     distanceFloor: floor,
     harmonyFloor: opts.harmonyFloor ?? 1.5,
     stepRatio: 0.5,
+    beatless,
   })
   const picked = pickPeaks(nov, nBars, { minSpacing, threshold: opts.peakThreshold ?? 2.5, dominance: 0.4 })
   const { grid, rejectedByFloor } = picked
@@ -142,7 +150,6 @@ export function analyzeSong(pcm: Float32Array, sampleRate: number, opts: Analyze
 
   // ---- segments, labels, events ------------------------------------------------------------------------
   const bounds = [0, ...peaks.map((p) => p.bar), nBars]
-  ;(globalThis as Record<string, unknown>).__planDebug = { vec, vecMain, chromaVec, bar, nBars, nov, bounds } // TEMP-DEBUG
   const labels = labelSegments(vec, bounds, 0.75, 1.5 * floor)
   const barTime = (k: number) => bars[Math.min(bars.length - 1, k)]
   const segments: PlanSegment[] = []
@@ -206,11 +213,14 @@ export function analyzeSong(pcm: Float32Array, sampleRate: number, opts: Analyze
       nBars,
       tempo: { initialBpm: tempo.bpm, acf: tempo.acf, confidence: tempo.confidence, candidates: tempo.candidates },
       beatOnsetRatio: track.onsetRatio,
+      beatless,
       downbeat: {
         confidence: down.confidence,
         scores: down.scores,
         salienceConfidence: down.salienceConfidence,
         structureConfidence: down.structureConfidence,
+        alignmentConfidence: down.alignmentConfidence,
+        methodsAgree: down.methodsAgree,
       },
       grid,
       novelty: Array.from(nov.z, round),

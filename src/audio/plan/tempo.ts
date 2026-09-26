@@ -82,14 +82,12 @@ export function estimateTempo(onset: Float32Array | Float64Array, fps: number, o
     const f = l - i
     return at(i) * (1 - f) + at(i + 1) * f
   }
-  const lags: number[] = []
   const score = new Float64Array(maxLag + 2)
   for (let l = minLag; l <= maxLag + 1; l++) {
     const bpm = (fps * 60) / l
     const enh = at(l) + 0.5 * atf(2 * l) + 0.25 * atf(4 * l)
     const prior = Math.exp(-0.5 * Math.pow(Math.log2(bpm / priorBpm) / priorOct, 2))
     score[l] = enh * prior
-    lags.push(l)
   }
   // peaks
   const peaks: number[] = []

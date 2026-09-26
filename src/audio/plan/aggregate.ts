@@ -158,25 +158,3 @@ export function meanRange(y: ArrayLike<number>, from: number, to: number): numbe
   for (let i = a; i < b; i++) s += y[i]
   return b > a ? s / (b - a) : 0
 }
-
-/**
- * Replace each segment's chroma with the L2-normalised mean over the `radius` segments either side (a boxcar of
- * `2 * radius` centred on it). Harmony is judged over a whole progression: a 1-bar or 2-bar chord cycle would
- * otherwise show up as a periodic ripple of "change" at every bar. The window is symmetric, so a real key or
- * chord-set change still peaks at its true position.
- */
-export function smoothChroma(a: Agg, radius: number): void {
-  const n = a.n
-  const src = Float32Array.from(a.chroma)
-  const tmp = new Float64Array(12)
-  for (let k = 0; k < n; k++) {
-    tmp.fill(0)
-    const lo = Math.max(0, k - radius)
-    const hi = Math.min(n, k + radius)
-    for (let j = lo; j < hi; j++) for (let p = 0; p < 12; p++) tmp[p] += src[j * 12 + p]
-    let nrm = 0
-    for (let p = 0; p < 12; p++) nrm += tmp[p] * tmp[p]
-    nrm = Math.sqrt(nrm)
-    for (let p = 0; p < 12; p++) a.chroma[k * 12 + p] = nrm > 1e-6 ? tmp[p] / nrm : 0
-  }
-}

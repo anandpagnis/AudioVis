@@ -11,10 +11,11 @@
  * floor on the shift across a boundary rejects fills, gain steps and noise while a real change (bass drop-out, a
  * new mix, a key change) clears it by a wide margin.
  */
-import { meanRange, median, robustZ, slope, clamp, type Agg } from './aggregate'
-import { MEL_BANDS } from './dsp'
-import { VEC_DIM } from './vectors'
 import type { EventFeats } from '../events/types'
+import { aggregate, clamp, meanRange, median, robustZ, slope, type Agg, type Envelopes } from './aggregate'
+import type { PhaseAlignment } from './downbeat'
+import { MEL_BANDS, type FrameFeatures } from './dsp'
+import { featureVectors, VEC_DIM } from './vectors'
 
 export interface Peak {
   /** Boundary index: between bar `bar - 1` and bar `bar`. */
@@ -130,6 +131,12 @@ export interface NoveltyOptions {
   harmonyFloor: number
   /** A step keeps its 2-bar shift at least this share of its 4/8-bar shift; a linear ramp's is 25-50%. */
   stepRatio: number
+  /**
+   * The beat grid carries no rhythm (drumless / ambient music): bars are arbitrary units, and in sparse tonal
+   * textures every chord change is as large a timbre change as a section change. Judge the main channel on the
+   * long (8-bar) kernel only.
+   */
+  beatless?: boolean
 }
 
 export interface NoveltyResult {
@@ -168,12 +175,12 @@ export function computeNovelty(vecMain: Float32Array, chromaVec: Float32Array, n
   const dist = new Float64Array(n)
   for (let i = 1; i < n; i++) {
     const persist = Math.max(z4[i], 0.9 * z8[i])
-    const main = Math.sqrt(Math.max(0, z2[i]) * Math.max(0, persist))
-    const harm = 0.8 * Math.max(0, zh[i])
+    const main = opts.beatless ? 0.9 * Math.max(0, z8[i]) : Math.sqrt(Math.max(0, z2[i]) * Math.max(0, persist))
+    const harm = (opts.beatless ? 1 : 0.8) * Math.max(0, zh[i])
     const dm = Math.max(d4[i], d8[i])
     dist[i] = Math.max(dm, dh[i])
     zRaw[i] = Math.max(main, harm)
-    const mainOk = dm >= opts.distanceFloor && d2[i] >= opts.stepRatio * dm
+    const mainOk = dm >= opts.distanceFloor && (opts.beatless || d2[i] >= opts.stepRatio * dm)
     // full 8-bar kernel only: a truncated window at either end of the song is dominated by its first / last bars
     const harmOk = dh[i] >= opts.harmonyFloor && i >= 8 && n - i >= 8
     z[i] = Math.max(mainOk ? main : 0, harmOk ? harm : 0)
@@ -229,8 +236,11 @@ export function pickPeaks(nov: NoveltyResult, n: number, opts: PeakOptions): { p
     }
   }
   const prior = (i: number) => 1 + (grid.phase4 >= 0 && i % 4 === grid.phase4 ? 0.25 : 0) + (grid.phase8 >= 0 && i % 8 === grid.phase8 ? 0.12 : 0)
-  const score = (i: number) => z[i] * prior(i)
-  const cand = localMaxima(z, n, 0, opts.minSpacing).filter((i) => score(i) >= opts.threshold)
+  // the soft grid prior enters BEFORE the local-maximum test, so a boundary that jitters by a bar between two
+  // near-equal novelty values lands on the grid, while a clearly stronger off-grid peak still wins
+  const scoreArr = Float64Array.from(z, (v, i) => v * prior(i))
+  const score = (i: number) => scoreArr[i]
+  const cand = localMaxima(scoreArr, n, opts.threshold, opts.minSpacing)
   // gated-out local maxima that would otherwise have passed: fills, volume steps, ramps, noise
   let rejected = 0
   for (const i of localMaxima(zRaw, n, opts.threshold, opts.minSpacing)) if (z[i] < opts.threshold) rejected++
@@ -344,7 +354,7 @@ export interface Typing {
 /** A stretch whose level and high band (or onset density) climb: a riser / build. */
 export function segmentRising(a: Agg, from: number, to: number): boolean {
   if (to - from < 3) return false
-  return slope(a.levelDb, from, to) >= 0.25 && (slope(a.highDb, from, to) >= 0.3 || slope(a.flux, from, to) >= 0.03)
+  return slope(a.levelDb, from, to) >= 0.2 && (slope(a.highDb, from, to) >= 0.3 || slope(a.flux, from, to) >= 0.03)
 }
 
 /**
@@ -390,7 +400,8 @@ export function mergeBuilds(a: Agg, bounds: number[]): number[] {
     changed = false
     for (let k = 1; k + 1 < out.length; k++) {
       const i = out[k]
-      if (!segmentRising(a, out[k - 1], i) || !segmentRising(a, i, out[k + 1])) continue
+      // judge each side on up to 8 bars next to the boundary (a long flat section after the build must not hide it)
+      if (!segmentRising(a, Math.max(out[k - 1], i - 8), i) || !segmentRising(a, i, Math.min(out[k + 1], i + 8))) continue
       const dLow = meanRange(a.lowDb, i, i + 2) - meanRange(a.lowDb, i - 2, i)
       if (dLow >= 6) continue
       out.splice(k, 1)
@@ -432,3 +443,32 @@ export function channelZ(vec: Float32Array, a: Agg, n: number, boundaries: numbe
   }))
 }
 
+
+/**
+ * How well bars cut at each of the four phases resolve section steps. For phase p the bar summaries are rebuilt and
+ * the mean height of the 8 strongest, well-spaced 2-bar feature steps (timbre / rhythm / bass channel) is taken:
+ * bars that straddle a boundary smear it over two bars, so the true phase scores highest (25% higher on the
+ * synthetic suite; a few percent on real music, hence the modest confidence). Cheap: four bar aggregations.
+ */
+export function phaseAlignment(frames: FrameFeatures, env: Envelopes, beatFrames: number[]): PhaseAlignment {
+  const scores: number[] = []
+  for (let p = 0; p < 4; p++) {
+    const n = Math.floor((beatFrames.length - 1 - p) / 4)
+    if (n < 12) {
+      scores.push(0)
+      continue
+    }
+    const edges: number[] = []
+    for (let k = 0; k <= n; k++) edges.push(beatFrames[p + 4 * k])
+    const vec = featureVectors(aggregate(frames, env, edges))
+    for (let k = 0; k < n; k++) for (let j = MEL_BANDS; j < MEL_BANDS + 12; j++) vec[k * VEC_DIM + j] = 0
+    const d2 = windowDistance(vec, n, 2)
+    const idx: number[] = []
+    for (let i = 3; i <= n - 3; i++) if (d2[i] >= d2[i - 1] && d2[i] > d2[i + 1]) idx.push(i)
+    const kept = suppress(idx, (i) => d2[i], 4).sort((a, b) => d2[b] - d2[a]).slice(0, 8)
+    scores.push(kept.length ? kept.reduce((t, i) => t + d2[i], 0) / kept.length : 0)
+  }
+  const sorted = [...scores].sort((a, b) => b - a)
+  const margin = sorted[1] > 1e-9 ? sorted[0] / sorted[1] : 1
+  return { scores, confidence: clamp((margin - 1.02) / 0.08, 0, 1) }
+}

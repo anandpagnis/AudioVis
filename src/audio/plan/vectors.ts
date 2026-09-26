@@ -37,18 +37,6 @@ export function featureVectors(a: Agg): Float32Array {
   return out
 }
 
-/** Euclidean distance between two vectors in a flat array. */
-export function vecDist(v: ArrayLike<number>, a: number, b: number): number {
-  let s = 0
-  const oa = a * VEC_DIM
-  const ob = b * VEC_DIM
-  for (let d = 0; d < VEC_DIM; d++) {
-    const x = v[oa + d] - v[ob + d]
-    s += x * x
-  }
-  return Math.sqrt(s)
-}
-
 /** Mean vector of rows `[from, to)`. */
 export function meanVec(v: ArrayLike<number>, from: number, to: number, out: Float64Array): void {
   out.fill(0)
