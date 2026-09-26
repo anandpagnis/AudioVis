@@ -657,7 +657,10 @@ export function AutoPilot() {
       f.structureValid && f.songSection.boundaryChanged && !f.songSection.isBuild
     if (
       (DIRECTOR_ON ? showRuntime.palette : target !== null || f.sectionChange || structureRecolour) &&
-      f.time - lastPaletteAt.current >= PALETTE_MIN_SEC
+      // The wall-clock floor belongs to the legacy triggers (the old phrase detector fired every ~4 s). Under the show
+      // director it only DROPPED real reactions (a colour request 8 s after the last one was refused, not delayed); the
+      // director already spaces its own tweaks in bars and only produces events for real changes.
+      (DIRECTOR_ON || f.time - lastPaletteAt.current >= PALETTE_MIN_SEC)
     ) {
       // Excluding what is already showing is the actual fix for "colours never
       // change": the old guard only acted when the current palette was absent
@@ -734,7 +737,7 @@ export function AutoPilot() {
       target === null &&
       (!s.pendingSceneId || (DIRECTOR_ON && s.pendingSceneId === s.heldSceneId)) &&
       (DIRECTOR_ON ? showRuntime.mode : f.sectionChange || structureRecolour) &&
-      f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC
+      (DIRECTOR_ON || f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC) // legacy-only floor, see the palette gate above
     ) {
       const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++, sceneLook)
       if (mode) {
