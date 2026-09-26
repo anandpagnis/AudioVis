@@ -143,3 +143,52 @@ describe('hotkey gate: finish needs two presses of e', () => {
     expect(g.handle(key('e'), 1600).action).toBe('finish')
   })
 })
+
+describe('hotkey gate: small mark (n)', () => {
+  it('maps n and N to markSmall, never preventing default', () => {
+    const g = createHotkeyGate()
+    expect(g.handle(key('n'), 1000)).toEqual({ action: 'markSmall', preventDefault: false })
+    expect(g.handle(key('N'), 2000)).toEqual({ action: 'markSmall', preventDefault: false })
+  })
+
+  it('debounces markSmall from the last accepted one', () => {
+    const g = createHotkeyGate()
+    expect(g.handle(key('n'), 1000).action).toBe('markSmall')
+    expect(g.handle(key('n'), 1000 + DEBOUNCE_MS - 1).action).toBeNull()
+    expect(g.handle(key('N'), 1000 + DEBOUNCE_MS).action).toBe('markSmall')
+  })
+
+  it('tracks the debounce PER KIND: m then n (and n then m) within the window are both accepted', () => {
+    const g = createHotkeyGate()
+    expect(g.handle(key('m'), 1000).action).toBe('mark')
+    expect(g.handle(key('n'), 1010).action).toBe('markSmall')
+    expect(g.handle(key(' '), 1020).action).toBeNull() // a second BIG within its own window is still dropped
+    expect(g.handle(key('n'), 1030).action).toBeNull() // and so is a second SMALL
+    expect(g.handle(key('u'), 1040).action).toBe('undo')
+    const h = createHotkeyGate()
+    expect(h.handle(key('n'), 0).action).toBe('markSmall')
+    expect(h.handle(key('m'), 5).action).toBe('mark')
+  })
+
+  it('ignores repeat, modifiers, composition and typing targets, and a refused press does not start the debounce', () => {
+    const g = createHotkeyGate()
+    expect(g.handle(key('n', { repeat: true }), 1000)).toEqual({ action: null, preventDefault: false })
+    for (const mod of ['ctrlKey', 'metaKey', 'altKey', 'shiftKey']) {
+      expect(g.handle(key('n', { [mod]: true }), 1000)).toEqual({ action: null, preventDefault: false })
+    }
+    expect(g.handle(key('n', { isComposing: true }), 1000).action).toBeNull()
+    expect(g.handle(key('n', { target: { tagName: 'INPUT' } }), 1000).action).toBeNull()
+    expect(g.handle(key('N', { target: { tagName: 'TEXTAREA' } }), 1000).action).toBeNull()
+    expect(g.handle(key('n', { target: { tagName: 'DIV' } }), 1001).action).toBe('markSmall')
+  })
+
+  it('does not disturb m / u / e: the finish arm survives an n, and reset() clears the small debounce', () => {
+    const g = createHotkeyGate()
+    g.handle(key('e'), 1000)
+    expect(g.handle(key('n'), 1200).action).toBe('markSmall')
+    expect(g.handle(key('e'), 1600).action).toBe('finish')
+    g.handle(key('n'), 5000)
+    g.reset()
+    expect(g.handle(key('n'), 5001).action).toBe('markSmall')
+  })
+})

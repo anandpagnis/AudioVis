@@ -1,8 +1,10 @@
 /**
  * Structure / event recorder (`?structurelog`): the ONLY human ground truth for tuning the section-change engine.
  *
- * The user plays a song, taps a key at every REAL section change ({@link StructureLog.mark}), and this records
- * those taps next to everything the detectors thought and every scene change, all stamped on the AUDIO clock
+ * The user plays a song, taps a key at every REAL section change ({@link StructureLog.mark}, `M` / Space = a BIG
+ * change worth a new scene, kind `scene`) and at every SMALL change where colours or post-FX / layers / effects
+ * should react but no new scene is wanted ({@link StructureLog.markSmall}, `N`, kind `small`; these match the show
+ * director's two outputs CUT and MICRO). This records those taps next to everything the detectors thought and every scene change, all stamped on the AUDIO clock
  * (`features.time`, the AudioContext clock while a source runs), so a later harness can score the detectors
  * against the taps. The plan is `so-the-mood-analysis-lively-hickey.md`, Phase 0A.
  *
@@ -12,7 +14,11 @@
  *
  * ## What is recorded (EDGES only, never per-frame data)
  *
- *  - `marks`    the human taps (`mark`), sorted by audio time. Each carries the beat position and bpm at the tap.
+ *  - `marks`    the human taps (`mark` / `markSmall`), sorted by audio time. Each carries its `kind` (`scene` | `small`),
+ *               the beat position and bpm at the tap. Example (schema v2):
+ *               `{"id":3,"kind":"small","t":45.05,"beat":70,"beatInBar":2,"beatProgress":0.1,"bpm":120,"wallMs":1234.5}`
+ *               Version 1 logs have no `kind`: readers treat such a mark as `scene`. Undo removes the most recently
+ *               ADDED mark of either kind.
  *  - `events`   one record per detector edge: `sectionChange` (+ strength), `songSection` value changes,
  *               `boundary` (`boundaryChanged`), `drop`, `buildUp` / `isBuild` / `isDrop` / `isBreakdown` /
  *               `dropExpected` / `silence` (level flags: BOTH edges, `on`), `mood`, `character` (primary change),
@@ -22,6 +28,11 @@
  *               reason. The show director calls `noteCommit(trigger, detail)`; until then it is `unknown`.
  *  - `samples`  a coarse 1 Hz sample (energy, loudness, LUFS, bpm, confidence) so the plots can be rebuilt.
  *  - `beats`    `[beatIndex, t]` per beat, so marks can be snapped to the real beat grid.
+ *  - `cells`    (ADDITIVE, schema v2) the per-beat feature cell the live event layer consumes, QUANTISED to 4
+ *               significant digits, so a retuned detector can be replayed on a tapped song WITHOUT its audio
+ *               (Spotify / YouTube system capture has no file): see {@link StructureLogCell} and
+ *               `audio/eval/logCells.ts` (turns them back into `eventReplay.replayCells` input). About 300 bytes a
+ *               beat: 35 KB per minute at 120 bpm. Fed by {@link StructureLog.noteCell}.
  *
  * Memory is bounded: every list is a ring with a cap and a `dropped` counter (oldest goes first). A held flag
  * records ONE edge, and a frame with no edge allocates nothing.
@@ -34,7 +45,8 @@
  * still be downloaded.
  */
 
-export const STRUCTURE_LOG_VERSION = 1
+/** 2: marks carry `kind` (`scene` | `small`) and the counters split by kind. Version 1 logs are still readable. */
+export const STRUCTURE_LOG_VERSION = 2
 export const STRUCTURE_LOG_SCHEMA = 'audiovis.structurelog'
 
 export type StructureLogSource = 'system' | 'mic' | 'file' | 'unknown'
@@ -69,6 +81,7 @@ export const STRUCTURE_LOG_CAPS = {
   commits: 2_000,
   samples: 7_200, // 2 h at 1 Hz
   beats: 30_000,
+  cells: 30_000,
   marks: 5_000,
   archive: 5,
 } as const
@@ -138,9 +151,13 @@ export interface StructureLogStoreSnapshot {
 
 // -------------------------------------------------------------------------------------------- output shapes
 
+export type StructureLogMarkKind = 'scene' | 'small'
+
 export interface StructureLogMark {
   /** Creation order (stable across the time-sorted list and across undo). */
   id: number
+  /** `scene` = a BIG change (M / Space); `small` = colours / effects should react, no new scene (N). */
+  kind: StructureLogMarkKind
   /** Audio-clock seconds of the tap (`features.time`). */
   t: number
   /** `beatIndex` in force at the tap. */
@@ -151,6 +168,55 @@ export interface StructureLogMark {
   bpm: number
   wallMs: number
   note?: string
+}
+
+/** Flat layout of {@link StructureLogCell.cell} (version 1): raw dB [sub, bass, mid, presence, high, air, rms] (7), the 13
+ * log-mel values (`BeatCell.mfcc`), the 12 chroma bins (`BeatCell.hpcp`), then onsetDensity, flatness, centroid, silent. */
+export const CELL_RAW_N = 7
+export const CELL_MEL_N = 13
+export const CELL_CHROMA_N = 12
+export const CELL_LEN = CELL_RAW_N + CELL_MEL_N + CELL_CHROMA_N + 4
+export const STRUCTURE_LOG_CELL_LAYOUT = 'raw7,mel13,chroma12,onset,flatness,centroid,silent'
+
+/** The slice of a `BeatCell` (`audio/essentia/structureDsp.ts`) the recorder reads. Structural: no audio import. */
+export interface StructureLogCellInput {
+  hpcp: ArrayLike<number>
+  mfcc: ArrayLike<number>
+  logRms: number
+  centroid: number
+  flatness: number
+  air: number
+  sub: number
+  bass: number
+  mid: number
+  high: number
+  onsetDensity: number
+  raw?: ArrayLike<number>
+  silent?: number
+}
+
+/** The slice of `AudioFeatures` `noteCell` reads (the frame that closed the beat). */
+export interface StructureLogCellFrame {
+  beatIndex: number
+  beatInBar: number
+  time: number
+  bpm: number
+  downbeatLocked: boolean
+}
+
+/** One beat cell as the event layer received it, quantised (see {@link StructureLog.noteCell}). */
+export interface StructureLogCell {
+  beat: number
+  t: number
+  bpm: number
+  /** Downbeat estimator lock at that beat (the event layer's grid hint). */
+  locked: boolean
+  /** `(beat - beatInBar) mod 4`: bar lines are the beats with `(beat - offset) % 4 === 0`. */
+  offset: number
+  /** Flat feature list, layout {@link STRUCTURE_LOG_CELL_LAYOUT} ({@link CELL_LEN} numbers). */
+  cell: number[]
+  /** Present only when the cell had no raw dB tap: `[logRms, sub, bass, mid, high, air]` (and `cell[0..6]` are 0). */
+  fb?: number[]
 }
 
 export interface StructureLogEvent {
@@ -207,7 +273,10 @@ export interface StructureLogBpmSummary {
 
 export interface StructureLogCounters {
   frames: number
+  /** All marks currently held (both kinds). */
   marks: number
+  sceneMarks: number
+  smallMarks: number
   undoneMarks: number
   commits: number
   events: Record<StructureLogEventKind, number>
@@ -215,6 +284,9 @@ export interface StructureLogCounters {
   droppedCommits: number
   droppedSamples: number
   droppedBeats: number
+  droppedCells: number
+  /** Cells held for this track (after cap drops). */
+  cells: number
   droppedMarks: number
   nonFinite: number
   resets: number
@@ -243,6 +315,10 @@ export interface StructureLogJson {
   samples: StructureLogSample[]
   /** `[beatIndex, t]` pairs. */
   beats: Array<[number, number]>
+  /** ADDITIVE (v2): per-beat feature cells for offline replay of the event layer. Absent in older logs. */
+  cells?: StructureLogCell[]
+  /** {@link STRUCTURE_LOG_CELL_LAYOUT} when `cells` is present. */
+  cellLayout?: string
   counters: StructureLogCounters
 }
 
@@ -258,8 +334,11 @@ export interface StructureLogSummary {
   running: boolean
   source: StructureLogSource
   trackHint: string
+  /** All marks (both kinds). */
   marks: number
-  lastMark: { t: number; beat: number } | null
+  sceneMarks: number
+  smallMarks: number
+  lastMark: { t: number; beat: number; kind: StructureLogMarkKind } | null
   eventCounts: Record<StructureLogEventKind, number>
   section: string
   sectionConfidence: number
@@ -287,6 +366,11 @@ function fin(x: unknown, fallback: number): number {
 /** Rounded for the file (never NaN / Infinity, which JSON would turn into null). */
 function r3(x: number): number {
   return Number.isFinite(x) ? Math.round(x * 1000) / 1000 : 0
+}
+
+/** 4 significant digits (never NaN / Infinity): the file-size / fidelity trade of the recorded cells. */
+function q4(x: unknown): number {
+  return typeof x === 'number' && Number.isFinite(x) ? Number(x.toPrecision(4)) : 0
 }
 
 function toSource(v: string | null | undefined): StructureLogSource {
@@ -375,7 +459,7 @@ export function structureLogFileName(trackHint: string | undefined, startedAtIso
 export function stringifyStructureLog(json: StructureLogJson): string {
   const list = (a: readonly unknown[]): string =>
     a.length === 0 ? '[]' : `[\n${a.map((x) => `    ${JSON.stringify(x)}`).join(',\n')}\n  ]`
-  const { marks, events, commits, samples, beats, counters, ...head } = json
+  const { marks, events, commits, samples, beats, cells, counters, ...head } = json
   const headText = JSON.stringify(head, null, 2).slice(0, -2) // drop the closing "\n}"
   return (
     `${headText},\n` +
@@ -384,9 +468,14 @@ export function stringifyStructureLog(json: StructureLogJson): string {
     `  "commits": ${list(commits)},\n` +
     `  "samples": ${list(samples)},\n` +
     `  "beats": ${list(beats)},\n` +
+    (cells === undefined ? '' : `  "cells": ${list(cells)},\n`) +
     `  "counters": ${JSON.stringify(counters)}\n}\n`
   )
 }
+
+/** The on-screen key hint (the overlay's first line of instructions). */
+export const STRUCTURE_LOG_HINT =
+  'M / Space = BIG change (new scene)  |  N = SMALL change (colour / effects)  |  U undo  |  E, E save'
 
 const MMSS = (sec: number): string => {
   const s = Math.max(0, sec)
@@ -418,9 +507,9 @@ export function formatStructureLogHud(sum: StructureLogSummary): string[] {
   if (sum.running) lines.push(`t ${MMSS(sum.t)}  beat ${sum.beat}`)
   else if (sum.marks > 0) lines.push('SOURCE STOPPED. Press E, E to save this track.')
   else lines.push('waiting for a running audio source...')
-  lines.push('M / Space = MARK a section change    U = undo    E, E = finish + save')
-  const last = sum.lastMark ? `${MMSS(sum.lastMark.t)} (beat ${sum.lastMark.beat})` : '-'
-  lines.push(`MARKS ${sum.marks}   last ${last}`)
+  lines.push(STRUCTURE_LOG_HINT)
+  const last = sum.lastMark ? `${MMSS(sum.lastMark.t)} (beat ${sum.lastMark.beat}, ${sum.lastMark.kind})` : '-'
+  lines.push(`MARKS scene ${sum.sceneMarks}  small ${sum.smallMarks}   last ${last}`)
   const ev = EVENT_SHORT.map(([k, s]) => `${s} ${sum.eventCounts[k]}`).join('  ')
   lines.push(ev)
   const valid = sum.structureValid ? 'valid' : 'not valid'
@@ -441,6 +530,8 @@ export function formatStructureLogHud(sum: StructureLogSummary): string[] {
 
 // ------------------------------------------------------------------------------------------------- the log
 
+type CapKey = 'events' | 'commits' | 'samples' | 'beats' | 'cells' | 'marks' | 'archive'
+
 export interface StructureLogOptions {
   /** Wall clock in ms. Default `performance.now()`. */
   now?: () => number
@@ -449,7 +540,7 @@ export interface StructureLogOptions {
   userAgent?: string
   /** Default true. The module singleton starts disabled and is switched on by the overlay. */
   enabled?: boolean
-  caps?: Partial<Record<'events' | 'commits' | 'samples' | 'beats' | 'marks' | 'archive', number>>
+  caps?: Partial<Record<CapKey, number>>
 }
 
 // Indices into the previous-flag table (`Uint8Array`, so the per-frame path allocates nothing).
@@ -479,7 +570,7 @@ export class StructureLog {
   private readonly clock: () => number
   private readonly isoNow: () => string
   private readonly userAgent: string | undefined
-  private readonly caps: Record<'events' | 'commits' | 'samples' | 'beats' | 'marks' | 'archive', number>
+  private readonly caps: Record<CapKey, number>
 
   // ---- the current track's records
   private marks: StructureLogMark[] = []
@@ -490,6 +581,7 @@ export class StructureLog {
   private readonly commits: Ring<StructureLogCommit>
   private readonly samples: Ring<StructureLogSample>
   private readonly beats: Ring<[number, number]>
+  private readonly cells: Ring<StructureLogCell>
   private eventCounts = emptyEventCounts()
   private commitCount = 0
   private tempoReadings: number[] = []
@@ -557,18 +649,31 @@ export class StructureLog {
     this.commits = new Ring(this.caps.commits)
     this.samples = new Ring(this.caps.samples)
     this.beats = new Ring(this.caps.beats)
+    this.cells = new Ring(this.caps.cells)
     this.startedAtIso = this.isoNow()
   }
 
   // ------------------------------------------------------------------------------------------- human input
 
   /**
-   * A human tap: "a real section change is happening about now". `t` is the audio-clock time (`features.time`)
+   * A human tap of kind `scene` (M / Space): "a real section change is happening about now". `t` is the audio-clock time (`features.time`)
    * and `beat` the `beatIndex` in force. Beat-in-bar, beat progress and bpm come from the last observed frame.
    * Marks are kept sorted by `t` (a late out-of-order mark is inserted, not appended). Returns the mark, or null
    * for a non-finite `t` (counted) or a disabled log.
    */
   mark(t: number, beat: number, note?: string): StructureLogMark | null {
+    return this.addMark('scene', t, beat, note)
+  }
+
+  /**
+   * A human tap of kind `small` (N): "colours / post-FX / layers / effects should react now, but this is NOT a new
+   * scene". Same stamping and ordering as {@link mark}.
+   */
+  markSmall(t: number, beat: number, note?: string): StructureLogMark | null {
+    return this.addMark('small', t, beat, note)
+  }
+
+  private addMark(kind: StructureLogMarkKind, t: number, beat: number, note?: string): StructureLogMark | null {
     if (!this.enabled) return null
     if (typeof t !== 'number' || !Number.isFinite(t)) {
       this.nonFinite++
@@ -576,6 +681,7 @@ export class StructureLog {
     }
     const m: StructureLogMark = {
       id: ++this.markSeq,
+      kind,
       t: r3(t),
       beat: Math.trunc(fin(beat, this.curBeat)),
       beatInBar: this.curBib,
@@ -595,7 +701,7 @@ export class StructureLog {
     return m
   }
 
-  /** Remove the most recently CREATED mark (a mis-tap). Returns it, or null when there is none. */
+  /** Remove the most recently CREATED mark of either kind (a mis-tap). Returns it, or null when there is none. */
   undoLastMark(): StructureLogMark | null {
     if (this.marks.length === 0) return null
     let idx = 0
@@ -604,6 +710,12 @@ export class StructureLog {
     this.undone++
     this.currentExported = false
     return removed
+  }
+
+  private countKind(kind: StructureLogMarkKind): number {
+    let n = 0
+    for (const m of this.marks) if (m.kind === kind) n++
+    return n
   }
 
   /** Name the current track (shown in the file and its file name). */
@@ -684,6 +796,44 @@ export class StructureLog {
     if (extra.decision !== undefined) data.decision = extra.decision
     if (extra.shadow) data.shadow = true
     this.emit('sectionEvent', data)
+  }
+
+  // ------------------------------------------------------------------------------------------- beat cells
+
+  /**
+   * One freshly folded per-beat feature cell (the `StructureAnalyzer.onCell` hook, once per beat), recorded quantised so
+   * the event layer can be replayed offline from the log alone. `f` is the frame that closed the beat. A no-op unless the
+   * log is enabled (`?structurelog`); costs one small array per BEAT, nothing per frame. Bounded (`caps.cells`, oldest
+   * dropped and counted). A cell whose beat / time is not finite is skipped (counted in `nonFinite`).
+   */
+  noteCell(c: StructureLogCellInput, f: StructureLogCellFrame): void {
+    if (!this.enabled) return
+    if (!Number.isFinite(f.beatIndex) || !Number.isFinite(f.time)) {
+      this.nonFinite++
+      return
+    }
+    const v = new Array<number>(CELL_LEN)
+    const raw = c.raw
+    const hasRaw = raw !== undefined && raw.length >= CELL_RAW_N
+    let k = 0
+    for (let i = 0; i < CELL_RAW_N; i++) v[k++] = hasRaw ? q4(raw[i]) : 0
+    for (let i = 0; i < CELL_MEL_N; i++) v[k++] = i < c.mfcc.length ? q4(c.mfcc[i]) : 0
+    for (let i = 0; i < CELL_CHROMA_N; i++) v[k++] = i < c.hpcp.length ? q4(c.hpcp[i]) : 0
+    v[k++] = q4(c.onsetDensity)
+    v[k++] = q4(c.flatness)
+    v[k++] = q4(c.centroid)
+    v[k] = q4(c.silent)
+    const beat = Math.trunc(f.beatIndex)
+    const rec: StructureLogCell = {
+      beat,
+      t: r3(f.time),
+      bpm: r3(fin(f.bpm, 0)),
+      locked: f.downbeatLocked === true,
+      offset: (((beat - Math.trunc(fin(f.beatInBar, 0))) % 4) + 4) % 4,
+      cell: v,
+    }
+    if (!hasRaw) rec.fb = [q4(c.logRms), q4(c.sub), q4(c.bass), q4(c.mid), q4(c.high), q4(c.air)]
+    this.cells.push(rec)
   }
 
   // ------------------------------------------------------------------------------------------- per frame
@@ -973,6 +1123,7 @@ export class StructureLog {
     this.commits.clear()
     this.samples.clear()
     this.beats.clear()
+    this.cells.clear()
     this.eventCounts = emptyEventCounts()
     this.commitCount = 0
     this.tempoReadings = []
@@ -1038,9 +1189,13 @@ export class StructureLog {
       commits: this.commits.toArray(),
       samples: this.samples.toArray(),
       beats: this.beats.toArray(),
+      cells: this.cells.toArray(),
+      cellLayout: STRUCTURE_LOG_CELL_LAYOUT,
       counters: {
         frames: this.frames,
         marks: this.marks.length,
+        sceneMarks: this.countKind('scene'),
+        smallMarks: this.countKind('small'),
         undoneMarks: this.undone,
         commits: this.commitCount,
         events: { ...this.eventCounts },
@@ -1048,6 +1203,8 @@ export class StructureLog {
         droppedCommits: this.commits.dropped,
         droppedSamples: this.samples.dropped,
         droppedBeats: this.beats.dropped,
+        droppedCells: this.cells.dropped,
+        cells: this.cells.size,
         droppedMarks: this.droppedMarks,
         nonFinite: this.nonFinite,
         resets: this.resets,
@@ -1111,7 +1268,9 @@ export class StructureLog {
       source: this.source,
       trackHint: this.trackHint,
       marks: this.marks.length,
-      lastMark: last ? { t: last.t, beat: last.beat } : null,
+      sceneMarks: this.countKind('scene'),
+      smallMarks: this.countKind('small'),
+      lastMark: last ? { t: last.t, beat: last.beat, kind: last.kind } : null,
       eventCounts: { ...this.eventCounts },
       section: this.liveSection,
       sectionConfidence: this.liveSectionConf,

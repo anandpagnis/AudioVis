@@ -25,7 +25,7 @@ function rawLog(over: Record<string, unknown> = {}): Record<string, unknown> {
   for (let i = 0; i < 100; i++) beats.push([i, 10 + i * 0.5])
   return {
     schema: STRUCTURE_LOG_SCHEMA,
-    version: STRUCTURE_LOG_VERSION,
+    version: 1,
     startedAtIso: '2026-05-06T07:08:09.123Z',
     source: 'file',
     trackHint: 'Song',
@@ -93,6 +93,68 @@ describe('lag compensation', () => {
     expect(truth.caveats).toContain(HUMAN_LAG_CAVEAT)
     expect(HUMAN_LAG_CAVEAT).toMatch(/0\.2-1\.5 s/)
     expect(HUMAN_TAP_LAG_RANGE_SEC).toEqual([0.2, 1.5])
+  })
+})
+
+describe('two kinds of mark (schema v2)', () => {
+  const v2Marks = [
+    { id: 1, kind: 'scene', t: 30.6, beat: 41, beatInBar: 1, beatProgress: 0.2, bpm: 120, wallMs: 1 },
+    { id: 2, kind: 'small', t: 20.55, beat: 21, beatInBar: 1, beatProgress: 0.1, bpm: 120, wallMs: 2 },
+    { id: 3, kind: 'small', t: 45.05, beat: 70, beatInBar: 2, beatProgress: 0.1, bpm: 120, wallMs: 3 },
+    { id: 4, kind: 'scene', t: 10.2, beat: 0, beatInBar: 0, beatProgress: 0.4, bpm: 120, wallMs: 4 },
+  ]
+  const v2 = (over: Record<string, unknown> = {}) => rawLog({ version: 2, marks: v2Marks, ...over })
+
+  it('splits the marks by kind and keeps the combined list in time order', () => {
+    const truth = structureLogToTruth(v2(), { snap: false })
+    expect(truth.boundaries.map((b) => [b.id, b.kind])).toEqual([
+      [4, 'scene'],
+      [2, 'small'],
+      [1, 'scene'],
+      [3, 'small'],
+    ])
+    expect(truth.sceneMarks.map((b) => b.id)).toEqual([4, 1])
+    expect(truth.smallMarks.map((b) => b.id)).toEqual([2, 3])
+    expect(truth.sceneMarks.length + truth.smallMarks.length).toBe(truth.boundaries.length)
+  })
+
+  it('applies the same lag compensation (floored at the first frame) to both kinds', () => {
+    const truth = structureLogToTruth(v2(), { snap: false })
+    expect(r3(truth.smallMarks.map((b) => b.t))).toEqual([20.05, 44.55])
+    expect(r3(truth.sceneMarks.map((b) => b.t))).toEqual([10, 30.1]) // 10.2 - 0.5 floors at firstT = 10
+    const raw = structureLogToTruth(v2(), { snap: false, lagCompensationSec: 0 })
+    expect(raw.smallMarks.map((b) => b.t)).toEqual([20.55, 45.05])
+    const floored = structureLogToTruth(
+      v2({ marks: [{ id: 1, kind: 'small', t: 10.2, beat: 0, beatProgress: 0.4, bpm: 120 }] }),
+      { snap: false },
+    )
+    expect(floored.smallMarks[0].t).toBe(10)
+  })
+
+  it('snaps both kinds to the recorded beats', () => {
+    const truth = structureLogToTruth(v2())
+    expect(truth.smallMarks.map((b) => b.beat)).toEqual([20, 69])
+    expect(truth.sceneMarks.map((b) => b.beat)).toEqual([0, 40])
+    expect(truth.smallMarks.every((b) => b.snapped)).toBe(true)
+    expect(truthBoundaryBeats(truth)).toEqual([0, 20, 40, 69])
+  })
+
+  it('reads a mark with an unknown kind as scene', () => {
+    const truth = structureLogToTruth(v2({ marks: [{ id: 1, kind: 'huge', t: 30, beat: 40, bpm: 120, beatProgress: 0 }] }))
+    expect(truth.sceneMarks).toHaveLength(1)
+    expect(truth.smallMarks).toHaveLength(0)
+  })
+})
+
+describe('version 1 logs (no kind on a mark)', () => {
+  it('are still readable and yield every mark as a scene mark', () => {
+    const truth = structureLogToTruth(rawLog({ version: 1 }))
+    expect(truth.version).toBe(1)
+    expect(truth.boundaries).toHaveLength(3)
+    expect(truth.sceneMarks).toHaveLength(3)
+    expect(truth.smallMarks).toEqual([])
+    expect(truth.boundaries.every((b) => b.kind === 'scene')).toBe(true)
+    expect(parseStructureLog(rawLog({ version: 1 })).marks.every((m) => m.kind === 'scene')).toBe(true)
   })
 })
 
@@ -215,7 +277,7 @@ describe('empty and hostile logs', () => {
     expect(() => structureLogToTruth(null)).toThrow(/expected an object/)
     expect(() => structureLogToTruth([])).toThrow(/expected an object/)
     expect(() => structureLogToTruth({})).toThrow(/missing version/)
-    expect(() => structureLogToTruth({ version: 1, schema: 'something.else' })).toThrow(/unknown schema/)
+    expect(() => structureLogToTruth({ version: STRUCTURE_LOG_VERSION, schema: 'something.else' })).toThrow(/unknown schema/)
     expect(() => structureLogToTruth({ version: STRUCTURE_LOG_VERSION + 1 })).toThrow(/newer than supported/)
     expect(() => structureLogToTruth('{not json')).toThrow()
   })
@@ -269,13 +331,19 @@ describe('end to end with the recorder', () => {
     const s = { sceneId: 'a', pendingSceneId: null, status: 'running', sourceType: 'system' }
     for (let t = 5; t < 30; t += 1 / 60) log.observe(frame(t), s)
     log.mark(13.1, 26) // a tap ~0.8 s after the change the detector saw at 12.3
+    log.markSmall(20.6, 41)
     const truth = structureLogToTruth(stringifyStructureLog(log.toJSON()))
     expect(truth.source).toBe('system')
     expect(truth.trackHint).toBe('E2E')
-    expect(truth.boundaries).toHaveLength(1)
+    expect(truth.version).toBe(2)
+    expect(truth.sceneMarks).toHaveLength(1)
+    expect(truth.smallMarks).toHaveLength(1)
+    expect(truth.smallMarks[0].beat).toBe(40) // 20.6 - 0.5 = 20.1 -> the beat at 20.0
+    expect(truth.boundaries).toHaveLength(2)
     // 13.1 - 0.5 = 12.6 -> nearest recorded beat (a beat every 0.5 s) is 12.5
     expect(truth.boundaries[0].beatTime).toBeCloseTo(12.5, 1)
     expect(truth.boundaries[0].beat).toBe(25)
+    expect(truth.boundaries[0].kind).toBe('scene')
     const det = detectorEventTimes(truth, 'sectionChange')
     expect(det).toHaveLength(1)
     expect(det[0]).toBeCloseTo(12.3, 1)

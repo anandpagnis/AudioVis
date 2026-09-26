@@ -346,6 +346,64 @@ describe('marks', () => {
     expect(log.undoLastMark()).toBeNull()
   })
 
+  it('stores the kind: mark() is a scene mark, markSmall() a small one, and both carry the same stamps', () => {
+    const { log } = makeLog()
+    const t = run(log, 0, 5.3, store(), { bpm: 128 })
+    const a = log.mark(t, 10)
+    const b = log.markSmall(t + 1, 12, 'colour')
+    expect(a?.kind).toBe('scene')
+    expect(b).toMatchObject({ id: 2, kind: 'small', beat: 12, bpm: 128, note: 'colour' })
+    expect(log.toJSON().marks.map((m) => m.kind)).toEqual(['scene', 'small'])
+  })
+
+  it('keeps marks of both kinds in one time-sorted list', () => {
+    const { log } = makeLog()
+    run(log, 0, 1)
+    log.mark(30, 60)
+    log.markSmall(10, 20)
+    log.mark(20, 40)
+    log.markSmall(20, 41)
+    const marks = log.toJSON().marks
+    expect(marks.map((m) => m.t)).toEqual([10, 20, 20, 30])
+    expect(marks.map((m) => m.kind)).toEqual(['small', 'scene', 'small', 'scene'])
+    expect(marks.map((m) => m.id)).toEqual([2, 3, 4, 1])
+  })
+
+  it('undo removes the most recently ADDED mark of either kind', () => {
+    const { log } = makeLog()
+    run(log, 0, 1)
+    log.mark(10, 20)
+    log.markSmall(30, 60)
+    log.mark(20, 40)
+    expect(log.undoLastMark()?.kind).toBe('scene') // the t = 20 scene mark, added last
+    expect(log.undoLastMark()).toMatchObject({ kind: 'small', t: 30 })
+    expect(log.undoLastMark()).toMatchObject({ kind: 'scene', t: 10 })
+    expect(log.undoLastMark()).toBeNull()
+    expect(log.toJSON().counters.undoneMarks).toBe(3)
+  })
+
+  it('counts each kind in the counters and the summary, and the overlay prints both', () => {
+    const { log } = makeLog()
+    run(log, 0, 1)
+    for (let i = 0; i < 5; i++) log.mark(i, i)
+    for (let i = 0; i < 3; i++) log.markSmall(10 + i, 10 + i)
+    expect(log.toJSON().counters).toMatchObject({ marks: 8, sceneMarks: 5, smallMarks: 3 })
+    const sum = log.summary()
+    expect(sum).toMatchObject({ marks: 8, sceneMarks: 5, smallMarks: 3 })
+    expect(sum.lastMark).toMatchObject({ t: 12, kind: 'small' })
+    expect(formatStructureLogHud(sum).join('\n')).toMatch(/MARKS scene 5 {2}small 3 {3}last 0:12\.0 \(beat 12, small\)/)
+    log.undoLastMark()
+    expect(log.summary()).toMatchObject({ sceneMarks: 5, smallMarks: 2 })
+  })
+
+  it('markSmall ignores a non-finite time and does nothing when disabled', () => {
+    const { log } = makeLog()
+    run(log, 0, 1)
+    expect(log.markSmall(Number.NaN, 4)).toBeNull()
+    expect(log.toJSON().counters.nonFinite).toBe(1)
+    expect(makeLog({ enabled: false }).log.markSmall(1, 2)).toBeNull()
+  })
+
   it('ignores a non-finite time and counts it', () => {
     const { log } = makeLog()
     run(log, 0, 1)
@@ -578,6 +636,20 @@ describe('schema, JSON and file names', () => {
     expect(text.endsWith('}\n')).toBe(true)
   })
 
+  it('is schema version 2 and every exported mark carries its kind, through the text round trip', () => {
+    const { log } = makeLog()
+    const t = run(log, 0, 2)
+    log.mark(t, 4)
+    log.markSmall(t + 0.5, 5, 'fx')
+    const j = log.toJSON()
+    expect(STRUCTURE_LOG_VERSION).toBe(2)
+    expect(j.version).toBe(2)
+    const back = JSON.parse(stringifyStructureLog(j)) as { marks: Array<{ kind: string; note?: string }> }
+    expect(back.marks.map((m) => m.kind)).toEqual(['scene', 'small'])
+    expect(back.marks[1].note).toBe('fx')
+    expect(JSON.parse(stringifyStructureLog(j))).toEqual(JSON.parse(JSON.stringify(j)))
+  })
+
   it('stringifies an empty log to valid JSON', () => {
     const { log } = makeLog()
     const text = stringifyStructureLog(log.toJSON())
@@ -638,12 +710,12 @@ describe('overlay text', () => {
     log.mark(t, 4)
     const lines = formatStructureLogHud(log.summary())
     const text = lines.join('\n')
-    expect(text).toMatch(/MARKS 1/)
+    expect(text).toMatch(/MARKS scene 1 {2}small 0 {3}last/)
     expect(text).toMatch(/chg 1/)
     expect(text).toMatch(/section section c0\.60 8b valid/)
     expect(text).toMatch(/scene b/)
     expect(text).toMatch(/a > b {2}\[unknown\]/)
-    expect(text).toMatch(/M \/ Space = MARK/)
+    expect(text).toMatch(/M \/ Space = BIG change \(new scene\) {2}\| {2}N = SMALL change \(colour \/ effects\) {2}\| {2}U undo {2}\| {2}E, E save/)
     expect(text).toMatch(/unnamed/)
   })
 

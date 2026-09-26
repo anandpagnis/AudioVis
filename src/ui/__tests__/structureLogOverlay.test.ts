@@ -60,6 +60,22 @@ describe('StructureLog overlay plumbing', () => {
     expect(STRUCTURE_LOG_SRC.match(/tabIndex=\{-1\}/g)?.length).toBeGreaterThanOrEqual(5)
   })
 
+  it('tells the user plainly which key is which kind of change', () => {
+    const hint = 'M / Space = BIG change (new scene)  |  N = SMALL change (colour / effects)  |  U undo  |  E, E save'
+    expect(RECORDER_SRC).toContain(hint)
+    expect(RECORDER_SRC).toMatch(/lines\.push\(STRUCTURE_LOG_HINT\)/)
+    expect(RECORDER_SRC).toMatch(/MARKS scene \$\{sum\.sceneMarks\} {2}small \$\{sum\.smallMarks\}/)
+  })
+
+  it('dispatches N to markSmall and M / Space to mark, and has an N button next to MARK', () => {
+    expect(STRUCTURE_LOG_SRC).toMatch(/case 'markSmall':\s*doMark\(true\)/)
+    expect(STRUCTURE_LOG_SRC).toMatch(/case 'mark':\s*doMark\(false\)/)
+    expect(STRUCTURE_LOG_SRC).toMatch(/structureLog\.markSmall\(t,\s*cur\.beat\)/)
+    expect(STRUCTURE_LOG_SRC).toMatch(/structureLog\.mark\(t,\s*cur\.beat\)/)
+    expect(STRUCTURE_LOG_SRC).toMatch(/actionsRef\.current\?\.markSmall\(\)/)
+    expect(STRUCTURE_LOG_SRC).toMatch(/N \(small\)/)
+  })
+
   it('the name field hands the keyboard back to the tap keys on Enter / Escape', () => {
     expect(STRUCTURE_LOG_SRC).toMatch(/e\.key === 'Enter' \|\| e\.key === 'Escape'\) e\.currentTarget\.blur\(\)/)
   })
@@ -81,9 +97,9 @@ describe('StructureLog mount', () => {
 })
 
 describe('the keys collide with nothing in the output window', () => {
-  it('the hotkey map is m / space / u / e only, in the tested module', () => {
-    for (const k of ["'m'", "'M'", "' '", "'u'", "'U'", "'e'", "'E'"]) expect(HOTKEYS_SRC).toContain(`case ${k}:`)
-    // seven single-character keys and nothing else (the long case is the legacy 'Spacebar' name)
-    expect((HOTKEYS_SRC.match(/case '.':/g) ?? []).length).toBe(7)
+  it('the hotkey map is m / space / n / u / e only, in the tested module', () => {
+    for (const k of ["'m'", "'M'", "' '", "'n'", "'N'", "'u'", "'U'", "'e'", "'E'"]) expect(HOTKEYS_SRC).toContain(`case ${k}:`)
+    // nine single-character keys and nothing else (the long case is the legacy 'Spacebar' name)
+    expect((HOTKEYS_SRC.match(/case '.':/g) ?? []).length).toBe(9)
   })
 })

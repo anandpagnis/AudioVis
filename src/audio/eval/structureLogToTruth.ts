@@ -14,6 +14,15 @@
  * with a tolerance window (the plan uses +-1 bar and 0.5 s / 3 s hit rates), not exact equality, and should report
  * results at more than one lag (for example 0.2, 0.5 and 1.0 s) when the conclusion depends on it.
  *
+ * ## Two kinds of mark (schema v2)
+ *
+ * A mark is `scene` (M / Space: a BIG change worth a new scene: the show director's CUT) or `small` (N: colours or
+ * post-FX / layers / effects should react, but no new scene: its MICRO). {@link StructureTruth.boundaries} keeps
+ * BOTH kinds, in time order (each {@link TruthBoundary} carries its `kind`); {@link StructureTruth.sceneMarks} and
+ * {@link StructureTruth.smallMarks} are the same boundaries split by kind. The lag compensation (floored at the
+ * first recorded frame) and the beat snapping are applied identically to both. A version 1 log has no `kind` on
+ * its marks: every mark is read as `scene`, so `smallMarks` is empty.
+ *
  * ## Time bases
  *
  * Every time in the log is the AUDIO clock (`features.time`, the AudioContext clock), the same clock the detector
@@ -23,13 +32,17 @@
  */
 
 import {
+  CELL_LEN,
+  STRUCTURE_LOG_CELL_LAYOUT,
   STRUCTURE_LOG_SCHEMA,
   STRUCTURE_LOG_VERSION,
+  type StructureLogCell,
   type StructureLogCommit,
   type StructureLogEvent,
   type StructureLogEventKind,
   type StructureLogJson,
   type StructureLogMark,
+  type StructureLogMarkKind,
   type StructureLogSample,
   type StructureLogSource,
 } from '../../engine/structureLog'
@@ -46,6 +59,8 @@ export const HUMAN_LAG_CAVEAT =
 export interface TruthBoundary {
   /** The mark's creation id in the log. */
   id: number
+  /** `scene` (M / Space, a new scene) or `small` (N, colours / effects). Version 1 logs: always `scene`. */
+  kind: StructureLogMarkKind
   /** The raw tap time (audio clock, seconds). */
   tapT: number
   /** Lag-compensated time: `tapT - lagCompensationSec`, floored at the start of the recording. */
@@ -76,8 +91,12 @@ export interface StructureTruth {
   bpm: number | null
   lagCompensationSec: number
   hasMarks: boolean
-  /** The human marks, in time order. */
+  /** The human marks of BOTH kinds, in time order. */
   boundaries: TruthBoundary[]
+  /** The `scene` marks (M / Space) of `boundaries`, in time order. Every mark of a version 1 log. */
+  sceneMarks: TruthBoundary[]
+  /** The `small` marks (N) of `boundaries`, in time order. Empty for a version 1 log. */
+  smallMarks: TruthBoundary[]
   /** Every detector event the run recorded, in time order (all kinds). */
   detectorEvents: StructureLogEvent[]
   /** The same events grouped by kind (kinds with no events are absent). */
@@ -112,10 +131,20 @@ function arr<T>(v: unknown, keep: (x: unknown) => x is T): T[] {
   return Array.isArray(v) ? v.filter(keep) : []
 }
 
-const isMark = (x: unknown): x is StructureLogMark => isObj(x) && finite(x.t) && finite(x.beat)
+/** Entry shape only; `kind` is normalised afterwards (a v1 mark has none). */
+const isMark = (x: unknown): x is Omit<StructureLogMark, 'kind'> & { kind?: unknown } =>
+  isObj(x) && finite(x.t) && finite(x.beat)
 const isEvent = (x: unknown): x is StructureLogEvent =>
   isObj(x) && finite(x.t) && typeof x.kind === 'string' && (x.data === undefined || isObj(x.data))
 const isCommit = (x: unknown): x is StructureLogCommit => isObj(x) && finite(x.t) && typeof x.to === 'string'
+const isCell = (x: unknown): x is StructureLogCell =>
+  isObj(x) &&
+  finite(x.beat) &&
+  finite(x.t) &&
+  Array.isArray(x.cell) &&
+  x.cell.length >= CELL_LEN &&
+  x.cell.every(finite) &&
+  (x.fb === undefined || (Array.isArray(x.fb) && x.fb.length >= 6 && x.fb.every(finite)))
 const isSample = (x: unknown): x is StructureLogSample => isObj(x) && finite(x.t)
 const isBeat = (x: unknown): x is [number, number] =>
   Array.isArray(x) && x.length >= 2 && finite(x[0]) && finite(x[1])
@@ -162,13 +191,19 @@ export function parseStructureLog(input: unknown): StructureLogJson {
       median: num(bpm.median),
       readings: finite(bpm.readings) ? bpm.readings : 0,
     },
-    marks: arr(v.marks, isMark).sort((a, b) => a.t - b.t),
+    marks: arr(v.marks, isMark)
+      .map((m): StructureLogMark => ({ ...m, kind: m.kind === 'small' ? 'small' : 'scene' }))
+      .sort((a, b) => a.t - b.t),
     events: arr(v.events, isEvent)
       .map((e) => (e.data === undefined ? { ...e, data: {} } : e))
       .sort((a, b) => a.t - b.t),
     commits: arr(v.commits, isCommit),
     samples: arr(v.samples, isSample),
     beats: arr(v.beats, isBeat).sort((a, b) => a[1] - b[1]),
+    cells: arr(v.cells, isCell)
+      .map((c): StructureLogCell => ({ ...c, locked: c.locked === true, bpm: finite(c.bpm) ? c.bpm : 0, offset: finite(c.offset) ? c.offset : 0 }))
+      .sort((a, b) => a.t - b.t),
+    cellLayout: STRUCTURE_LOG_CELL_LAYOUT,
     counters: counters as unknown as StructureLogJson['counters'],
   } satisfies Omit<StructureLogJson, 'userAgent' | 'trackHint'>
   const json: StructureLogJson = out
@@ -253,6 +288,7 @@ export function structureLogToTruth(input: unknown, opts: TruthOptions = {}): St
     const snapped = snap ? snapMarkToBeat(m, t, log.beats) : null
     const b: TruthBoundary = {
       id: m.id,
+      kind: m.kind,
       tapT: m.t,
       t,
       tRel: t - (log.firstT ?? 0),
@@ -286,6 +322,8 @@ export function structureLogToTruth(input: unknown, opts: TruthOptions = {}): St
     lagCompensationSec: lag,
     hasMarks: log.marks.length > 0,
     boundaries,
+    sceneMarks: boundaries.filter((b) => b.kind === 'scene'),
+    smallMarks: boundaries.filter((b) => b.kind === 'small'),
     detectorEvents: log.events,
     detectorsByKind: groupByKind(log.events),
     commits: log.commits,

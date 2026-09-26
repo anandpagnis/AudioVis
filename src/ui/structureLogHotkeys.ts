@@ -3,18 +3,20 @@
  * without a DOM. It lives in the OUTPUT window only, which has no other keyboard map (the DJ shortcuts in
  * `ui/HUD.tsx` belong to the control window), so `m` / `u` / `e` / space collide with nothing there.
  *
- *  - `m` or Space   MARK: "a real section change is happening now"
+ *  - `m` or Space   MARK a BIG change: "a real section change is happening now" (worth a new scene)
+ *  - `n`            MARK a SMALL change: colours / post-FX / layers / effects should react, but NOT a new scene
  *  - `u`            undo the last mark (a mis-tap)
  *  - `e`, `e`       finish the track and save its JSON: the first press only ARMS it (so a stray key never ends
  *                   a track), the second within {@link FINISH_CONFIRM_MS} does it
  *
  * Ignored: key repeat (a held key), any modifier (ctrl / meta / alt / shift, so browser shortcuts and Shift+M
  * type nothing), IME composition, and anything typed into an input / textarea / select / contenteditable (the
- * track-name field must not fire marks). A second MARK or UNDO within {@link DEBOUNCE_MS} of an accepted one is a
- * double-press and is dropped.
+ * track-name field must not fire marks). A second press of the same kind (MARK, MARK SMALL or UNDO) within
+ * {@link DEBOUNCE_MS} of an accepted one is a double-press and is dropped. The debounce is tracked PER KIND, so `m`
+ * then `n` within the window are both accepted.
  */
 
-export type StructureLogKeyAction = 'mark' | 'undo' | 'finishArm' | 'finish'
+export type StructureLogKeyAction = 'mark' | 'markSmall' | 'undo' | 'finishArm' | 'finish'
 
 export interface StructureLogKeyEvent {
   key: string
@@ -46,7 +48,7 @@ export function isTypingTarget(target: unknown): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 }
 
-type BaseKey = 'mark' | 'undo' | 'finish'
+type BaseKey = 'mark' | 'markSmall' | 'undo' | 'finish'
 
 function baseAction(key: string): BaseKey | null {
   switch (key) {
@@ -55,6 +57,9 @@ function baseAction(key: string): BaseKey | null {
     case ' ':
     case 'Spacebar': // very old engines
       return 'mark'
+    case 'n':
+    case 'N':
+      return 'markSmall'
     case 'u':
     case 'U':
       return 'undo'
@@ -78,6 +83,7 @@ const NONE_PREVENT: StructureLogKeyResult = { action: null, preventDefault: true
 /** A stateful gate (debounce + the two-press finish). One per overlay instance. */
 export function createHotkeyGate(debounceMs = DEBOUNCE_MS, finishConfirmMs = FINISH_CONFIRM_MS): StructureLogHotkeyGate {
   let lastMark = -Infinity
+  let lastSmall = -Infinity
   let lastUndo = -Infinity
   let finishArmedAt = -Infinity
 
@@ -96,6 +102,10 @@ export function createHotkeyGate(debounceMs = DEBOUNCE_MS, finishConfirmMs = FIN
           if (nowMs - lastMark < debounceMs) return prevent ? NONE_PREVENT : NONE
           lastMark = nowMs
           return { action: 'mark', preventDefault: prevent }
+        case 'markSmall':
+          if (nowMs - lastSmall < debounceMs) return NONE
+          lastSmall = nowMs
+          return { action: 'markSmall', preventDefault: false }
         case 'undo':
           if (nowMs - lastUndo < debounceMs) return NONE
           lastUndo = nowMs
@@ -114,6 +124,7 @@ export function createHotkeyGate(debounceMs = DEBOUNCE_MS, finishConfirmMs = FIN
     },
     reset() {
       lastMark = -Infinity
+      lastSmall = -Infinity
       lastUndo = -Infinity
       finishArmedAt = -Infinity
     },

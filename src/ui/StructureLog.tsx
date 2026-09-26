@@ -13,7 +13,8 @@ import { createHotkeyGate } from './structureLogHotkeys'
  * `engine/structureLogFlags.ts`).
  *
  * Use: click the output window once so it has keyboard focus, type the song name into the field BEFORE pressing
- * play, then press M (or Space) at every real section change. E, E saves the JSON and starts the next track.
+ * play, then press M (or Space) at every BIG section change (a new scene) and N at every SMALL change (colours or
+ * effects should react, no new scene). U undoes the last tap of either kind. E, E saves the JSON and starts the next track.
  * The keys live in `structureLogHotkeys.ts` (tested).
  *
  * DOM discipline follows `LookDebug` / `FpsMeter`: no React state and no per-frame React work. A per-frame hook
@@ -112,6 +113,7 @@ async function copyText(text: string): Promise<boolean> {
 
 interface StructureLogActions {
   mark: () => void
+  markSmall: () => void
   undo: () => void
   finish: () => void
   copy: () => void
@@ -147,7 +149,7 @@ export function StructureLog() {
       lastFrameWall = performance.now()
     }
 
-    const doMark = () => {
+    const doMark = (small = false) => {
       if (!structureLog.isRunning()) {
         say('No audio is running yet: mark ignored.')
         return
@@ -155,17 +157,17 @@ export function StructureLog() {
       const cur = structureLog.now()
       // The last frame is up to one frame old; carry the clock forward by the wall time since then.
       const t = cur.t + Math.min(0.1, Math.max(0, (performance.now() - lastFrameWall) / 1000))
-      const m = structureLog.mark(t, cur.beat)
+      const m = small ? structureLog.markSmall(t, cur.beat) : structureLog.mark(t, cur.beat)
       if (m) {
         flashUntil = performance.now() + FLASH_MS
         if (rootRef.current) rootRef.current.style.borderColor = '#7dff9a'
-        say(`MARK #${structureLog.summary(0).marks} at ${m.t.toFixed(1)} s, beat ${m.beat}`, 2500)
+        say(`${small ? 'SMALL' : 'BIG'} mark #${structureLog.summary(0).marks} at ${m.t.toFixed(1)} s, beat ${m.beat}`, 2500)
       }
     }
 
     const doUndo = () => {
       const m = structureLog.undoLastMark()
-      say(m ? `Undid the mark at ${m.t.toFixed(1)} s.` : 'No mark to undo.', 2500)
+      say(m ? `Undid the ${m.kind === 'small' ? 'SMALL' : 'BIG'} mark at ${m.t.toFixed(1)} s.` : 'No mark to undo.', 2500)
     }
 
     const save = (out: StructureLogExport): void => {
@@ -197,14 +199,17 @@ export function StructureLog() {
       const out = structureLog.latestArchived()
       if (out) save(out)
     }
-    actionsRef.current = { mark: doMark, undo: doUndo, finish: doFinish, copy: doCopy, prev: doPrev }
+    actionsRef.current = { mark: () => doMark(false), markSmall: () => doMark(true), undo: doUndo, finish: doFinish, copy: doCopy, prev: doPrev }
 
     const onKey = (e: KeyboardEvent) => {
       const res = gate.handle(e, performance.now())
       if (res.preventDefault) e.preventDefault()
       switch (res.action) {
         case 'mark':
-          doMark()
+          doMark(false)
+          break
+        case 'markSmall':
+          doMark(true)
           break
         case 'undo':
           doUndo()
@@ -286,7 +291,10 @@ export function StructureLog() {
       />
       <div style={ROW}>
         <button type="button" tabIndex={-1} style={CONTROL} onMouseDown={noFocus} onClick={() => actionsRef.current?.mark()}>
-          MARK
+          MARK (big)
+        </button>
+        <button type="button" tabIndex={-1} style={CONTROL} onMouseDown={noFocus} onClick={() => actionsRef.current?.markSmall()}>
+          N (small)
         </button>
         <button type="button" tabIndex={-1} style={CONTROL} onMouseDown={noFocus} onClick={() => actionsRef.current?.undo()}>
           Undo
