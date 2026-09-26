@@ -23,7 +23,7 @@ import {
   type ScenePerformanceCost,
 } from '../scenes'
 import { sceneBoost, sceneLookActive } from '../scenes/sceneTraits'
-import { LAYER_ROLES, useStore, type LayerRole } from '../store'
+import { LAYER_ROLES, manualHoldActive, useStore, type LayerRole } from '../store'
 import { pickByCharacter } from './characterPick'
 import { DIRECTOR_ON } from './show/directorFlags'
 import { LAYERS_CUT, LAYERS_NONE, showRuntime } from './show/showRuntime'
@@ -228,7 +228,7 @@ export function PerformanceDirector() {
     if (cueState.governed) return // authored cues own the journey
     if (performanceState.djCam.active) return // a DJ-cam cutaway owns the frame
     if (performanceState.limitless.active) return // a Limitless cutaway owns the frame
-    if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
+    if (manualHoldActive(s.lastManualAt, MANUAL_HOLD_SEC)) return
 
     // Hold the subject through a confirmed build-up — recomposing mid-riser is
     // exactly the "transitions when it doesn't need to" complaint. The drop

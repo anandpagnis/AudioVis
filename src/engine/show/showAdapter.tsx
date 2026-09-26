@@ -22,7 +22,7 @@ import {
   type SceneDef,
 } from '../../scenes'
 import { sceneBoost } from '../../scenes/sceneTraits'
-import { useStore } from '../../store'
+import { manualHoldActive, useStore } from '../../store'
 import { pickHypeScene } from '../AutoPilot'
 import { ARM } from '../armedChange'
 import { activeLook, armedRuntime, trendOf, tryCommitArmed } from '../armedDirector'
@@ -378,7 +378,7 @@ export function ShowAdapter() {
       cueState.governed ||
       performanceState.djCam.active ||
       performanceState.limitless.active ||
-      f.time - s.lastManualAt < MANUAL_HOLD_SEC
+      manualHoldActive(s.lastManualAt, MANUAL_HOLD_SEC)
     if (suppressed) {
       // The events were consumed (an edge is never late), but say so in the log.
       if (feedV2) for (let k = 0; k < ctx.live.length; k++) structureLog.noteSectionEvent(ctx.live[k], { decision: 'suppressed' })

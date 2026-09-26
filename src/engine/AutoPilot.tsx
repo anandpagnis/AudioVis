@@ -48,7 +48,7 @@ import { pickPaletteByCharacter } from './paletteCharacter'
 import type { LookProfile } from './look/lookRow'
 import { performanceState } from './performanceState'
 import { quality } from './quality'
-import { canAutoSwitch, useStore } from '../store'
+import { canAutoSwitch, manualHoldActive, useStore } from '../store'
 import { DIRECTOR_ON } from './show/directorFlags'
 import { showRuntime } from './show/showRuntime'
 
@@ -465,7 +465,7 @@ export function AutoPilot() {
           cueState.governed ||
           performanceState.djCam.active ||
           performanceState.limitless.active ||
-          f.time - s.lastManualAt < MANUAL_HOLD_SEC,
+          manualHoldActive(s.lastManualAt, MANUAL_HOLD_SEC),
         silent: f.silence,
         tier: quality.tier,
         beat,
@@ -537,7 +537,7 @@ export function AutoPilot() {
     if (cueState.governed) return // authored cues own the journey
     if (performanceState.djCam.active) return // a DJ-cam cutaway owns the frame
     if (performanceState.limitless.active) return // a Limitless cutaway owns the frame
-    if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
+    if (manualHoldActive(s.lastManualAt, MANUAL_HOLD_SEC)) return
     // Baseline the stale clock the first time automation is actually live,
     // rather than at component mount (which can be well before playback
     // starts) or leaving it at -Infinity (which would fire on frame one).

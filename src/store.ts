@@ -256,6 +256,23 @@ const relaxLayerGains = (
  * would leave the stamp in the future and freeze the show on one scene for the
  * whole of the next track — so a negative elapsed count reads as "yes".
  */
+/**
+ * Seconds on the WALL clock, the only clock `lastManualAt` may be stamped or compared with. `features.time` is
+ * `performance.now() / 1000` while idle but `AudioContext.currentTime` (which starts at 0 when the context is created)
+ * while audio runs, so a stamp taken on one clock and read on the other made every director think the user had touched
+ * something for as long as it took the audio clock to catch up with page uptime: automation, colour changes included,
+ * silently off for minutes after a single click on a mode button, and for the first 45 s of every session
+ * (`lastManualAt` started at 0).
+ */
+export function wallSeconds(): number {
+  return performance.now() / 1000
+}
+
+/** The manual back-off is active: the DJ touched something within `holdSec` wall-clock seconds. */
+export function manualHoldActive(lastManualAt: number, holdSec: number, nowSec: number = wallSeconds()): boolean {
+  return nowSec - lastManualAt < holdSec
+}
+
 export function canAutoSwitch(lastCommitBeat: number, beatIndex = audioEngine.features.beatIndex) {
   const elapsed = beatIndex - lastCommitBeat
   return elapsed < 0 || elapsed >= MIN_SUBJECT_DWELL_BEATS
@@ -881,7 +898,7 @@ export const useStore = create<AppState>()(
       moodDrive: true,
       djCamEnabled: false,
       limitlessCutawayEnabled: false,
-      lastManualAt: 0,
+      lastManualAt: -1e9, // never touched: no back-off (the wall clock, see wallSeconds)
 
       responseTuning: { attack: 1, release: 1, subdivision: 1 },
       bandMappings: [],
@@ -1151,7 +1168,7 @@ export const useStore = create<AppState>()(
       setExportPreset: (preset) => set({ exportPreset: preset }),
 
       requestScene: (id, opts) => {
-        if (!opts?.auto) set({ lastManualAt: audioEngine.features.time })
+        if (!opts?.auto) set({ lastManualAt: wallSeconds() })
         if (id === get().sceneId) return false
         // A scene that cannot hold `primary` must never become the subject.
         //
@@ -1278,7 +1295,7 @@ export const useStore = create<AppState>()(
             [role]: audioEngine.features.beatIndex,
           },
         }
-        set(opts?.auto ? patch : { ...patch, lastManualAt: audioEngine.features.time })
+        set(opts?.auto ? patch : { ...patch, lastManualAt: wallSeconds() })
       },
 
       setLayerFx: (role, patch) =>
@@ -1370,7 +1387,7 @@ export const useStore = create<AppState>()(
         set(
           opts?.auto
             ? { paletteId: id }
-            : { paletteId: id, lastManualAt: audioEngine.features.time },
+            : { paletteId: id, lastManualAt: wallSeconds() },
         ),
       toggleUi: () => set((s) => ({ uiHidden: !s.uiHidden })),
       toggleDebug: () => set((s) => ({ debugOpen: !s.debugOpen })),
@@ -1407,7 +1424,7 @@ export const useStore = create<AppState>()(
         // A manual switch backs AutoPilot off, exactly as a manual scene or
         // palette change does; a director's own pick must not, or the show
         // would silence its own automation every time it changed a mode.
-        if (!opts?.auto) set({ lastManualAt: performance.now() / 1000 })
+        if (!opts?.auto) set({ lastManualAt: wallSeconds() })
         // Dropped, not remapped: a mode change can make a parameter inert, and
         // a stored inert value would silently reappear on the way back. The
         // scene's defaults for the new mode are the honest starting point.
