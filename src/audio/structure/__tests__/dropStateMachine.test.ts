@@ -274,6 +274,86 @@ describe('DropStateMachine', () => {
     expect(m.update(0.85, 0.9, DT)).toBe(true)
   })
 
+  describe('refractory and repeat guard (a pumping passage fired 14 drops in 28 s)', () => {
+    /** One short dip and its snap-back with a hit: what a bass-line rest pattern does every couple of seconds. */
+    function pumpingCluster(m: DropStateMachine, cycles: number, dipSec = 0.9, steadySec = 1.1): number {
+      let fires = 0
+      for (let c = 0; c < cycles; c++) {
+        feed(m, frames(steadySec), 0.8, 0)
+        feed(m, frames(dipSec), 0.15, 0)
+        if (m.update(0.85, 0.9, DT)) fires++
+      }
+      return fires
+    }
+
+    it('without the guard the cluster fires over and over (what the tap log showed)', () => {
+      const m = new DropStateMachine({ refractorySec: 0, repeatWindowSec: 0 })
+      seedBaseline(m, 0.8)
+      expect(pumpingCluster(m, 14)).toBeGreaterThanOrEqual(8)
+    })
+
+    it('with the defaults the same cluster fires a few times at most, and never twice inside the refractory', () => {
+      const m = new DropStateMachine()
+      seedBaseline(m, 0.8)
+      const fires = pumpingCluster(m, 14)
+      expect(fires).toBeLessThanOrEqual(3)
+    })
+
+    it('real drops 20 s apart both still fire', () => {
+      const m = new DropStateMachine()
+      seedBaseline(m, 0.8)
+      let fires = 0
+      for (let k = 0; k < 3; k++) {
+        feed(m, frames(18), 0.8, 0)
+        feed(m, frames(1.6), 0.1, 0) // a hush of a bar or so
+        if (m.update(0.85, 0.9, DT)) fires++
+      }
+      expect(fires).toBe(3)
+    })
+
+    it('right after a fire a second dip must be twice as long (repeat guard), and inside the refractory it is ignored', () => {
+      const m = new DropStateMachine()
+      seedBaseline(m, 0.8)
+      feed(m, frames(1), 0.8, 0)
+      feed(m, frames(1.2), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(true) // first drop
+      // inside the 4 s refractory: a long enough dip is not even considered
+      feed(m, frames(1.5), 0.8, 0)
+      feed(m, frames(1.6), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(false)
+      // 6 s after: a 0.9 s dip (fine for a first drop) is too short now (needs 2 x 0.7 s)
+      feed(m, frames(6), 0.8, 0)
+      feed(m, frames(0.9), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(false)
+      // ... while a 1.6 s one fires
+      feed(m, frames(6), 0.8, 0)
+      feed(m, frames(1.6), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(true)
+    })
+
+    it('the guard is inert once the window has passed (a drop 25 s later is judged like a first one)', () => {
+      const m = new DropStateMachine()
+      seedBaseline(m, 0.8)
+      feed(m, frames(1), 0.8, 0)
+      feed(m, frames(1.2), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(true)
+      feed(m, frames(25), 0.8, 0)
+      feed(m, frames(0.9), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(true)
+    })
+
+    it('reset() clears the fire memory', () => {
+      const m = new DropStateMachine()
+      seedBaseline(m, 0.8)
+      feed(m, frames(1.2), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(true)
+      m.reset()
+      seedBaseline(m, 0.8)
+      feed(m, frames(0.9), 0.1, 0)
+      expect(m.update(0.85, 0.9, DT)).toBe(true)
+    })
+  })
+
   it('is deterministic', () => {
     const run = () => {
       const m = new DropStateMachine()

@@ -51,6 +51,8 @@ import {
 } from '../../src/audio/eval/silverScore'
 import type { SectionEvent } from '../../src/audio/events/types'
 import { percentile } from '../../src/audio/eval/structureMetrics'
+import { MUX } from '../../src/audio/events/eventMux'
+import type { EventLayerConfig } from '../../src/audio/events/EventLayer'
 import { LEGACY } from '../../src/audio/events/legacyEvents'
 import { SHOW } from '../../src/engine/show/showPolicy'
 
@@ -68,6 +70,10 @@ const SEED = Number(process.env.DVS_SEED) || 1
 const COPIES = Math.max(1, Number(process.env.DVS_COPIES) || 20)
 const SWEEP = process.env.DVS_SWEEP !== '0'
 const SWEEP_COPIES = 6
+// A/B knobs for the tap-log lane: DVS_MUX=all|release|none (which legacy drops reach the director under v2, `eventMux.ts`),
+// DVS_LAYER=old restores ratio-only fill typing and turns the gap drop off (the layer before the tap-log changes).
+if (process.env.DVS_MUX === 'all' || process.env.DVS_MUX === 'release' || process.env.DVS_MUX === 'none') MUX.legacyDrops = process.env.DVS_MUX
+const LAYER_CFG: Partial<EventLayerConfig> = process.env.DVS_LAYER === 'old' ? { fillRecentFrac: Infinity, gapDrop: false } : {}
 
 const f1 = (v: number): string => (Number.isFinite(v) ? v.toFixed(1) : 'n/a')
 const f2 = (v: number): string => (Number.isFinite(v) ? v.toFixed(2) : 'n/a')
@@ -136,7 +142,7 @@ function loadTrack(name: string, fam: Map<string, string>): TrackData | null {
   const run = JSON.parse(readFileSync(cellsPath, 'utf8')) as CachedRun
   const traceSec = trace.n / trace.frameRate
   const horizon = Math.min(traceSec, run.durationSec)
-  const live = prepareLiveStream(trace, run.cells, run.sampleRate)
+  const live = prepareLiveStream(trace, run.cells, run.sampleRate, LAYER_CFG)
   const de = detectorEvents(trace)
   return {
     id,

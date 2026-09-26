@@ -1,7 +1,8 @@
 /**
  * The LIVE EVENT LAYER (`?events=v2`): turns the per-beat cells of the slow analyser into typed, bar-aligned
  * `SectionEvent`s with a lag of about six beats. It replaces `f.sectionChange` and the analyser's late boundaries as the
- * source of `change` events; drops and build starts stay with `legacyEvents.ts`.
+ * source of `change` events, and (`gapDrop.ts`) of `drop` events: the low end returning after a dropout of at least a bar. The
+ * legacy `f.drop` is demoted under v2 (`eventMux.ts`); build starts stay with `legacyEvents.ts`.
  *
  *   BeatCell --extractFeatures--> FeatureRing --ChangeScorer--> Candidate --type/grid/sim--> SectionEvent --> ring
  *
@@ -15,7 +16,14 @@
  * ## Event types
  *  - `change`     a scene-class change that PERSISTS (the beats after the peak stay unlike the old baseline);
  *  - `fill`       a transient: the score spiked and the beats after it returned to the baseline (`persist` below
- *                 {@link EventLayerConfig.fillPersist}): a drum fill or a stab. Weight 0 in the director: punctuation;
+ *                 {@link EventLayerConfig.fillPersist} AND the beats after the peak back under
+ *                 {@link EventLayerConfig.fillRecentFrac} of the acceptance threshold): a drum fill or a stab. Weight 0 in the
+ *                 director: punctuation. A candidate the ratio calls a fill but that still clears that bar is AMBIGUOUS (a change
+ *                 that stays, or a fill that has not ended) and is held {@link EventLayerConfig.fillHoldBeats} more beats, then
+ *                 typed on the longer stretch after the peak: before this, the first hump of a real change (a saturating peak has
+ *                 a small persistence RATIO) was a `fill` and the `change` came 2-4 s later and weaker (tap logs);
+ *  - `drop`       the low band (sub+bass) was out (>= 10 dB under its trailing median, >= 4 cells and 1.75 s) and is whole again
+ *                 (`gapDrop.ts`; `strength` / `confidence` grow with the gap; `corroborated`: a dropout AND a return);
  *  - `gain`       only the level channel moved (the shape score, which leaves it out, is below
  *                 {@link EventLayerConfig.gainShapeMax}): a volume knob. Weight 0: suppressed;
  *  - `breakdown`  a low-band dropout (sub+bass fell by >= {@link EventLayerConfig.breakdownLowDb} dB and the level with
@@ -77,15 +85,34 @@ import {
   extractFeatures,
 } from './barFeatures'
 import { BarGrid, type BarGridConfig } from './barGrid'
-import { ChangeScorer, DEFAULT_SCORER, type Candidate, type ScorerConfig } from './changeScorer'
+import { ChangeScorer, DEFAULT_SCORER, copyCandidate, makeCandidate, type Candidate, type ScorerConfig } from './changeScorer'
+import { GapDropDetector, type GapDropConfig, type GapDropFire } from './gapDrop'
 import type { BeatCell } from '../essentia/structureDsp'
 import type { EventType, SectionEvent } from './types'
 
 export interface EventLayerConfig {
   scorer: Partial<ScorerConfig>
   grid: Partial<BarGridConfig>
+  /** The gap -> snap-back drop detector (`gapDrop.ts`); `false` turns it off (no `drop` events from this layer). */
+  gapDrop: Partial<GapDropConfig> | false
   /** A candidate whose post-peak beats keep less than this share of the peak score is a `fill`. */
   fillPersist: number
+  /**
+   * ... AND the beats after the peak must also have fallen back under this share of the acceptance threshold (`recentS < fillRecentFrac * thr`).
+   * The persistence ratio alone is relative to the PEAK, and a big change's peak saturates (score 30): its two beats after the peak
+   * still score 4 against a bar of 5, a ratio of 0.14, and were typed a fill (the first hump of a real change, with the `change`
+   * arriving 2-4 s later and weaker). A fill RETURNS to the baseline: in absolute terms too. Infinity restores the ratio-only rule.
+   */
+  fillRecentFrac: number
+  /**
+   * A candidate that the ratio calls a fill (`persist < fillPersist`) but whose beats after the peak are still above
+   * `fillRecentFrac` of the threshold is AMBIGUOUS: a change that stays, or a fill that has not ended yet (a two-bar fill is
+   * still going two beats after its peak). It is HELD for this many more beats, then typed on the longer stretch after the peak
+   * (`ChangeScorer.recentScoreOver`): a fill has returned to the baseline by then, a change has not. The event is delivered
+   * at that later beat (honest `detectedAt`); unambiguous candidates are not delayed. 0 = do not hold: an ambiguous
+   * candidate is typed as a change at once.
+   */
+  fillHoldBeats: number
   /** Refractory (beats from the peak) after a `fill`, shorter than after a change. */
   fillRefractoryBeats: number
   /** Only-the-level-moved test: the score without the level channel below this is a `gain`. */
@@ -119,7 +146,10 @@ export interface EventLayerConfig {
 export const DEFAULT_EVENT_LAYER: Readonly<EventLayerConfig> = Object.freeze({
   scorer: {},
   grid: {},
+  gapDrop: {},
   fillPersist: 0.7,
+  fillRecentFrac: 0.8,
+  fillHoldBeats: 2,
   fillRefractoryBeats: 4,
   gainShapeMax: 1.8,
   gainMinDb: 1.0,
@@ -190,6 +220,7 @@ export interface EventLayerStats {
   fills: number
   gains: number
   breakdowns: number
+  drops: number
   gapCells: number
   resets: number
   jumps: number
@@ -209,6 +240,7 @@ function makeEvent(): SectionEvent {
     phase: 0,
     feats: { level: 0, low: 0, timbre: 0, harmony: 0, rhythm: 0 },
     sim: undefined,
+    corroborated: false,
   }
 }
 
@@ -220,6 +252,8 @@ export class EventLayer {
   readonly cfg: EventLayerConfig
   readonly scorer: ChangeScorer
   readonly grid: BarGrid
+  /** The gap -> snap-back drop detector (null when `cfg.gapDrop` is false). */
+  readonly gapDrop: GapDropDetector | null
   readonly stats: EventLayerStats = {
     beats: 0,
     scored: 0,
@@ -228,6 +262,7 @@ export class EventLayer {
     fills: 0,
     gains: 0,
     breakdowns: 0,
+    drops: 0,
     gapCells: 0,
     resets: 0,
     jumps: 0,
@@ -239,7 +274,7 @@ export class EventLayer {
    * (within half a beat). A random phase would be "on" a quarter of the time: the gap is the evidence that section
    * changes really fall on bars.
    */
-  readonly lastEmit = { rawBoundary: 0, gridReady: false, rawOnGrid: false, s: 0, persist: 0 }
+  readonly lastEmit = { rawBoundary: 0, gridReady: false, rawOnGrid: false, s: 0, persist: 0, recentRatio: 0 }
 
   private readonly moments = new RunningMoments(SIG_DIM)
   private readonly events: SectionEvent[]
@@ -247,6 +282,12 @@ export class EventLayer {
   private seq = 0
   private drained = 0
   private nextId = 1
+  /** The drop the current `push` completed (set by `stepGap`, delivered by `push`). */
+  private pendingDrop: SectionEvent | null = null
+  /** An ambiguous candidate being held for `fillHoldBeats` more scored beats (see the config), and its copy. */
+  private held = false
+  private heldWait = 0
+  private readonly heldCand: Candidate = makeCandidate()
 
   // per-source state
   private lastBeat = Number.NaN
@@ -281,6 +322,7 @@ export class EventLayer {
     this.cfg = { ...DEFAULT_EVENT_LAYER, ...cfg }
     this.scorer = new ChangeScorer({ ...DEFAULT_SCORER, ...this.cfg.scorer })
     this.grid = new BarGrid(this.cfg.grid)
+    this.gapDrop = this.cfg.gapDrop === false ? null : new GapDropDetector(this.cfg.gapDrop)
     this.events = Array.from({ length: this.cfg.ringSize }, makeEvent)
     this.simObjs = Array.from({ length: this.cfg.ringSize }, () => ({ boundaryBeat: 0, similarity: 0 }))
   }
@@ -289,6 +331,8 @@ export class EventLayer {
   reset(): void {
     this.scorer.reset()
     this.grid.reset()
+    this.gapDrop?.reset()
+    this.held = false
     this.moments.reset()
     this.lastBeat = Number.NaN
     this.seq0 = 0
@@ -319,6 +363,27 @@ export class EventLayer {
    * Returns the events this beat created (a shared empty array when none).
    */
   push(cell: BeatCell, beat: number, time: number, bpm: number, downbeat?: DownbeatHint): readonly SectionEvent[] {
+    this.pendingDrop = null
+    const inner = this.pushCell(cell, beat, time, bpm, downbeat)
+    const dropEv = this.pendingDrop
+    if (dropEv === null) return inner
+    this.pendingDrop = null
+    return inner.length === 0 ? [dropEv] : [dropEv, ...inner]
+  }
+
+  /** The low band of a cell in dB (mean of sub and bass), for the gap detector; NaN when the cell has no raw tap. */
+  private stepGap(cell: BeatCell, beat: number, time: number): void {
+    const gd = this.gapDrop
+    if (gd === null) return
+    const raw = cell.raw
+    if (raw === undefined || raw.length < 7) return
+    const low = 0.5 * (Math.max(-120, raw[0]) + Math.max(-120, raw[1]))
+    const fire = gd.push(low, time, beat)
+    // delivered NOW so the ring order is drop, then any change candidate of the same beat
+    if (fire !== null) this.pendingDrop = this.emitDrop(fire)
+  }
+
+  private pushCell(cell: BeatCell, beat: number, time: number, bpm: number, downbeat?: DownbeatHint): readonly SectionEvent[] {
     const c = this.cfg
     if (!Number.isFinite(beat) || !Number.isFinite(time)) return NO_EVENTS
     const bpmOk = Number.isFinite(bpm) && bpm > 20 && bpm < 400 ? bpm : 120
@@ -338,6 +403,7 @@ export class EventLayer {
     this.lastTime = time
     this.seq0++
     this.offsetSeq = beat - this.seq0
+    this.stepGap(cell, beat, time)
 
     // --- tempo: an octave-type re-lock (halving, doubling, 3:2) changes what a "beat" is, so the bar phase learned so
     // far means nothing. Ordinary tempo wobble does not. -------------------------------------------------------------------
@@ -368,6 +434,7 @@ export class EventLayer {
         // the newest committed cell overlapped the start of the gap: it is tainted too
         if (this.scorer.ring.count > 0) this.scorer.ring.dropNewest(1)
         this.scorer.invalidate()
+        this.held = false
       }
       this.gapCells++
       // A long gap loses the bar phase (the tracker's grid drifts through silence); a short one keeps it.
@@ -410,6 +477,10 @@ export class EventLayer {
     }
     this.stats.scored++
     const cand = this.scorer.step(60 / (this.bpmAvg > 0 ? this.bpmAvg : bpmOk), this.grid)
+    if (this.held && --this.heldWait <= 0) {
+      const ev = this.resolveHeld()
+      if (cand === null) return ev
+    }
     if (cand === null) return NO_EVENTS
     this.stats.candidates++
     return this.emit(cand)
@@ -435,9 +506,36 @@ export class EventLayer {
     }
   }
 
-  private typeOf(cand: Candidate): EventType {
+  /** The type of a candidate, or `hold` when it is ambiguous between a change that stays and a fill that has not ended (see `fillHoldBeats`). */
+  private typeOf(cand: Candidate): EventType | 'hold' {
     const c = this.cfg
-    if (cand.persist < c.fillPersist) return 'fill'
+    if (cand.persist < c.fillPersist) {
+      if (cand.recentS < c.fillRecentFrac * cand.thr) return 'fill'
+      if (c.fillHoldBeats > 0) return 'hold'
+    }
+    return this.typeNoFill(cand)
+  }
+
+  /** The held candidate, typed on the longer stretch after its peak: a fill has returned to the baseline, a change has not. */
+  private resolveHeld(): readonly SectionEvent[] {
+    const c = this.cfg
+    const cand = this.heldCand
+    this.held = false
+    const ring = this.scorer.ring
+    const k = (c.scorer.peakHalf ?? DEFAULT_SCORER.peakHalf) + c.fillHoldBeats
+    const rs = this.scorer.recentScoreOver(k)
+    cand.detectedBeat = ring.beatAt(0)
+    cand.detectedTime = ring.timeAt(0)
+    if (Number.isFinite(rs)) {
+      cand.recentS = rs
+      cand.persist = cand.s > 0 ? rs / cand.s : 1
+    }
+    const ended = Number.isFinite(rs) && rs < c.fillRecentFrac * cand.thr
+    return this.emit(cand, ended ? 'fill' : this.typeNoFill(cand))
+  }
+
+  private typeNoFill(cand: Candidate): EventType {
+    const c = this.cfg
     if (cand.shape < c.gainShapeMax && Math.abs(cand.levelDelta) >= c.gainMinDb) return 'gain'
     if (cand.lowAbsDelta <= c.breakdownLowDb && cand.levelDelta <= c.breakdownLevelDb && cand.recentLowAbsDelta <= 0.5 * c.breakdownLowDb) {
       return 'breakdown'
@@ -459,9 +557,17 @@ export class EventLayer {
     return clamp01(0.3 + 0.3 * persist + 0.2 * gridAgree + 0.2 * agree)
   }
 
-  private emit(cand: Candidate): readonly SectionEvent[] {
+  private emit(cand: Candidate, forced?: EventType): readonly SectionEvent[] {
     const c = this.cfg
-    const type = this.typeOf(cand)
+    const t0 = forced ?? this.typeOf(cand)
+    if (t0 === 'hold') {
+      // ambiguous: keep a copy (the scorer reuses its candidate) and decide `fillHoldBeats` scored beats from now
+      copyCandidate(this.heldCand, cand)
+      this.held = true
+      this.heldWait = c.fillHoldBeats
+      return NO_EVENTS
+    }
+    const type: EventType = t0
     const st = this.stats
     let strength = strengthOf(cand.sEff)
     // Typed events choose their own refractory: a fill must not shadow the change that follows it.
@@ -476,6 +582,7 @@ export class EventLayer {
     const sceneClass = type === 'change' || type === 'breakdown'
     this.lastEmit.s = cand.sEff
     this.lastEmit.persist = cand.persist
+    this.lastEmit.recentRatio = cand.thr > 0 ? cand.recentS / cand.thr : 0
     this.lastEmit.rawBoundary = cand.boundarySeqRaw
     this.lastEmit.gridReady = this.grid.snapReady()
     this.lastEmit.rawOnGrid = this.lastEmit.gridReady && Math.abs(cand.boundarySeqRaw - this.grid.snap(cand.boundarySeqRaw)) <= 0.5
@@ -522,8 +629,37 @@ export class EventLayer {
       o.similarity = sim.similarity
       ev.sim = o
     } else ev.sim = undefined
+    ev.corroborated = false
     this.seq++
     return [ev]
+  }
+
+  /** Deliver the gap detector's drop through the ring (before any change candidate of the same beat). */
+  private emitDrop(d: GapDropFire): SectionEvent {
+    const slot = this.seq % this.events.length
+    const ev = this.events[slot]
+    ev.id = this.nextId++
+    ev.type = 'drop'
+    ev.strength = d.strength
+    ev.confidence = d.confidence
+    ev.boundaryBeat = d.boundaryBeat
+    ev.boundaryTime = d.boundaryTime
+    ev.detectedAtBeat = d.detectedBeat
+    ev.detectedAtTime = d.detectedTime
+    ev.source = 'live'
+    const bib = this.grid.beatInBar(this.seq0)
+    ev.phase = bib >= 0 ? bib : 0
+    ev.feats.level = 0
+    ev.feats.low = d.depthDb / 5
+    ev.feats.timbre = 0
+    ev.feats.harmony = 0
+    ev.feats.rhythm = 0
+    ev.sim = undefined
+    // a dropout AND a return: two independent observations of one physical drop (the director's gate for a young drop)
+    ev.corroborated = true
+    this.stats.drops++
+    this.seq++
+    return ev
   }
 
   /** Mean of the section's first beats (raw signature), remember it, and return the best earlier match. */

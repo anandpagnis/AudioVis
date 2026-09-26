@@ -206,6 +206,8 @@ export interface Candidate {
   d: Float64Array
   /** Score of the beats AFTER the peak against the old baseline, as a share of `s` (a fill returns to ~0). */
   persist: number
+  /** The score of those beats AFTER the peak (z units, same whitening): what `persist` is a share of. A saturating peak (score 30) makes the share small even when the change plainly stays (score 5 against a bar of 4): typing looks at both. */
+  recentS: number
   /** The score with the level channel left out (0 = only the level moved: a volume knob). */
   shape: number
   /** Window means at the peak: low-band absolute dB change (low tilt + level) and level change, in dB. */
@@ -216,6 +218,17 @@ export interface Candidate {
   recentLevelDelta: number
   /** Extra lag applied for slow channels, in beats. */
   extraLag: number
+}
+
+/** Copy every field of `src` into `dst` (a candidate the scorer will overwrite on its next accept must be kept by value). */
+export function copyCandidate(dst: Candidate, src: Candidate): void {
+  const z = dst.z
+  const d = dst.d
+  Object.assign(dst, src)
+  dst.z = z
+  dst.d = d
+  z.set(src.z)
+  d.set(src.d)
 }
 
 export function makeCandidate(): Candidate {
@@ -237,6 +250,7 @@ export function makeCandidate(): Candidate {
     z: new Float64Array(CHANNELS),
     d: new Float64Array(CHANNELS),
     persist: 1,
+    recentS: 0,
     shape: 0,
     lowAbsDelta: 0,
     levelDelta: 0,
@@ -520,6 +534,27 @@ export class ChangeScorer {
     return this.pickPeak(spb, prior)
   }
 
+  /**
+   * Score (whitened, z units) of the newest `k` beats against the baseline that preceded the window of the peak `k - peakHalf`
+   * beats ago: `pickPeak`'s persistence measure over a LONGER stretch after the peak. NaN when there is too little history.
+   * `EventLayer` asks it a few beats after an ambiguous candidate to tell a change that stays from a fill that ends.
+   */
+  recentScoreOver(k: number): number {
+    const c = this.cfg
+    const ring = this.ring
+    const N = c.newBeats
+    const n = ring.count
+    const Mp = Math.min(c.oldBeats, n - k - N)
+    if (k < 1 || Mp < c.minOldBeats) return Number.NaN
+    if (!ring.meanWindow(0, k, this.newMean) || !ring.meanWindow(k + N, Mp, this.oldMean)) return Number.NaN
+    channelDistances(this.newMean, this.oldMean, this.d)
+    const NB = c.newBeatsSlow
+    const MBp = Math.min(c.oldBeats, n - k - NB)
+    this.d[CH_HARMONY] = MBp >= c.minOldBeats && ring.meanWindow(k + NB, MBp, this.oldMeanB) ? harmonyDistance(this.newMean, this.oldMeanB) : 0
+    this.whiten(this.d, this.z)
+    return this.combine(this.z, false)
+  }
+
   /** Ring slot of the entry `back` beats before the newest scored one. */
   private pSlot(back: number): number {
     return (this.pHead - 1 - back + this.P * 2) % this.P
@@ -608,6 +643,7 @@ export class ChangeScorer {
     cand.recentLowAbsDelta = 0
     cand.recentLevelDelta = 0
     cand.persist = 1
+    cand.recentS = 0
     if (Mp >= c.minOldBeats && ring.meanWindow(h, N, this.newMean) && ring.meanWindow(h + N, Mp, this.oldMean)) {
       cand.levelDelta = this.newMean[OFF_LEVEL] - this.oldMean[OFF_LEVEL]
       cand.lowAbsDelta = this.newMean[OFF_LOW] + this.newMean[OFF_LEVEL] - (this.oldMean[OFF_LOW] + this.oldMean[OFF_LEVEL])
@@ -621,6 +657,7 @@ export class ChangeScorer {
         this.whiten(this.d, this.z)
         const sRecent = this.combine(this.z, false)
         cand.persist = sc > 0 ? sRecent / sc : 1
+        cand.recentS = sRecent
       }
     }
     this.lastPeakStep = peakStep

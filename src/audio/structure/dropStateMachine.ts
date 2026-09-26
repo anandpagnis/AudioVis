@@ -126,6 +126,16 @@
  *                         fast enough that "baseline" still means
  *                         "recently", not "the whole track so far".
  *
+ * REFRACTORY AND REPEAT GUARD (added with the tap logs: a pumping / sidechained passage fired 14 drops in 28 s, spacing 1.3-2.6 s,
+ * in a song whose real drops were 20 s apart). A drop is a rare, section-level event, so two mechanisms stop a machine that
+ * fires over and over from doing so:
+ *   refractorySec = 4     after a fire, no dip is even considered for this long (about two bars at 120 BPM: a second
+ *                         "drop" that close is the same event or a bass-line rest pattern, never a new section).
+ *   repeat guard          every fire inside the last `repeatWindowSec` (20 s) makes the next dip need one more
+ *                         `dipMinSec` of deep time (and `lowSnapMinDipSec`): a genuine breakdown-then-drop lasts as long
+ *                         however recently a drop fired, a rest pattern does not. One fire in the window doubles the bar, two
+ *                         triple it. Both are inert on music that drops every 15-20 s or less often.
+ *
  * Deterministic, allocation-free after construction, NaN/negative-dt-safe
  * (mirrors this codebase's `if (!(dt > 0)) return` idiom — see
  * `emotionDimensions.ts` / `onsetDensity.ts`). Zero AudioEngine dependency
@@ -151,6 +161,10 @@ export interface DropStateMachineOptions {
   armTimeoutSec?: number
   /** Transient input must reach this value to count as a concurrent hit. Default 0.5. */
   transientThreshold?: number
+  /** After a fire, dips are ignored for this long (s). 0 = off. Default 4. */
+  refractorySec?: number
+  /** Each fire within this many seconds raises the deep time the next dip needs by one `dipMinSec` (and `lowSnapMinDipSec`). 0 = off. Default 20. */
+  repeatWindowSec?: number
 }
 
 const DEFAULT_BASELINE_TAU_SEC = 8
@@ -161,6 +175,10 @@ const DEFAULT_LOW_SNAP_MIN_DIP_SEC = 1.0
 const DEFAULT_SNAP_WINDOW_SEC = 0.5
 const DEFAULT_ARM_TIMEOUT_SEC = 25
 const DEFAULT_TRANSIENT_THRESHOLD = 0.5
+const DEFAULT_REFRACTORY_SEC = 4
+const DEFAULT_REPEAT_WINDOW_SEC = 20
+/** Fire stamps kept for the repeat guard (older ones are past any sensible window anyway). */
+const FIRE_RING = 6
 
 /** Frame dt is capped at this before use, same guard `HarmonicTensionEstimator` uses for its own
  * pending-time accumulator — a backgrounded-tab gap should not be read as one giant instantaneous sample. */
@@ -177,6 +195,8 @@ export class DropStateMachine {
   private readonly snapWindowSec: number
   private readonly armTimeoutSec: number
   private readonly transientThreshold: number
+  private readonly refractorySec: number
+  private readonly repeatWindowSec: number
 
   private baseline = 0
   private seeded = false
@@ -191,6 +211,8 @@ export class DropStateMachine {
   private clock = 0
   private lastDeepClock = -Infinity
   private lastTransientClock = -Infinity
+  private readonly fireClocks = new Float64Array(FIRE_RING).fill(-Infinity)
+  private firePos = 0
 
   constructor(opts: DropStateMachineOptions = {}) {
     this.baselineTau = Math.max(0.5, opts.baselineTauSec ?? DEFAULT_BASELINE_TAU_SEC)
@@ -201,6 +223,8 @@ export class DropStateMachine {
     this.snapWindowSec = Math.max(0, opts.snapWindowSec ?? DEFAULT_SNAP_WINDOW_SEC)
     this.armTimeoutSec = Math.max(0, opts.armTimeoutSec ?? DEFAULT_ARM_TIMEOUT_SEC)
     this.transientThreshold = opts.transientThreshold ?? DEFAULT_TRANSIENT_THRESHOLD
+    this.refractorySec = Math.max(0, opts.refractorySec ?? DEFAULT_REFRACTORY_SEC)
+    this.repeatWindowSec = Math.max(0, opts.repeatWindowSec ?? DEFAULT_REPEAT_WINDOW_SEC)
   }
 
   reset(): void {
@@ -213,6 +237,16 @@ export class DropStateMachine {
     this.clock = 0
     this.lastDeepClock = -Infinity
     this.lastTransientClock = -Infinity
+    this.fireClocks.fill(-Infinity)
+    this.firePos = 0
+  }
+
+  /** Fires inside the repeat window, as a multiplier on the deep time a dip needs (1 = none recently). */
+  private repeatScale(): number {
+    if (this.repeatWindowSec <= 0) return 1
+    let n = 0
+    for (let i = 0; i < FIRE_RING; i++) if (this.clock - this.fireClocks[i] <= this.repeatWindowSec) n++
+    return 1 + n
   }
 
   /**
@@ -244,7 +278,7 @@ export class DropStateMachine {
     let fired = false
     switch (this.state) {
       case 'normal':
-        if (isDeep) {
+        if (isDeep && this.clock - this.fireClocks[(this.firePos + FIRE_RING - 1) % FIRE_RING] >= this.refractorySec) {
           this.state = 'dipping'
           // The frame that crosses under the threshold is deep time too (so N deep frames = N * dt).
           this.dipElapsed = h
@@ -253,7 +287,7 @@ export class DropStateMachine {
       case 'dipping':
         if (isDeep) {
           this.dipElapsed += h
-          if (this.dipElapsed >= this.dipMinSec) {
+          if (this.dipElapsed >= this.dipMinSec * this.repeatScale()) {
             this.state = 'armed'
             this.armElapsed = 0
             this.deepSec = this.dipElapsed
@@ -282,8 +316,10 @@ export class DropStateMachine {
           // cycle: there is no more "dip" left to snap out of, fired or not.
           const recentlyDeep = this.clock - this.lastDeepClock <= this.snapWindowSec
           const transientNow = this.clock - this.lastTransientClock <= this.snapWindowSec
-          if (recentlyDeep && (transientNow || this.deepSec >= this.lowSnapMinDipSec)) {
+          if (recentlyDeep && (transientNow || this.deepSec >= this.lowSnapMinDipSec * this.repeatScale())) {
             fired = true
+            this.fireClocks[this.firePos] = this.clock
+            this.firePos = (this.firePos + 1) % FIRE_RING
           }
           this.state = 'normal'
         } else if (this.armElapsed >= this.armTimeoutSec) {

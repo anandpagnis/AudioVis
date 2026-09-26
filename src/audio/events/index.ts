@@ -15,4 +15,6 @@ export {
   type EventLayerStats,
 } from './EventLayer'
 export type { EventFeats, EventType, SectionEvent } from './types'
-export { maskLegacyInputForV2, mergeLiveWithLegacy } from './eventMux'
+export { MUX, keepLegacyDrop, maskLegacyInputForV2, mergeLiveWithLegacy } from './eventMux'
+export { DEFAULT_GAP_DROP, GapDropDetector, type GapDropConfig, type GapDropFire } from './gapDrop'
+export { DEFAULT_PHRASE_PRIOR, PhrasePrior, type PhraseEstimate, type PhrasePriorConfig } from './phrasePrior'

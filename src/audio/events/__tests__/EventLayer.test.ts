@@ -163,7 +163,7 @@ describe('EventLayer: refractory, guards, resets', () => {
     expect(() => layer.push(cells[1], 6000, 4000, Number.NaN)).not.toThrow()
   })
 
-  it('a silence gap in the middle of a section is never an event and does not fake one afterwards', () => {
+  it('a silence gap in the middle of a section is never a change / fill / gain, and does not fake one afterwards (the low end returning after it is a drop)', () => {
     const rnd = mulberry(4)
     const cells: BeatCell[] = []
     for (let b = 1; b <= 200; b++) {
@@ -175,7 +175,12 @@ describe('EventLayer: refractory, guards, resets', () => {
       cells.push(c)
     }
     const layer = new EventLayer()
-    expect(run(layer, cells)).toEqual([])
+    const evs = run(layer, cells)
+    // a >= 1.75 s hush and the low end coming back whole is exactly what `gapDrop.ts` reads as a drop: one, at the return
+    expect(evs.filter((e) => e.type !== 'drop')).toEqual([])
+    const drops = evs.filter((e) => e.type === 'drop')
+    expect(drops.length).toBeLessThanOrEqual(1)
+    if (drops.length === 1) expect(drops[0].detectedAtBeat).toBeGreaterThanOrEqual(94)
     expect(layer.stats.gapCells).toBeGreaterThanOrEqual(4)
   })
 

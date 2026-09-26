@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { maskLegacyInputForV2, mergeLiveWithLegacy } from '../../../audio/events/eventMux'
+import { MUX, maskLegacyInputForV2, mergeLiveWithLegacy } from '../../../audio/events/eventMux'
 import { createLegacyEventState, stepLegacyEvents, type LegacyInput } from '../../../audio/events/legacyEvents'
 import type { SectionEvent } from '../../../audio/events/types'
 import LOOKDEBUG_SRC from '../../look/lookDebug.ts?raw'
@@ -116,8 +116,9 @@ describe('eventMux: v2 keeps the legacy drop / buildStart events and replaces th
     }
   })
 
-  it('a drop edge and a build start still come through in v2 mode, and the live events are appended after them', () => {
-    const li = legacyIn({ drop: true, sectionChange: true, sectionChangeStrength: 1.2 })
+  it('a release-backed drop edge and a build start still come through in v2 mode, and the live events are appended after them', () => {
+    // (a breakdown was on: the mapper grades this drop as the bass-return release, 0.85, which survives the v2 demotion)
+    const li = legacyIn({ drop: true, inBreakdown: true, sectionChange: true, sectionChangeStrength: 1.2 })
     maskLegacyInputForV2(li)
     const state = createLegacyEventState()
     const out: SectionEvent[] = []
@@ -138,8 +139,41 @@ describe('eventMux: v2 keeps the legacy drop / buildStart events and replaces th
     expect(out[0].corroborated).toBeFalsy()
   })
 
+  it('under v2 a LONE legacy drop (no build / breakdown behind it) is demoted: the live gap drop is the drop source', () => {
+    expect(MUX.legacyDrops).toBe('release')
+    const state = createLegacyEventState()
+    const lone: SectionEvent[] = []
+    stepLegacyEvents(state, legacyIn({ drop: true }), lone)
+    expect(lone.map((e) => e.type)).toEqual(['drop'])
+    expect(lone[0].confidence).toBeLessThan(MUX.legacyDropMinConfidence)
+    const liveDrop = live({ id: 5, type: 'drop', confidence: 0.6 })
+    mergeLiveWithLegacy(lone, [liveDrop])
+    expect(lone).toEqual([liveDrop]) // the lone legacy drop is gone, the live drop stays
+  })
+
+  it('MUX.legacyDrops = all restores the old pass-through and none ignores every legacy drop', () => {
+    const mk = (): SectionEvent[] => {
+      const out: SectionEvent[] = []
+      stepLegacyEvents(createLegacyEventState(), legacyIn({ drop: true }), out)
+      return out
+    }
+    const old = MUX.legacyDrops
+    try {
+      MUX.legacyDrops = 'all'
+      const a = mk()
+      mergeLiveWithLegacy(a, [])
+      expect(a).toHaveLength(1)
+      MUX.legacyDrops = 'none'
+      const n = mk()
+      mergeLiveWithLegacy(n, [])
+      expect(n).toHaveLength(0)
+    } finally {
+      MUX.legacyDrops = old
+    }
+  })
+
   it('a legacy change / breakdown in the list is filtered out and the array is rewritten in place', () => {
-    const arr: SectionEvent[] = [live({ id: 1, type: 'change', source: 'legacy' }), live({ id: 2, type: 'drop', source: 'legacy' }), live({ id: 3, type: 'breakdown', source: 'legacy' }), live({ id: 4, type: 'buildStart', source: 'legacy' })]
+    const arr: SectionEvent[] = [live({ id: 1, type: 'change', source: 'legacy' }), live({ id: 2, type: 'drop', source: 'legacy', confidence: 0.9 }), live({ id: 3, type: 'breakdown', source: 'legacy' }), live({ id: 4, type: 'buildStart', source: 'legacy' })]
     const same = arr
     mergeLiveWithLegacy(arr, [live({ id: 9 })])
     expect(arr).toBe(same)

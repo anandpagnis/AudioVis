@@ -141,6 +141,17 @@ function extractDetectors(run: TrackRunResult, sr: number): DetectorTrace[] {
       ats: scene.map((e) => e.detectedAtTime + off),
       available: true,
     })
+    // The live layer's own drop (`gapDrop.ts`: a low-band dropout of >= a bar, then its return), scored against the drop truth.
+    const drops = run.events.filter((e) => e.type === 'drop' && e.detectedAtTime + off >= MIN_DET_SEC)
+    out.push({
+      id: 'events.v2.drop',
+      label: 'EventLayer v2: gap -> snap-back drop (vs drop truth)',
+      kind: 'point',
+      recallTypes: ['drop'],
+      claims: drops.map((e) => e.boundaryTime + off),
+      ats: drops.map((e) => e.detectedAtTime + off),
+      available: true,
+    })
   }
 
   const tr = run.trace
