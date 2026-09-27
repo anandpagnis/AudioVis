@@ -99,6 +99,15 @@ export const PRELUDE_SYMBOLS: readonly string[] = [
   'uBeatSin',
   'uBeatSin2',
   'uBeatSin4',
+  'uNoiseLUT',
+  // The prelude's first FUNCTIONS/consts (engine/noiseLUT.ts's shared hash
+  // lookup) — the test below only scans for `uniform|varying` declarations
+  // (the prelude had no functions before these), so these three are not
+  // machine-verified against the prelude source the way the uniforms above
+  // are. Keep them in step by hand if noiseLUT's own names ever change.
+  'hashLUT',
+  'hashLUT2',
+  'NOISE_LUT_TEXELS',
 ]
 
 /** GLSL scalar/vector/matrix type keywords, for the two extraction regexes below. */

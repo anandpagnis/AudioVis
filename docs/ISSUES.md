@@ -12646,3 +12646,78 @@ per-frame canvas heavy enough to distort the reading.
       licence gate all pass at every step. Tests: 2488/2489 pass throughout;
       the one failure is the pre-existing, unrelated `checkDistLicences.test.ts`
       flake first confirmed in F258.
+
+- [~] **F261 · A primary that declares `blending: THREE.NoBlending` never
+      cross-dissolves — it hard-cuts, and reads as fading up from black** —
+      *2026-09-25, user report on `snowflake` ("the flake split[s] are
+      translucent, they should be solid — looks great on buildups, then
+      [it's off at] scene transition to some drop")* `src/scenes/SnowflakeScene.tsx`,
+      `src/engine/createShaderScene.tsx`, `src/engine/SceneManager.tsx`
+
+      **Root cause.** `createShaderScene`'s own doc comment on `blending`
+      claims: *"`SceneManager` wraps every mounted scene in a `BlendedLayer`,
+      which... overwrites every material's blending... a forced `add` for the
+      primary and effect slots. So for the on-screen material [the spec's own
+      `blending` field] is only the value used before that pass runs."* That is
+      no longer true. `SceneManager`'s render JSX
+      (`e.role === 'primary' ? <Scene /> : <BlendedLayer role={e.role}>...`)
+      never wraps a primary entry in `BlendedLayer` at all — `applyBlend()`
+      (the function that actually rewrites `material.blending`) has no other
+      caller. So whatever a primary declares via `spec.blending` is exactly
+      what its on-screen material keeps, forever, for as long as it holds the
+      primary slot — nothing "forces add" for it later.
+
+      `snowflake` declared `blending: THREE.NoBlending` (same reasoning as
+      `matrix`/`wireframe`: crisp thin strokes want an opaque write, not an
+      additive one). With GL blending genuinely disabled, the default
+      (non-wipe) crossfade — two fullscreen quads at the same render order,
+      each just multiplying its own colour by its own `uFade` — no longer
+      blends at all: whichever quad's draw call lands last in that frame's
+      command list (in practice, the just-promoted incoming entry, mounted
+      after and so ordered after in the transparent render list) OVERWRITES
+      the framebuffer outright, discarding the outgoing scene's pixels
+      regardless of either one's `uFade`. The outgoing scene vanishes the
+      instant the incoming entry is promoted rather than dissolving away, and
+      the incoming one renders visibly at whatever (low, early-in-the-fade)
+      brightness `uFade` gives it — reading as fading up from black rather
+      than cross-dissolving with what was behind it. On `snowflake`'s
+      near-black cold-field background with thin bright lines, that showed as
+      the flake looking pale/translucent specifically during a transition,
+      solid only once the fade completed — exactly the buildup-fine,
+      transition-into-a-drop-wrong split the user described. Wipe-style
+      transitions are unaffected (they composite via captured textures and
+      `THREE.Layers`, never via raw material blending — see F260).
+
+      **Fixed for `snowflake`:** removed `blending: THREE.NoBlending` from its
+      spec, falling back to `createShaderScene`'s default
+      `THREE.AdditiveBlending` — matching how every other default-blending
+      scene already crossfades cleanly. At rest (no transition, near-black
+      background either way) this is visually identical to before; the
+      difference only shows up during the crossfade it was breaking.
+
+      **Same bug also written on 20 other scenes'
+      `blending: THREE.NoBlending` declaration** (`FridayLinesScene`,
+      `ButterflyFieldScene`, `OversaturatedWebScene`, `TruchetKaleidoScene`,
+      `MalachiteScene`, `MazeFlightScene`, `FortressHarkonnenScene`,
+      `FoldPathScene`, `DjCamScene`, `BeatsScene`, `GyroidFluxScene`,
+      `NeonJungleScene`, `LattesFoldScene`, `HoldScene`, `NebulaDriftScene`,
+      `TravellingScene`, `JavaZoneLatticeScene`, `InkFluidScene`,
+      `DustFieldScene`, `LimitlessScene` — found by `grep`, not individually
+      verified against a live transition). Each one only actually hits the bug
+      while holding the PRIMARY slot (a scene only ever used as an
+      accent/background/overlay routes through `BlendedLayer` normally, which
+      still works correctly for non-primary roles). Not fixed here — the user
+      asked about `snowflake` specifically, and blanket-flipping 20 scenes'
+      blending without checking each one's own reason for choosing `NoBlending`
+      (some may have a real opaque-coverage need, like `maze`'s "paints every
+      pixel including its own fog ground") risks a different regression per
+      scene. Whoever picks this up next: audit each one's rationale, and
+      either fix the JSX so a primary genuinely does get forced to `add` (the
+      fix the stale doc comment already assumed existed) or fix each scene
+      individually as `snowflake` was here. The stale doc comment on
+      `ShaderSceneSpec.blending` (`createShaderScene.tsx`) should also be
+      corrected once the real behaviour is settled either way.
+
+      **Verification.** `npm run check`: typecheck, lint, 2525/2528 tests
+      (2 skipped, 1 todo — none related), build and the licence gate all
+      pass.

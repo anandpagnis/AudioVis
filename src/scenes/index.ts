@@ -876,6 +876,10 @@ export const SCENES: SceneDef[] = [
       // Matches `kaleido`: a centred mandala primary doesn't want to sit as a
       // background or accent under something else.
       compatibleWith: [],
+      // Owns the frame, same reasoning as `tribalentity`/`mothwings`: a
+      // centred mandala composites additively over its own dark centre, so a
+      // background layer would show straight through it.
+      ownsFrame: true,
       // Same 0.6-0.9 band as `kaleido`, calibrated close but not copied — equal
       // weights would make the director's tie-break between the two mandala
       // scenes arbitrary.
@@ -916,6 +920,7 @@ export const SCENES: SceneDef[] = [
       performanceCost: 'high',
       // Owns the frame; nothing composites with a first-person corridor.
       compatibleWith: [],
+      ownsFrame: true,
       // Peaks at `aggressive`, where `tunnel` peaks at `building` and `kifs` at
       // `peak` — three high-energy scenes that would otherwise shadow each
       // other across the same range.
@@ -1012,6 +1017,7 @@ export const SCENES: SceneDef[] = [
       performanceCost: 'low',
       // Owns the frame; nothing composites with a full-bleed fractal.
       compatibleWith: [],
+      ownsFrame: true,
       moodFit: { groove: 0.76, building: 0.82, peak: 0.86, aggressive: 0.9 },
       // Flat 2D fractal math, no camera concept — inert here, declared only
       // for CameraDirector.test.ts's variety invariant, same as `kifs`.

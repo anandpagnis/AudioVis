@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { quality } from '../engine/quality'
-import { criticalDamping, spring, springStep, type SpringState } from '../engine/response'
+import { criticalDamping, isDownbeat, spring, springStep, type SpringState } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
 import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
 
@@ -17,9 +17,11 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * ## This is the most expensive scene in the roster, and why
  *
  * `map()` is the hot path and it is not cheap: a `carveScale` at each nested
- * scale (six `hash31` each) plus a `pathPos` call for the guaranteed corridor.
- * It runs once per raymarch step, then ~15 more times during shading — 4 for
- * the normal, 5 for AO, 6 for the edge-glow Laplacian.
+ * scale (six `hashLUT` lookups each — see engine/noiseLUT.ts; was six inline
+ * `hash31` ALU chains each until the shared lookup texture replaced them)
+ * plus a `pathPos` call for the guaranteed corridor. It runs once per
+ * raymarch step, then ~15 more times during shading — 4 for the normal, 5
+ * for AO, 6 for the edge-glow Laplacian.
  *
  * **Measured, not guessed** (Apple M1, ANGLE/Metal, 2560x1600 target, offscreen
  * draw timed with a `readPixels` sync — `gl.finish()` is a no-op under ANGLE
@@ -123,16 +125,22 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *
  * ## Band routing
  *
- *   onKick  → two things at once, off the same signal (see "Response
- *             identity" below): a SPRING lurch (small camera roll/bank that
- *             rings back through level) and a SKIP (a brief, always-forward
- *             burst of extra cruise speed). The spring also walks the
- *             palette ramp and thins/thickens the fog. Neither one can ever
- *             slow, stop or reverse the flight — see "Response identity" for
- *             why that is provable, not just tuned.
- *   mids    → flight-speed drift
- *   energy  → headlight and emissive intensity
- *   highs   → circuit and window shimmer
+ *   downbeat → a real turn: a lasting lateral swerve baked into the flight
+ *              path itself (see TURN_IMPULSE/TURN_WIDTH), which the existing
+ *              cornering `lean` then banks into exactly as it already does
+ *              for the noise path's own organic curves. Once a bar, not
+ *              every kick — see TURN_IMPULSE's own doc for why.
+ *   onKick   → two things at once, off the same signal (see "Response
+ *              identity" below): a SPRING lurch (palette-ramp swing and
+ *              fog breathe, rings back through level) and a SKIP (a brief,
+ *              always-forward burst of extra cruise speed). Neither one can
+ *              ever slow, stop or reverse the flight — see "Response
+ *              identity" for why that is provable, not just tuned.
+ *   mids     → flight-speed drift, and a modest swell in how sharply the
+ *              maze itself turns (uTurns)
+ *   energy   → headlight/emissive intensity, and how open the maze is
+ *              (uDensity) — up only, never down; see uDensity's own doc
+ *   highs    → circuit and window shimmer
  *
  * ## Response identity: the skip-and-roll — motion first, rotation small
  *
@@ -163,31 +171,34 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  * position version had (see below) closed by construction rather than by
  * tuning.
  *
- * **Why the roll is small, and why a spring at all.** An earlier version of
+ * **Why the spring no longer touches rotation either.** An earlier version of
  * THIS pass tried putting the spring's own signed, overshoot-and-rebound
  * value straight onto `uPhase`, on the theory that the rebound would just
  * read as a deceleration — measured, the rebound velocity actually went
  * negative for a stretch, so the camera flew BACKWARD every beat, reading as
  * the flight pausing rather than settling (this is why the skip above is a
  * one-directional decay, not the spring's signed value, sharing the position
- * term). A later version tried enlarging the SAME spring's OUTPUT (now aimed
- * at rotation, never position) to a near-180° bank so a kick would flip the
- * camera ("ceiling becomes floor") — that read as wrong on an actual
- * corridor flythrough and is reverted. The spring keeps its original, subtle
- * job: `st.lurch.value` (as `uLurch`) feeds a `kickRoll` term summed into
- * camera bank in `main()`, alongside the existing cornering `lean`, so a kick
- * rocks the view a little on the SAME beat the skip moves it forward,
- * carries PAST level, and rings back — the readable overshoot the spring
- * exists for, at an amplitude that reads as a kick accompanying the motion
- * rather than as the whole event.
+ * term). A later version tried enlarging the SAME spring's OUTPUT (aimed at
+ * rotation instead) to a near-180° bank so a kick would flip the camera
+ * ("ceiling becomes floor") — that read as wrong on an actual corridor
+ * flythrough and was reverted to a subtle bank. Even subtle, though, it was
+ * STILL a camera roll with no corresponding change in the corridor — geometry
+ * dead ahead, camera tilting for no visible reason — which read as a shake,
+ * not as flying through a turn. Rotation now comes from a different source
+ * entirely: the downbeat swerves the actual flight path (`turnBias()`, and
+ * TURN_IMPULSE/TURN_WIDTH's own doc above), and the existing cornering `lean`
+ * banks into that real curvature the same way it always banked into the
+ * noise path's own gentle turns. The spring keeps a smaller, purely cosmetic
+ * job now — palette-ramp swing (`uHue`) and fog depth (`uLurch`) — both still
+ * worth the overshoot-and-rebound shape, neither one steering the camera.
  *
  * Notice what the kick still does not do: it does not brighten anything. The
  * old `uShock * 0.8` term in `light` was the 22nd of 22 scenes driving glow
- * from a kick envelope, so it stays gone. The kick reaches the image four
- * ways, none of them a gain term:
+ * from a kick envelope, so it stays gone. The kick/beat reaches the image
+ * four ways, none of them a gain term:
  *
  *   1. `st.skip` (as cruise-rate multiplier) — the motion itself, forward-only.
- *   2. `uLurch` (as camera roll) — the small rock, via `lean`/`bank`.
+ *   2. `turnBias()` (as a real path swerve) — the turn, via `lean`/`bank`.
  *   3. `uHue`   — palette-ramp POSITION, so the neon swings colour and rocks
  *                 back with the geometry rather than merely flashing.
  *   4. `uLurch` (as fog density), signed: the surge thins the fog ahead of
@@ -216,8 +227,9 @@ const LURCH_DAMPING = criticalDamping(LURCH_STIFFNESS) * 0.38
 /**
  * Spring-position impulse per unit of kick onset — the source's authored
  * lurch size, unchanged from when it was added straight onto `st.z`. What
- * changed is where the spring's output goes (camera roll, not position — see
- * `LURCH_ROLL` in the shader) and what happens next.
+ * changed is where the spring's output goes now (palette-ramp swing and fog
+ * depth, never position or rotation — see `uHue`/`uLurch` in the shader and
+ * TURN_IMPULSE's own doc for where rotation comes from instead).
  */
 const LURCH_IMPULSE = 0.8
 
@@ -248,6 +260,50 @@ const SKIP_MAX = 1.2
  *  a kick train charging toward SKIP_MAX (1.2) peaks just under 2x. Tuned to
  *  read as a distinct forward lurch without the corridor blurring past. */
 const SKIP_BOOST = 0.8
+
+/**
+ * A real turn instead of a shake.
+ *
+ * User complaint: the kick-roll (below, now removed) rocked the camera on
+ * every beat with no corresponding change in the actual corridor -- geometry
+ * dead ahead, camera tilting for no reason the eye could find in the world,
+ * which read as a shake rather than as flying somewhere. The fix is to make
+ * the beat swerve the CORRIDOR itself (a real, lasting lateral offset baked
+ * into `pathPos`, so the camera, its forward vector, AND the carved SDF all
+ * move together with no clipping risk) and let the EXISTING `lean` term --
+ * which already banks the camera into whatever curvature the noise-driven
+ * path happens to have -- bank into this real curvature too. One mechanism,
+ * reused, instead of a second one layered on top and disconnected from it.
+ *
+ * Triggered on the downbeat only, not every kick (`isDownbeat`, same gate
+ * `KifsRoseScene` uses for its own once-a-bar structural response) -- a
+ * turn is a bigger, rarer, structural event, and firing it on every kick
+ * (up to 4/bar) would just trade one kind of busyness for another. The
+ * continuous stuff (skip, hue drift, energy-driven light) still answers
+ * every beat; only the turn is bar-scale.
+ *
+ * `TURN_WIDTH` is shared with the shader (interpolated into `FRAG` below) --
+ * JS needs it to know when an in-progress turn has fully resolved, so a
+ * retrigger before that point can fold in whatever fraction already landed
+ * (see `st.turnBase`'s update, in `update()`) instead of popping.
+ *
+ * Sizing these two against each other is a real constraint, not a free
+ * choice: `map()`'s guaranteed corridor is a fixed-width tube built around
+ * `pathPos(p.z)` at each point's OWN z, scaled by a flat 0.2 specifically to
+ * stay Lipschitz-safe against a SLOPED tube (see the comment at that `min()`
+ * call) -- the march can overstep through a wall if the path's local slope
+ * (d(path.x)/dz) gets steep enough that the flat safety margin no longer
+ * covers it. The values below put the ramp's peak slope (a smoothstep's
+ * derivative peaks at its midpoint, `1.5 * TURN_IMPULSE / TURN_WIDTH`) at
+ * ~2.4x the organic noise path's own typical slope at rest -- a clearly
+ * sharper, deliberate-feeling turn, chosen to stay well inside the range the
+ * existing 0.2 margin was already carrying rather than testing its edge.
+ * Conservative on purpose: a turn that reads as too gentle is a tuning pass
+ * (raise TURN_IMPULSE or shrink TURN_WIDTH a little and look), a turn that
+ * clips through a wall is a correctness bug. Wants a live look either way.
+ */
+const TURN_IMPULSE = 2.4 // world units of lateral swerve per turn
+const TURN_WIDTH = 6.0 // z-units the swerve takes to fully resolve (~2x CELL)
 
 /**
  * Loop ceilings. GLSL ES 1.00 needs constant bounds; uniforms early-break.
@@ -281,12 +337,21 @@ export const FRAG = /* glsl */ `
    * Signed lurch-spring displacement, roughly -0.4..1.4. NOT an envelope: it
    * crosses zero and changes sign as the camera rocks back, so anything
    * reading it must behave sensibly for negative values. Drives fog depth
-   * AND the kick-roll bank angle in main() -- the colour swing rides on
-   * uHue instead. Deliberately never reaches forward position: uPhase is
-   * driven by cruise distance alone, so the flight never slows, stops or
-   * reverses (see header, "Response identity").
+   * only here -- the colour swing rides on uHue instead, and camera bank no
+   * longer comes from this spring at all (see uTurnBase/uTurnZ0/uTurnDelta
+   * and turnBias(), below). Deliberately never reaches forward position:
+   * uPhase is driven by cruise distance alone, so the flight never slows,
+   * stops or reverses (see header, "Response identity").
    */
   uniform float uLurch;
+  // A real, lasting lateral swerve baked into pathPos() -- see turnBias() and
+  // the header note above TURN_IMPULSE/TURN_WIDTH (JS side). uTurnBase is
+  // every past, fully-resolved turn's permanent contribution; uTurnDelta is
+  // the signed amount the CURRENT in-progress turn adds once it finishes
+  // ramping in, over uTurnZ0..uTurnZ0+TURN_WIDTH.
+  uniform float uTurnBase;
+  uniform float uTurnZ0;
+  uniform float uTurnDelta;
   uniform float uTurns;
   uniform float uSmooth;
   uniform float uDensity;
@@ -315,28 +380,37 @@ export const FRAG = /* glsl */ `
   const float SAT = 1.54;
   const float FOG = 1.0;
 
-  // Radians of camera bank per unit of lurch-spring displacement -- the
-  // kick's rotation amplitude (see header, "Response identity"). Reverted to
-  // the original wave-2 amplitude: a full half-rotate ("ceiling becomes
-  // floor") was tried at LURCH_ROLL = 3.6 and reported as looking wrong on a
-  // real corridor flythrough, so this is back to a subtle bank -- a max-
-  // charged kick (uLurch ~= 1.4) banks the camera ~0.45 rad (~26 deg), summed
-  // with the existing cornering lean term and clamped in main() so the two
-  // together never exceed a first-person-safe ~34 deg even when both peak at
-  // once. The rotation is now deliberately the SMALL half of the kick
-  // reaction -- see SKIP_BOOST below for the half that reads as motion.
-  const float LURCH_ROLL = 0.32;
+  // Permanent + in-progress turn offset at world-space z (see uTurnBase/
+  // uTurnZ0/uTurnDelta above). smoothstep clamps its input, so this is well-
+  // defined for every z: 0 well before a turn starts, uTurnBase alone long
+  // after it settles, easing between the two across the ramp.
+  float turnBias(float z) {
+    return uTurnBase + uTurnDelta * smoothstep(uTurnZ0, uTurnZ0 + ${TURN_WIDTH.toFixed(1)}, z);
+  }
 
+  // hash31 used to be defined here (its own fract/dot/fract chain) and is now
+  // the shared hashLUT() from SHADER_SCENE_PRELUDE (see engine/noiseLUT.ts) --
+  // one texture fetch against a small, cache-resident table instead of the
+  // same ALU work recomputed on every one of the ~110+ hash calls a single
+  // shaded pixel makes here (six hash31 calls per carveScale, up to three
+  // nested scales, called once per march step PLUS several more times during
+  // shading). Not a bit-identical swap -- the maze's specific corridor layout
+  // changes (still a valid, coherent, equally random maze), which nothing
+  // here depends on staying the same.
+  //
+  // Two hashes stay local, deliberately NOT migrated to the shared LUT:
+  //   hash21 (below) seeds the final dither, whose whole job is to vary
+  //     CONTINUOUSLY frame to frame (see its call site: + fract(uTime)) --
+  //     hashLUT2's nearest-filtered per-cell lookup would discretize that
+  //     into occasional steps instead of a smooth per-frame shimmer.
+  //   hash11/vnoise (below) power pathPos(), the flight path itself, which
+  //     interpolates smoothly BETWEEN samples (vnoise's own mix()) rather
+  //     than reading one discrete value per cell -- the opposite of what a
+  //     nearest-filtered lookup is for.
   float hash21(vec2 p) {
     p = fract(p * vec2(234.34, 435.345));
     p += dot(p, p + 34.23);
     return fract(p.x * p.y);
-  }
-
-  float hash31(vec3 p) {
-    p = fract(p * 0.1031);
-    p += dot(p, p.zyx + 31.32);
-    return fract((p.x + p.y) * p.z);
   }
 
   float hash11(float p) { return fract(sin(p * 127.1) * 43758.5453123); }
@@ -363,7 +437,11 @@ export const FRAG = /* glsl */ `
               + 0.5 * (vnoise(zc / 1.575 + 9.0) - 0.5)) * 1.60 * uTurns;
     float gy = ((vnoise(zc / 3.9 + 21.0) - 0.5)
               + 0.5 * (vnoise(zc / 1.75 + 40.0) - 0.5)) * 1.35 * uTurns;
-    return vec3((stairs(gx) + 0.5) * CELL, (stairs(gy) + 0.5) * CELL, z);
+    // Added AFTER stairs() quantizes the noise lattice, not before: the beat
+    // turn is a smooth offset riding on top of the organic maze, never a
+    // perturbation of the lattice hashing itself, so the base geometry the
+    // noise describes is completely unaffected by whether a turn happened.
+    return vec3((stairs(gx) + 0.5) * CELL + turnBias(z), (stairs(gy) + 0.5) * CELL, z);
   }
 
   // Corridors reach through any cell face whose symmetric hash rolls open, each
@@ -376,24 +454,24 @@ export const FRAG = /* glsl */ `
     float d = 1e9;
 
     float crx = max(abs(f.y), abs(f.z)) - w;
-    if (hash31(id + vec3( 0.5, 0.0, 0.0) + seed) < prob)
+    if (hashLUT(id + vec3( 0.5, 0.0, 0.0) + seed) < prob)
       d = min(d, max(crx, max( f.x - e, -f.x - w)));
-    if (hash31(id + vec3(-0.5, 0.0, 0.0) + seed) < prob)
+    if (hashLUT(id + vec3(-0.5, 0.0, 0.0) + seed) < prob)
       d = min(d, max(crx, max(-f.x - e,  f.x - w)));
 
     float sz = seed + 33.17;
     float crz = max(abs(f.x), abs(f.y)) - w;
-    if (hash31(id + vec3(0.0, 0.0,  0.5) + sz) < prob)
+    if (hashLUT(id + vec3(0.0, 0.0,  0.5) + sz) < prob)
       d = min(d, max(crz, max( f.z - e, -f.z - w)));
-    if (hash31(id + vec3(0.0, 0.0, -0.5) + sz) < prob)
+    if (hashLUT(id + vec3(0.0, 0.0, -0.5) + sz) < prob)
       d = min(d, max(crz, max(-f.z - e,  f.z - w)));
 
     float sy = seed + 71.73;
     float py = prob * 0.45;
     float cry = max(abs(f.x), abs(f.z)) - w;
-    if (hash31(id + vec3(0.0,  0.5, 0.0) + sy) < py)
+    if (hashLUT(id + vec3(0.0,  0.5, 0.0) + sy) < py)
       d = min(d, max(cry, max( f.y - e, -f.y - w)));
-    if (hash31(id + vec3(0.0, -0.5, 0.0) + sy) < py)
+    if (hashLUT(id + vec3(0.0, -0.5, 0.0) + sy) < py)
       d = min(d, max(cry, max(-f.y - e,  f.y - w)));
 
     return d;
@@ -463,7 +541,7 @@ export const FRAG = /* glsl */ `
     float light = 1.0 + uEnergy * 0.5;
 
     // Neutral base so the neon reads, tinted toward the palette's dark end.
-    float tint = hash31(floor(p / CELL) + 7.7);
+    float tint = hashLUT(floor(p / CELL) + 7.7);
     vec3 alb = mix(vec3(0.16, 0.17, 0.20), vec3(0.23, 0.21, 0.27), tint) + uShadow * 0.6;
 
     float gs = 0.5;
@@ -475,13 +553,13 @@ export const FRAG = /* glsl */ `
     lm = max(lm, (1.0 - smoothstep(0.006, 0.028, dl.z)) * (1.0 - an.z));
     lm *= dfade;
 
-    float lh = hash31(floor(p / gs) + 13.7);
+    float lh = hashLUT(floor(p / gs) + 13.7);
     float circuit = lm * step(0.72, lh)
                   * (0.7 + 0.3 * sin(uTime * 2.0 + lh * TAU * 3.0) * (0.5 + 0.5 * uHighs));
 
     vec3 wq = abs(fract(p) - 0.5);
     float inset = max(wq.x * (1.0 - an.x), max(wq.y * (1.0 - an.y), wq.z * (1.0 - an.z)));
-    float wh = hash31(floor(p) + 91.7);
+    float wh = hashLUT(floor(p) + 91.7);
     float thr = 1.0 - 0.11 * WINDOWS;
     float wmask = (1.0 - smoothstep(0.27, 0.33, inset)) * step(thr, wh)
                 * (0.65 + 0.35 * sin(uTime * 1.5 + wh * TAU * 5.0) * (0.5 + 0.5 * uHighs));
@@ -523,15 +601,15 @@ export const FRAG = /* glsl */ `
     vec3 ta = pathPos(zt + 2.4);
     vec3 fw = normalize(ta - ro);
 
-    // Cornering lean: bank into upcoming turns so they read as turns.
-    float lean = clamp(-0.22 * (pathPos(zt + 2.8).x - ro.x) / CELL, -0.35, 0.35);
-    // Kick roll: the lurch spring's entire output lands here, never on
-    // position. A kick banks the camera, the under-damped spring carries it
-    // PAST level, rocks back through it, and settles -- the readable
-    // overshoot the spring exists for, aimed at an axis where overshooting
-    // is just a rock, not a reversal of travel.
-    float kickRoll = uLurch * LURCH_ROLL;
-    float bank = clamp(lean + kickRoll, -0.6, 0.6);
+    // Cornering lean: bank into upcoming turns so they read as turns -- ALL
+    // of them, organic (the noise path's own gentle curves) and beat-driven
+    // (turnBias(), above) alike, since both are now just curvature in the
+    // same pathPos(). Widened from the old +/-0.35 (which only ever needed to
+    // cover the organic path's gentle drift) to +/-0.6, so a beat turn's
+    // sharper swerve can bank a proper, visible corner instead of clipping
+    // against a ceiling sized for the smaller motion. First-pass estimate;
+    // wants a live look alongside TURN_IMPULSE/TURN_WIDTH.
+    float bank = clamp(-0.22 * (pathPos(zt + 2.8).x - ro.x) / CELL, -0.6, 0.6);
     vec3 wup = vec3(sin(bank), cos(bank), 0.0);
     vec3 rt = normalize(cross(fw, wup));
     vec3 up = cross(rt, fw);
@@ -601,6 +679,16 @@ interface MazeState {
    * slowing, stopping or reversing the flight.
    */
   skip: number
+  /** z where the CURRENTLY active turn ramp started (see TURN_IMPULSE/TURN_WIDTH). */
+  turnZ0: number
+  /** Signed amount the active turn adds once it fully resolves at turnZ0 + TURN_WIDTH. */
+  turnDelta: number
+  /** Permanent lateral offset from every past, fully-resolved turn. */
+  turnBase: number
+  /** Alternates each trigger so consecutive turns swerve opposite ways. */
+  turnSign: number
+  /** beatIndex of the last downbeat already used to trigger a turn (dedupe, same pattern as KifsRoseScene's lastStepBeat). */
+  lastTurnBeat: number
 }
 
 export const MazeFlightScene = createShaderScene<MazeState>({
@@ -650,6 +738,9 @@ export const MazeFlightScene = createShaderScene<MazeState>({
   uniforms: () => ({
     uPhase: { value: 0 },
     uLurch: { value: 0 },
+    uTurnBase: { value: 0 },
+    uTurnZ0: { value: 0 },
+    uTurnDelta: { value: 0 },
     uTurns: { value: 1.63 },
     uSmooth: { value: 0.6 },
     uDensity: { value: 1.5 },
@@ -664,8 +755,20 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     uTMax: { value: 48 },
     uEdgeOn: { value: 1 },
   }),
-  state: () => ({ z: 0.4, hue: 0, lurch: spring(0), skip: 0 }),
-  update({ u, s, P, st, dt }) {
+  state: () => ({
+    z: 0.4,
+    hue: 0,
+    lurch: spring(0),
+    skip: 0,
+    turnZ0: 0,
+    turnDelta: 0,
+    turnBase: 0,
+    turnSign: 1,
+    lastTurnBeat: -1,
+  }),
+  update({ u, s, P, st, dt, ctx }) {
+    const f = ctx.f
+
     // A kick charges the skip envelope BEFORE cruise is applied, so the same
     // frame's forward step already carries the boost -- no attack lag.
     if (s.onKick > 0) {
@@ -680,6 +783,22 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     // out as code rather than as a comment.
     st.z += dt * 3.2 * (1 + s.mids * 0.5) * drastic(P.speed) * (1 + st.skip * SKIP_BOOST)
     st.skip *= Math.exp(-dt * SKIP_DECAY)
+
+    // --- A real turn, once a bar, on the downbeat. See TURN_IMPULSE/
+    // TURN_WIDTH's own doc for the full reasoning; this is the trigger.
+    if (f.beat && isDownbeat(f.beatInBar) && f.beatIndex !== st.lastTurnBeat) {
+      st.lastTurnBeat = f.beatIndex
+      // Fold whatever fraction of the PREVIOUS turn has already resolved
+      // into the permanent base before retargeting, using the shader's own
+      // smoothstep shape -- so a retrigger before the last one finished
+      // ramping continues smoothly from wherever it actually was, never pops.
+      const progress = Math.min(1, Math.max(0, (st.z - st.turnZ0) / TURN_WIDTH))
+      const eased = progress * progress * (3 - 2 * progress)
+      st.turnBase += st.turnDelta * eased
+      st.turnSign = -st.turnSign
+      st.turnDelta = TURN_IMPULSE * st.turnSign
+      st.turnZ0 = st.z
+    }
 
     // A kick is also a small rock, off the same onset. The onset SHOVES the
     // spring's position (an impulse to displacement, so the surge is instant
@@ -704,19 +823,29 @@ export const MazeFlightScene = createShaderScene<MazeState>({
     // touches it (see header, "Response identity": that was tried, and the
     // under-damped rebound briefly drove forward velocity negative, which
     // read as the flight pausing on every beat). The spring instead reaches
-    // the shader three ways, none of them forward position: camera roll (via
-    // uLurch -> kickRoll in main()), a swing in palette-ramp POSITION that
-    // rocks back with the geometry (uHue), and signed fog depth (uLurch
-    // again).
+    // the shader two ways, neither of them forward position: a swing in
+    // palette-ramp POSITION that rocks back with the geometry (uHue), and
+    // signed fog depth (uLurch). Camera roll no longer comes from the spring
+    // at all — it comes from `lean` banking into the real turn below.
     u.uPhase.value = st.z
     u.uLurch.value = st.lurch.value
     u.uHue.value = st.hue + st.lurch.value * LURCH_HUE
     u.uEnergy.value = s.energy
     u.uHighs.value = s.highs
+    u.uTurnBase.value = st.turnBase
+    u.uTurnZ0.value = st.turnZ0
+    u.uTurnDelta.value = st.turnDelta
 
-    u.uTurns.value = P.shape * 2.0
+    // Energy (continuous level, never the onKick spike — see "Response
+    // identity" above for why a spike never drives a gain term here) opens
+    // the maze up further on intense passages. Neutral at silence, so the
+    // dial's own value is reproduced exactly at rest; only ever multiplies
+    // UP, never down, since low density/complexity is the one thing that
+    // reads badly here (a manual dial choice, not something audio should be
+    // able to reach for on its own).
+    u.uTurns.value = P.shape * 2.0 * (1 + s.mids * 0.18)
     u.uSmooth.value = P.tilt
-    u.uDensity.value = P.density * 1.5
+    u.uDensity.value = P.density * 1.5 * (1 + s.energy * 0.28)
     u.uFov.value = 0.4 + P.fill * 1.6
     u.uGlowAmt.value = 0.2 + P.contrast * 1.6
 

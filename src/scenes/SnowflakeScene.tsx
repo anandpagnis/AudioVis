@@ -1,4 +1,3 @@
-import * as THREE from 'three'
 import { createShaderScene } from '../engine/createShaderScene'
 import { criticalDamping, slew, spring, springStep, type SpringState } from '../engine/response'
 import { drastic } from '../engine/sceneParams'
@@ -294,21 +293,33 @@ export const FRAG = /* glsl */ `
     // more -- the old sine term needed the 0.5 + 0.5 * remap specifically
     // because a sine goes negative, which a directional ramp never does.
     float beatGrow = uBeatRamp * BEAT_RAMP_GROW + uBeatPulse * BEAT_POP_GROW;
+    // The hub's own radius term (below) has ALWAYS answered uBass directly,
+    // on top of beatGrow -- "the heart breathing with the bass" the header
+    // documents. The arms/branches above never got a share of that same bass
+    // signal, only beatGrow -- so a bass swell with no coincident beat
+    // crossing grew the centre alone while the limbs (and the glow, which
+    // just follows the same distance field) sat completely still, reading as
+    // two independently-clocked reactions rather than one body breathing.
+    // breath is what the limbs use instead of bare beatGrow: the same beat
+    // growth, plus a quieter follow of bass (2/3 of the hub's own weight, so
+    // the hub still leads that reaction) -- coupling them without changing
+    // the hub's own established term at all.
+    float breath = beatGrow + uBass * 0.02;
 
-    float armLen = (0.78 + 0.05 * sin(uTime * 0.4) + uEnergy * 0.12 + beatGrow) * armScale;
+    float armLen = (0.78 + 0.05 * sin(uTime * 0.4) + uEnergy * 0.12 + breath) * armScale;
     float d = seg(p, vec2(0.04, 0.0), vec2(armLen, 0.0));     // main spine
 
     // side branches (a little fern), 60 degrees off the spine, shrinking to the tip.
-    // The fern length itself also blooms with beatGrow (1.6x its weight below,
+    // The fern length itself also blooms with breath (1.6x its weight below,
     // since a branch visibly lengthening reads as "growth" far more than the
-    // spine stretching does) -- this is the part of the beat reaction that
-    // answers "generate branches on beat", not just the hub ring.
+    // spine stretching does) -- this is the part of the beat/bass reaction
+    // that answers "generate branches", not just the hub ring.
     float bAng = PI / 3.0;
     vec2 bdir = vec2(cos(bAng), sin(bAng));
     for (int k = 1; k <= 6; k++){
       float bx = 0.10 * float(k);
       if (bx > armLen) break;
-      float bl = uBranch * 0.22 * (1.0 - bx / armLen) * (1.0 + beatGrow * 1.6);
+      float bl = uBranch * 0.22 * (1.0 - bx / armLen) * (1.0 + breath * 1.6);
       vec2 btip = vec2(bx, 0.0) + bdir * bl;
       d = min(d, seg(p, vec2(bx, 0.0), btip));
 
@@ -386,7 +397,25 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
   frag: FRAG,
   // Crisp thin strokes — the direct (native-res) path, same as `matrix`,
   // whose hard edges ruled the upscaled offscreen path out. No `pixelBudget`.
-  blending: THREE.NoBlending,
+  //
+  // Deliberately NOT `blending: THREE.NoBlending` (removed — see F261 in
+  // docs/ISSUES.md): a primary entry is never wrapped by `SceneManager`'s
+  // `BlendedLayer` (that only wraps background/accent/overlay/effect), so
+  // whatever a scene declares here is what its ON-SCREEN material keeps for
+  // its entire life as a primary — there is no later pass that "forces add"
+  // for it despite what this spec's own doc comment implies. With
+  // `NoBlending`, GL blending is genuinely disabled: during the default
+  // (non-wipe) crossfade, both the outgoing and incoming primary are plain
+  // fullscreen quads at the same render order, and whichever draws last that
+  // frame OVERWRITES the framebuffer outright rather than blending with
+  // `uFade` — the outgoing scene vanishes the instant the incoming one is
+  // promoted, and the incoming one appears to fade up FROM BLACK rather than
+  // cross-dissolve with what was there. On a scene this dark (a near-black
+  // cold field with thin bright lines), that read as the flake fading in
+  // pale/washed out — solid only once the transition fully lands. Falling
+  // back to the default `THREE.AdditiveBlending` makes both primaries
+  // genuinely sum during the overlap, which is what every other default-
+  // blending scene in the roster already does cleanly.
   uniforms: () => ({
     uAngle: { value: 0 },
     uZoom: { value: 1 },

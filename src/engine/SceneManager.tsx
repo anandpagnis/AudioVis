@@ -9,6 +9,7 @@ import {
   getScene,
   isSceneLoaded,
   prewarmScene,
+  sceneOwnsFrame,
   scenePixelBudget,
 } from '../scenes'
 import { getSharedEnvMap } from './envMap'
@@ -59,6 +60,13 @@ const SLOT_RENDER_ORDER: Record<SlotName, number> = {
   accent: 20,
   overlay: 30,
   effect: 40,
+}
+
+/** `resolveLayerIds`'s own empty result shape, reused as an input when tenancy forbids every layer. */
+const EMPTY_LAYER_IDS: Record<LayerRole, string | null> = {
+  background: null,
+  accent: null,
+  overlay: null,
 }
 
 /**
@@ -1090,13 +1098,33 @@ export function SceneManager() {
         budgetMP,
       )
     }
-    const wantedLayers = resolveLayerIds(state.layerSceneIds, state.sceneId, state.pendingSceneId, {
-      remaining: Math.max(0, quality.knobs.frameBudgetMs - nonLayerMs),
-      msFor: (id, role) => {
-        const meta = getScene(id).metadata
-        return slotCostMs(id, budgetTier, role, meta.roleScalable, meta.performanceCost, budgetMP)
+    // Mirrors the bridge's `layersHeld` (PerformanceStateBridge.tsx) exactly,
+    // but the bridge only nulls the TELEMETRY copy of the desire
+    // (`performanceState.layers`) — nothing reads that for mounting. Without
+    // this gate here too, a layer set before the cutaway/owning scene arrived
+    // (or added manually via the HUD while one is already up) kept being
+    // resolved from the raw store desire below and stayed mounted at dir 1:
+    // still costing a real render every frame, and — since `ownsFrame`
+    // primaries and cutaways both composite additively — still visibly
+    // bleeding into the frame. Checked here, not baked into `resolveLayerIds`,
+    // so the budget-driven admission logic itself stays about capacity only.
+    const layersHeld =
+      performanceState.djCam.active ||
+      performanceState.limitless.active ||
+      sceneOwnsFrame(state.sceneId) ||
+      sceneOwnsFrame(state.pendingSceneId)
+    const wantedLayers = resolveLayerIds(
+      layersHeld ? EMPTY_LAYER_IDS : state.layerSceneIds,
+      state.sceneId,
+      state.pendingSceneId,
+      {
+        remaining: Math.max(0, quality.knobs.frameBudgetMs - nonLayerMs),
+        msFor: (id, role) => {
+          const meta = getScene(id).metadata
+          return slotCostMs(id, budgetTier, role, meta.roleScalable, meta.performanceCost, budgetMP)
+        },
       },
-    })
+    )
     // Layers deliberately skip the primary streamer's pending/promote
     // lifecycle — they have their own independent fade and never participate
     // in the beat-locked commit above, so there is no warm SLOT to arbitrate

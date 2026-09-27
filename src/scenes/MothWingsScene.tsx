@@ -35,17 +35,26 @@ import { bipolar, drastic } from './contract'
  *
  * ## What reacts to what
  *
- *   mids      THE WINGBEAT. The B<->C morph runs on its own clock, whose pace
- *             follows the mids: slower on a sparse passage (never stopped —
- *             a moth that freezes reads as a broken scene), up to ~1.35x the
- *             Shadertoy pace on a full one.
+ *   mids      THE WINGBEAT's PACE. The B<->C morph runs on its own clock,
+ *             which follows the mids: slower on a sparse passage (never
+ *             stopped — a moth that freezes reads as a broken scene), up to
+ *             ~1.5x the Shadertoy pace on a full one, and up to ~2x with a
+ *             kick surge added on top (see `kick` below).
+ *   energy    THE WINGBEAT's DEPTH, and line brightness. Before this, the
+ *             B<->C shape change always ran its full swing regardless of the
+ *             music — only the SPEED changed — so a quiet passage still saw
+ *             the wings fully open and close, just more slowly, which never
+ *             read as "quiet." Energy (plus the kick surge, see below) now
+ *             also scales how FAR the swing travels: a floor keeps it fluttering
+ *             at rest, rising to the full authored range on a loud passage.
  *   hats      The glow travelling out along the veins races with busy hats and
  *             drifts without them.
  *   kick      A surge in that glow — each kick throws a wave of light outward
- *             from the body that coasts back to cruising speed — and a soft
- *             breath of zoom through a spring, so the hit has weight without
- *             a hard edge.
- *   energy    Line brightness, quiet to loud.
+ *             from the body that coasts back to cruising speed — a soft
+ *             breath of zoom through a spring — and, on the same surge, a
+ *             quickening of the wingbeat's pace and a deepening of its swing,
+ *             so a hit reads as the moth flapping harder, not just glowing
+ *             brighter.
  *   camera    ZOOM and TILT. The director's distance from this scene's anchor
  *             becomes zoom (push = slow zoom in, pull = out, spiral = breathing,
  *             locked = hold); its sideways angle becomes a gentle tilt. Both
@@ -73,7 +82,8 @@ import { bipolar, drastic } from './contract'
  */
 
 export const FRAG = /* glsl */ `
-  uniform float uMorph;   // wingbeat phase, in cycles (wrapped 0..1): paced by the mids
+  uniform float uMorph;   // wingbeat phase, in cycles (wrapped 0..1): paced by the mids + kick
+  uniform float uFlapDepth; // how far the B<->C swing actually travels: floor + energy + kick surge
   uniform float uTravel;  // travelling-glow phase, radians (wrapped): hats + kick surge
   uniform float uZoom;    // camera distance x fill dial x kick breath
   uniform float uRoll;    // tilt from the camera's sideways angle
@@ -110,7 +120,14 @@ export const FRAG = /* glsl */ `
     // Picture space: the director's zoom and tilt, the fill dial, the breath.
     vec2 uv = rot(uRoll) * suv / uZoom;
 
-    float s = 0.5 + 0.5 * sin(uMorph * 6.28318);
+    // uFlapDepth scales the swing's AMPLITUDE, never its phase: at silence the
+    // wings still flutter (a small swing around the midpoint, never frozen --
+    // "a moth that freezes reads as a broken scene"), on a loud or kick-heavy
+    // passage the swing reaches the full authored B<->C range. The phase
+    // (uMorph) is untouched by this, so nothing here can pop or reverse it --
+    // same invariant as the rest of the file: no audio envelope reaches the
+    // shader raw, only smoothly-eased state.
+    float s = 0.5 + 0.5 * uFlapDepth * sin(uMorph * 6.28318);
     float cyOffset = mix(STAGE_B, STAGE_C, s);
 
     vec2 c = vec2(CX, CY + cyOffset);
@@ -152,10 +169,30 @@ export const FRAG = /* glsl */ `
 const TAU = Math.PI * 2
 
 /** The Shadertoy wingbeat, in cycles per second. */
-const MORPH_SPD = 0.55
-/** Wingbeat pace with the mids silent, and how much a full mid band adds. */
-const MORPH_FLOOR = 0.45
-const MORPH_MIDS = 0.9
+export const MORPH_SPD = 0.55
+/** Wingbeat pace with the mids silent, and how much a full mid band adds.
+ *  Exported so MothWingsScene.test.ts can pin its per-frame bounds against
+ *  these directly rather than a hand-copied literal. */
+export const MORPH_FLOOR = 0.35
+export const MORPH_MIDS = 1.15
+/** Extra wingbeat pace a full kick surge adds, on top of the mids term above
+ *  -- a hit briefly quickens the flap, the same way it already surges the
+ *  travelling glow (SURGE_SPD) and breathes the zoom (BREATH_ZOOM). Reuses
+ *  `st.surge`, already smoothed for that purpose; no new state needed. */
+export const MORPH_SURGE = 0.5
+/**
+ * How far the B<->C swing actually travels: never zero (a moth that freezes
+ * reads as a broken scene — see the file header), floored at just over half
+ * the authored range at silence, reaching the FULL range on a loud or
+ * kick-heavy passage. This is the fix for "wing forming/flap controlled by
+ * audio": before this, `mids` only changed how FAST the wings cycled between
+ * poses, never how FAR — the shape change itself ran the same full swing
+ * regardless of what the music was doing. Reuses the already-smoothed
+ * `st.energy`/`st.surge`, so the depth itself is exactly as smooth as those.
+ */
+export const FLAP_DEPTH_FLOOR = 0.55
+export const FLAP_DEPTH_ENERGY = 0.35
+export const FLAP_DEPTH_SURGE = 0.35
 /** The Shadertoy glow speed, in radians per second. */
 const TRAVEL_SPD = 3.0
 /** Glow speed with no hats, and how much busy hats add. */
@@ -229,9 +266,11 @@ export interface MothWingsState {
   /** Eased camera zoom and tilt, so mode switches and handheld wobble glide. */
   camZoom: number
   roll: number
-  /** Outputs: final zoom (camera x fill x breath) and line brightness. */
+  /** Outputs: final zoom (camera x fill x breath), line brightness, and how
+   *  far the B<->C swing travels (see FLAP_DEPTH_FLOOR's own doc). */
   zoom: number
   bright: number
+  flapDepth: number
 }
 
 export function createMothWingsState(): MothWingsState {
@@ -247,6 +286,7 @@ export function createMothWingsState(): MothWingsState {
     roll: 0,
     zoom: 1,
     bright: BRIGHT_FLOOR,
+    flapDepth: FLAP_DEPTH_FLOOR,
   }
 }
 
@@ -271,8 +311,14 @@ export function stepMothWings(
   // Integrated, never set: the music changes how fast the moth moves, not
   // where it is, so nothing here can jump.
   const step = isFinite(dt) && dt > 0 ? Math.min(dt, MAX_CLOCK_STEP) : 0
-  st.morph += step * rate * MORPH_SPD * (MORPH_FLOOR + MORPH_MIDS * st.mids)
+  st.morph +=
+    step * rate * MORPH_SPD * (MORPH_FLOOR + MORPH_MIDS * st.mids + MORPH_SURGE * st.surge)
   st.morph -= Math.floor(st.morph)
+  st.flapDepth = clamp(
+    FLAP_DEPTH_FLOOR + FLAP_DEPTH_ENERGY * st.energy + FLAP_DEPTH_SURGE * st.surge,
+    0,
+    1,
+  )
   st.travel +=
     step * rate * (TRAVEL_SPD * (TRAVEL_FLOOR + TRAVEL_HATS * st.highs) + SURGE_SPD * st.surge)
   st.travel %= TAU
@@ -303,6 +349,7 @@ export const MothWingsScene = createShaderScene<MothWingsState>({
   state: createMothWingsState,
   uniforms: () => ({
     uMorph: { value: 0 },
+    uFlapDepth: { value: FLAP_DEPTH_FLOOR },
     uTravel: { value: 0 },
     uZoom: { value: 1 },
     uRoll: { value: 0 },
@@ -311,6 +358,7 @@ export const MothWingsScene = createShaderScene<MothWingsState>({
   update({ u, s, P, st, dt, ctx }) {
     stepMothWings(st, s, P, ctx.camera.position, dt)
     u.uMorph.value = st.morph
+    u.uFlapDepth.value = st.flapDepth
     u.uTravel.value = st.travel
     u.uZoom.value = st.zoom
     u.uRoll.value = st.roll

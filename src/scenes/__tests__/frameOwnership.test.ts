@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import BRIDGE_SRC from '../../engine/PerformanceStateBridge.tsx?raw'
 import DIRECTOR_SRC from '../../engine/PerformanceDirector.tsx?raw'
+import SCENE_MANAGER_SRC from '../../engine/SceneManager.tsx?raw'
 import { canHoldRole, getCompatibleScenes, getScene, sceneOwnsFrame, SCENES } from '../index'
 
 /**
@@ -79,5 +80,22 @@ describe('frame ownership: wiring (source pins)', () => {
     const director = code(DIRECTOR_SRC)
     expect(director).toMatch(/owned\s*=\s*sceneOwnsFrame\(primaryId\)/)
     expect(director).toMatch(/forRole\s*=\s*\(role: LayerRole\)\s*=>\s*owned\s*\?\s*\[\]\s*:/)
+  })
+
+  it('SceneManager withholds mounting layers, not just the telemetry copy, while a cutaway or a frame-owning subject is up', () => {
+    // The bridge and the director above both only gate what they own — a
+    // TELEMETRY desire and an AUTO pick. Neither stops a layer that was already
+    // set (manually, or by a stale auto pick) from staying mounted, rendering
+    // every frame, and bleeding into the composite. `resolveLayerIds` is fed
+    // from the raw store desire; this pins that the call site itself refuses to
+    // pass that desire through under the same conditions the bridge holds
+    // `performanceState.layers` null for.
+    const manager = code(SCENE_MANAGER_SRC)
+    expect(manager).toMatch(
+      /layersHeld\s*=\s*\n?\s*performanceState\.djCam\.active\s*\|\|\s*\n?\s*performanceState\.limitless\.active\s*\|\|\s*\n?\s*sceneOwnsFrame\(state\.sceneId\)\s*\|\|\s*\n?\s*sceneOwnsFrame\(state\.pendingSceneId\)/,
+    )
+    expect(manager).toMatch(
+      /resolveLayerIds\(\s*\n?\s*layersHeld\s*\?\s*EMPTY_LAYER_IDS\s*:\s*state\.layerSceneIds,/,
+    )
   })
 })

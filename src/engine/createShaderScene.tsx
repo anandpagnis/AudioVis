@@ -5,6 +5,7 @@ import { bandClocks } from './bandClocks'
 import { beatOscillators } from './beatOscillators'
 import { FULLSCREEN_VERT } from './glsl'
 import { createLilimState, updateLilimState, type LilimAudioState } from './lilimState'
+import { getNoiseLUT, NOISE_LUT_SIZE } from './noiseLUT'
 import type { PaletteBlender } from './palettes'
 import { useSceneFrame, type SceneFrame } from './sceneFrame'
 import { useSceneParams, type ResolvedSceneParams } from './sceneParams'
@@ -77,6 +78,29 @@ export const SHADER_SCENE_PRELUDE = /* glsl */ `
   uniform float uBeatSin;
   uniform float uBeatSin2;
   uniform float uBeatSin4;
+
+  /**
+   * Shared hash-lookup texture (see engine/noiseLUT.ts) — a precomputed,
+   * well-distributed random value per cell, available to every scene with no
+   * per-scene setup. Call \`hashLUT(vec3)\` / \`hashLUT2(vec2)\` instead of
+   * writing another inline \`fract\`/\`dot\`/\`fract\` hash chain: one texture
+   * fetch against a small, cache-resident table is cheaper than the same ALU
+   * work repeated per pixel, per iteration, in a raymarcher's shading loop.
+   * NOT a bit-identical replacement for any scene's previous hash formula —
+   * see noiseLUT.ts's own header for why that trade is the right one here.
+   */
+  uniform sampler2D uNoiseLUT;
+  const float NOISE_LUT_TEXELS = ${NOISE_LUT_SIZE.toFixed(1)};
+
+  float hashLUT2(vec2 p) {
+    vec2 ip = floor(p);
+    vec2 uv = (mod(ip, NOISE_LUT_TEXELS) + 0.5) / NOISE_LUT_TEXELS;
+    return texture2D(uNoiseLUT, uv).r;
+  }
+  float hashLUT(vec3 p) {
+    vec3 ip = floor(p);
+    return hashLUT2(ip.xy + ip.z * vec2(37.0, 71.0));
+  }
 `
 
 /** What a shader scene's per-frame callback receives. */
@@ -326,6 +350,10 @@ function getSceneMaterial<S>(gl: THREE.WebGLRenderer, spec: ShaderSceneSpec<S>):
       uBeatSin: { value: 0 },
       uBeatSin2: { value: 0 },
       uBeatSin4: { value: 0 },
+      // Static for the renderer's lifetime (see noiseLUT.ts) — bound once
+      // here, unlike the per-frame values above, since nothing about it
+      // changes frame to frame.
+      uNoiseLUT: { value: getNoiseLUT(gl) },
       ...spec.uniforms?.(),
     },
   })

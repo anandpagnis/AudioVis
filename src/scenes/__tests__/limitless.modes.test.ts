@@ -151,6 +151,7 @@ describe('FRAG uniform completeness', () => {
     'uBeatSin',
     'uBeatSin2',
     'uBeatSin4',
+    'uNoiseLUT',
   ]
 
   it('declares no uniform the prelude already declares', () => {

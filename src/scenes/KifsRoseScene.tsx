@@ -117,7 +117,9 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
  *   barPhase          → continuous radial breath + ramp-position drift
  *   mids              → rotation speed
  *   highs             → orbit-trap ramp spread (shimmer on hats)
- *   energy            → overall brightness
+ *   energy            → overall brightness AND iteration count (up to +3 folds
+ *                       of extra web detail on louder passages, on top of the
+ *                       `complexity` dial's own 4..20 range)
  *
  * ### One term deliberately off brightness
  *
@@ -328,12 +330,25 @@ export const FRAG = /* glsl */ `
     float th = uPhase;
 
     // Kaleidoscope: fold the plane into N mirrored wedges, slowly spinning.
-    // uSymmetry now STEPS on the downbeat and holds for the bar -- the fold
-    // count is the scene's largest structural response and it is deliberately
-    // an integer cut, not an eased ramp.
+    // uSymmetry EASES continuously bar-to-bar (see FOLD_STEP_RATE on the JS
+    // side) -- but this comment used to claim it stayed an integer cut, which
+    // was only true because the JS-side slew() call was missing (fixed in
+    // "Round 3"). Once uSymmetry genuinely carried a fractional value here,
+    // mod(a, segAngle) broke: wrapping a full circle into a NON-integer
+    // number of equal pieces is not actually possible, so the last wedge
+    // before the a = -PI/+PI seam (atan2's own branch cut, which th's
+    // rotation sweeps across the LEFT and RIGHT of the screen over time) came
+    // out a different size from the rest for as long as the ease was
+    // mid-flight -- a visibly torn, asymmetric bulge, which is exactly what
+    // read as the mandala "opening from the left/right side" on a symmetry
+    // change. Rounding to the nearest whole wedge count here keeps the fold
+    // always exactly N-fold and the tear gone; the eased float upstream still
+    // softens WHEN the switch lands (spread across the ~100ms ease instead of
+    // snapping on the downbeat frame), it now just never lands on a
+    // fractional wedge count while doing so.
     float a = atan(uv.y, uv.x) + th;
     float r = length(uv);
-    float segAngle = TAU / float(uSymmetry);
+    float segAngle = TAU / floor(uSymmetry + 0.5);
     a = mod(a, segAngle);
     a = abs(a - 0.5 * segAngle);
     vec2 z = vec2(cos(a), sin(a)) * r;
@@ -530,9 +545,19 @@ export const KifsRoseScene = createShaderScene<KifsRoseState>({
     // resolution with `high` cost. Letting the tier also cap `uIterCount`
     // doubled up on that and thinned the fractal itself at low tiers, which
     // reads as the rose losing petals rather than just getting softer.
-    // Complexity's own 4..20 range is unaffected — only the performer's
-    // dial, not the governor, decides how many folds run.
-    u.uIterCount.value = Math.round(4 + P.complexity * 16) // 4..20
+    // Complexity's own 4..20 range is unaffected — only the governor never
+    // touches this; `energy` still does, deliberately, below.
+    //
+    // `energy` tops the dial up by up to 3 extra folds on louder passages —
+    // more nested detail in the web itself, not another brightness term (see
+    // "One term deliberately off brightness" above; this is the fractal's OWN
+    // structure responding, same class of thing as `uSymmetry`/`uFoldStep`,
+    // just continuous instead of bar-held). Additive on top of the dial
+    // rather than replacing its range, so parameter neutrality still holds:
+    // `complexity` at 0.5 with silence (`energy` 0) still renders exactly 12,
+    // the authored midpoint. Clamped to the shader's own 4..20 (`MAXI`) so a
+    // loud passage at max complexity can't ask the loop for more than it has.
+    u.uIterCount.value = Math.min(20, Math.max(4, Math.round(4 + P.complexity * 16 + s.energy * 3)))
     u.uMorph.value = P.tilt * 1.2 // matches source's 0..1.2 range
     u.uFill.value = 0.4 + P.fill * 2.1 // matches source's 0.4..2.5 zoom range
     u.uContrast.value = P.contrast

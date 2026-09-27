@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseISF, type ParsedISF } from '../parseISF'
 import {
+  glslChunkSymbols,
   ISF_FADE_WRAPPER,
   isfUniformName,
   isfUniformSeed,
@@ -62,11 +63,13 @@ describe('the reserved symbol lists stay in step with the code they describe', (
     }
     const prelude = CREATE_SHADER_SCENE_SRC.slice(open + 1, close)
 
-    const declared = [...prelude.matchAll(/\b(?:uniform|varying)\s+\w+\s+(\w+)\s*;/g)].map(
-      (m) => m[1],
-    )
+    // `glslChunkSymbols`, not a bespoke uniform/varying-only regex: the
+    // prelude now also declares functions and a const (engine/noiseLUT.ts's
+    // shared hash lookup), and this is the same extraction SHADER_LIB_SYMBOLS
+    // already trusts for exactly that mix of declaration kinds.
+    const declared = glslChunkSymbols(prelude)
     expect(declared.length).toBeGreaterThan(15)
-    expect([...declared].sort()).toEqual([...PRELUDE_SYMBOLS].sort())
+    expect(declared).toEqual([...PRELUDE_SYMBOLS].sort())
   })
 
   it('SHADER_LIB_SYMBOLS finds every shared chunk symbol a scene could collide with', () => {
