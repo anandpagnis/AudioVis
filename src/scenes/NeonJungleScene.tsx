@@ -1281,7 +1281,7 @@ export const NeonJungleScene = createShaderScene<NeonJungleState>({
   // SCENES for being too expensive that is the wrong direction, and it is
   // stated here as a known, accepted-for-now consequence pending the `/bench`
   // this scene needs before promotion — not as a solved problem.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 6.7 : 3.9),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 6.7 : 3.9),
   uniforms: () => ({
     uClock: { value: 0 },
     uQuality: { value: 1 },

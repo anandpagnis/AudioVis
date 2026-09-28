@@ -24,7 +24,7 @@ import {
 } from './transitions'
 import { usesWipe, WIPE_LAYER_IN, WIPE_LAYER_OUT, WIPE_MAX_TIER } from './transitionWipe'
 import { quality } from './quality'
-import { combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
+import { claimsResolution, combinePixelBudgets, POST_CHAIN_PIXEL_BUDGET, renderScale } from './renderScale'
 import {
   applyFrameLoad,
   fillScale,
@@ -1248,8 +1248,8 @@ export function SceneManager() {
     // of it. `applyFrameLoad` decides what else may be admitted to the frame, so
     // it counts everything DRAWING — the transient overlap included, since that
     // is precisely when nothing more should be admitted. `renderScale` decides
-    // the resolution the frame is drawn at, so it counts only what is STAYING;
-    // a change there costs a resize. See the setSceneBudget call below.
+    // the resolution the frame is drawn at, so it counts only the committed
+    // primary; a change there costs a resize. See the setSceneBudget call below.
     committedBudgets.length = 0
     applyFrameLoad(
       entriesRef.current.map((e) => {
@@ -1259,9 +1259,9 @@ export function SceneManager() {
         // one still warming is genuinely drawing. Same distinction the
         // transition discount makes below.
         const drawing = e.dir !== 0 || !isWarmComplete(e)
-        // COMMITTED tenancies only — see the setSceneBudget call below for why
-        // this set is narrower than `drawing`.
-        if (e.dir === 1 && e.role !== 'effect') committedBudgets.push(scenePixelBudget(def))
+        // The COMMITTED PRIMARY only — see the setSceneBudget call below for
+        // why this set is narrower than `drawing`.
+        if (claimsResolution(e)) committedBudgets.push(scenePixelBudget(def))
         return {
           role: e.role,
           dir: e.dir,
@@ -1290,9 +1290,9 @@ export function SceneManager() {
     // priority -100, which is what lets PerfMonitor treat a budget change as this
     // frame's committed truth and resize immediately instead of holding it.
     //
-    // Two exclusions, both for the same reason: a change here costs a renderer
+    // Three exclusions, all for the same reason: a change here costs a renderer
     // resize and a reallocation of the post chain's mip pyramid, so the budget
-    // must only follow things that are STAYING.
+    // must only follow what actually needs to own the resolution.
     //
     //  - The outgoing and warming primaries (`dir !== 1`) are left out, even
     //    though mid-crossfade the frame really is paying for both. Including
@@ -1311,6 +1311,14 @@ export function SceneManager() {
     //    cost more than the whole effect. Their per-frame cost is already gated,
     //    on the composition budget above, which is the right instrument for a
     //    transient.
+    //
+    //  - Layers (background / accent / overlay) are left out too (F272). The
+    //    director adds and drops them at section boundaries, and each one used
+    //    to re-solve the canvas: a stall and a visible sharpness jump every
+    //    time. Like effects, they are already priced in milliseconds at the
+    //    applied resolution by the admission budget above, so one that does not
+    //    fit is refused rather than paid for with resolution. See
+    //    `claimsResolution`.
     // The post chain is in every frame and is the most fill-bound thing in it,
     // so it claims against the same budget the scenes do — see
     // POST_CHAIN_PIXEL_BUDGET. Added here rather than inside

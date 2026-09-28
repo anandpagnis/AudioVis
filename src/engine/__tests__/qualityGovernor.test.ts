@@ -581,6 +581,112 @@ describe('quality governor — per-scene rung memory (F164)', () => {
 })
 
 /**
+ * F272: the new-scene caution trims DETAIL, not resolution.
+ *
+ * The caution rung used to move `pixelBudgetScale` with everything else, which
+ * resized the canvas (and flipped the function-form per-scene budgets) on most
+ * scene changes — a visible sharpness dip the user asked to remove. The rung
+ * itself, its probing and its per-scene memory are unchanged; only the two
+ * resolution knobs are held at the rung the ladder was on before.
+ */
+describe('quality governor — new-scene caution holds resolution (F272)', () => {
+  const STEADY = { ms: 16.6, p95: 16.7 }
+  const BAD = { ms: 26, p95: 24 }
+
+  it('drops detail one rung but keeps the previous rung resolution', () => {
+    const before = governorAt(1).knobs
+    const cheaper = governorAt(2).knobs
+    const g = governorAt(1)
+    g.enterScene('maze', 0)
+    expect(g.tier).toBe(2)
+    expect(g.knobs.raymarchSteps).toBe(cheaper.raymarchSteps)
+    expect(g.knobs.noiseOctaves).toBe(cheaper.noiseOctaves)
+    expect(g.knobs.pixelBudgetScale).toBe(before.pixelBudgetScale)
+    expect(g.knobs.resolutionSteps).toBe(before.resolutionSteps)
+  })
+
+  it('keeps the function-form per-scene budgets on their rich side through the caution', () => {
+    // At tier 2 -> 3 the detail knob crosses the `>= 50` line the budgets use;
+    // resolution must not follow it.
+    const g = governorAt(2)
+    g.enterScene('beats', 0)
+    expect(g.knobs.raymarchSteps).toBeLessThan(50)
+    expect(g.knobs.resolutionSteps).toBeGreaterThanOrEqual(50)
+  })
+
+  it('climbing back out releases the hold with no resolution change', () => {
+    const g = governorAt(1)
+    const scale = g.knobs.pixelBudgetScale
+    g.enterScene('kifs', 0)
+    g.tick(STEADY.ms, 1, STEADY.p95)
+    g.tick(STEADY.ms, 8, STEADY.p95)
+    expect(g.tier).toBe(1)
+    expect(g.knobs.pixelBudgetScale).toBe(scale)
+    expect(g.knobs.raymarchSteps).toBe(governorAt(1).knobs.raymarchSteps)
+  })
+
+  it('a demote past the caution means the scene really is too heavy, so resolution follows', () => {
+    const g = governorAt(1)
+    g.enterScene('maze', 0)
+    g.tick(BAD.ms, 3, BAD.p95)
+    expect(g.tier).toBe(3)
+    expect(g.knobs.pixelBudgetScale).toBe(governorAt(3).knobs.pixelBudgetScale)
+    expect(g.knobs.resolutionSteps).toBe(governorAt(3).knobs.resolutionSteps)
+  })
+
+  it('a proven rung is evidence, not caution: resolution follows it', () => {
+    const g = governorAt(2)
+    g.enterScene('wingfold', 0) // caution: 2 -> 3
+    g.tick(STEADY.ms, 1, STEADY.p95)
+    g.tick(STEADY.ms, 12, STEADY.p95) // wingfold proven at 3, ladder climbs to 2
+    g.tick(STEADY.ms, 17, STEADY.p95) // and on to 1
+    expect(g.tier).toBe(1)
+    g.enterScene('maze', 18) // unmeasured: caution to 2, resolution held at 1
+    g.enterScene('wingfold', 19) // proven at 3: enters there on evidence
+    expect(g.tier).toBe(3)
+    expect(g.knobs.pixelBudgetScale).toBe(governorAt(3).knobs.pixelBudgetScale)
+    expect(g.knobs.resolutionSteps).toBe(governorAt(3).knobs.resolutionSteps)
+  })
+
+  it('a second unmeasured scene keeps the hold at the original rung', () => {
+    const g = governorAt(0)
+    const scale = g.knobs.pixelBudgetScale
+    g.enterScene('maze', 0)
+    g.enterScene('kifs', 1)
+    expect(g.tier).toBe(2)
+    expect(g.knobs.pixelBudgetScale).toBe(scale)
+  })
+
+  it('the transition discount still dips the per-scene budgets, from the held rung', () => {
+    const g = governorAt(1)
+    g.enterScene('maze', 0)
+    const held = g.knobs.resolutionSteps
+    g.setTransitionDiscount(1)
+    expect(g.knobs.resolutionSteps).toBe(governorAt(3).knobs.resolutionSteps)
+    expect(g.knobs.resolutionSteps).toBeLessThan(held)
+    expect(g.knobs.pixelBudgetScale).toBe(governorAt(1).knobs.pixelBudgetScale)
+    g.setTransitionDiscount(0)
+    expect(g.knobs.resolutionSteps).toBe(held)
+  })
+
+  it('without a caution, resolutionSteps is exactly raymarchSteps, discount or not', () => {
+    for (const t of [0, 1, 2, 3, 4]) {
+      const g = governorAt(t)
+      expect(g.knobs.resolutionSteps).toBe(g.knobs.raymarchSteps)
+      g.setTransitionDiscount(0.6)
+      expect(g.knobs.resolutionSteps).toBe(g.knobs.raymarchSteps)
+    }
+  })
+
+  it('pinning a tier releases the hold', () => {
+    const g = governorAt(1)
+    g.enterScene('maze', 0)
+    g.pinTier(2)
+    expect(g.knobs.pixelBudgetScale).toBe(governorAt(2).knobs.pixelBudgetScale)
+  })
+})
+
+/**
  * Consecutive-overbudget emergency path (audit c11, "the move" item 3 —
  * Unreal's `MaxConsecutiveOverbudgetGPUFrameCount`).
  *

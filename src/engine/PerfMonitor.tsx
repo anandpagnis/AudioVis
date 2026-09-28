@@ -138,6 +138,11 @@ const SCALE_EMERGENCY_RATIO = 3
  * first one immediate and folds the rest into a single later apply against
  * whatever budget the composition settled on. The tier-driven path is
  * additionally frozen outright while a transition runs — see the frame loop.
+ *
+ * Since F272 layer add/drop no longer moves the pair key at all
+ * (`claimsResolution`), so the bursts described above are mostly gone at the
+ * source; this stays as the guard against a commit and a tier change stacking
+ * two reallocations, until F272's later stages stop resizing to scale at all.
  */
 const RESIZE_COALESCE_SEC = 0.5
 
@@ -587,13 +592,14 @@ export function PerfMonitor() {
       lastResizeAt.current = clock.elapsedTime
       applyRenderScale()
     }
-    // One frame stale — SceneManager's compositor writes this at priority 1,
-    // after this component. Irrelevant against a gate that spans a ~1 s fade.
+    // Fresh: SceneManager writes this in its priority -100 frame hook, before
+    // this component runs.
     const txActive = performanceState.transition.active
     if (renderScale.pairKey !== appliedPair.current) {
-      // The live composition's own budget moved (a commit, a layer add/drop).
-      // Already-committed event, applies now; RESIZE_COALESCE_SEC is what stops
-      // a burst of these inside one transition from each paying a realloc.
+      // The live composition's own budget moved (a primary commit — layers no
+      // longer move it, F272). Already-committed event, applies now;
+      // RESIZE_COALESCE_SEC stops a commit and a tier change landing inside one
+      // transition from each paying a realloc.
       applyRenderScaleCoalesced()
     } else if (quality.tier !== appliedTier.current) {
       // Direction-aware since F157: a tier change that SHEDS load applies on

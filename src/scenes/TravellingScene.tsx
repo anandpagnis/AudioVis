@@ -706,7 +706,7 @@ export const TravellingScene = createShaderScene<TravellingState>({
   // 5.6 MP clears the clamp on 4K (0.82 linear -> 3155x1774) and reaches native
   // 1.00 on 1080p at every tier. Being the dearest scene in the roster, this is
   // also where the extra pixels hurt most — see the header's ACTION list.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 72 ? 5.6 : 3.3),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 72 ? 5.6 : 3.3),
   uniforms: () => ({
     uClock: { value: 0 },
     // Starts at 0 like uClock -- st.travelZ (update()) accumulates from here.

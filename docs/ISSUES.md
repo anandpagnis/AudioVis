@@ -13476,3 +13476,79 @@ per-frame canvas heavy enough to distort the reading.
       **Verification.** `npm run check`: typecheck, lint, 2525/2528 tests
       (2 skipped, 1 todo — none related), build and the licence gate all
       pass.
+
+- [~] **F272 · Resolution changes stall the show, keep changing sharpness, and
+      leave upscaled scenes soft; rework in stages** — *2026-09-28, user
+      report on both machines (RTX 4060 on 4K; MacBook Air M1 at "looks like
+      1440x900", i.e. a 2880x1800 = 5.18 MP fullscreen canvas)*
+      `src/engine/renderScale.ts`, `src/engine/PerfMonitor.tsx`,
+      `src/engine/SceneManager.tsx`, `src/engine/PostFXChain.tsx`,
+      `src/engine/createShaderScene.tsx`, `src/engine/GradePass.ts`
+
+      **Symptoms.** (a) blurry/soft, (b) a hitch when resolution changes,
+      (c) sharpness keeps changing during a show.
+
+      **Cause.** The canvas resolution is re-solved from the composition and
+      the quality tier, and moves on a layer add/drop (every committed
+      background/accent/overlay counted toward the budget), a primary
+      cost-class commit at lower tiers, a tier move, and the one-rung caution
+      on a scene's first commit. Every move is an R3F `setDpr` plus a
+      `composer.setSize`, reallocating the canvas, the composer buffers, the
+      16 bloom mip targets and the trail/echo history.
+
+      **Measured on the M1** (standalone WebGL2 harness, ANGLE/Metal, each
+      pass its own render pass, synced by reading back the target that pass
+      wrote — reading the canvas does NOT wait for offscreen work on
+      ANGLE/Metal, and EXT_disjoint_timer_query read 2-6x high with wild
+      spread, so the F238 M1 sweep's 40x per-cell spread may be the timer's):
+      - canvas resize + 21 chain targets reallocated: 20-25 ms median, up to
+        34 ms (raw GL only; the app adds the React re-render of ~17
+        `viewport.dpr` subscribers on top). Chain realloc alone, canvas
+        fixed: 20-24 ms. Canvas resize alone: ~5 ms. So pinning the canvas
+        while still reallocating the chain does not fix the hitch.
+      - drawing into a scissored sub-rect of full-size RGBA16F targets costs
+        the same as drawing into exact-size targets (ratio 0.95-1.07 at
+        0.4/0.6/0.73), and changing the sub-rect costs nothing. Allocate-once
+        + sub-rect is viable on the M1.
+      - one fullscreen RGBA16F read+write pass at 2880x1800: ~1.47 ms.
+      - upscale pass to 2560x1600 (8-bit): bilinear ~0.6 ms, 5-tap
+        Catmull-Rom ~1.3 ms, 9-tap ~1.7 ms, FSR1 EASU ~4.4 ms (ruled out).
+
+      **User decisions (2026-09-28):** stop after every stage for a test on
+      both machines; instant resolution steps first, slow glide-up later
+      (F273); bicubic upscale only at the top quality tiers, bilinear below,
+      plus the free half-texel alignment fix; in-repo bloom/CA/vignette with
+      the luminance threshold folded into the first downsample
+      (near-identical, cheaper); new-scene caution trims detail, not
+      resolution; keep the transition resolution dip; keep the sparkle
+      sharpen but ramp it smoothly; build zoom (`uIris`) zero at rest; echo
+      history at half resolution, trails at full; an app "max render
+      resolution" setting (default Native); screenshots and recordings
+      always at full resolution.
+
+      **Stages** (each committed on `all-visuals`, then paused for the user):
+      1. Layers stop moving the resolution; new-scene caution trims detail
+         only.
+      2. Budgeted-scene blit: half-texel alignment fix + rect-clamped taps +
+         bicubic at top tiers; sparkle ramps smoothly; build zoom zero at
+         rest.
+      3. Scenes take their resolution from the real render target, not
+         `viewport.dpr` (invisible; also fixes wipe transitions cropping
+         gl_FragCoord scenes).
+      4. In-repo bloom / chromatic aberration / vignette pass (parity check).
+      5. Allocate once, render the chain in a sub-rect, GradePass upscales to
+         a canvas pinned at base DPR; delete the reallocation machinery;
+         instant steps.
+      6. Max render resolution setting.
+
+- [ ] **F273 · REMINDER: add the slow glide-up to resolution changes once the
+      user confirms the instant steps** — *2026-09-28, user request*
+      `src/engine/PerfMonitor.tsx` (after F272 stage 5)
+
+      The user chose instant resolution steps for F272's first version so
+      they can see each change, and asked to add a slow glide-up (1-2 s
+      ease when resolution rises; drops stay instant) once they have
+      confirmed the steps look right, and to be reminded. Raise this at
+      every F272 checkpoint from stage 5 on until it is done. Watch for
+      shimmer on per-pixel hashes (snowflake's star dust), thin lines and
+      point sprites while the scale is moving.

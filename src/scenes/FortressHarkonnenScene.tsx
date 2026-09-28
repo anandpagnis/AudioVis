@@ -332,7 +332,7 @@ export const FortressHarkonnenScene = createShaderScene<HarkonnenState>({
   // governor can cut neither pixel count nor per-pixel cost on this scene.
   // That is a known and accepted-for-now consequence, pending the `/bench` the
   // cost section above already asks for; it is not a solved problem.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 7.8 : 4.4),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 7.8 : 4.4),
   uniforms: () => ({
     uFly: { value: 0 },
     uShock: { value: 0 },

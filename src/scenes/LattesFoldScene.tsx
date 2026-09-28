@@ -276,7 +276,7 @@ export const LattesFoldScene = createShaderScene<LattesFoldState>({
   blending: THREE.NoBlending,
   // Markedly more aggressive than its siblings' (0.5/0.3 vs ~1.2/0.7): see
   // the header's cost note. Starting point pending /bench, not a measurement.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 0.5 : 0.3),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 0.5 : 0.3),
   uniforms: () => ({
     uRawT: { value: 0 },
     uLatN: { value: 3 },

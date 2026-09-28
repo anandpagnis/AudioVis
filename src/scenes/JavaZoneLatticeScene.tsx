@@ -273,7 +273,7 @@ export const JavaZoneLatticeScene = createShaderScene<JavaZoneState>({
   blending: THREE.NoBlending,
   // Offscreen + upscale, same shape as beats -- the closest true analogue.
   // Starting point pending /bench, not a measurement.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.2 : 0.7),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 1.2 : 0.7),
   uniforms: () => ({
     uBeats: { value: 0 },
     uTravel: { value: 0 },

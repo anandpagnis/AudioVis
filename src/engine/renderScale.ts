@@ -35,8 +35,10 @@ import { quality } from './quality'
  *
  *  - **Composition.** lilim renders one scene; AudioVis stacks a primary, up to
  *    three layers, live effects and a crossfade partner into ONE framebuffer at
- *    ONE resolution. See {@link combinePixelBudgets} — the budgets combine by
- *    reciprocal sum, not by taking the smallest.
+ *    ONE resolution. Only the committed primary and the post chain claim that
+ *    resolution ({@link claimsResolution}, F272 — layers are admitted by the
+ *    millisecond budget instead), and those claims combine by reciprocal sum,
+ *    not by taking the smallest ({@link combinePixelBudgets}).
  *  - **The tier ladder.** The five tiers still scale the frame, but they now do
  *    it by scaling the BUDGET (`quality.knobs.pixelBudgetScale`) rather than by
  *    naming a resolution. Budget is in megapixels and cost is linear in
@@ -85,10 +87,9 @@ export const MAX_PIXEL_BUDGET = 64
  *
  * It is a real number rather than a sentinel on purpose. A sentinel would mean
  * "exempt", and an exemption is exactly the thing that lets one scene ignore the
- * governor; a large budget still combines with its neighbours' in
- * {@link combinePixelBudgets} and still shrinks with the tier, so a cheap scene
- * layered under two expensive ones contributes its (small) share of the
- * pressure instead of vanishing from the arithmetic.
+ * governor; a large budget still combines with the post chain's in
+ * {@link combinePixelBudgets} and still shrinks with the tier, so a scene that
+ * claims it never escapes the governor.
  */
 export const NATIVE_PIXEL_BUDGET = 32
 
@@ -171,6 +172,11 @@ export const POST_CHAIN_PIXEL_BUDGET = 24
  *
  * Degenerates correctly: one scene gets exactly its own budget (lilim's case),
  * and an empty frame gets {@link NATIVE_PIXEL_BUDGET}.
+ *
+ * The arithmetic above holds for any set, and `/bench` composes arbitrary sets
+ * through it. The live frame, though, hands it only the committed primary and
+ * the post chain since F272 — see {@link claimsResolution} for why layers no
+ * longer claim resolution.
  */
 export function combinePixelBudgets(budgets: Iterable<number>): number {
   let reciprocal = 0
@@ -180,6 +186,31 @@ export function combinePixelBudgets(budgets: Iterable<number>): number {
   }
   if (reciprocal <= 0) return NATIVE_PIXEL_BUDGET
   return 1 / reciprocal
+}
+
+/**
+ * Does this mounted entry claim the frame's resolution? (F272)
+ *
+ * Only the committed primary does. The post chain joins it separately, see
+ * `POST_CHAIN_PIXEL_BUDGET`.
+ *
+ * Layers (background / accent / overlay) used to claim it too, so every layer
+ * the director added or dropped re-solved the canvas scale — a resize, a
+ * reallocation of the whole post chain, and a visible sharpness jump, several
+ * times a minute on a 4K panel. They do not need it: layer admission already
+ * prices every layer in milliseconds at the resolution actually applied
+ * (`slotCostMs` against `renderScale.internalMP`), so a layer that does not fit
+ * is refused rather than paid for with resolution. The tier ladder, which
+ * measures real frame time, is what takes resolution away when the frame
+ * cannot hold it. Three of the backgrounds also cap their own resolution
+ * offscreen (`createShaderScene`'s `pixelBudget`), so their canvas claim was
+ * counted twice.
+ *
+ * Outgoing/warming primaries (`dir !== 1`) and effects never claimed it; see
+ * SceneManager's budget walk for why.
+ */
+export function claimsResolution(e: { role: string; dir: number }): boolean {
+  return e.dir === 1 && e.role === 'primary'
 }
 
 /**
@@ -341,10 +372,12 @@ export function bufferScale(applied = renderScale.applied): number {
  * so the descent is smooth rather than a single cliff, and on 1080p it is
  * 1.00 / 1.00 / 1.00 / 1.00 / 0.96 — native almost all the way down.
  *
- * The governor still governs in both directions. Layering pulls resolution down
- * (two `high` scenes plus the chain resolve to 4.96 MP, so a 4K panel drops to
- * 0.77), and a display genuinely past what the GPU can carry still gets scaled
- * hard (a 5K panel runs 0.75 / 0.63 / 0.52 / 0.44 / 0.40).
+ * The governor still governs in both directions. The tier ladder, which
+ * measures real frame time, pulls resolution down when the frame cannot hold
+ * it, and a display genuinely past what the GPU can carry still gets scaled
+ * hard (a 5K panel runs 0.75 / 0.63 / 0.52 / 0.44 / 0.40). Layering no longer
+ * does on its own (F272, {@link claimsResolution}): a layer that does not fit
+ * the millisecond budget is refused rather than paid for with resolution.
  *
  * The cost of this is real and worth stating: a weak machine on a large panel
  * now spends its first second or two at native before the ladder demotes it,

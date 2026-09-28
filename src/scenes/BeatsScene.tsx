@@ -414,7 +414,7 @@ export const BeatsScene = createShaderScene<BeatsState>({
   // 1.00 on 1080p at every tier. This makes the scene MORE expensive, not less,
   // which sharpens rather than settles the cost question in the header's
   // "FORCED LIVE" section above — one more reason the /bench there is overdue.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 6.7 : 3.9),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 6.7 : 3.9),
   uniforms: () => ({
     uBeats: { value: 0 },
     uSpin: { value: 0 },

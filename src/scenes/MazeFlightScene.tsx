@@ -732,9 +732,10 @@ export const MazeFlightScene = createShaderScene<MazeState>({
   // longer buys back a nesting level — F139 removed the `detailCap` ladder
   // outright, and nesting is never tier-gated now (see header points 2 and 3) —
   // so the step is simply resolution relief at the tiers where the governor has
-  // no other lever on this scene. `quality.knobs.raymarchSteps` is the same
-  // tier proxy `update()` already reads below.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 5.0 : 3.0),
+  // no other lever on this scene. `quality.knobs.resolutionSteps` is the
+  // resolution-side twin of the `raymarchSteps` tier proxy `update()` reads
+  // below: it ignores the new-scene caution, which trims detail only (F272).
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 5.0 : 3.0),
   uniforms: () => ({
     uPhase: { value: 0 },
     uLurch: { value: 0 },

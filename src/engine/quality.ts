@@ -34,6 +34,16 @@ export interface QualityKnobs {
   pixelBudgetScale: number
   /** Max raymarch iterations (uMaxSteps early-break in RAYMARCH_GLSL). */
   raymarchSteps: number
+  /**
+   * `raymarchSteps` as seen by RESOLUTION decisions: the tier-proxy the
+   * function-form `pixelBudget`s read (`resolutionSteps >= 50 ? hi : lo`).
+   *
+   * Equal to `raymarchSteps` except while a new scene's caution rung is active
+   * (see `enterScene`, F272): the caution trims detail, not resolution, so this
+   * stays at the rung the ladder held before the scene arrived. It still takes
+   * the transition discount, which is a deliberate per-scene resolution dip.
+   */
+  resolutionSteps: number
   /** fbm octaves (uOctaves early-break in NOISE3D_GLSL). */
   noiseOctaves: number
   /** Jacobi pressure iterations for the fluid solver. */
@@ -75,6 +85,7 @@ const TIERS: QualityKnobs[] = [
   {
     pixelBudgetScale: 1.0,
     raymarchSteps: 96,
+    resolutionSteps: 96,
     noiseOctaves: 4,
     fluidJacobi: 20,
     particleFraction: 1.0,
@@ -83,6 +94,7 @@ const TIERS: QualityKnobs[] = [
   {
     pixelBudgetScale: 0.72,
     raymarchSteps: 72,
+    resolutionSteps: 72,
     noiseOctaves: 4,
     fluidJacobi: 16,
     particleFraction: 0.8,
@@ -91,6 +103,7 @@ const TIERS: QualityKnobs[] = [
   {
     pixelBudgetScale: 0.49,
     raymarchSteps: 54,
+    resolutionSteps: 54,
     noiseOctaves: 3,
     fluidJacobi: 12,
     particleFraction: 0.6,
@@ -99,6 +112,7 @@ const TIERS: QualityKnobs[] = [
   {
     pixelBudgetScale: 0.34,
     raymarchSteps: 40,
+    resolutionSteps: 40,
     noiseOctaves: 3,
     fluidJacobi: 10,
     particleFraction: 0.45,
@@ -107,6 +121,7 @@ const TIERS: QualityKnobs[] = [
   {
     pixelBudgetScale: 0.23,
     raymarchSteps: 28,
+    resolutionSteps: 28,
     noiseOctaves: 2,
     fluidJacobi: 8,
     particleFraction: 0.33,
@@ -469,6 +484,21 @@ export class QualityGovernor {
   private readonly provenTier = new Map<string, number>()
   private sceneId = ''
   private sceneTierSince = 0
+  /**
+   * Rung whose RESOLUTION is held while a new scene's caution rung is active,
+   * or -1 (F272).
+   *
+   * `enterScene` drops an unmeasured scene one rung as a precaution. The user
+   * asked for that precaution to trim detail only: a resolution change was a
+   * visible sharpness dip on most scene changes, and resolution is the knob a
+   * viewer can see. So while the caution holds, `pixelBudgetScale` and
+   * `resolutionSteps` come from this rung; everything else follows `tier`.
+   *
+   * Any tier change the ladder makes on its own evidence releases it: a climb
+   * lands back on (or above) this rung anyway, and a demote means the new scene
+   * really is too heavy, so resolution follows the ladder again.
+   */
+  private resolutionHold = -1
 
   /**
    * Tell the governor the display's actual refresh interval in milliseconds.
@@ -728,6 +758,11 @@ export class QualityGovernor {
    * Only ever moves the tier CHEAPER. Entering a scene richer than the ladder
    * currently sits is what the climb is for, and it has its own evidence.
    *
+   * The caution rung trims DETAIL only (F272): while it holds, resolution
+   * (`pixelBudgetScale`, `resolutionSteps`) stays at the rung the ladder was on
+   * before the scene arrived — see {@link resolutionHold}. A proven rung is
+   * evidence rather than caution, so resolution follows it.
+   *
    * Idempotent per scene id, so a caller may invoke it on every commit without
    * checking whether the id actually changed.
    */
@@ -739,7 +774,13 @@ export class QualityGovernor {
     const proven = this.provenTier.get(id)
     const cap = proven ?? Math.min(TIERS.length - 1, this.tier + 1)
     if (cap <= this.tier) return
+    // An unmeasured scene's rung is a precaution, and it trims detail only
+    // (F272): resolution stays where the ladder was. A proven rung is evidence,
+    // not caution, so resolution follows it.
+    const hold = proven === undefined ? (this.resolutionHold >= 0 ? this.resolutionHold : this.tier) : -1
     this.setTier(cap)
+    this.resolutionHold = hold
+    this.applyKnobs()
     // The scene changed, so the steady credit the old one earned is stale, and
     // the rung this just entered is not a probe the ladder chose — it must not
     // be charged to `blockedUntil` if the new scene turns out to be expensive.
@@ -780,26 +821,46 @@ export class QualityGovernor {
     this.sceneTierSince = 0
   }
 
+  /**
+   * Every tier change goes through here, and every one of them releases the
+   * new-scene resolution hold — `enterScene` re-arms it straight after its own
+   * call. See {@link resolutionHold}.
+   */
   private setTier(t: number): void {
     this.tier = Math.max(0, Math.min(TIERS.length - 1, t))
+    this.resolutionHold = -1
     this.applyKnobs()
   }
 
-  /** Rebuild `knobs` from the current tier and discount amount. */
+  /** Rebuild `knobs` from the current tier, the resolution hold, and the discount amount. */
   private applyKnobs(): void {
     const base = TIERS[this.tier]
-    if (this.discount <= 0) {
+    const resTier = this.resolutionHold >= 0 ? this.resolutionHold : this.tier
+    const res = TIERS[resTier]
+    if (this.discount <= 0 && resTier === this.tier) {
       this.knobs = base
       return
     }
+    const d = this.discounted
+    if (this.discount <= 0) {
+      // Caution only: this rung's detail at the held rung's resolution.
+      Object.assign(d, base)
+      d.pixelBudgetScale = res.pixelBudgetScale
+      d.resolutionSteps = res.resolutionSteps
+      this.knobs = d
+      return
+    }
     const cheaper = TIERS[Math.min(TIERS.length - 1, this.tier + TRANSITION_DISCOUNT_TIERS)]
+    const resCheaper = TIERS[Math.min(TIERS.length - 1, resTier + TRANSITION_DISCOUNT_TIERS)]
     const a = this.discount
     const mix = (from: number, to: number) => from + (to - from) * a
-    const d = this.discounted
 
     // Resizing the canvas at the start of every crossfade would cost a renderer
     // reallocation — far more than the discount saves.
-    d.pixelBudgetScale = base.pixelBudgetScale
+    d.pixelBudgetScale = res.pixelBudgetScale
+    // The per-scene budgets DO dip through a crossfade (a deliberate saving the
+    // user chose to keep, F272) — from the held rung, not the caution rung.
+    d.resolutionSteps = Math.round(mix(res.resolutionSteps, resCheaper.resolutionSteps))
     // Composition is decided at phrase boundaries and must not flip because a
     // transition happens to be in flight; that would drop layers mid-fade.
     d.frameBudgetMs = base.frameBudgetMs

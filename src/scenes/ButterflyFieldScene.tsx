@@ -427,7 +427,7 @@ export const ButterflyFieldScene = createShaderScene<ButterflyState>({
   // butterfly field (one `atan` + ~14 trig) every step, up to `uMaxSteps` — the
   // heaviest term, and the main tier lever. A mild offscreen budget covers the
   // low tiers. NOT /bench-measured; see SCENE_COST_MS.butterfly.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.6 : 1.0),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 1.6 : 1.0),
   uniforms: () => ({
     uFlapPhase: { value: 0 },
     uFlowPhase: { value: 0 },

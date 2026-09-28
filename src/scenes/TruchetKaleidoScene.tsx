@@ -544,7 +544,7 @@ export const TruchetKaleidoScene = createShaderScene<TruchetState>({
   // pessimistic. Left LIVE deliberately: it was force-promoted by explicit
   // request, and the estimate is unmeasured — `slotBudget.test.ts` now reports
   // it rather than aborting before it, which is where that decision belongs.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.6 : 1.0),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 1.6 : 1.0),
   uniforms: () => ({
     uFly: { value: 0 },
     uShock: { value: 0 },

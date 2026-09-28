@@ -707,7 +707,7 @@ export const OversaturatedWebScene = createShaderScene<WebState>({
   // 1.00 on 1080p at every tier. This scene stays the LOWEST budget of the four
   // by design — the uniform re-anchor preserved the roster's existing ordering,
   // which encodes measured cost differences between the scenes.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 4.4 : 2.8),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 4.4 : 2.8),
   uniforms: () => ({
     uFly: { value: 0 },
     // 1e4 = sinceImpulse()'s "never fired" sentinel, so the very first frame

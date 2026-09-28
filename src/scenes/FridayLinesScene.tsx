@@ -164,7 +164,7 @@ export const FridayLinesScene = createShaderScene<FridayLinesState>({
   blending: THREE.NoBlending,
   // Offscreen + upscale, same shape as beats/gyroid. Starting point pending
   // /bench, not a measurement.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.1 : 0.65),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 1.1 : 0.65),
   uniforms: () => ({
     uRawT: { value: 0 },
     uK: { value: 7 },

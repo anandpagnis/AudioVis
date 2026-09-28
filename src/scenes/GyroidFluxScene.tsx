@@ -399,7 +399,7 @@ export const GyroidFluxScene = createShaderScene<GyroidState>({
   // /bench: this scene's own estimate range (see header) overlaps beats'
   // ballpark closely enough that inventing different numbers blind would not
   // be more honest, just differently wrong.
-  pixelBudget: () => (quality.knobs.raymarchSteps >= 50 ? 1.2 : 0.7),
+  pixelBudget: () => (quality.knobs.resolutionSteps >= 50 ? 1.2 : 0.7),
   uniforms: () => ({
     uRawT: { value: 0 },
     uWarp: { value: 2.5 },

@@ -6,6 +6,7 @@ import {
   NATIVE_PIXEL_BUDGET,
   RENDER_SCALE_FLOOR,
   bufferScale,
+  claimsResolution,
   combinePixelBudgets,
   decideTierResize,
   solveRenderScale,
@@ -151,15 +152,50 @@ describe('combinePixelBudgets', () => {
     expect(combinePixelBudgets([])).toBe(NATIVE_PIXEL_BUDGET)
   })
 
-  it('admitting a layer costs resolution, and dropping it gives it back', () => {
-    // The composition case the engine actually feeds this: a subject alone, then
-    // the same subject with an accent over it, then alone again. Reversible,
-    // because the combine is a pure function of the current set rather than an
-    // accumulator that drifts as layers come and go across a long show.
+  it('adding a claimant costs resolution, and removing it gives it back', () => {
+    // A pure function of the current set rather than an accumulator, so a long
+    // show's claimants coming and going cannot drift it. (The live frame only
+    // hands it the committed primary and the post chain since F272 — see
+    // `claimsResolution` — but `/bench` composes arbitrary sets through it.)
     const solo = combinePixelBudgets([1.5])
     const layered = combinePixelBudgets([1.5, 4])
     expect(layered).toBeLessThan(solo)
     expect(combinePixelBudgets([1.5])).toBe(solo)
+  })
+})
+
+describe('claimsResolution (F272)', () => {
+  it('only the committed primary claims the frame resolution', () => {
+    expect(claimsResolution({ role: 'primary', dir: 1 })).toBe(true)
+  })
+
+  it('layers never do, so the director adding or dropping one cannot resize the canvas', () => {
+    for (const role of ['background', 'accent', 'overlay']) {
+      expect(claimsResolution({ role, dir: 1 })).toBe(false)
+    }
+  })
+
+  it('effects never do, at any stage of their lifecycle', () => {
+    for (const dir of [1, 0, -1]) expect(claimsResolution({ role: 'effect', dir })).toBe(false)
+  })
+
+  it('an outgoing or warming primary does not, so a crossfade resizes once rather than twice', () => {
+    expect(claimsResolution({ role: 'primary', dir: 0 })).toBe(false)
+    expect(claimsResolution({ role: 'primary', dir: -1 })).toBe(false)
+  })
+
+  it('a frame whose layers change keeps the same combined budget', () => {
+    // The whole point: the same primary with and without an accent resolves to
+    // the same number, so the pair key PerfMonitor watches does not move.
+    const budgetOf = (entries: { role: string; dir: number; mp: number }[]) =>
+      combinePixelBudgets(entries.filter(claimsResolution).map((e) => e.mp))
+    const alone = budgetOf([{ role: 'primary', dir: 1, mp: 12.5 }])
+    const layered = budgetOf([
+      { role: 'primary', dir: 1, mp: 12.5 },
+      { role: 'accent', dir: 1, mp: 16 },
+      { role: 'background', dir: 1, mp: 20 },
+    ])
+    expect(layered).toBe(alone)
   })
 })
 
