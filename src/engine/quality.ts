@@ -508,6 +508,16 @@ export class QualityGovernor {
    * thresholds somewhere absurd and either pin the tier at 0 forever or walk it
    * to the floor. 4 ms covers 240 Hz; 21 ms covers 48 Hz.
    */
+  /**
+   * The rung whose RESOLUTION is live: `tier`, or the held rung while a new
+   * scene's caution is active (F272, see {@link resolutionHold}). For
+   * resolution-side decisions that must not flip when the caution trims detail
+   * — e.g. whether an upscale gets the bicubic filter.
+   */
+  get resolutionTier(): number {
+    return this.resolutionHold >= 0 ? this.resolutionHold : this.tier
+  }
+
   /** The display interval the thresholds are ratios of. Read-only to callers. */
   get refreshIntervalMs(): number {
     return this.refreshMs

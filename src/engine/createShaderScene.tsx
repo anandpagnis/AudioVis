@@ -7,6 +7,7 @@ import { FULLSCREEN_VERT } from './glsl'
 import { createLilimState, updateLilimState, type LilimAudioState } from './lilimState'
 import { getNoiseLUT, NOISE_LUT_SIZE } from './noiseLUT'
 import type { PaletteBlender } from './palettes'
+import { quality } from './quality'
 import { useSceneFrame, type SceneFrame } from './sceneFrame'
 import { resolveFactoryDials, useSceneParams, type ResolvedSceneParams } from './sceneParams'
 import { resourceCache } from './streaming/resourceCache'
@@ -554,18 +555,96 @@ function createDirectScene<S>(spec: ShaderSceneSpec<S>): ComponentType {
  * Blit the offscreen buffer, honouring the scene's blending choice.
  *
  * The source texture is allocated at the FULL canvas size (see `BudgetedRT`
- * below) but only the bottom-left `uUvMax` fraction of it holds this frame's
- * actual render — the rest is stale/uninitialised from whatever the target
- * held before. `uUvMax` is already inset half a texel short of the true
- * boundary so linear filtering can't sample across into that stale region.
+ * below) but only the bottom-left `uSrcSize` texels hold this frame's actual
+ * render — the rest is stale/uninitialised from whatever the target held
+ * before. Every tap is clamped to texel centres inside that rect
+ * (`rectUv`), so filtering can never pull the stale region in.
+ *
+ * ## Alignment (F272)
+ *
+ * Sampling happens in texel space, `vUv * uSrcSize`, so at 1:1 each output
+ * pixel lands exactly on a texel centre and the blit is an exact copy. The
+ * previous mapping, `vUv * (w/fullW - 0.5/fullW)`, drifted by up to half a
+ * texel across the frame, so every budgeted scene drawn at 1:1 was a 50/50
+ * blend of two texels — soft — across its upper-right half.
+ *
+ * ## Upscale filter (F272)
+ *
+ * `uCubic` 0 is bilinear. Above 0 it is the cubic-convolution kernel with that
+ * tension (0.5 = Catmull-Rom) in its 5-tap form: bilinear taps placed so the
+ * hardware does most of the weighting, corners dropped and renormalised. The
+ * result is clamped to the taps' own range, so a bright line on black cannot
+ * ring into a dark halo or go negative — this roster is bright lines on black,
+ * and 16 of the 17 budgeted displays write straight into the frame. Linear in
+ * the input, so it stays exact under `uFade`. Used only while the scene is
+ * actually upscaled and the machine is on a top tier: measured on the M1 at
+ * 2560x1600, a bilinear blit costs ~0.6 ms and this ~1.3 ms.
  */
-const DISPLAY_FRAG = /* glsl */ `
+export const DISPLAY_FRAG = /* glsl */ `
   precision highp float;
   varying vec2 vUv;
   uniform sampler2D uScene;
-  uniform vec2 uUvMax;
-  void main() { gl_FragColor = texture2D(uScene, vUv * uUvMax); }
+  uniform vec2 uSrcSize;
+  uniform vec2 uTexel;
+  uniform float uCubic;
+  vec2 rectUv(vec2 t) { return clamp(t, vec2(0.5), uSrcSize - 0.5) * uTexel; }
+  void main() {
+    vec2 pos = vUv * uSrcSize;
+    if (uCubic <= 0.0) {
+      gl_FragColor = texture2D(uScene, rectUv(pos));
+      return;
+    }
+    vec2 tc1 = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - tc1;
+    float C = uCubic;
+    vec2 w0 = -C * f * (1.0 - f) * (1.0 - f);
+    vec2 w3 = -C * f * f * (1.0 - f);
+    vec2 w1 = 1.0 + f * f * ((C - 3.0) + (2.0 - C) * f);
+    vec2 w2 = 1.0 - w0 - w1 - w3;
+    vec2 w12 = w1 + w2;
+    vec2 t0 = rectUv(tc1 - 1.0);
+    vec2 t3 = rectUv(tc1 + 2.0);
+    vec2 t12 = rectUv(tc1 + w2 / w12);
+    vec4 cC = texture2D(uScene, t12);
+    vec4 cL = texture2D(uScene, vec2(t0.x, t12.y));
+    vec4 cR = texture2D(uScene, vec2(t3.x, t12.y));
+    vec4 cB = texture2D(uScene, vec2(t12.x, t0.y));
+    vec4 cT = texture2D(uScene, vec2(t12.x, t3.y));
+    float wC = w12.x * w12.y;
+    float wL = w0.x * w12.y;
+    float wR = w3.x * w12.y;
+    float wB = w12.x * w0.y;
+    float wT = w12.x * w3.y;
+    vec4 c = (cC * wC + cL * wL + cR * wR + cB * wB + cT * wT) / (wC + wL + wR + wB + wT);
+    vec4 mn = min(cC, min(min(cL, cR), min(cB, cT)));
+    vec4 mx = max(cC, max(max(cL, cR), max(cB, cT)));
+    gl_FragColor = max(clamp(c, mn, mx), 0.0);
+  }
 `
+
+/** Catmull-Rom tension for {@link DISPLAY_FRAG}'s upscale. */
+export const BLIT_CUBIC_TENSION = 0.5
+
+/**
+ * The cheapest quality tier that still gets the bicubic upscale (tiers run 0
+ * richest → 4 survival). The user's call (F272): bicubic only while the machine
+ * is running comfortably — the top two tiers — and plain bilinear once the
+ * ladder has stepped down, so a struggling M1 never pays for it.
+ */
+export const BLIT_CUBIC_MAX_TIER = 1
+
+/**
+ * `uCubic` for a budgeted scene's blit: the Catmull-Rom tension when the
+ * active rect is genuinely smaller than what it is drawn over AND the live
+ * resolution tier is a top one, else 0 (bilinear — which at 1:1 is an exact
+ * copy). Total against non-finite input. Pure, so the policy is testable
+ * without a GPU.
+ */
+export function blitCubicFor(srcW: number, destW: number, resolutionTier: number): number {
+  if (!Number.isFinite(srcW) || !Number.isFinite(destW) || !Number.isFinite(resolutionTier)) return 0
+  if (srcW >= destW - 0.5) return 0
+  return resolutionTier <= BLIT_CUBIC_MAX_TIER ? BLIT_CUBIC_TENSION : 0
+}
 
 /** The GPU-side pieces a budgeted scene needs: real allocations, not just JS state. */
 interface BudgetedRT {
@@ -658,7 +737,12 @@ function getBudgetedRT(gl: THREE.WebGLRenderer, id: string, blending: THREE.Blen
     depthWrite: false,
     depthTest: false,
     blending,
-    uniforms: { uScene: { value: null }, uUvMax: { value: new THREE.Vector2(1, 1) } },
+    uniforms: {
+      uScene: { value: null },
+      uSrcSize: { value: new THREE.Vector2(1, 1) },
+      uTexel: { value: new THREE.Vector2(1, 1) },
+      uCubic: { value: 0 },
+    },
   })
   const created: BudgetedRT = {
     target,
@@ -795,11 +879,13 @@ function createBudgetedScene<S>(
     // the target is fixed to the full canvas (see `getBudgetedRT`'s F139/
     // F143 doc comment) and essentially never changes, while this tracks the
     // viewport sub-rect the quality governor moves dozens of times a minute.
-    // Tracks BOTH sizes `uUvMax` is a ratio of, not just the active one.
+    // Tracks BOTH sizes the blit samples with — the active rect (`uSrcSize`)
+    // and the allocation (`uTexel`) — not just the active one.
     //
     // Guarding on the active size alone was a real, visible bug: black bars
     // along the top and right with the picture squashed into the bottom-left.
-    // `uUvMax` is `active / full`, and in the normal (unclamped) regime the
+    // The blit's mapping then was `uUvMax = active / full` (replaced by
+    // `uSrcSize`/`uTexel` in F272, same dependency), and in the normal (unclamped) regime the
     // ACTIVE size is invariant under DPR — `solveScale` divides by `dpr` and
     // the `w = floor(size.width * dpr * scale)` below multiplies it straight
     // back out, so `w` reduces to `floor(sqrt(budget * 1e6 * W/H))`, a
@@ -847,7 +933,7 @@ function createBudgetedScene<S>(
       // window-resize-shaped symptom the user hit today actually was: not a
       // resize bug, this path reallocating every time DPR eased back down.
       // The target only ever needs to be big enough to hold the active
-      // rect — that is already exactly what viewport/scissor/`uUvMax` render
+      // rect — that is already exactly what viewport/scissor/`uSrcSize` render
       // into and sample below — so once it has grown to a given size this
       // session there is no reason to ever shrink it back down again; doing
       // so only re-pays the stall the next time DPR climbs back up. Same
@@ -888,10 +974,15 @@ function createBudgetedScene<S>(
         // frame than the one actually being written into.
         material.uniforms.uRes.value.set(w, h)
         material.uniforms.uAspect.value = w / h
-        // Half-texel inset so the blit's bilinear filtering can't sample
-        // across into the stale region outside this frame's active rect.
-        displayMaterial.uniforms.uUvMax.value.set(w / fullW - 0.5 / fullW, h / fullH - 0.5 / fullH)
+        // The blit samples in texel space inside the active rect and clamps
+        // every tap to it — see DISPLAY_FRAG's alignment note (F272).
+        displayMaterial.uniforms.uSrcSize.value.set(w, h)
+        displayMaterial.uniforms.uTexel.value.set(1 / fullW, 1 / fullH)
       }
+      // Bicubic only while the rect is genuinely upscaled and the live
+      // resolution tier is a top one (F272). A uniform write, so read every
+      // frame to follow the tier without its own change-guard.
+      displayMaterial.uniforms.uCubic.value = blitCubicFor(w, Math.floor(size.width * dpr), quality.resolutionTier)
       // Cheap Vector4 writes, not a GPU resize — `setRenderTarget()` below
       // reads these directly (three's own dynamic-resolution mechanism).
       rt.target.viewport.set(0, 0, w, h)

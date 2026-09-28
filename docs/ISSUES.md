@@ -13541,6 +13541,27 @@ per-frame canvas heavy enough to distort the reading.
          instant steps.
       6. Max render resolution setting.
 
+      **Progress.**
+      - Stage 1 done (`d339022`): `claimsResolution` in renderScale.ts —
+        only the committed primary claims resolution. The caution rung holds
+        `pixelBudgetScale` and a new `resolutionSteps` knob at the
+        pre-caution rung (`QualityGovernor.resolutionHold`); the 12
+        function-form `pixelBudget`s read `resolutionSteps`. Not yet watched
+        on either machine (user skipped the checkpoint).
+      - Stage 2 done: `DISPLAY_FRAG` samples in texel space with every tap
+        clamped inside the active rect (the old `uUvMax` mapping blended two
+        texels across the upper-right half of every budgeted scene drawn
+        1:1) and uses a 5-tap de-ringed Catmull-Rom when upscaled at quality
+        tier 0-1 (`blitCubicFor`, `BLIT_CUBIC_MAX_TIER`, keyed on the new
+        `quality.resolutionTier` so the caution does not flip it). CAS lobe
+        ramps in over uSharpen 0..0.1 (was a 0 -> 1/8 jump, which is what
+        the sparkle shimmer toggled). The build push-in has its own
+        `performanceState.iris` (build pressure only; 0 at rest, 1 = 4% at a
+        build's peak, released on the drop; snapped to exactly 0 below
+        `IRIS_REST_SNAP`), so a resting frame is no longer resampled — the
+        zoom used to ride `vignette` and rest at ~3.4%. Both shaders
+        compile and link on the M1 (ANGLE/Metal). Not yet watched live.
+
 - [ ] **F273 · REMINDER: add the slow glide-up to resolution changes once the
       user confirms the instant steps** — *2026-09-28, user request*
       `src/engine/PerfMonitor.tsx` (after F272 stage 5)

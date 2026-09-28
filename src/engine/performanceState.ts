@@ -196,6 +196,14 @@ export interface PerformanceState {
   caAngle: number
   /** 0..1 — vignette darkness. Rises through a build to tighten the frame. */
   vignette: number
+  /**
+   * 0..1 — build push-in (F272): GradePass's small zoom toward the centre, 1 = a
+   * 4% push. Exactly build pressure (a build in progress, an approaching peak,
+   * a confirmed build section), so it is 0 at rest — a resting frame is never
+   * resampled — and released on the drop. Split from `vignette`, which rests
+   * at each mood's darkness level and so held the zoom at ~3.4% all show.
+   */
+  iris: number
   /** 0..1 — atmospheric depth. */
   fog: number
   /**
@@ -472,6 +480,7 @@ export const performanceState: PerformanceState = {
   glitch: 0,
   caAngle: 0,
   vignette: 0.85,
+  iris: 0,
   fog: 0,
   trails: 0,
   echo: 0,

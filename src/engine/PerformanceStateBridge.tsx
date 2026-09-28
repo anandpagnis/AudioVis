@@ -391,6 +391,9 @@ export function PerformanceStateBridge() {
     // visualTension ~0 for its entire runtime and the mirror/lens eligibility
     // gates (opticalDirector.ts) essentially never open outside `hot` moods.
     const baselineTension = visualTensionFloor(m.level)
+    // Build pressure alone — no mood floor, no drop spike — for the push-in
+    // (F272, `performanceState.iris`), which must be exactly 0 at rest.
+    const buildPush = Math.min(1, Math.max(buildTension, predictionTension, structureTension))
     p.visualTension = Math.min(
       1,
       Math.max(buildTension, predictionTension, structureTension, baselineTension) +
@@ -567,6 +570,9 @@ export function PerformanceStateBridge() {
       1.5,
       f.delta,
     )
+    // The push-in rides the same build and releases on the same drop, at the
+    // same ease, but from exactly 0 at rest (F272) — see `performanceState.iris`.
+    p.iris = approach(p.iris, f.drop ? 0 : buildPush, 1.5, f.delta)
 
     // Glitch is punctuation, so it is gated on tension and drops rather than
     // running continuously. Low quality zeroes it — the pass stays in the chain

@@ -82,9 +82,16 @@ import { audioEngine } from '../audio/AudioEngine'
  *
  * So the dial keeps the vignette AND gains a term that works on a black field:
  * a small inward scale. Pushing in magnifies the subject, which reads as the
- * frame closing regardless of what is in the corners. One dial, two mechanisms,
- * and between them it now does something visible on every scene in the roster
- * rather than on the four that fill the frame.
+ * frame closing regardless of what is in the corners. Between them it now does
+ * something visible on every scene in the roster rather than on the four that
+ * fill the frame.
+ *
+ * The push-in has its own dial since F272, `performanceState.iris`. It rode
+ * `vignette` until then, and `vignette` rests at each mood's darkness level
+ * (~0.85), so the zoom rested at ~3.4% and resampled — softened — every frame
+ * of the show, moving only between 3.4% and 4% through a build. `iris` is
+ * build pressure alone: exactly 0 at rest (no resample at all), up to 1 (a 4%
+ * push) at the peak of a build, released on the drop.
  *
  * `uGain` multiplies. This is not a stylistic choice: docs/09_Rendering_Engine.md
  * records that a previous grade attempt used `BrightnessContrast.brightness`,
@@ -257,7 +264,13 @@ export const GRADE_FRAG = /* glsl */ `
     // Negative lobe. Normalising by the total weight keeps the average level
     // unchanged, so this sharpens without shifting exposure — which matters
     // because the exposure servo is watching this same frame.
-    float w = -(1.0 / mix(8.0, 5.0, uSharpen)) * dot(amp, vec3(0.3333));
+    //
+    // The smoothstep ramps the lobe in from zero over the first 0.1 of
+    // uSharpen (F272). Without it the lobe jumped straight from 0 to 1/8 the
+    // moment uSharpen crossed the enable threshold, so the sparkle shimmer —
+    // which is all that drives uSharpen on a native frame — snapped the whole
+    // picture's sharpness on and off with the music.
+    float w = -(1.0 / mix(8.0, 5.0, uSharpen)) * smoothstep(0.0, 0.1, uSharpen) * dot(amp, vec3(0.3333));
     vec3 sum = centre + (up + down + left + right) * w;
     return clamp(sum / (1.0 + 4.0 * w), 0.0, 1.0e4);
   }
@@ -303,7 +316,12 @@ export const GRADE_FRAG = /* glsl */ `
     // rides a director dial that moves through every build, and anything a
     // viewer can identify as a zoom stops reading as tension and starts reading
     // as a camera move, which CameraDirector already owns.
-    vec2 uv = (vUv - 0.5) * (1.0 - uIris * 0.04) + 0.5;
+    //
+    // Exactly vUv at rest (F272): uIris is 0 outside a build, and a resting
+    // frame must not be resampled at all — the zoom used to rest at ~3.4%,
+    // which softened every frame of the show. Branch on a uniform, so every
+    // fragment takes the same path.
+    vec2 uv = uIris > 0.0 ? (vUv - 0.5) * (1.0 - uIris * 0.04) + 0.5 : vUv;
     vec3 col = texture2D(tDiffuse, uv).rgb;
     // Sharpen BEFORE the gain, so the filter's clamp works in the same range it
     // was derived for. Skipped entirely when the frame is already native — the
@@ -375,6 +393,14 @@ export const GRADE_FRAG = /* glsl */ `
  * the SAME number rather than two copies of `0.85` silently drifting apart.
  */
 export const CAS_SHARPEN_CEILING = 0.85
+
+/**
+ * `performanceState.iris` below which the build push-in is treated as exactly
+ * off (F272). 0.005 of a 4% push is 0.02% — about a third of a pixel at the
+ * edge of a 2880-wide frame — so snapping it away is invisible, and it lets a
+ * resting frame skip the resample entirely.
+ */
+export const IRIS_REST_SNAP = 0.005
 
 /**
  * How hard to sharpen, given the scale the frame was rendered at (F122).
@@ -556,7 +582,10 @@ export class GradePass extends Pass {
     // only consumer, and going through the singleton means a context loss that
     // resets exposure reaches the shader on the very next frame.
     this.material.uniforms.uGain.value = exposure.gain
-    this.material.uniforms.uIris.value = performanceState.vignette
+    // `iris` eases toward 0 exponentially and never lands, and anything above 0
+    // switches the resample on — so a residue is snapped to exactly 0.
+    const iris = performanceState.iris
+    this.material.uniforms.uIris.value = Number.isFinite(iris) && iris > IRIS_REST_SNAP ? Math.min(1, iris) : 0
     const u = this.material.uniforms
     u.uFog.value = performanceState.fog
     // The servo's mean is in output space and updates on its own 0.18 s cadence,

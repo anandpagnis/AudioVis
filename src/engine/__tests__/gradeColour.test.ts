@@ -329,6 +329,14 @@ describe('GRADE_FRAG structure', () => {
     expect(fog).toBeLessThan(output)
   })
 
+  it('does not resample a resting frame: the build push-in is a no-op at uIris 0 (F272)', () => {
+    expect(GRADE_FRAG).toMatch(/vec2 uv = uIris > 0\.0 \? \(vUv - 0\.5\) \* \(1\.0 - uIris \* 0\.04\) \+ 0\.5 : vUv;/)
+  })
+
+  it('ramps the sharpen lobe in from zero rather than switching it on (F272)', () => {
+    expect(GRADE_FRAG).toMatch(/smoothstep\(0\.0, 0\.1, uSharpen\)/)
+  })
+
   it('skips the whole stage on a uniform branch at identity', () => {
     const guard = at('if (uGradeSat != 1.0 || uGradeTemp != 0.0 || uGradeContrast != 1.0) col = moodGrade(col)')
     expect(guard).toBeGreaterThan(at('col *= uGain'))
