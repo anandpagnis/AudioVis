@@ -398,7 +398,7 @@ export const SnowflakeScene = createShaderScene<SnowflakeState>({
   // Crisp thin strokes — the direct (native-res) path, same as `matrix`,
   // whose hard edges ruled the upscaled offscreen path out. No `pixelBudget`.
   //
-  // Deliberately NOT `blending: THREE.NoBlending` (removed — see F261 in
+  // Deliberately NOT `blending: THREE.NoBlending` (removed — see F271 in
   // docs/ISSUES.md): a primary entry is never wrapped by `SceneManager`'s
   // `BlendedLayer` (that only wraps background/accent/overlay/effect), so
   // whatever a scene declares here is what its ON-SCREEN material keeps for

@@ -1,7 +1,9 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
+import { isPhraseEdge } from '../audio/structure/downbeat'
 import type { MoodState } from '../audio/types'
+import { tryCommitArmed } from './armedDirector'
 import { getAudioResponse } from './audioResponse'
 import { cueState } from './CueTimeline'
 import { frameLoad } from './frameLoad'
@@ -22,8 +24,10 @@ import {
   type ScenePerformanceCost,
 } from '../scenes'
 import { sceneBoost, sceneLookActive } from '../scenes/sceneTraits'
-import { LAYER_ROLES, useStore, type LayerRole } from '../store'
+import { LAYER_ROLES, manualHoldActive, useStore, type LayerRole } from '../store'
 import { pickByCharacter } from './characterPick'
+import { DIRECTOR_ON } from './show/directorFlags'
+import { LAYERS_CUT, LAYERS_NONE, showRuntime } from './show/showRuntime'
 
 const MANUAL_HOLD_SEC = 45
 const PHRASE_HOLD_BEATS = 16 // fallback recompose cadence when no section fires
@@ -225,7 +229,7 @@ export function PerformanceDirector() {
     if (cueState.governed) return // authored cues own the journey
     if (performanceState.djCam.active) return // a DJ-cam cutaway owns the frame
     if (performanceState.limitless.active) return // a Limitless cutaway owns the frame
-    if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
+    if (manualHoldActive(s.lastManualAt, MANUAL_HOLD_SEC)) return
 
     // Hold the subject through a confirmed build-up — recomposing mid-riser is
     // exactly the "transitions when it doesn't need to" complaint. The drop
@@ -241,14 +245,22 @@ export function PerformanceDirector() {
     // ever promised. Should `dropExpected` gain a source independent of
     // `buildConfirmed`, this keeps holding for the right reason. Same fix
     // applied at AutoPilot.tsx:360, for the identical reason.
-    if (f.structureValid && f.songSection.isSustain && !f.songSection.boundaryChanged) return
+    // (Under the show director the hold is the director's own decision: it simply asks for no recompose mid-riser.)
+    if (!DIRECTOR_ON && f.structureValid && f.songSection.isSustain && !f.songSection.boundaryChanged) return
 
     // With a real structure read, a latched boundary replaces the blind
     // 16-beat timer; without one, the timer is the degraded fallback.
     const latchedBoundary = f.structureValid && f.songSection.boundaryChanged
-    const phraseFallback =
-      !f.structureValid && f.beat && f.beatInBar === 0 && f.beatIndex > 0 && f.beatIndex % 16 === 0
-    const boundary = f.sectionChange || latchedBoundary || phraseFallback
+    // `isPhraseEdge` = first beat of every 4th bar (`bar` counts from the estimated downbeat). The old
+    // `beatIndex % 16 === 0` test is only equal to this while the downbeat offset is 0; with an adopted
+    // offset it could never be true together with `beatInBar === 0`, silently killing this fallback.
+    const phraseFallback = !f.structureValid && isPhraseEdge(f.beat, f.beatInBar, f.bar)
+    // Under the show director (default) `f.sectionChange`, the latched boundary and the blind 16-beat phrase no longer
+    // recompose anything on their own: the layers change only when the director asks (a MICRO for accent / overlay,
+    // a CUT for the background too), through `showRuntime.layers`. `?director=legacy` keeps the three signals.
+    const boundary = DIRECTOR_ON ? showRuntime.layers !== LAYERS_NONE : f.sectionChange || latchedBoundary || phraseFallback
+    // A section-scale recompose (the background too): a section signal, or under the director a CUT.
+    const sectionBoundary = DIRECTOR_ON ? showRuntime.layers === LAYERS_CUT : f.sectionChange || latchedBoundary
     if (!boundary || f.beatIndex === lastBoundaryBeat.current) return
     lastBoundaryBeat.current = f.beatIndex
 
@@ -256,6 +268,7 @@ export function PerformanceDirector() {
     // immediately; only the blind periodic fallback respects the one-phrase
     // spacing so calm stretches aren't over-recomposed.
     if (
+      !DIRECTOR_ON &&
       !f.sectionChange &&
       !latchedBoundary &&
       f.beatIndex - lastSwitchBeat.current < PHRASE_HOLD_BEATS
@@ -292,13 +305,17 @@ export function PerformanceDirector() {
     const inBreakdown = f.structureValid && f.songSection.isBreakdown
     const notHeavy = (scene: SceneDef) => scene.metadata.performanceCost !== 'high'
 
-    const primaryCandidates = inBreakdown
-      ? selectPrimaryCandidates(mood, s.sceneId).filter(notHeavy)
-      : selectPrimaryCandidates(mood, s.sceneId)
+    // Under the show director this hook never picks the primary (an empty list skips the pick below): the director's
+    // CUT does, and this hook only recomposes the layers around whichever primary is landing.
+    const primaryCandidates: SceneDef[] = DIRECTOR_ON
+      ? []
+      : inBreakdown
+        ? selectPrimaryCandidates(mood, s.sceneId).filter(notHeavy)
+        : selectPrimaryCandidates(mood, s.sceneId)
 
     const layerFits = inBreakdown ? [] : getScenesForMood(mood)
 
-    if (primaryCandidates.length === 0 && layerFits.length === 0) return
+    if (!DIRECTOR_ON && primaryCandidates.length === 0 && layerFits.length === 0) return
 
     // Prefer scenes that express the strongest current musical layer — folded
     // into pickVariedScene as a weight boost rather than a hard sort, so it
@@ -326,8 +343,15 @@ export function PerformanceDirector() {
     // Only pick a new primary when one isn't already mid-commit; otherwise we'd
     // fight AutoPilot's in-flight switch. Either way we (re)compose the layers
     // against whichever primary is landing.
-    let primaryId = s.pendingSceneId ?? s.sceneId
-    if (!s.pendingSceneId && primaryCandidates.length > 0) {
+    // A HELD (armed) pending scene is not landing yet: until it is released the current scene is still the subject
+    // the layers must sit on. A boundary is exactly the moment to cut to it (already picked from the music and
+    // compiled, armedDirector.ts); only when it no longer fits does a fresh, cold pick replace it (`requestScene`
+    // clears the hold).
+    const heldPending = s.heldSceneId !== null && s.heldSceneId === s.pendingSceneId
+    let primaryId = s.pendingSceneId && !heldPending ? s.pendingSceneId : s.sceneId
+    const armedTaken = heldPending && tryCommitArmed('boundary', false, f)
+    if (armedTaken) primaryId = s.heldSceneId as string
+    if (!armedTaken && (!s.pendingSceneId || heldPending) && primaryCandidates.length > 0) {
       // Character-driven pick over every primary-capable scene (not just this mood label's pool,
       // which overlaps the others ~90%); null until the character read is ready, then the
       // original mood-label pick runs unchanged.
@@ -379,8 +403,7 @@ export function PerformanceDirector() {
     // ground that changes every 16 beats is just a second primary. Holding the
     // previous pick means passing an empty pool, which composeLayers reads as
     // "leave it alone".
-    const backgroundPool =
-      (f.sectionChange || latchedBoundary) && !inBreakdown ? forRole('background') : []
+    const backgroundPool = sectionBoundary && !inBreakdown ? forRole('background') : []
 
     const slots = composeLayers({
       primaryId,
@@ -423,7 +446,7 @@ export function PerformanceDirector() {
     })
     // Background is preserved across non-section recomposes; the other two are
     // always written, since nothing else clears them.
-    if (f.sectionChange || latchedBoundary) s.setLayer('background', slots.background, { auto: true })
+    if (sectionBoundary) s.setLayer('background', slots.background, { auto: true })
     s.setLayer('accent', slots.accent, { auto: true })
     s.setLayer('overlay', slots.overlay, { auto: true })
     lastSwitchBeat.current = f.beatIndex

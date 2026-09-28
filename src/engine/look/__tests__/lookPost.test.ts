@@ -909,10 +909,18 @@ describe('bridge wiring (source pins)', () => {
     expect(bridge).not.toMatch(/lookForceMood\(|lookFamilies\(|lookDebugEnabled\(/)
   })
 
-  it('uses the decision-edge conditions it always did (no new triggers for the lens or the mirror)', () => {
+  it('the lens keeps its decision-edge conditions; the mirror decides through the gate, never by re-rolling', () => {
     expect(bridge).toMatch(/f\.sectionChange \|\| \(phraseEdge && lensPhrasesHeld\.current >= LENS_MAX_PHRASES\)/)
-    expect(bridge).toMatch(/shouldRepickMirror\(\{/)
-    expect(bridge).toMatch(/L\.primary !== mirrorPrimaryAtPick\.current/)
+    // The mirror: one gated decision (mirrorGate.ts), on a beat, with a deterministic per-section seed. The old
+    // per-sectionChange / per-phrase re-roll (shouldRepickMirror, a fresh `mirrorSeed++` coin flip, a mood-moved
+    // bypass of every hold) made an engaged fold flip on and off at random and must not come back.
+    expect(bridge).toMatch(/stepMirrorGate\(mirrorGateState\.current,/)
+    expect(bridge).toMatch(/beatEdge:\s*f\.beat,/)
+    expect(bridge).toMatch(/mirrorFromProfile\(L, p\.visualTension, gate\.seed,/)
+    expect(bridge).toMatch(/commitMirrorDecision\(/)
+    expect(bridge).not.toMatch(/shouldRepickMirror/)
+    expect(bridge).not.toMatch(/mirrorSeed\.current\+\+/)
+    expect(bridge).not.toMatch(/mirrorPrimaryAtPick/)
   })
 
   it('no wall-clock or unseeded randomness in the look system', () => {

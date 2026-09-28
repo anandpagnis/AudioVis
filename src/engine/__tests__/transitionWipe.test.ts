@@ -9,7 +9,9 @@ import {
   WIPE_LAYER_IN,
   WIPE_LAYER_OUT,
   WIPE_MAX_TIER,
+  WIPE_NOISE_SIZE,
   WIPE_STYLE_INDEX,
+  buildWipeNoise,
   datamoshBlockOffset,
   datamoshChannelOffset,
   featherFor,
@@ -319,5 +321,83 @@ describe('capture ordering (source pin)', () => {
     // From that point, the enclosing useFrame's close must carry a priority below PostFXChain's default (0).
     const closeIdx = SCENE_MANAGER_SRC.indexOf('}, -1)', layerBlock)
     expect(closeIdx, 'useFrame(..., -1) after the layer-assignment block').toBeGreaterThan(layerBlock)
+  })
+})
+
+describe('buildWipeNoise — the baked inkDissolve field', () => {
+  const N = WIPE_NOISE_SIZE
+  const px = (d: Uint8Array, x: number, y: number, c: number) => d[(y * N + x) * 4 + c]
+
+  it('is RGBA8 of the declared size, fully opaque, with an empty blue channel', () => {
+    const d = buildWipeNoise()
+    expect(d).toHaveLength(N * N * 4)
+    for (let i = 0; i < d.length; i += 4) {
+      expect(d[i + 2]).toBe(0)
+      expect(d[i + 3]).toBe(255)
+    }
+  })
+
+  it('is deterministic: the same bytes every call, whenever it is built', () => {
+    expect(Array.from(buildWipeNoise().slice(0, 4096))).toEqual(Array.from(buildWipeNoise().slice(0, 4096)))
+  })
+
+  it('spans a wide, roughly centred range (a usable threshold field) in both noise channels', () => {
+    const d = buildWipeNoise()
+    for (const c of [0, 1]) {
+      let lo = 255
+      let hi = 0
+      let sum = 0
+      for (let i = c; i < d.length; i += 4) {
+        lo = Math.min(lo, d[i])
+        hi = Math.max(hi, d[i])
+        sum += d[i]
+      }
+      const mean = sum / (N * N)
+      expect(lo, `channel ${c} low`).toBeLessThan(60)
+      expect(hi, `channel ${c} high`).toBeGreaterThan(195)
+      expect(mean, `channel ${c} mean`).toBeGreaterThan(105)
+      expect(mean, `channel ${c} mean`).toBeLessThan(150)
+    }
+  })
+
+  it('is smooth (value noise, not white noise): neighbouring texels differ by little', () => {
+    const d = buildWipeNoise()
+    let worst = 0
+    for (let y = 0; y < N; y++) for (let x = 0; x < N - 1; x++) worst = Math.max(worst, Math.abs(px(d, x, y, 0) - px(d, x + 1, y, 0)))
+    // ~10.7 texels per lattice cell; the steepest Hermite slope over a full 0..1 lattice step is 1.5 per cell.
+    expect(worst).toBeLessThan(40)
+  })
+
+  it('tiles seamlessly: the wrap from the last texel to the first is as smooth as any interior step', () => {
+    const d = buildWipeNoise()
+    let worstWrap = 0
+    for (let y = 0; y < N; y++) worstWrap = Math.max(worstWrap, Math.abs(px(d, N - 1, y, 0) - px(d, 0, y, 0)))
+    for (let x = 0; x < N; x++) worstWrap = Math.max(worstWrap, Math.abs(px(d, x, N - 1, 0) - px(d, x, 0, 0)))
+    expect(worstWrap).toBeLessThan(40)
+  })
+
+  it('the two channels are independent lattices (the two octaves must not be the same field)', () => {
+    const d = buildWipeNoise()
+    let sr = 0
+    let sg = 0
+    let srr = 0
+    let sgg = 0
+    let srg = 0
+    const n = N * N
+    for (let i = 0; i < d.length; i += 4) {
+      sr += d[i]
+      sg += d[i + 1]
+      srr += d[i] * d[i]
+      sgg += d[i + 1] * d[i + 1]
+      srg += d[i] * d[i + 1]
+    }
+    const cov = srg / n - (sr / n) * (sg / n)
+    const corr = cov / Math.sqrt((srr / n - (sr / n) ** 2) * (sgg / n - (sg / n) ** 2))
+    expect(Math.abs(corr)).toBeLessThan(0.35)
+  })
+
+  it('honours a custom size and lattice', () => {
+    const d = buildWipeNoise(32, 4)
+    expect(d).toHaveLength(32 * 32 * 4)
   })
 })

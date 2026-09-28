@@ -148,7 +148,7 @@ describe('transitionRack', () => {
     expect(transitionRack('mosaic', 0.5).lensAmount).toBeGreaterThan(0.5)
     expect(transitionRack('sortSlice', 0.5).lensAmount).toBeGreaterThan(0.5)
     expect(transitionRack('mosaic', 0.5).lensAmount).toBeCloseTo(0.6, 9)
-    expect(transitionRack('sortSlice', 0.5).lensAmount).toBeCloseTo(0.65, 9)
+    expect(transitionRack('sortSlice', 0.5).lensAmount).toBeCloseTo(0.9, 9)
   })
 
   it('mosaic and sortSlice are zero at both ends, like every other rack style', () => {
@@ -159,9 +159,13 @@ describe('transitionRack', () => {
     }
   })
 
-  it('names real lens materials for mosaic (pixels) and sortSlice (pixel-sort), referencing LENS rather than a magic number', () => {
+  it('names real lens materials for mosaic (pixels) and sortSlice (ribs), referencing LENS rather than a magic number', () => {
     expect(transitionRack('mosaic', 0.5).lensStyle).toBe(LENS.pixels)
-    expect(transitionRack('sortSlice', 0.5).lensStyle).toBe(LENS.pixelSort)
+    expect(transitionRack('sortSlice', 0.5).lensStyle).toBe(LENS.ribs)
+  })
+
+  it('sortSlice no longer rides the expensive pixel-sort lens (a 14-tap dependent loop at full resolution)', () => {
+    for (const t of [0.1, 0.5, 0.9]) expect(transitionRack('sortSlice', t).lensStyle).not.toBe(LENS.pixelSort)
   })
 
   it('mosaic and sortSlice are deterministic, like every other style', () => {

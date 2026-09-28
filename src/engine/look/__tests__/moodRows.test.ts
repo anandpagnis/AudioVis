@@ -32,6 +32,7 @@ const RANGES: Record<ScalarKey, readonly [number, number]> = {
   lensEngage: [0, 0.7], lensAmountFloor: [0.15, 0.42], lensAmountCeil: [0.15, 0.42],
   mirrorEngage: [0, 0.9], mirrorSpinMin: [0, 0.7], mirrorSpinMax: [0, 0.7], mirrorTwistMax: [0, 1.3], mirrorMix: [0, 1], mirrorBusyGain: [0, 1],
   steerSpeed: [0, 1], steerComplexity: [0, 1], steerDensity: [0, 1], steerFill: [0, 1], steerContrast: [0, 1],
+  tempoCoupling: [0, 1.2],
   cameraSpeed: [0.6, 1.6], cameraShake: [0, 1.5], cameraCutRate: [0, 1],
   transitionDurationBias: [0.6, 1.6], transitionSharpness: [1, 8],
   gradeSat: [0.75, 1.3], gradeTemp: [-1, 1], gradeContrast: [0.95, 1.3],
@@ -543,9 +544,11 @@ describe('MOOD_ROWS: legibility (no two moods look alike)', () => {
 
   it('the families cover every visible field of the row', () => {
     const covered = new Set<Component>(Object.values(FAMILIES).flat())
-    // busyGain, traitStrength and the fx propensities are gains / rare events, not continuously visible looks
+    // busyGain, traitStrength, tempoCoupling and the fx propensities are gains / rare events, not continuously
+    // visible looks (tempoCoupling only matters relative to the song's tempo, so it does not read as a "look")
     const skipped: Component[] = [
       'mirrorBusyGain',
+      'tempoCoupling',
       'traitStrength',
       'fxShock',
       'fxFlare',

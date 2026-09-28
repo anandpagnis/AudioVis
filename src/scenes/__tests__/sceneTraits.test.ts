@@ -373,10 +373,10 @@ describe('directorSteers opt-ins', () => {
     }
   })
 
-  it("opts 4D Beats' tilt (the 4D angle) and Fractal Rose Window's shape (symmetry) in", () => {
+  it("opts 4D Beats' tilt (the 4D angle) in, and keeps Fractal Rose Window's symmetry OUT of the director steer (it made the rose bounce)", () => {
     const get = (id: string) => SCENES.find((s) => s.id === id)?.metadata.contract
     expect(get('beats')?.directorSteers).toEqual(['tilt'])
-    expect(get('kifs')?.directorSteers).toEqual(['shape'])
+    expect(get('kifs')?.directorSteers).toBeUndefined()
     expect(get('beats')?.paramLabels?.['*']?.tilt).toBe('4D angle')
     expect(get('kifs')?.paramLabels?.['*']?.shape).toBe('symmetry')
   })

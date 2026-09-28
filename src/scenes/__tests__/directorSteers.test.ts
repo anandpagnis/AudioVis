@@ -32,3 +32,27 @@ describe('resolveSteeredParams and directorSteers', () => {
     expect(out.tilt).toBe(0.7)
   })
 })
+
+describe('steerExempt', () => {
+  it('keeps the authored default for an exempt dial while the others are still steered', () => {
+    const c = declares({ params: { speed: 0.5, complexity: 0.8, density: 1, fill: 0.62 }, steerExempt: ['complexity', 'density', 'fill'] })
+    const out = resolveSteeredParams(c, undefined, { speed: 0.9, complexity: 0.25, density: 0.2, fill: 0.9 }, undefined)
+    expect(out.complexity).toBe(0.8)
+    expect(out.density).toBe(1)
+    expect(out.fill).toBe(0.62)
+    expect(out.speed).toBe(0.9)
+  })
+
+  it('the user own dial still wins on an exempt dial', () => {
+    const c = declares({ params: { complexity: 0.8 }, steerExempt: ['complexity'] })
+    expect(resolveSteeredParams(c, undefined, { complexity: 0.2 }, { complexity: 0.4 }).complexity).toBe(0.4)
+  })
+
+  it('the three scenes that were bouncing / thinning are exempt', async () => {
+    const { getSceneContract } = await import('../index')
+    expect(getSceneContract('kifs')?.steerExempt).toEqual(expect.arrayContaining(['fill', 'complexity']))
+    expect(getSceneContract('kifs')?.directorSteers).toBeUndefined()
+    expect(getSceneContract('wingfold')?.steerExempt).toContain('fill')
+    expect(getSceneContract('maze')?.steerExempt).toEqual(expect.arrayContaining(['complexity', 'density', 'fill']))
+  })
+})

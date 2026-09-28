@@ -23,6 +23,24 @@ const BIN_COUNT = Math.ceil((MAX_PERIOD - MIN_PERIOD) / BIN_SIZE)
 const WINDOW = 12 // seconds of onset history
 
 /**
+ * Phase ACQUISITION (see `acquirePhase`). `addOnset`'s PLL only pulls the grid toward onsets within
+ * `0.3 * period` of a predicted beat, so a grid that starts (or drifts) more than that from the onset comb is
+ * never pulled at all: measured on synthetic drums it sat 230 ms off a 750 ms beat for ~14 s before a slow tempo
+ * drift happened to carry it into range (80 BPM), and at 128 BPM (estimate 127.7) it never locked in 60 s.
+ */
+const ACQ_WINDOW = 6 // seconds of onsets whose phase is averaged
+const ACQ_MIN_ONSETS = 6
+/** Minimum concentration (0 = onsets spread evenly around the beat, 1 = all at one phase) to trust the comb. Two
+ * clusters half a period apart (a doubled-period grid over a steady beat) score ~0, so the octave stays ambiguous. */
+const ACQ_MIN_CONCENTRATION = 0.6
+/** Offsets smaller than this fraction of a period are the PLL's job (it has the tighter, per-onset gain). */
+const ACQ_MIN_OFFSET = 0.12
+/** Fraction of the measured offset corrected per evaluation (every 0.5 s): ~2 s to close a large gap. */
+const ACQ_GAIN = 0.5
+/** ...but never more than this fraction of a period in one step, so the published beat phase does not lurch. */
+const ACQ_MAX_STEP = 0.15
+
+/**
  * Ceiling on how strongly the 120-BPM prior can reweight the histogram. At
  * this mix the shaping matches the old always-on prior (0.35 + 0.65·gaussian);
  * the actual mix is scaled by histogram ambiguity, so a decisive peak is
@@ -323,8 +341,43 @@ export class BpmEstimator {
       }
     }
 
+    this.acquirePhase(now)
+
     const target = candConf * (0.45 + 0.55 * this.hitScore)
     this.confidence += (target - this.confidence) * 0.3
+  }
+
+  /**
+   * Re-acquire the beat phase from the recent onset comb. The strength-weighted CIRCULAR mean of the onsets'
+   * positions within the period says where, on average, the onsets sit relative to the grid; if they are clearly
+   * periodic at this tempo (high concentration) and clearly displaced (more than `ACQ_MIN_OFFSET` of a period),
+   * slew the phase toward them. This is the capture range the per-onset PLL lacks; once within `ACQ_MIN_OFFSET`
+   * the PLL takes over again. Runs on the existing 0.5 s evaluation cadence, so it costs one pass over <= 12 s of
+   * onsets, and never changes `period`.
+   */
+  private acquirePhase(now: number) {
+    const os = this.onsets
+    const k = (2 * Math.PI) / this.period
+    let x = 0
+    let y = 0
+    let w = 0
+    let n = 0
+    for (let i = 0; i < os.length; i++) {
+      const o = os[i]
+      if (now - o.t > ACQ_WINDOW) continue
+      const a = (o.t - this.phase) * k
+      x += o.s * Math.cos(a)
+      y += o.s * Math.sin(a)
+      w += o.s
+      n++
+    }
+    if (n < ACQ_MIN_ONSETS || !(w > 0)) return
+    if (Math.hypot(x, y) / w < ACQ_MIN_CONCENTRATION) return
+    // Onsets sit `delta` periods AFTER the grid (-0.5..0.5).
+    const delta = Math.atan2(y, x) / (2 * Math.PI)
+    if (Math.abs(delta) < ACQ_MIN_OFFSET) return
+    const step = Math.max(-ACQ_MAX_STEP, Math.min(ACQ_MAX_STEP, delta * ACQ_GAIN))
+    this.phase += step * this.period
   }
 
   /** IOI-histogram candidate + clarity — the built-in tempo source, used

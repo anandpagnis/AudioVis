@@ -5,12 +5,26 @@
  * Everything that is a pure, exported module in `src/audio` is imported and
  * used directly — `computeSpectralBands`, `computeLowBands`, `BandNormalizer`,
  * `ProgramLevel`, `BpmEstimator`, `PhraseDetector`, `MoodEstimator`,
- * `PercussionDetector`. Only the glue that lives inline inside `AudioEngine`
+ * `PercussionDetector`, `StructureAnalyzer` (F260's always-on, non-Essentia
+ * structure detector — the same fallback source `AudioEngine.ts` feeds
+ * `SectionTracker` from). Only the glue that lives inline inside `AudioEngine`
  * (the FFT reads, the RMS/crest loop, the smoothing lines, the energy blend,
  * the fps-independent onset/percussion tick, `advanceGrid`, `detectStructure`)
  * is re-implemented here, each block tagged with the `AudioEngine.ts` step it
  * mirrors. `crosscheck.calib.ts` bounds the residual difference against a real
  * browser decode.
+ *
+ * `structureRuns`/`structureStatus` on `TrackRunResult` and `structureBuildActive`
+ * on `FrameSample` are for `structure-sanity.calib.ts` only — see that file for
+ * why structure needs the full linear spectrum every frame (`f.spectrum`, not
+ * on the narrow `FrameSample`) rather than a cached replay.
+ *
+ * Phase 0C (scene-cadence baseline) additions, all additive and opt-in so every existing harness is unchanged:
+ * `SectionTracker` is now stepped after `StructureAnalyzer` exactly as `AudioEngine.update()` does (it only writes
+ * `f.songSection` / `f.structureValid`, which nothing else here reads); `hooks.dropStateMachine` adds the engine's
+ * second drop path, `hooks.character` steps the emotion/character read per frame, and `hooks.trace` returns
+ * `TrackRunResult.trace`, a compact columnar record of every field the scene-change trigger logic reads
+ * (`src/audio/eval/cadenceTrace.ts`, replayed by `legacyCadence.ts`). `FULL_CHAIN_HOOKS` turns all three on.
  *
  * Faithful to AudioEngine as of the F154 front-end sweep: the 2048 main FFT +
  * 8192 sub/bass FFT, `f.sub` off the 8192 grid, `f.sparkle`, the age-windowed
@@ -19,15 +33,28 @@
  */
 import { BandNormalizer, ProgramLevel, type SilenceConfig } from '../../src/audio/bandNormalizer'
 import { BpmEstimator } from '../../src/audio/BpmEstimator'
+import { beatLeadSec } from '../../src/audio/beatLead'
 import { ChromaKeyEstimator } from '../../src/audio/chromaKey'
 import { HarmonicTensionEstimator } from '../../src/audio/harmonicTension'
+import { CharacterClassifier } from '../../src/audio/CharacterClassifier'
+import { EmotionDimensionEstimator } from '../../src/audio/emotionDimensions'
 import { MoodEstimator } from '../../src/audio/MoodEstimator'
 import { PercussionDetector } from '../../src/audio/PercussionDetector'
 import { PhraseDetector } from '../../src/audio/PhraseDetector'
-import { computeLowBands, computeSpectralBands } from '../../src/audio/spectralFeatures'
+import { SectionTracker } from '../../src/audio/SectionTracker'
+import { CadenceTraceBuilder, type CadenceTrace } from '../../src/audio/eval/cadenceTrace'
+import { DropStateMachine } from '../../src/audio/structure/dropStateMachine'
+import type { EventCellRecord } from '../../src/audio/eval/eventReplay'
+import { EventLayer, type EventLayerConfig } from '../../src/audio/events/EventLayer'
+import { RawTap } from '../../src/audio/events/rawTap'
+import type { SectionEvent } from '../../src/audio/events/types'
+import { computeLowBands, computeSpectralBands, writeLinearSpectrum } from '../../src/audio/spectralFeatures'
 import { evictExpired, fftAdvanced, makeWaveProbe } from '../../src/audio/frameGating'
 import { broadbandEnergyTerm, energyTargetOf, stepEnergy } from '../../src/audio/energyTarget'
 import { OfflineLoudness } from '../../src/audio/loudness'
+import { StructureAnalyzer, type StructureAnalyzerStatus } from '../../src/audio/structure/StructureAnalyzer'
+import { BeatSalienceGatherer, DownbeatEstimator, barPosition } from '../../src/audio/structure/downbeat'
+import type { StructureRaw } from '../../src/audio/essentia/structureProtocol'
 import { createEmptyFeatures, type AudioFeatures } from '../../src/audio/types'
 import { frequencyDataDb } from './fft'
 
@@ -36,6 +63,8 @@ const FFT_SIZE = 2048
 const LOW_FFT_SIZE = 8192 // dedicated sub/bass analyser — f.sub only
 const FLUX_WINDOW_SEC = 1.0
 const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
+/** AudioEngine.ts DOWNBEAT_MIN_GRID_CONF — keep in sync. */
+const DOWNBEAT_MIN_GRID_CONF = 0.3
 
 /**
  * Dev A/B knob for the broadband energy term.
@@ -56,6 +85,55 @@ export interface StepHooks {
   /** Called before `bpmEstimator.update`; return a `[bpm, confidence01]` to feed
    * `setModelTempo`, or null. Lets the harness exercise the model-vote path. */
   modelTempo?: (now: number) => [number, number] | null
+  /** Construct the `StructureAnalyzer` disabled (its `update()` returns null immediately). For harnesses that
+   *  only need the beat grid / downbeat (`downbeat-sanity.calib.ts`) and would otherwise pay for its batches. */
+  skipStructure?: boolean
+  /** Override AudioEngine's DOWNBEAT_MIN_GRID_CONF for a tuning experiment (default: the engine's value). */
+  downbeatMinGridConf?: number
+  /** Called at every broadband onset handed to the beat grid (`bpmEstimator.addOnset`), with the harness frame
+   *  time (window START; add `FFT_SIZE / sampleRate` for the live `ctx.currentTime` convention). For
+   *  `beat-latency.calib.ts`, which measures how late the detector fires relative to the true onset. */
+  onOnset?: (t: number, strength: number) => void
+  /** Override the published-beat lead in seconds (default: `beatLeadSec()`, the engine's built-in lead). 0 = the
+   *  grid exactly as `BpmEstimator` has it. For `beat-latency.calib.ts`. */
+  beatLeadSec?: number
+  /** Also step the engine's SECOND drop path (`DropStateMachine`: breakdown -> dip -> snap-back), which
+   *  `AudioEngine.detectStructure` runs alongside the broadband ratio test. Default OFF so every existing harness
+   *  keeps its calibrated `drop` / mood numbers bit-identical (`f.drop` feeds `MoodEstimator`); the scene-cadence
+   *  baseline turns it on because a live `f.drop` includes it. */
+  dropStateMachine?: boolean
+  /** Also step `EmotionDimensionEstimator` + `CharacterClassifier` every frame, like `AudioEngine.update()` does
+   *  (the emotion harness instead replays them from a 20 Hz cache, `emotion.ts`). Fills `f.character` and the
+   *  trace's `charPrimary`. Default OFF: nothing else in `FrameSample` depends on it. */
+  character?: boolean
+  /** Return `TrackRunResult.trace`: a compact columnar per-frame record of everything the scene-change trigger
+   *  logic reads (`src/audio/eval/cadenceTrace.ts`). Default OFF. */
+  trace?: boolean
+  /**
+   * Step the LIVE EVENT LAYER (`src/audio/events`, `?events=v2`) exactly as `AudioEngine` does: the analyser's per-beat
+   * cell (with the raw-dB tap) feeds `EventLayer.push`. `true` = default config, or a partial config to override.
+   * Fills `TrackRunResult.events` and `.cells`. Times are on this harness's clock (window START, like `FrameSample.t`).
+   * Default OFF; the raw tap itself is always written (it changes no other output).
+   */
+  events?: boolean | Partial<EventLayerConfig>
+}
+
+/** The hooks that make `runTrack` mirror the LIVE engine's trigger inputs as closely as this harness can. */
+export const FULL_CHAIN_HOOKS: StepHooks = { dropStateMachine: true, character: true, trace: true }
+
+/** One beat crossing, for `downbeat-sanity.calib.ts` (the bar-phase estimator's per-beat trace). */
+export interface BeatSample {
+  t: number
+  beatIndex: number
+  beatInBar: number
+  /** Downbeat offset in force at this crossing: `(beatIndex - beatInBar) mod 4`. 0 unless locked. */
+  offset: number
+  downbeatLocked: boolean
+  downbeatConfidence: number
+  /** The estimator's leading phase (-1 = not enough evidence yet), adopted or not. */
+  candidate: number
+  gridConfidence: number
+  silence: boolean
 }
 
 export interface TrackRunResult {
@@ -64,6 +142,28 @@ export interface TrackRunResult {
   frameRate: number
   sampleRate: number
   durationSec: number
+  /** Every non-null `StructureRaw` the (always-on, non-Essentia) `StructureAnalyzer` produced over
+   *  the track, in order — one per completed batch PLUS, after the first batch, one per beat fold (the
+   *  cached segmentation with a fresh riser read; count batches via `structureStatus.runs`).
+   *  Segments/boundaries refine batch to batch, so the LAST entry is the one worth reporting for a
+   *  per-track summary; earlier entries are kept too so a caller can see how the read evolved. Empty for a track too short to clear
+   *  `StructureAnalyzer`'s warm-up gates (`MIN_HISTORY_SEC` + `FIRST_JOB_DELAY_SEC`). */
+  structureRuns: StructureRaw[]
+  /** One entry per beat crossing, with the downbeat estimator's state at that beat. */
+  beats: BeatSample[]
+  /** Every per-beat salience the gatherer closed (what the estimator was fed), for diagnosing the evidence. */
+  salience: Array<{ beatIndex: number; salience: number; usable: boolean }>
+  /** The analyzer's own status object at the end of the run (`runs`, `lastCostMs`, `buildScore`, …) —
+   *  see `StructureAnalyzer.ts`. Present even when `structureRuns` is empty (still shows warm-up state). */
+  structureStatus: StructureAnalyzerStatus
+  /** Columnar per-frame trace of the trigger inputs (phase 0C). Present only when `hooks.trace` was set. It
+   *  includes `SectionTracker`'s output (`songSection`, `structureValid`), which `runTrack` now steps after
+   *  `StructureAnalyzer` exactly as `AudioEngine.update()` does. */
+  trace?: CadenceTrace
+  /** Present only when `hooks.events` was set: every event the live event layer delivered (copies), in order. */
+  events?: SectionEvent[]
+  /** Present only when `hooks.events` was set: the beat cells the layer was fed, for offline re-tuning (`replayCells`). */
+  cells?: EventCellRecord[]
 }
 
 /** The subset of `AudioFeatures` the calibration reports read, per frame. */
@@ -115,6 +215,10 @@ export interface FrameSample {
   harmonicTonalness: number
   harmonicRoughness: number
   harmonicDissonance: number
+  /** `StructureAnalyzer`'s own held build-active read at this frame (its `status.buildActive`,
+   *  current between batches — not just true on the rare frame a new `StructureRaw` lands). For
+   *  comparing against the fast, always-on `buildUp` flag above: see `structure-sanity.calib.ts`. */
+  structureBuildActive: boolean
 }
 
 /**
@@ -157,6 +261,44 @@ export function runTrack(
   const percussionDetector = new PercussionDetector()
   const chromaKey = new ChromaKeyEstimator()
   const harmTension = new HarmonicTensionEstimator()
+  // Always-on, non-Essentia structure segmentation — the same class AudioEngine.ts falls back to in
+  // every real build (see its header). NOT disabled: this harness wants its live reads, not the
+  // `?structure=off` kill-switch path.
+  const eventLayer = hooks.events ? new EventLayer(typeof hooks.events === 'object' ? hooks.events : {}) : null
+  const eventLog: SectionEvent[] = []
+  const cellLog: EventCellRecord[] = []
+  const rawTap = new RawTap()
+  const structureAnalyzer = new StructureAnalyzer({
+    disabled: hooks.skipStructure ?? false,
+    onCell: eventLayer
+      ? (cell, fr) => {
+          const locked = fr.downbeatLocked
+          const offset = (((fr.beatIndex - fr.beatInBar) % 4) + 4) % 4
+          cellLog.push({ cell, beat: fr.beatIndex, time: fr.time, bpm: fr.bpm, locked, offset })
+          const evs = eventLayer.push(cell, fr.beatIndex, fr.time, fr.bpm, { locked, offset })
+          for (const e of evs) eventLog.push({ ...e, feats: { ...e.feats }, ...(e.sim ? { sim: { ...e.sim } } : {}) })
+        }
+      : undefined,
+  })
+  const structureRuns: StructureRaw[] = []
+  // `SectionTracker` fuses the analyzer's segmentation with the fast `f.drop` / `f.buildUp` / `f.sectionChange`
+  // flags into `f.songSection` + `f.structureValid`, which every director reads. AudioEngine steps it right
+  // after the analyzer; nothing else in this harness reads its output, so it cannot move any other field.
+  const sectionTracker = new SectionTracker()
+  // Optional (see `StepHooks`): the engine's second drop path, and the per-frame character read.
+  const dropStateMachine = hooks.dropStateMachine ? new DropStateMachine() : null
+  const emotion = hooks.character ? new EmotionDimensionEstimator() : null
+  const characterClassifier = hooks.character ? new CharacterClassifier() : null
+  if (characterClassifier) f.character = characterClassifier.state
+  // AudioEngine.ts's bar-phase estimator + its per-frame evidence gatherer (structure/downbeat.ts).
+  const downbeat = new DownbeatEstimator()
+  const beatSalience = new BeatSalienceGatherer()
+  const beats: BeatSample[] = []
+  const salienceLog: Array<{ beatIndex: number; salience: number; usable: boolean }> = []
+  const downbeatMinGridConf = hooks.downbeatMinGridConf ?? DOWNBEAT_MIN_GRID_CONF
+  const lead = hooks.beatLeadSec ?? beatLeadSec()
+  let lastBeatAt = -1
+  let beatPeakBass = 0
 
   const freqDb = new Float32Array(FFT_SIZE / 2)
   const prevMag = new Float32Array(FFT_SIZE / 2)
@@ -182,6 +324,12 @@ export function runTrack(
   // reaches further back, zero-padded at the track start like a real node's
   // warm-up.
   const totalFrames = Math.floor((pcm.length - FFT_SIZE) / hop)
+  const traceBuilder = hooks.trace
+    ? new CadenceTraceBuilder(Math.max(0, totalFrames), frameRate, sampleRate, pcm.length / sampleRate, {
+        characterStepped: !!hooks.character,
+        dropStateMachine: !!hooks.dropStateMachine,
+      })
+    : null
 
   for (let i = 0; i < totalFrames; i++) {
     const now = i * delta
@@ -200,6 +348,11 @@ export function runTrack(
     for (let k = 0; k < 1024; k++) waveform[k] = pcm[end - 1024 + k] ?? 0
     frequencyDataDb(fftFrame, FFT_SIZE, freqDb)
     frequencyDataDb(lowFrame, LOW_FFT_SIZE, lowFreqDb)
+    // f.spectrum: AudioEngine.ts writes this from the MAIN (2048) FFT, not lowFreqDb — see its own
+    // "--- Spectrum ---" block. Needed here for `StructureAnalyzer`'s mel-band timbre channel
+    // (`melBands(f.spectrum, ...)`), which nothing before this harness's structure work read, so it
+    // was never populated.
+    writeLinearSpectrum(freqDb, f.spectrum)
 
     // C8 — did the FFT advance? (Always yes here; see the declaration comment.)
     // Same shared helper the live engine uses, so the two can't drift.
@@ -242,6 +395,8 @@ export function runTrack(
     f.vocal = norm(bands.vocal, spectral.vocal)
     f.air = norm(bands.air, spectral.air)
     f.sparkle = norm(bands.sparkle, spectral.sparkle)
+    // AudioEngine's raw dB tap (events/rawTap.ts): read straight off the same locals, before any normalisation.
+    rawTap.write(spectral, lowSub, rmsRaw)
     f.flux = norm(bands.flux, spectral.bassFlux)
     // K-weighted momentary loudness -> BandNormalizer, mirroring AudioEngine's
     // `f.loudness = norm(bands.loudness, sqrt(lastLoudMsMom))`. `end` is the
@@ -310,6 +465,7 @@ export function runTrack(
           lastOnsetTime = now
           const strength = Math.min(1, (spectral.bassFlux - mean) / (std * 4 + 1e-6))
           bpmEstimator.addOnset(now, strength)
+          hooks.onOnset?.(now, strength)
         }
       }
     }
@@ -326,20 +482,65 @@ export function runTrack(
     f.beatGridAccuracy = bpmEstimator.hitScore
     {
       const est = bpmEstimator
-      const idx = Math.floor((now - est.phase) / est.period)
-      f.beatProgress = (now - est.phase) / est.period - idx
-      f.nextBeatTime = est.phase + (idx + 1) * est.period
+      // AudioEngine.advanceGrid: the grid is read `lead` ahead of the analysis clock (src/audio/beatLead.ts).
+      const gridNow = now + lead
+      const idx = Math.floor((gridNow - est.phase) / est.period)
+      f.beatProgress = (gridNow - est.phase) / est.period - idx
+      f.nextBeatTime = est.phase + (idx + 1) * est.period - lead
       f.beat = false
       if (idx !== lastGridIndex) {
         if (lastGridIndex !== -1 && idx > lastGridIndex) {
           f.beat = true
-          f.beatIndex += Math.min(idx - lastGridIndex, 4)
-          f.beatInBar = f.beatIndex % 4
-          f.bar = Math.floor(f.beatIndex / 4)
-          f.measure = Math.floor(f.beatIndex / 16)
-          f.beatStrength = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+          const crossed = idx - lastGridIndex
+          f.beatIndex += Math.min(crossed, 4)
+          if (crossed > 4) downbeat.discontinuity()
+          const bp = barPosition(f.beatIndex, downbeat.offset)
+          f.beatInBar = bp.beatInBar
+          f.bar = bp.bar
+          f.measure = bp.measure
+          const bassForStrength = lead > 0 ? Math.max(f.bass, beatPeakBass * 0.9) : f.bass
+          f.beatStrength = Math.min(1, 0.25 + bassForStrength * 0.9) * (0.35 + 0.65 * f.confidence)
+          lastBeatAt = now
+          beatPeakBass = 0
         }
-        lastGridIndex = idx
+        // AudioEngine.advanceGrid: hold the index on a one-step backward slew (no double count), resync on a larger one.
+        if (idx > lastGridIndex || idx < lastGridIndex - 1 || lastGridIndex === -1) lastGridIndex = idx
+      }
+      if (lead > 0) {
+        if (f.bass > beatPeakBass) beatPeakBass = f.bass
+        if (lastBeatAt >= 0 && now - lastBeatAt < 0.12) {
+          const live = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+          if (live > f.beatStrength) f.beatStrength = live
+        }
+      }
+      // Downbeat evidence (AudioEngine.ts advanceGrid, same block, same inputs).
+      const kick = f.percussion.kick
+      const closed = beatSalience.frame({
+        pos: f.beatIndex + f.beatProgress,
+        kickTrigger: kick.trigger,
+        kickStrength: kick.strength,
+        low: (f.sub + f.bass) * 0.5,
+        dt: f.delta,
+        usable: !f.silence && f.confidence >= downbeatMinGridConf,
+      })
+      if (closed) {
+        downbeat.update(closed.beatIndex, closed.salience, closed.usable)
+        salienceLog.push({ beatIndex: closed.beatIndex, salience: closed.salience, usable: closed.usable })
+      }
+      f.downbeatConfidence = downbeat.confidence
+      f.downbeatLocked = downbeat.locked
+      if (f.beat) {
+        beats.push({
+          t: now,
+          beatIndex: f.beatIndex,
+          beatInBar: f.beatInBar,
+          offset: (((f.beatIndex - f.beatInBar) % 4) + 4) % 4,
+          downbeatLocked: f.downbeatLocked,
+          downbeatConfidence: f.downbeatConfidence,
+          candidate: downbeat.candidate,
+          gridConfidence: f.confidence,
+          silence: f.silence,
+        })
       }
     }
 
@@ -368,11 +569,37 @@ export function runTrack(
         if (recent > before * 1.573 && recent > 0.447 && f.bass > 0.507 && now > dropUntil + 4) {
           dropUntil = now + 0.6
         }
-        const span = now - oldest
-        const first = energyLog[0]
-        const slope = span > 3 ? (recent - first.e) / span : 0
-        f.buildUp = slope > 0.197 && recent > 0.295 && recent > before
+        // Build-up: least-squares climb of `energy` over the log (mirrors AudioEngine.detectStructure).
+        let n = 0
+        let sx = 0
+        let sy = 0
+        let sxx = 0
+        let sxy = 0
+        let syy = 0
+        for (const s of energyLog) {
+          const x = s.t - now
+          n++
+          sx += x
+          sy += s.e
+          sxx += x * x
+          sxy += x * s.e
+          syy += s.e * s.e
+        }
+        const cov = n * sxy - sx * sy
+        const varX = n * sxx - sx * sx
+        const varY = n * syy - sy * sy
+        f.buildUp =
+          now - oldest > 4 &&
+          varX > 1e-9 &&
+          varY > 1e-12 &&
+          cov > 0 &&
+          cov / varX > 0.03 &&
+          (cov * cov) / (varX * varY) > 0.8 &&
+          recent > 0.295 &&
+          recent > before
       }
+      // AudioEngine.detectStructure's second drop path: breakdown -> dip -> snap-back, into the same latch.
+      if (dropStateMachine?.update(f.sub + f.bass, f.flux, f.delta)) dropUntil = now + 0.6
       f.drop = now < dropUntil
     }
 
@@ -383,6 +610,27 @@ export function runTrack(
     // intentional, not a bug. Those two only have effect in the live app.
     phraseDetector.update(now, f)
     moodEstimator.update(f)
+
+    // --- Character (AudioEngine.ts: emotion dimensions -> classifier, every frame the FFT advanced) ---
+    if (emotion && characterClassifier && advanced) {
+      emotion.update(f, delta)
+      characterClassifier.update(emotion.read(), now)
+    }
+
+    // --- Song structure (AudioEngine.ts: same relative position — after mood, at the
+    // `sectionTracker.update` call site — since `StructureAnalyzer.update()` only needs `f.beat`/
+    // `f.beatIndex` (advanceGrid, above), the percussion triggers (above) and `f.spectrum` (this
+    // frame's spectrum write, above); it doesn't read mood/character at all, so exact placement
+    // relative to those two blocks doesn't affect its output, only the ordering convention. ---
+    const structureRaw = structureAnalyzer.update(f, lowFreqDb, sampleRate, rawTap)
+    if (structureRaw) {
+      structureRuns.push(structureRaw)
+      traceBuilder?.noteBoundaries(i, structureRaw.boundaries)
+    }
+    // AudioEngine.ts: `this.sectionTracker.update(f, this.intel.updateStructure(f) ?? this.structureAnalyzer.update(...))`.
+    // No Essentia provider here (the commercial build's NullProvider), so `intel.updateStructure` is always null
+    // and the analyzer's read (a fresh batch, or the per-beat refresh) is what the tracker gets each frame.
+    sectionTracker.update(f, structureRaw)
 
     frames.push({
       t: now,
@@ -430,7 +678,9 @@ export function runTrack(
       harmonicTonalness: f.harmonicTonalness,
       harmonicRoughness: f.harmonicRoughness,
       harmonicDissonance: f.harmonicDissonance,
+      structureBuildActive: structureAnalyzer.status.buildActive,
     })
+    traceBuilder?.push(i, f)
   }
 
   return {
@@ -438,7 +688,13 @@ export function runTrack(
     frameRate,
     sampleRate,
     durationSec: pcm.length / sampleRate,
+    structureRuns,
+    beats,
+    salience: salienceLog,
+    structureStatus: structureAnalyzer.status,
+    ...(traceBuilder ? { trace: traceBuilder.finish() } : {}),
+    ...(eventLayer ? { events: eventLog, cells: cellLog } : {}),
   }
 }
 
-export type { AudioFeatures }
+export type { AudioFeatures, EventCellRecord }

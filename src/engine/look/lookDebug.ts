@@ -54,6 +54,52 @@ export interface LookDebugApplied {
   /** Live quality tier (0 = richest). Wipe styles need `tier <= wipeMaxTier` — see the `shot` line. */
   qualityTier: number
   wipeMaxTier: number
+  /** Tempo -> motion speed: the live BPM, the eased octave distance from 120, and the resulting rate (`tempoRate.ts`). */
+  bpm: number
+  tempoOctaves: number
+  tempoRate: number
+  /**
+   * The armed next scene (`engine/armedChange.ts`), or null when nothing is armed. `warm` = compiled and ready;
+   * `reason` = why this scene (trend / affinity / bpm / look / cost, `armedPick.describeChoice`).
+   */
+  armed: {
+    sceneId: string
+    sinceBeat: number
+    expiresBeat: number
+    gate: string
+    warm: boolean
+    trigger: string
+    reason: string
+  } | null
+  /** The armed scene's last fit score vs the best candidate, `0.71/0.80`, or ''. */
+  armedFit: string
+  /** The last arm / confirm outcome (`drop@b140`, `phrase@b152`, `refit@b120`, ...). Always shown. */
+  armedLast: string
+}
+
+/**
+ * The show director's state (`engine/show/showRuntime.showProbe`). `on` false = `?director=legacy`: the old trigger
+ * blocks run and there is nothing to report.
+ */
+export interface LookDebugShow {
+  on: boolean
+  /** Last decided action `HOLD` / `MICRO` / `CUT`, its reason, and what a MICRO varied ('' otherwise). */
+  kind: string
+  reason: string
+  micro: string
+  /** S, T_eff, scene age in bars and pressure 0..1 (there is no timer: no time-to-change is shown). */
+  S: number
+  T: number
+  age: number
+  pressure: number
+  hold: number
+  microCount: number
+  cut: number
+  /** How the last CUT was performed: `armed`, `pick`, `busy`, `refused`. */
+  cutHow: string
+  /** OPTIONAL: the event source (`v2` | `legacy`, `?events=`) and the last v2 event, printed at the end of the line. */
+  src?: string
+  lastEvent?: string
 }
 
 /** Everything one overlay refresh prints. */
@@ -62,6 +108,8 @@ export interface LookDebugSnapshot {
   character: { valid: boolean; confidence: number }
   applied: LookDebugApplied
   grade: { sat: number; temp: number; contrast: number }
+  /** Absent (older callers, tests) prints the director line as off. */
+  show?: LookDebugShow
 }
 
 /** A number to `d` places, or `-` when it is not finite (a NaN must show up as a dash, never crash the overlay). */
@@ -91,6 +139,22 @@ export function mirrorSummary(segments: number, twist: number, mix: number): str
   if (segments >= 2.5) return `kaleido/${Math.round(segments)}`
   if (Math.abs(twist) > 0.01) return `vortex ${fmtSigned(twist, 2)}`
   return 'off'
+}
+
+/**
+ * The director line: `show CUT drop-fast(armed) S=1.12 T=0.61 age=6.0b P=0.40 no timer  H12 M5 C3`: the last
+ * action and why, the score against the effective threshold, the scene's age in bars, the pressure, `no timer` (a scene
+ * changes only on a musical event) and the running counts of HOLD / MICRO / CUT.
+ */
+export function formatShowLine(show: LookDebugShow | undefined): string {
+  if (!show || !show.on) return 'show  director off (?director=legacy: the old triggers run)'
+  const how = show.kind === 'CUT' && show.cutHow !== '-' ? `(${show.cutHow})` : ''
+  const what = show.kind === 'MICRO' && show.micro ? `:${show.micro}` : ''
+  return (
+    `show  ${show.kind}${what} ${show.reason}${how} S=${fmt(show.S, 2)} T=${fmt(show.T, 2)} age=${fmt(show.age, 1)}b` +
+    ` P=${fmt(show.pressure, 2)} no timer  H${fmt(show.hold, 0)} M${fmt(show.microCount, 0)} C${fmt(show.cut, 0)}` +
+    (show.src ? `  ev=${show.src}${show.lastEvent && show.lastEvent !== '-' ? ` [${show.lastEvent}]` : ''}` : '')
+  )
 }
 
 /** The overlay text, one string per line. Total: any snapshot field may be NaN. */
@@ -125,6 +189,20 @@ export function formatLookDebug(s: LookDebugSnapshot): string[] {
       `${downgraded ? ' (DOWNGRADED)' : ''}  active=${a.transitionActive} t=${fmt(a.transitionProgress, 2)}`,
   )
   lines.push(`quality tier=${a.qualityTier} (wipe needs <= ${a.wipeMaxTier})`)
+  // The armed next scene: what is waiting, whether it is compiled, how well it still fits, why it was chosen, and
+  // what last released or dropped it (the confirm trigger: drop / section / phrase / energy / predicted / age /
+  // mood / boundary / build).
+  const arm = a.armed
+  const fit = a.armedFit ? ` fit=${a.armedFit}` : ''
+  lines.push(
+    arm
+      ? `armed ${arm.sceneId} b${fmt(arm.sinceBeat, 0)}>b${fmt(arm.expiresBeat, 0)} warm=${arm.warm ? 'y' : 'n'} trig=${arm.trigger}${fit}  why=${arm.reason}  last=${a.armedLast}`
+      : `armed -  last=${a.armedLast}`,
+  )
+  lines.push(formatShowLine(s.show))
+  lines.push(
+    `tempo bpm=${fmt(a.bpm, 0)} oct=${fmtSigned(a.tempoOctaves, 2)} coupling=${fmt(look.tempoCoupling, 2)} -> speed x${fmt(a.tempoRate, 2)}`,
+  )
   const f = look.families
   lines.push(
     `family ${f.grade ? 'grade' : '-grade'} ${f.post ? 'post' : '-post'} ${f.scene ? 'scene' : '-scene'} ${f.camera ? 'camera' : '-camera'}`,

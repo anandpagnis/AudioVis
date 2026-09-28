@@ -4,6 +4,7 @@ import { sessionLog } from './sessionLog'
 import { captureIfRequested } from './recorder'
 import { frameSampler } from './frameSampler'
 import { AutoPilot } from './AutoPilot'
+import { ShowAdapter } from './show/showAdapter'
 import { CameraDirector } from './CameraDirector'
 import { CueTimeline } from './CueTimeline'
 import { DjCamDirector } from './DjCamDirector'
@@ -30,7 +31,7 @@ import { useStore } from '../store'
  * priorities, in three bands:
  *
  *   analysis   `SceneManager` (-100, calls `audioEngine.update()` first)
- *   decide     `PerformanceStateBridge` (-95) → `AutoPilot` (-90) →
+ *   decide     `PerformanceStateBridge` (-95) → `ShowAdapter` (-92) → `AutoPilot` (-90) →
  *              `CueTimeline` (-88) → `DjCamDirector` (-87) →
  *              `LimitlessDirector` (-86.5) → `EffectDirector` (-86) →
  *              `PerformanceDirector` (-85) → `FilterDirector` (-84)
@@ -111,6 +112,7 @@ export function Stage() {
       <PerfMonitor />
       {/* decide */}
       <PerformanceStateBridge />
+      <ShowAdapter />
       <AutoPilot />
       <CueTimeline />
       <DjCamDirector />

@@ -268,6 +268,8 @@ interface JavaZoneState {
 export const JavaZoneLatticeScene = createShaderScene<JavaZoneState>({
   id: 'javazone',
   frag: FRAG,
+  // Travel rate is beats-per-second (`bps`) already, so the factory must not fold the tempo in again.
+  tempoLocked: true,
   blending: THREE.NoBlending,
   // Offscreen + upscale, same shape as beats -- the closest true analogue.
   // Starting point pending /bench, not a measurement.

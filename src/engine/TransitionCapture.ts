@@ -44,16 +44,6 @@ import { WIPE_LAYER_IN, WIPE_LAYER_OUT } from './transitionWipe'
  */
 
 /**
- * Capture resolution relative to the renderer's current size. The result
- * passes through the WHOLE post chain afterward (bloom, feedback, lens,
- * grade), so detail lost at capture time is invisible by the time a viewer
- * sees it — matching the plan's own reasoning for why a reduced capture
- * resolution is free. 0.75 keeps the two extra render targets (and the fill
- * cost of the two extra render passes) meaningfully cheaper than a full-res
- * capture would be, without softening the image enough to read as a quality
- * drop during the one to two seconds a wipe transition runs for.
- */
-/**
  * Linear scale of the renderer's current size the two capture targets are allocated at (so the AREA cost is
  * this squared). A wipe reads and downstream-blurs/blooms/composites a small texture over sub-2-second
  * transitions, so full resolution buys nothing visible; keeping this low is the direct lever on the capture's
@@ -143,10 +133,21 @@ export class TransitionCapture {
     camera.layers.set(WIPE_LAYER_OUT)
     gl.setRenderTarget(this.outTarget)
     gl.render(scene, camera)
-    camera.layers.set(WIPE_LAYER_IN)
-    gl.setRenderTarget(this.inTarget)
-    gl.render(scene, camera)
-    camera.layers.mask = savedMask
+    // `WebGLRenderer.render` walks the WHOLE scene graph updating world matrices on every call (unless
+    // `matrixWorldAutoUpdate` is off). The first capture above has just done that for this frame and nothing
+    // moves between the two captures, so the second one skips it: one full-graph traversal saved per wipe frame
+    // (the composer's own RenderPass, after this, still does its own). Restored in `finally` so an exception in
+    // the render can never leave the scene stuck unable to update its matrices.
+    const savedAutoUpdate = scene.matrixWorldAutoUpdate
+    scene.matrixWorldAutoUpdate = false
+    try {
+      camera.layers.set(WIPE_LAYER_IN)
+      gl.setRenderTarget(this.inTarget)
+      gl.render(scene, camera)
+    } finally {
+      scene.matrixWorldAutoUpdate = savedAutoUpdate
+      camera.layers.mask = savedMask
+    }
     gl.setRenderTarget(null)
   }
 

@@ -178,11 +178,12 @@ export function OrbitGlowScene() {
   useSceneFrame(({ f, dt, b, col, vis, params, p, role, slotProgress }) => {
     const u = material.uniforms
 
-    // Phase ACCUMULATES — see the header. Tempo sets the baseline (a 140 BPM
-    // track drifts faster than a 90 BPM one) and energy opens it up further, so
-    // the orbits speed up as the track builds instead of running independently
-    // of it. Floored so a breakdown drifts rather than freezing.
-    const tempo = Math.min(1.6, Math.max(0.6, f.bpm / 120))
+    // Phase ACCUMULATES — see the header. Energy opens the rate up, so the orbits
+    // speed up as the track builds instead of running independently of it.
+    // Floored so a breakdown drifts rather than freezing. TEMPO is not applied
+    // here: `params.speed` below already carries it (scaled by the mood's tempo
+    // coupling, engine/tempoRate.ts); a private BPM term as well would count the
+    // tempo twice.
     // `b.energy` slewed before it multiplies in — found in a systematic
     // audit (2026-09-11) for the "raw band drives an accumulating rate"
     // pattern reported live and fixed twice elsewhere this session
@@ -190,7 +191,7 @@ export function OrbitGlowScene() {
     // of the base rate) is large enough that an unsmoothed band visibly
     // jerked the orbit speed frame to frame.
     energyEnv.current = slew(energyEnv.current, b.energy, dt, 3, 3)
-    phase.current += dt * (0.35 + energyEnv.current * 0.85) * tempo * params.speed * drastic(p.speed)
+    phase.current += dt * (0.35 + energyEnv.current * 0.85) * params.speed * drastic(p.speed)
     u.uPhase.value = phase.current
 
     // Radius: orbits widen on a swell and tighten when the track thins out.

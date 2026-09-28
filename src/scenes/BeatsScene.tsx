@@ -389,6 +389,8 @@ interface BeatsState {
 export const BeatsScene = createShaderScene<BeatsState>({
   id: 'beats',
   frag: FRAG,
+  // Spin rate is already a function of `bpm` (`beatsSpinRate`), so the factory must not fold the tempo in again.
+  tempoLocked: true,
   // Paints its own black background — replace, not blend, for the offscreen
   // buffer (BlendedLayer forces `add` on the on-screen primary anyway).
   blending: THREE.NoBlending,

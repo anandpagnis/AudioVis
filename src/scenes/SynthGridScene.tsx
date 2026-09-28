@@ -573,9 +573,10 @@ export function SynthGridScene() {
 
     clock.current += dt * params.speed
 
-    // Travel accumulates so a changing rate never jumps the world. Tempo sets
-    // the baseline, energy opens it up.
-    const tempo = Math.min(1.5, Math.max(0.7, f.bpm / 120))
+    // Travel accumulates so a changing rate never jumps the world. Energy opens
+    // the rate up. TEMPO is not applied here: `params.speed` below already
+    // carries it (scaled by the mood's tempo coupling, engine/tempoRate.ts); a
+    // private BPM term as well would count the tempo twice.
     // `b.energy` slewed before it multiplies in — found in a systematic
     // audit (2026-09-11) for the "raw band drives an accumulating rate"
     // pattern reported live and fixed twice elsewhere this session
@@ -584,7 +585,7 @@ export function SynthGridScene() {
     // unsmoothed band would have jerked the cars twice as visibly as the
     // world itself.
     energyEnv.current = slew(energyEnv.current, b.energy, dt, 3, 3)
-    const speed = BASE_SPEED * (0.5 + energyEnv.current * 0.9) * tempo * params.speed
+    const speed = BASE_SPEED * (0.5 + energyEnv.current * 0.9) * params.speed
     dist.current += dt * speed
     // Cars run faster than the world, as in the source.
     carDist.current += dt * speed * 2

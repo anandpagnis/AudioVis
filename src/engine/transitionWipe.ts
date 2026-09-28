@@ -373,3 +373,64 @@ export function datamoshChannelOffset(reveal: boolean, progress: number): number
   const arc = smoothstep(1 - Math.abs(t * 2 - 1))
   return (reveal ? 1 : -1) * DATAMOSH_CHANNEL_OFFSET_MAX * arc
 }
+
+/**
+ * Side length, in texels, of the baked `inkDissolve` noise field (RGBA8, so 64 KB).
+ */
+export const WIPE_NOISE_SIZE = 128
+/**
+ * Lattice cells across one period of the baked field. The field TILES (its edges wrap), so a shader
+ * samples it at `uv * (cellsWanted / WIPE_NOISE_CELLS)` with `RepeatWrapping`. 12 is the smallest whole number
+ * that serves both octaves `inkDissolve` needs: 6 cells per screen (uv * 0.5) and ~13 (uv * 13/12).
+ */
+export const WIPE_NOISE_CELLS = 12
+
+/** Deterministic integer hash to 0..1 (Wang-style avalanche; no `sin`, so it is exact and portable). */
+function latticeValue(ix: number, iy: number, channel: number): number {
+  let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iy, 0x165667b1) ^ Math.imul(channel + 1, 0x9e3779b1)) >>> 0
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0
+  h = (h ^ (h >>> 16)) >>> 0
+  return h / 4294967296
+}
+
+/**
+ * The static noise field `inkDissolve` thresholds against, baked once into an RGBA8 texture's bytes instead of
+ * being recomputed per pixel per frame in the compositor shader (which cost two 4-corner hash-and-blend value
+ * noises, ~8 `sin` plus their dot products, at FULL display resolution while a wipe runs).
+ *
+ * Same construction the shader used: smooth value noise (a random lattice, bilerped with the Hermite
+ * `f*f*(3-2f)` curve), in 0..1. Two INDEPENDENT lattices, R and G, so the two octaves the shader sums are
+ * uncorrelated (the old code got that from different offsets into one field). The lattice wraps every
+ * {@link WIPE_NOISE_CELLS} cells, so the texture tiles seamlessly under `RepeatWrapping`. B is 0 and A is 255.
+ *
+ * Deterministic: the same bytes every call, so a wipe never depends on when the pass was constructed.
+ */
+export function buildWipeNoise(size: number = WIPE_NOISE_SIZE, cells: number = WIPE_NOISE_CELLS): Uint8Array {
+  const out = new Uint8Array(size * size * 4)
+  const lattice = [new Float32Array(cells * cells), new Float32Array(cells * cells)]
+  for (let c = 0; c < 2; c++) {
+    for (let y = 0; y < cells; y++) for (let x = 0; x < cells; x++) lattice[c][y * cells + x] = latticeValue(x, y, c)
+  }
+  const at = (c: number, ix: number, iy: number) => lattice[c][(((iy % cells) + cells) % cells) * cells + (((ix % cells) + cells) % cells)]
+  for (let y = 0; y < size; y++) {
+    const v = (y / size) * cells
+    const iy = Math.floor(v)
+    let fy = v - iy
+    fy = fy * fy * (3 - 2 * fy)
+    for (let x = 0; x < size; x++) {
+      const u = (x / size) * cells
+      const ix = Math.floor(u)
+      let fx = u - ix
+      fx = fx * fx * (3 - 2 * fx)
+      const o = (y * size + x) * 4
+      for (let c = 0; c < 2; c++) {
+        const top = at(c, ix, iy) * (1 - fx) + at(c, ix + 1, iy) * fx
+        const bottom = at(c, ix, iy + 1) * (1 - fx) + at(c, ix + 1, iy + 1) * fx
+        out[o + c] = Math.round((top * (1 - fy) + bottom * fy) * 255)
+      }
+      out[o + 3] = 255
+    }
+  }
+  return out
+}

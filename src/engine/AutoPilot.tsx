@@ -1,12 +1,32 @@
 import { useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { audioEngine } from '../audio/AudioEngine'
-import type { MoodState } from '../audio/types'
+import type { AudioFeatures, MoodState } from '../audio/types'
 import {
   MOOD_CHANGE_MAX_AMBIGUITY,
   MOOD_CHANGE_MIN_CONFIDENCE,
   MOOD_PREDICT_MIN_CONFIDENCE,
 } from './autoPilotGates'
+import {
+  ARM,
+  armPlaced,
+  armRefused,
+  armedProbe,
+  dropPickSuppressed,
+  fitCheckDue,
+  stepArmed,
+} from './armedChange'
+import {
+  ARM_ENABLED,
+  activeLook,
+  armReason,
+  armedFitNow,
+  armedRuntime,
+  pickArmScene,
+  trendOf,
+  tryCommitArmed,
+} from './armedDirector'
+import { isPhraseEdge } from '../audio/structure/downbeat'
 import { cueState } from './CueTimeline'
 import { keyPaletteTracker } from './keyPalette'
 import { deriveVAFromList } from './moodValenceArousal'
@@ -25,8 +45,12 @@ import {
 import { characterPickEnabled, pickByCharacter, songSeedFor } from './characterPick'
 import { CharacterShiftTrigger } from './characterShift'
 import { pickPaletteByCharacter } from './paletteCharacter'
+import type { LookProfile } from './look/lookRow'
 import { performanceState } from './performanceState'
-import { canAutoSwitch, useStore } from '../store'
+import { quality } from './quality'
+import { canAutoSwitch, manualHoldActive, useStore } from '../store'
+import { DIRECTOR_ON } from './show/directorFlags'
+import { showRuntime } from './show/showRuntime'
 
 /** Palette families per mood — switched only when the current one doesn't fit. */
 /**
@@ -106,6 +130,46 @@ export const PALETTE_VA: Readonly<Record<string, ValenceArousal>> = (() => {
 })()
 
 const MANUAL_HOLD_SEC = 45 // back off after the DJ touches anything
+
+/**
+ * The scene for the HOT moment about to arrive (a drop): the pick both the armed-scene path and the original
+ * drop pre-arm make. `extraExclude` lets a refused id be skipped on a re-pick; empty, this is exactly the
+ * original inline pick.
+ */
+export function pickHypeScene(
+  f: AudioFeatures,
+  s: ReturnType<typeof useStore.getState>,
+  sceneLook: LookProfile | undefined,
+  extraExclude: readonly string[] = [],
+) {
+  const m = f.mood
+  const hypeMood: MoodState = m.state === 'aggressive' || m.predictedState === 'aggressive' ? 'aggressive' : 'peak'
+  const exclude = [s.sceneId, ...extraExclude]
+  const armCands = getPrimaryScenesForMood(hypeMood).filter((sc) => !exclude.includes(sc.id))
+  // Deliberately NOT passed the live VA read: this picks a scene for the
+  // HOT moment about to arrive, not for the still-building passage
+  // playing right now, and those two are far apart in VA by design — see
+  // MOOD_VA.building's negative valence vs peak/aggressive's. Weighting
+  // by the current read would bias the pre-arm pick toward the build's
+  // own anticipatory character instead of the drop's.
+  // Character-driven when the character read is ready (arousal lifted to the drop's level);
+  // otherwise the original mood-label pick.
+  return (
+    pickByCharacter(getCharacterCandidates(), {
+      character: f.character,
+      key: f.key,
+      now: f.time,
+      recentIds: s.recentSceneIds,
+      exclude,
+      minArousal: 0.85,
+      // The look's trait bias, with the DROP flavour of the build/drop factor (`dropFit`): this pick is for
+      // the hot moment about to arrive, where a scene built for the riser is the wrong answer.
+      boost: sceneLook ? (scene) => sceneBoost(scene, sceneLook, 'drop') : undefined,
+    }) ??
+    pickVariedScene(armCands, hypeMood, s.recentSceneIds) ??
+    null
+  )
+}
 
 // A committed mood change only drives a scene/palette switch once the read is
 // solid: confident enough, and not a near-tie with the runner-up state.
@@ -338,7 +402,7 @@ export function AutoPilot() {
   useFrame(() => {
     const f = audioEngine.features
     const m = f.mood
-    const s = useStore.getState()
+    let s = useStore.getState()
     // Rising-edge drop detection must track even while suppressed, so a drop
     // that lands during the manual hold doesn't fire the instant it lifts.
     const dropEdge = f.drop && !prevDrop.current
@@ -372,11 +436,108 @@ export function AutoPilot() {
       charShift.current.reset()
     }
 
+    // --- Armed next scene ------------------------------------------------------------------------------
+    // The show ALWAYS holds a next scene (picked from the mood, the BPM and the DSP trend, compiled and waiting) and
+    // releases it when something confirms a change: see armedChange.ts. Runs every frame BEFORE the early returns
+    // below, like the drop and build edges above: an edge that lands while automation is suppressed is consumed,
+    // and a hold is given back the moment automation stops. `suppressed` is the same set of conditions the early
+    // returns use, minus silence (a pre-drop gap can be silent, and must not lose the arm; `silent` only blocks
+    // arming and every confirm but a real drop).
+    let armedConfirmedDrop = false
+    {
+      const armed = armedRuntime.state
+      const beat = f.beatIndex
+      const sustain = f.structureValid && f.songSection.isSustain
+      // The show director owns WHEN the primary changes (default; `?director=legacy` restores every trigger below):
+      // it tells the armed-scene machine and `tryCommitArmed` to stop releasing the armed scene on its own.
+      armedRuntime.directorOwns = DIRECTOR_ON
+      // Re-score the armed scene against the current music every few beats (and at once on a build's rising edge).
+      const fit =
+        armed.armed !== null && fitCheckDue(armed, beat, buildEdge)
+          ? armedFitNow(f, s, armed.armed.sceneId)
+          : null
+      if (fit !== null) armedProbe.fit = `${fit.armed.toFixed(2)}/${fit.best.toFixed(2)}`
+      const action = stepArmed(armed, {
+        enabled: ARM_ENABLED,
+        suppressed:
+          !s.autoPilot ||
+          s.status !== 'running' ||
+          cueState.governed ||
+          performanceState.djCam.active ||
+          performanceState.limitless.active ||
+          manualHoldActive(s.lastManualAt, MANUAL_HOLD_SEC),
+        silent: f.silence,
+        tier: quality.tier,
+        beat,
+        sustain,
+        buildEdge,
+        dropEdge,
+        beatsTillDrop: f.songSection.beatsTillDrop,
+        pendingSceneId: s.pendingSceneId,
+        heldSceneId: s.heldSceneId,
+        sceneId: s.sceneId,
+        canDwell: canAutoSwitch(s.lastCommitBeat, beat),
+        lastCommitBeat: s.lastCommitBeat,
+        sectionEdge: f.structureValid && f.songSection.boundaryChanged,
+        phraseStrength: f.sectionChange ? f.sectionChangeStrength : 0,
+        phraseEdge: isPhraseEdge(f.beat, f.beatInBar, f.bar),
+        energy: f.energy,
+        transitionActive: performanceState.transition.active,
+        fit: fit !== null ? { armed: fit.armed, best: fit.best } : null,
+        directorOwns: DIRECTOR_ON,
+      })
+      if (action.type === 'disarm') {
+        // `released`: a director already released the hold itself, so there is nothing to give back.
+        if (action.reason !== 'released') s.disarmScene()
+        s = useStore.getState()
+      } else if (action.type === 'confirm') {
+        // Only a hold that was really released answers the drop: if the store had already lost it, the normal drop
+        // pick below must still run, or this drop would switch nothing.
+        const released = s.releaseHold(action.immediate)
+        armedConfirmedDrop = released && action.trigger === 'drop'
+        s = useStore.getState()
+      } else if (action.type === 'arm') {
+        const trend = trendOf(f)
+        const placed = pickAndRequest(
+          [s.sceneId],
+          (exclude) => pickArmScene(f, s, exclude, trend),
+          (scene) => s.armScene(scene.id),
+        ).scene
+        if (placed) {
+          // The look is chosen with the scene, before it can mount (same reasoning as the scene-pick trigger below).
+          const sceneLook = activeLook() // the same gated look the rest of the frame uses
+          const armMode = pickVariedMode(placed.id, s.sceneModes[placed.id], modeRotation.current++, sceneLook)
+          if (armMode) s.setSceneMode(placed.id, armMode, { auto: true })
+          armPlaced(
+            armed,
+            placed.id,
+            armMode ?? null,
+            beat,
+            f.songSection.beatsTillDrop,
+            armReason(f, s, placed.id, trend),
+            sustain ? 'build' : 'idle',
+          )
+          armedProbe.fit = ''
+        } else {
+          armRefused(armed, beat)
+        }
+        s = useStore.getState()
+      }
+      // A hold with no record behind it is stale (a director cleared `pendingSceneId` directly, as the DJ-cam and
+      // Limitless cutaways do). Clear ONLY the hold: whatever is pending now is someone else's request.
+      if (armed.armed === null && s.heldSceneId !== null) {
+        useStore.setState({ heldSceneId: null })
+        s = useStore.getState()
+      }
+      armedProbe.armed = armed.armed
+      armedProbe.lastOutcome = armed.lastOutcome
+    }
+
     if (!s.autoPilot || s.status !== 'running' || f.silence) return
     if (cueState.governed) return // authored cues own the journey
     if (performanceState.djCam.active) return // a DJ-cam cutaway owns the frame
     if (performanceState.limitless.active) return // a Limitless cutaway owns the frame
-    if (f.time - s.lastManualAt < MANUAL_HOLD_SEC) return
+    if (manualHoldActive(s.lastManualAt, MANUAL_HOLD_SEC)) return
     // Baseline the stale clock the first time automation is actually live,
     // rather than at component mount (which can be well before playback
     // starts) or leaving it at -Infinity (which would fire on frame one).
@@ -418,10 +579,17 @@ export function AutoPilot() {
     // Abandon a stale pre-arm — the projected drop never arrived.
     if (preArmed.current && f.beatIndex - preArmBeat.current > 24) preArmed.current = false
 
-    const preArmedThisDrop = dropEdge && preArmed.current
+    // A drop the armed scene just answered (the confirm above cut to it, or a predicted commit already landed it)
+    // must not also request a second scene: same rule as the original pre-arm.
+    const preArmedThisDrop =
+      dropEdge && (preArmed.current || armedConfirmedDrop || dropPickSuppressed(armedRuntime.state, f.beatIndex))
     if (dropEdge) preArmed.current = false
 
-    if (dropEdge && !preArmedThisDrop) {
+    if (DIRECTOR_ON) {
+      // The show director owns every scene trigger (the drop pick, the predicted transition, a mood change, a
+      // character shift and the 25 s stale timer below). They are demoted: the mood/character/trend edges feed its
+      // pressure P and the ceiling replaces the stale timer (`engine/show/showAdapter.tsx`). Nothing is picked here.
+    } else if (dropEdge && !preArmedThisDrop) {
       target = m.state === 'aggressive' || m.predictedState === 'aggressive' ? 'aggressive' : 'peak'
       prefetchedFor.current = null
     } else if (dropEdge) {
@@ -488,8 +656,11 @@ export function AutoPilot() {
     const structureRecolour =
       f.structureValid && f.songSection.boundaryChanged && !f.songSection.isBuild
     if (
-      (target !== null || f.sectionChange || structureRecolour) &&
-      f.time - lastPaletteAt.current >= PALETTE_MIN_SEC
+      (DIRECTOR_ON ? showRuntime.palette : target !== null || f.sectionChange || structureRecolour) &&
+      // The wall-clock floor belongs to the legacy triggers (the old phrase detector fired every ~4 s). Under the show
+      // director it only DROPPED real reactions (a colour request 8 s after the last one was refused, not delayed); the
+      // director already spaces its own tweaks in bars and only produces events for real changes.
+      (DIRECTOR_ON || f.time - lastPaletteAt.current >= PALETTE_MIN_SEC)
     ) {
       // Excluding what is already showing is the actual fix for "colours never
       // change": the old guard only acted when the current palette was absent
@@ -564,9 +735,9 @@ export function AutoPilot() {
     // not acted on below.
     if (
       target === null &&
-      !s.pendingSceneId &&
-      (f.sectionChange || structureRecolour) &&
-      f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC
+      (!s.pendingSceneId || (DIRECTOR_ON && s.pendingSceneId === s.heldSceneId)) &&
+      (DIRECTOR_ON ? showRuntime.mode : f.sectionChange || structureRecolour) &&
+      (DIRECTOR_ON || f.time - lastModeVaryAt.current >= MODE_VARY_MIN_SEC) // legacy-only floor, see the palette gate above
     ) {
       const mode = pickVariedMode(s.sceneId, s.sceneModes[s.sceneId], modeRotation.current++, sceneLook)
       if (mode) {
@@ -590,6 +761,7 @@ export function AutoPilot() {
     // A refused request (dwell, `canHoldPrimary`, ...) excludes that id and re-picks a bounded number of times
     // (`BUILD_SWITCH.maxRepicks`); it never loops. The whole block is skipped without a valid scene look.
     if (
+      !DIRECTOR_ON &&
       sceneLook !== undefined &&
       shouldSwitchOnBuild({
         lookActive: true,
@@ -598,10 +770,17 @@ export function AutoPilot() {
         canSwitch: canAutoSwitch(s.lastCommitBeat, f.beatIndex),
         beatsTillDrop: f.songSection.beatsTillDrop,
         currentBuildFit: getSceneTraits(s.sceneId).buildFit,
-        hasPending: s.pendingSceneId !== null,
+        // A held (armed) scene is not a request in flight: it is exactly what the build switch should reuse.
+        hasPending: s.pendingSceneId !== null && s.pendingSceneId !== s.heldSceneId,
       })
     ) {
       buildState.current.fired = true
+      // The armed scene, already compiled, when it still fits the build: no cold pick, no compile on the riser.
+      if (tryCommitArmed('build', false, f)) {
+        lastAutoTriggerAt.current = f.time
+        charShift.current.consume()
+        return
+      }
       const { scene: switched } = pickAndRequest(
         [s.sceneId],
         (exclude, attempt) =>
@@ -640,36 +819,20 @@ export function AutoPilot() {
     // `immediate: false` so SceneManager's next-downbeat commit lands ON the
     // drop instead of a beat after it. Only with a real structure read, only
     // once per build, and only when nothing is already in flight.
+    //
+    // With `?arm` on and the quality tier allowing it, the ARMED drop scene above does this job much earlier
+    // (at the start of the build, so the scene is compiled long before the drop) and this block stays out of its
+    // way. Off (`?arm=off`, or a tier above `ARM.maxTier`) it runs exactly as it always did.
     if (
+      !DIRECTOR_ON &&
+      !(ARM_ENABLED && quality.tier <= ARM.maxTier) &&
       inSustain &&
       !preArmed.current &&
       !s.pendingSceneId &&
       f.songSection.beatsTillDrop >= 1 &&
       f.songSection.beatsTillDrop <= 3
     ) {
-      const hypeMood: MoodState =
-        m.state === 'aggressive' || m.predictedState === 'aggressive' ? 'aggressive' : 'peak'
-      const armCands = getPrimaryScenesForMood(hypeMood).filter((sc) => sc.id !== s.sceneId)
-      // Deliberately NOT passed the live VA read: this picks a scene for the
-      // HOT moment about to arrive, not for the still-building passage
-      // playing right now, and those two are far apart in VA by design — see
-      // MOOD_VA.building's negative valence vs peak/aggressive's. Weighting
-      // by the current read would bias the pre-arm pick toward the build's
-      // own anticipatory character instead of the drop's.
-      // Character-driven when the character read is ready (arousal lifted to the drop's level);
-      // otherwise the original mood-label pick.
-      const armPick =
-        pickByCharacter(getCharacterCandidates(), {
-          character: f.character,
-          key: f.key,
-          now: f.time,
-          recentIds: s.recentSceneIds,
-          exclude: [s.sceneId],
-          minArousal: 0.85,
-          // The look's trait bias, with the DROP flavour of the build/drop factor (`dropFit`): this pick is for
-          // the hot moment about to arrive, where a scene built for the riser is the wrong answer.
-          boost: sceneLook ? (scene) => sceneBoost(scene, sceneLook, 'drop') : undefined,
-        }) ?? pickVariedScene(armCands, hypeMood, s.recentSceneIds)
+      const armPick = pickHypeScene(f, s, sceneLook)
       if (armPick && s.requestScene(armPick.id, { auto: true, immediate: false })) {
         const armMode = pickVariedMode(armPick.id, s.sceneModes[armPick.id], modeRotation.current++, sceneLook)
         if (armMode) s.setSceneMode(armPick.id, armMode, { auto: true })
@@ -696,7 +859,12 @@ export function AutoPilot() {
     // Cheap to skip: the mood that triggered this is a section-scale fact, so
     // the request that is already in flight is aimed at essentially the same
     // musical moment.
-    if (s.pendingSceneId && !dropEdge) return
+    if (s.pendingSceneId && s.pendingSceneId !== s.heldSceneId && !dropEdge) return
+
+    // Prefer the ARMED scene: already picked from the music, mounted and compiled, so the change lands on the next
+    // downbeat with no cold load. Falls through to a fresh pick when it no longer fits, the dwell has not elapsed
+    // (the fresh request would be refused too) or nothing is armed (`?arm=off`, tier 4, warm-up).
+    if (!dropEdge && tryCommitArmed('mood', false, f)) return
 
     // Weighted pick among PRIMARY-capable fits (getScenesForMood is not
     // role-filtered — using it directly here used to let an accent/overlay-

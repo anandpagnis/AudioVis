@@ -1,0 +1,498 @@
+import type { EventType, SectionEvent } from '../../audio/events/types'
+import {
+  SHOW,
+  barsBetween,
+  dropCredibility,
+  effectiveThreshold,
+  eventScore,
+  minCutBars,
+} from './showPolicy'
+
+/**
+ * The show director: ONE pure decision, `step(state, input) -> action`, that owns WHEN the visuals change.
+ *
+ * No React, store, three or audio-engine imports: `showAdapter.tsx` gathers the live inputs and performs the action
+ * through the existing machinery; the tests drive this module directly with synthetic event streams. See
+ * `showPolicy.ts` for the constants and the reasoning (score S, age threshold T(a), pressure, refractory).
+ *
+ * Three outcomes, not two: `HOLD` (staying put is a decision, logged with its reason and numbers), `MICRO` (a
+ * proportionate tweak: palette, mode, layer or effect) and `CUT` (a new scene, committed on the next bar line; a drop
+ * is an immediate hard cut).
+ *
+ * Through a confirmed build (`input.inBuild`) every discretionary change is held (`build-hold`),
+ * exactly as the old directors held the look until the drop; a drop is the one thing that still cuts.
+ *
+ * There is NO timer: a scene changes only on a real event whose score clears the (age-lowered) threshold. A stream
+ * with no events never cuts, however long the scene has been on screen.
+ *
+ * Allocation-light: `step` reads one reused input object and returns ONE reused action object (`state.out`), valid
+ * until the next `step` on the same state; copy what you need. All per-source memory is in fixed typed arrays.
+ */
+
+export type ShowActionKind = 'HOLD' | 'MICRO' | 'CUT'
+/** What a MICRO varies. The adapter falls back (mode -> layer) when the scene has nothing to vary. */
+export type MicroKind = 'mode' | 'layer' | 'palette' | 'effect'
+
+export interface ShowAction {
+  kind: ShowActionKind
+  /** Short constant-string reason, e.g. `weak`, `min-age`, `below-T`, `refractory`, `event`, `drop-fast`. */
+  reason: string
+  /** The score of the event acted on (0 for an idle frame). */
+  S: number
+  /** T_eff: the effective threshold used (age threshold minus pressure). */
+  T: number
+  /** Scene age in tempo-robust bars. */
+  age: number
+  /** Pressure 0..1. */
+  pressure: number
+  /** Drop credibility 0..1 (rarity of the detector's own drops); 1 for anything that is not a drop. */
+  credibility: number
+  /** `SectionEvent.id` acted on, -1 when the decision was not about an event. */
+  eventId: number
+  eventType: EventType | ''
+  /** MICRO only: what to vary; null otherwise. */
+  micro: MicroKind | null
+  /** CUT only: a drop's hard cut, landing now rather than on the next bar line. */
+  immediate: boolean
+  /** CUT only: the armed scene still fits (a hint; the adapter re-verifies with the real fit check). */
+  useArmed: boolean
+  /** True when an event was actually decided, false for an idle frame (not counted in the stats). */
+  evaluated: boolean
+}
+
+/** One frame's worth of live input. The adapter reuses ONE of these and mutates its fields. */
+export interface ShowInput {
+  /** `f.beatIndex` and `f.time`. A clock going backwards is a new source: the state resets. */
+  beat: number
+  time: number
+  /** The beat and audio time the scene now on screen was committed (the store's `lastCommitBeat`). */
+  sceneStartBeat: number
+  sceneStartTime: number
+  /** At most one event per call; null on a frame with none (the pressure still advances). */
+  event: SectionEvent | null
+  /**
+   * A cut requested on THIS frame lands on the coming bar line (kept for CUT commit alignment). The
+   * adapter passes the last beat of a bar (`f.beat && f.beatInBar === 3`), not the downbeat frame itself: SceneManager
+   * checks for a pending scene before the directors run, so a request made ON the downbeat frame would wait a whole
+   * further bar for the next one.
+   */
+  barLine: boolean
+  inBreakdown: boolean
+  /** A confirmed build is running (`songSection.isSustain`). */
+  inBuild: boolean
+  /** One-frame pressure edges: a committed mood change, a character shift, a predicted transition going imminent. */
+  moodChanged: boolean
+  characterShift: boolean
+  moodPredicted: boolean
+  /** A rising trend (build, mood heading to peak, drop projected soon): level, refreshed while true. */
+  trendRising: boolean
+}
+
+export interface ShowStats {
+  hold: number
+  micro: number
+  cut: number
+}
+
+const DROP_RING = 8
+const BUMPS = 4
+const BUMP_MOOD = 0
+const BUMP_CHARACTER = 1
+const BUMP_TREND = 2
+const BUMP_PREDICTED = 3
+const NEVER = Number.NEGATIVE_INFINITY
+
+export interface ShowState {
+  lastBeat: number
+  lastTime: number
+  /** Fallback scene start (the first step after a reset) while the input's own is unknown. */
+  baseBeat: number
+  baseTime: number
+  lastCutBeat: number
+  lastCutTime: number
+  lastMicroBeat: number
+  lastMicroTime: number
+  /** Decaying pressure bumps: value and stamp per source (mood, character, trend, predicted). */
+  bumpV: Float64Array
+  bumpBeat: Float64Array
+  bumpTime: Float64Array
+  /** The last build seen (a `buildStart` event, or a build running) and the last change/breakdown event. */
+  lastBuildBeat: number
+  lastBuildTime: number
+  lastChangeBeat: number
+  /** The last frame a breakdown was on (`input.inBreakdown`): a drop right after it is a release. */
+  lastBreakdownBeat: number
+  lastBreakdownTime: number
+  /** Ring of the last drop EVENTS (id, beat, time) for the rarity weighting; ids are NaN when empty. */
+  dropId: Float64Array
+  dropBeat: Float64Array
+  dropTime: Float64Array
+  dropPos: number
+  /** Rotation for MICRO picks when an event has no per-channel feats. */
+  microRot: number
+  /** The armed scene still fits the music (the adapter keeps this current); copied into `CUT.useArmed`. */
+  armedFitOk: boolean
+  stats: ShowStats
+  /** The last frame's numbers, for the overlay (valid even on an idle frame). */
+  age: number
+  pressure: number
+  threshold: number
+  out: ShowAction
+}
+
+function makeAction(): ShowAction {
+  return {
+    kind: 'HOLD',
+    reason: 'idle',
+    S: 0,
+    T: 0,
+    age: 0,
+    pressure: 0,
+    credibility: 1,
+    eventId: -1,
+    eventType: '',
+    micro: null,
+    immediate: false,
+    useArmed: false,
+    evaluated: false,
+  }
+}
+
+export function createShowState(): ShowState {
+  const st: ShowState = {
+    lastBeat: NEVER,
+    lastTime: NEVER,
+    baseBeat: NaN,
+    baseTime: NaN,
+    lastCutBeat: NEVER,
+    lastCutTime: NEVER,
+    lastMicroBeat: NEVER,
+    lastMicroTime: NEVER,
+    bumpV: new Float64Array(BUMPS),
+    bumpBeat: new Float64Array(BUMPS),
+    bumpTime: new Float64Array(BUMPS),
+    lastBuildBeat: NEVER,
+    lastBuildTime: NEVER,
+    lastChangeBeat: NEVER,
+    lastBreakdownBeat: NEVER,
+    lastBreakdownTime: NEVER,
+    dropId: new Float64Array(DROP_RING).fill(NaN),
+    dropBeat: new Float64Array(DROP_RING),
+    dropTime: new Float64Array(DROP_RING),
+    dropPos: 0,
+    microRot: 0,
+    armedFitOk: false,
+    stats: { hold: 0, micro: 0, cut: 0 },
+    age: 0,
+    pressure: 0,
+    threshold: 0,
+    out: makeAction(),
+  }
+  return st
+}
+
+/** Forget everything (a new source restarted the clocks). Keeps the stats and the rotation. */
+export function resetShow(st: ShowState): void {
+  st.lastBeat = NEVER
+  st.lastTime = NEVER
+  st.baseBeat = NaN
+  st.baseTime = NaN
+  st.lastCutBeat = NEVER
+  st.lastCutTime = NEVER
+  st.lastMicroBeat = NEVER
+  st.lastMicroTime = NEVER
+  st.bumpV.fill(0)
+  st.lastBuildBeat = NEVER
+  st.lastBuildTime = NEVER
+  st.lastChangeBeat = NEVER
+  st.lastBreakdownBeat = NEVER
+  st.lastBreakdownTime = NEVER
+  st.dropId.fill(NaN)
+  st.dropPos = 0
+  st.armedFitOk = false
+}
+
+/**
+ * The adapter's report on a CUT it was asked to perform. A refused request (the scene was the current one, the
+ * store refused the id, something else was mid-commit) must not leave the refractory running as if the show had
+ * changed: it is shortened so the director retries in about two beats, on the next event.
+ */
+export function ackCut(st: ShowState, accepted: boolean, beat: number, time: number): void {
+  if (accepted) return
+  const retry = SHOW.refractoryBars * SHOW.beatsPerBar - 2
+  st.lastCutBeat = beat - retry
+  st.lastCutTime = time - retry * (SHOW.barSecMin / SHOW.beatsPerBar)
+}
+
+function bump(st: ShowState, k: number, v: number, beat: number, time: number): void {
+  st.bumpV[k] = v
+  st.bumpBeat[k] = beat
+  st.bumpTime[k] = time
+}
+
+/** P = the max of the sources' bumps, each decaying linearly to 0 over `pressureDecayBars` bars. */
+export function pressureAt(st: ShowState, beat: number, time: number): number {
+  let p = 0
+  for (let k = 0; k < BUMPS; k++) {
+    const v = st.bumpV[k]
+    if (v <= 0) continue
+    const f = 1 - barsBetween(st.bumpBeat[k], st.bumpTime[k], beat, time) / SHOW.pressureDecayBars
+    if (f > 0 && v * f > p) p = v * f
+  }
+  return p > 1 ? 1 : p
+}
+
+function hasFeats(f: SectionEvent['feats'] | undefined): boolean {
+  if (!f) return false
+  return (
+    (Math.abs(f.level) || 0) + (Math.abs(f.low) || 0) + (Math.abs(f.timbre) || 0) + (Math.abs(f.harmony) || 0) + (Math.abs(f.rhythm) || 0) > 0
+  )
+}
+
+/** The reasons a rarity-discounted drop's verdict is relabelled `drop-noisy` (the others are about timing, not credibility). */
+const DISCOUNTED_REASONS: readonly string[] = ['weak', 'below-T', 'min-age', 'breakdown-min', 'drop-gated']
+
+/**
+ * The rarity weight of a drop event (`showPolicy.dropCredibility`), and its entry in the ring of recent drops (once per
+ * event id: a re-delivered, merged event is the same physical drop). `playing` = a build or breakdown is on right now.
+ * A drop that releases a build or a breakdown (on, or ended within `dropReleaseBars`) is never discounted.
+ */
+function creditDrop(st: ShowState, ev: SectionEvent, beat: number, time: number, playing: boolean): number {
+  let others = 0
+  let known = false
+  for (let k = 0; k < DROP_RING; k++) {
+    const id = st.dropId[k]
+    if (id !== id) continue // an empty slot
+    if (id === ev.id) {
+      known = true
+      continue
+    }
+    if (barsBetween(st.dropBeat[k], st.dropTime[k], beat, time) <= SHOW.dropWindowBars) others++
+  }
+  if (!known) {
+    const k = st.dropPos
+    st.dropId[k] = ev.id
+    st.dropBeat[k] = beat
+    st.dropTime[k] = time
+    st.dropPos = (k + 1) % DROP_RING
+  }
+  const released =
+    playing ||
+    barsBetween(st.lastBuildBeat, st.lastBuildTime, beat, time) <= SHOW.dropReleaseBars ||
+    barsBetween(st.lastBreakdownBeat, st.lastBreakdownTime, beat, time) <= SHOW.dropReleaseBars
+  return released ? 1 : dropCredibility(others)
+}
+
+const ROTATION: readonly MicroKind[] = ['palette', 'layer', 'mode', 'effect']
+
+/**
+ * WHAT a MICRO varies, from the event. A change in timbre varies the mode or the layers (alternating), a harmonic
+ * change the palette, a rhythmic one an effect; level / low-end changes recompose the layers / punctuate with an
+ * effect. An event with no per-channel feats (the legacy source) rotates through palette, layer, mode, effect.
+ */
+export function pickMicro(st: ShowState, ev: SectionEvent): MicroKind {
+  if (ev.type === 'fill') return 'effect'
+  const f = ev.feats
+  if (hasFeats(f)) {
+    const t = Math.abs(f.timbre) || 0
+    const h = Math.abs(f.harmony) || 0
+    const r = Math.abs(f.rhythm) || 0
+    const lv = Math.abs(f.level) || 0
+    const lo = Math.abs(f.low) || 0
+    const top = Math.max(t, h, r, lv, lo)
+    if (top === t) return st.microRot++ % 2 === 0 ? 'mode' : 'layer'
+    if (top === h) return 'palette'
+    if (top === r) return 'effect'
+    if (top === lv) return 'layer'
+    return 'effect'
+  }
+  return ROTATION[st.microRot++ % ROTATION.length]
+}
+
+/** Fill the shared output object. */
+function emit(
+  out: ShowAction,
+  kind: ShowActionKind,
+  reason: string,
+  S: number,
+  T: number,
+  age: number,
+  pressure: number,
+  ev: SectionEvent | null,
+  evaluated: boolean,
+): ShowAction {
+  out.kind = kind
+  out.reason = reason
+  out.S = S
+  out.T = T
+  out.age = age
+  out.pressure = pressure
+  out.credibility = 1
+  out.eventId = ev ? ev.id : -1
+  out.eventType = ev ? ev.type : ''
+  out.micro = null
+  out.immediate = false
+  out.useArmed = false
+  out.evaluated = evaluated
+  return out
+}
+
+/**
+ * Advance the director by one call. Mutates `st`; returns `st.out`, filled with what the caller must do. Call it every
+ * frame (with `event: null` when there is none) so pressure decays; on a frame with
+ * several events call it once per event.
+ */
+export function step(st: ShowState, i: ShowInput): ShowAction {
+  const out = st.out
+  const beat = i.beat
+  const time = i.time
+
+  // A new source restarts the beat counter and the audio clock: nothing from the old track may leak.
+  if (beat < st.lastBeat || time < st.lastTime) resetShow(st)
+  st.lastBeat = beat
+  st.lastTime = time
+  if (Number.isNaN(st.baseBeat)) {
+    st.baseBeat = beat
+    st.baseTime = time
+  }
+
+  // Where the scene on screen started: the store's stamp, or the show's own first step before any commit.
+  const startKnown =
+    Number.isFinite(i.sceneStartBeat) && Number.isFinite(i.sceneStartTime) && i.sceneStartBeat <= beat && i.sceneStartTime <= time
+  const startBeat = startKnown ? i.sceneStartBeat : st.baseBeat
+  const startTime = startKnown ? i.sceneStartTime : st.baseTime
+
+  // --- Pressure sources and build memory (level and edge signals; they only ever lower the bar) -----------------
+  if (i.moodChanged) bump(st, BUMP_MOOD, SHOW.bumpMood, beat, time)
+  if (i.characterShift) bump(st, BUMP_CHARACTER, SHOW.bumpCharacter, beat, time)
+  if (i.moodPredicted) bump(st, BUMP_PREDICTED, SHOW.bumpPredicted, beat, time)
+  if (i.trendRising) bump(st, BUMP_TREND, SHOW.bumpTrend, beat, time)
+  if (i.inBuild) {
+    st.lastBuildBeat = beat
+    st.lastBuildTime = time
+  }
+  if (i.inBreakdown) {
+    st.lastBreakdownBeat = beat
+    st.lastBreakdownTime = time
+  }
+
+  const age = barsBetween(startBeat, startTime, beat, time)
+  const pressure = pressureAt(st, beat, time)
+  const T = effectiveThreshold(age, pressure)
+  const refractory = barsBetween(st.lastCutBeat, st.lastCutTime, beat, time) < SHOW.refractoryBars
+  const microReady = barsBetween(st.lastMicroBeat, st.lastMicroTime, beat, time) >= SHOW.microCooldownBars
+  st.age = age
+  st.pressure = pressure
+  st.threshold = T
+
+  const ev = i.event
+  let evaluated = false
+  emit(out, 'HOLD', 'idle', 0, T, age, pressure, null, false)
+
+  // --- Decide the event ---------------------------------------------------------------------------------------
+  if (ev !== null) {
+    evaluated = true
+    // A drop is weighted by how rare the detector's own drops are (a detector that fires constantly says little).
+    const cred = ev.type === 'drop' ? creditDrop(st, ev, beat, time, i.inBuild || i.inBreakdown) : 1
+    const S = eventScore(ev.type, ev.strength, ev.confidence, ev.source) * cred
+    emit(out, 'HOLD', 'weak', S, T, age, pressure, ev, true)
+    out.credibility = cred
+
+    if (ev.type === 'buildStart') {
+      // A riser starting: arms and applies pressure, never cuts (weight 0).
+      st.lastBuildBeat = beat
+      st.lastBuildTime = time
+      bump(st, BUMP_TREND, SHOW.bumpTrend, beat, time)
+      out.reason = 'build-start'
+    } else if (ev.type === 'gain') {
+      out.reason = 'gain'
+    } else if (ev.type === 'fill') {
+      // Punctuation only: a fill is worth an effect when it is clear, never a scene change.
+      const raw = (Number.isFinite(ev.strength) ? Math.min(1, Math.max(0, ev.strength)) : 0) * (Number.isFinite(ev.confidence) ? Math.min(1, Math.max(0, ev.confidence)) : 0)
+      if (raw >= SHOW.microMinS && microReady && !refractory) {
+        out.kind = 'MICRO'
+        out.reason = 'fill'
+        out.micro = 'effect'
+      } else out.reason = 'fill-weak'
+    } else {
+      if (ev.type === 'change' || ev.type === 'breakdown') {
+        if (S > 0) st.lastChangeBeat = beat
+      }
+      decideWeighted(st, i, ev, S, T, age, out, refractory, microReady)
+      // A discounted drop that did not cut says so (the overlay shows the reason).
+      if (cred < 1 && out.kind !== 'CUT' && DISCOUNTED_REASONS.includes(out.reason)) out.reason = 'drop-noisy'
+    }
+  }
+
+  // --- Bookkeeping for what was decided -----------------------------------------------------------------------
+  if (out.kind === 'CUT') {
+    st.lastCutBeat = beat
+    st.lastCutTime = time
+    out.useArmed = st.armedFitOk
+    st.stats.cut++
+  } else if (out.kind === 'MICRO') {
+    st.lastMicroBeat = beat
+    st.lastMicroTime = time
+    st.stats.micro++
+  } else if (evaluated) {
+    st.stats.hold++
+  }
+  return out
+}
+
+/** The weighted event types (drop / change / breakdown): the S >= T_eff decision. Writes the verdict into `out`. */
+function decideWeighted(
+  st: ShowState,
+  i: ShowInput,
+  ev: SectionEvent,
+  S: number,
+  T: number,
+  age: number,
+  out: ShowAction,
+  refractory: boolean,
+  microReady: boolean,
+): void {
+  if (S < SHOW.microMinS) return // 'weak'
+  if (refractory) {
+    out.reason = 'refractory'
+    return
+  }
+  const isDrop = ev.type === 'drop'
+  // Through a confirmed build the look stays put until the drop (the old directors' rule, kept): every discretionary
+  // change is held, tweaks included. The drop itself is the exception,
+  if (i.inBuild && !isDrop) {
+    out.reason = 'build-hold'
+    return
+  }
+  const buildRecent =
+    i.inBuild || barsBetween(st.lastBuildBeat, st.lastBuildTime, i.beat, i.time) <= SHOW.buildMemoryBars
+  const corroborated =
+    ev.corroborated === true || (i.beat - st.lastChangeBeat >= 0 && i.beat - st.lastChangeBeat <= SHOW.corroborateBeats)
+  const minBars = minCutBars(i.inBreakdown)
+
+  // Drop gating: a false drop is the only dwell bypass in the legacy show. A drop this young needs a build behind
+  // it or a second signal; without either it is a tweak, not a scene change.
+  if (isDrop && age < SHOW.dropFastMinBars && !buildRecent && !corroborated) {
+    micro(st, out, ev, microReady, 'drop-gated')
+    return
+  }
+  const dropFast = isDrop && S >= SHOW.dropFastMinS && age >= SHOW.dropFastMinBars
+  if (dropFast || (age >= minBars && S >= T)) {
+    out.kind = 'CUT'
+    out.reason = dropFast ? 'drop-fast' : 'event'
+    out.immediate = SHOW.dropImmediateOnlyFast ? dropFast : isDrop
+    return
+  }
+  const why = age < minBars ? (i.inBreakdown && age >= SHOW.minCutBars ? 'breakdown-min' : 'min-age') : 'below-T'
+  micro(st, out, ev, microReady, why)
+}
+
+function micro(st: ShowState, out: ShowAction, ev: SectionEvent, microReady: boolean, reason: string): void {
+  if (!microReady) {
+    out.reason = 'micro-cooldown'
+    return
+  }
+  out.kind = 'MICRO'
+  out.reason = reason
+  out.micro = pickMicro(st, ev)
+}

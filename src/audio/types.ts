@@ -317,14 +317,26 @@ export interface AudioFeatures {
   beatStrength: number
   /** 0..1 position inside the current beat. */
   beatProgress: number
-  /** Beat index inside the current bar, 0..3. */
+  /** Beat index inside the current bar, 0..3 (0 = the downbeat). Equals `beatIndex % 4` (the legacy,
+   *  arbitrary-phase reading) unless `downbeatLocked`, in which case it is measured from the estimated
+   *  downbeat. It changes only on a beat crossing and, when the estimator adopts or moves its offset
+   *  (rare), jumps by an arbitrary amount ONCE (e.g. 1 -> 3); consumers must tolerate one discontinuity.
+   *  Assumes 4/4. See `structure/downbeat.ts`. */
   beatInBar: number
-  /** Running beat count since start. */
+  /** Running beat count since start. Never affected by the downbeat estimate. */
   beatIndex: number
-  /** Bar count (4 beats). */
+  /** Bar count (4 beats), counted from the estimated downbeat when `downbeatLocked` (may step by one when
+   *  the offset is adopted or moved). */
   bar: number
-  /** Measure/phrase count (4 bars = 16 beats). */
+  /** Measure/phrase count (4 bars = 16 beats), same basis as `bar`. */
   measure: number
+  /** 0..1 evidence that `beatInBar === 0` really is the downbeat: how clearly the estimated downbeat phase
+   *  beats the runner-up (kick / low-end salience per beat phase, with a significance test). Low means
+   *  `beatInBar` is the legacy arbitrary-phase reading. */
+  downbeatConfidence: number
+  /** True once the downbeat estimator has ADOPTED a phase with high confidence (`beatInBar` is then
+   *  bar-aligned to it); false = legacy `beatIndex % 4`. */
+  downbeatLocked: boolean
   /** 0..1 confidence in the tempo/phase estimate. */
   confidence: number
   /** Predicted AudioContext time of the next beat. */
@@ -333,6 +345,11 @@ export interface AudioFeatures {
    * per-onset accuracy signal `confidence` is partly derived from, exposed on
    * its own for beat-tracking-accuracy analytics. */
   beatGridAccuracy: number
+  /** The song's tempo as signed octaves from 120 BPM (`log2(bpm/120)`, clamped +-1), confidence-gated and
+   *  eased — see `tempoSpeed.ts`. 0 = neutral (120 BPM, or the read is not yet trustworthy). Not a speed by
+   *  itself: consumers turn it into a rate with the current mood's coupling (`engine/tempoRate.ts`), so how much
+   *  the tempo matters is decided by the mood, not here. */
+  tempoOctaves: number
 
   /** Phrase count (16 beats, re-anchored at detected section changes). */
   phrase: number
@@ -524,9 +541,12 @@ export function createEmptyFeatures(): AudioFeatures {
     beatIndex: 0,
     bar: 0,
     measure: 0,
+    downbeatConfidence: 0,
+    downbeatLocked: false,
     confidence: 0,
     nextBeatTime: 0,
     beatGridAccuracy: 0,
+    tempoOctaves: 0,
     phrase: 0,
     phraseProgress: 0,
     sectionChange: false,

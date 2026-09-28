@@ -9,13 +9,22 @@ import type { AudioFeatures } from './types'
  * entered a new section (verse → chorus, breakdown, drop...). Section
  * boundaries re-anchor the phrase grid, so `phraseProgress` completes
  * exactly on musically meaningful boundaries instead of drifting.
+ *
+ * "Downbeat" here is `f.beatInBar === 0`: the real bar line once the engine's
+ * downbeat estimator has locked (`f.downbeatLocked`), the legacy arbitrary
+ * `beatIndex % 4` phase until then. The public output shape is unchanged.
  */
 
 const SAMPLE_INTERVAL = 0.1
 const HISTORY = 7 // seconds
 const RECENT_WINDOW = 1.2
-const WEIGHTS = [1.25, 1.0, 1.0, 0.8] // bass shifts matter most
-const THRESHOLD = 0.45
+// Bass shifts matter most, but the high band is weighted up (was 0.8): on the first tapped songs the scene changes
+// were hi-hats and upper layers entering, a small ABSOLUTE move of a quiet band that 0.8 hid.
+const WEIGHTS = [1.25, 1.0, 1.0, 1.2]
+// Was 0.45. Lowered so quieter section changes (a verse to a chorus at similar loudness) register; a real boundary
+// still needs a sustained shift on a downbeat, and the one-per-6-beats cooldown below keeps a noisy passage from
+// firing every bar.
+const THRESHOLD = 0.3
 
 interface Profile {
   t: number
@@ -46,7 +55,12 @@ export class PhraseDetector {
       }
     }
 
-    // Only consider boundaries on downbeats — sections change on the grid.
+    // Only consider boundaries on downbeats — sections change on the grid. `f.beatInBar` is measured from
+    // the estimated downbeat when `f.downbeatLocked` (structure/downbeat.ts), so this snaps to the real
+    // bar line; when the estimator is not confident it is the legacy `beatIndex % 4` (arbitrary phase),
+    // exactly as before. When the offset is adopted or moved (rare) `beatInBar` jumps once, which here
+    // just means the next boundary candidate lands on a different beat - `phraseStartBeat` is a raw
+    // `beatIndex`, so `phrase` / `phraseProgress` stay continuous across it.
     if (f.beat && f.beatInBar === 0 && now > this.cooldownUntil && !f.silence) {
       const recent = [0, 0, 0, 0]
       const before = [0, 0, 0, 0]
@@ -71,8 +85,8 @@ export class PhraseDetector {
         if (novelty > THRESHOLD) {
           f.sectionChange = true
           this.phraseStartBeat = f.beatIndex
-          // At most one boundary per 8 beats.
-          this.cooldownUntil = now + (60 / f.bpm) * 8
+          // At most one boundary per 6 beats (was 8).
+          this.cooldownUntil = now + (60 / f.bpm) * 6
         }
       }
     }

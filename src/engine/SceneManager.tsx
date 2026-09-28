@@ -42,6 +42,8 @@ import { sampleAnalytics } from './analyticsMetrics'
 import { beginTransition, sampleTransitionFrame } from './transitionMetrics'
 import { sceneStreamer } from './streaming/sceneStreamer'
 import { prewarmShaders } from './streaming/shaderPrewarm'
+import { isCommitBarLine } from './show/commitBarLine'
+import { EVENTS_V2 } from './show/directorFlags'
 
 /** Every slot a mounted scene instance can occupy. */
 export type SlotName = 'primary' | LayerRole | 'effect'
@@ -360,6 +362,10 @@ const IMMEDIATE_WARM_GRACE_SEC = 0.35
  * the "drops don't switch" bug survived for as long as it did.
  *
  * `incomingWarm` is null when no warm entry exists yet (nothing to wait for).
+ *
+ * `held` is an ARMED scene (`engine/armedChange.ts`): mounted and compiled like any pending scene, but not
+ * committed until something releases it. Nothing commits it while held: not an untrusted grid, not a downbeat, not
+ * the 2.5 s backstop. Omitted or false, this function is exactly what it was before arming existed.
  */
 export function resolveCommit(opts: {
   gridTrusted: boolean
@@ -367,8 +373,10 @@ export function resolveCommit(opts: {
   pendingImmediate: boolean
   incomingWarm: boolean | null
   waited: number
+  held?: boolean
 }): { commit: boolean; immediate: boolean } {
   const { gridTrusted, onDownbeat, pendingImmediate, incomingWarm, waited } = opts
+  if (opts.held === true) return { commit: false, immediate: false }
   const immediate =
     pendingImmediate && (incomingWarm === null || incomingWarm || waited > IMMEDIATE_WARM_GRACE_SEC)
 
@@ -713,7 +721,10 @@ export function SceneManager() {
         return
       }
       if (idx >= ids.length) return
-      prewarmScene(ids[idx++], gl)
+      const bootId = ids[idx++]
+      prewarmScene(bootId, gl)
+      // Compiled off to the side: cheap to arm later (armedPick.ts prefers these).
+      sceneStreamer.markCompiled(bootId)
       timer = window.setTimeout(pump, PREWARM_STAGGER_MS)
     }
     timer = window.setTimeout(pump, 0)
@@ -778,6 +789,13 @@ export function SceneManager() {
     const { pendingSceneId, commitScene } = state
     if (pendingSceneId) {
       if (pendingSince.current < 0) pendingSince.current = clock.elapsedTime
+      // An ARMED scene is warmed below like any other pending one but not committed (see `resolveCommit`'s
+      // `held`). Matched against the pending id so a stale hold can never freeze an unrelated request. While held
+      // the wait clock is pinned to now, so the moment it is released `waited` starts from ~0: the drop's warm
+      // grace and a non-drop release's downbeat wait then behave exactly as for a freshly requested scene, instead
+      // of seeing a huge `waited` and skipping straight to the 2.5 s backstop.
+      const held = state.heldSceneId !== null && state.heldSceneId === pendingSceneId
+      if (held) pendingSince.current = clock.elapsedTime
 
       // Pre-warm: mount the incoming scene the moment it's requested so its
       // shader compiles now, well before the downbeat we actually switch on.
@@ -810,10 +828,17 @@ export function SceneManager() {
       ) {
         entriesRef.current.push(makeEntry(pendingSceneId, 'primary', 0))
         force((n) => n + 1)
+        // A constantly ARMED scene mounts on its own schedule, not on a commit: its chunk load + shader compile
+        // (and, without parallel-compile support, its visible warm frames) land as a frame-time spike that is
+        // scheduled work, not load. Without this the governor would read every arm as evidence and demote the
+        // tier, which switches arming off: the feedback loop constant arming must not create.
+        if (held) suspendFrameSampling(WARM_FRAMES * 4 + 30)
       }
 
       const waited = clock.elapsedTime - pendingSince.current
-      const onDownbeat = f.beat && f.beatInBar === 0
+      // The bar line a pending scene commits on: `f.beatInBar === 0`, or with `?events=v2` the boundary-anchored grid's (the one
+      // the show adapter requests its cuts against) while it is confident. Legacy mode passes no grid: exactly the old test.
+      const onDownbeat = isCommitBarLine(f, EVENTS_V2 ? audioEngine.events : null)
       const gridTrusted = f.confidence > 0.25 && !f.silence
 
       // Drop-triggered switches do NOT wait for the next downbeat.
@@ -844,6 +869,7 @@ export function SceneManager() {
         pendingImmediate: state.pendingImmediate,
         incomingWarm: pendingWarm ? isWarmComplete(pendingWarm) : null,
         waited,
+        held,
       })
 
       if (commit) {

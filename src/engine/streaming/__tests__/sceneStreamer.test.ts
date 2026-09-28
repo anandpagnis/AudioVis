@@ -129,3 +129,31 @@ describe('sceneStreamer', () => {
     expect(sceneStreamer.status('y')).not.toBe('ACTIVE')
   })
 })
+
+describe('sceneStreamer: compiled-this-session set (what constant arming prefers)', () => {
+  beforeEach(() => sceneStreamer.reset())
+
+  it('a scene that reached READY is remembered as compiled, and stays so after it is released or evicted', () => {
+    expect(sceneStreamer.hasCompiled('plasma')).toBe(false)
+    sceneStreamer.preload('plasma', 0)
+    sceneStreamer.noteLoaded('plasma')
+    expect(sceneStreamer.hasCompiled('plasma')).toBe(false) // still warming: not compiled yet
+    sceneStreamer.noteReady('plasma')
+    expect(sceneStreamer.hasCompiled('plasma')).toBe(true)
+    sceneStreamer.clearPending()
+    expect(sceneStreamer.status('plasma')).toBeUndefined()
+    expect(sceneStreamer.hasCompiled('plasma')).toBe(true) // three.js still holds the program
+  })
+
+  it('markCompiled records a boot-prewarmed scene that never mounted', () => {
+    sceneStreamer.markCompiled('kifs')
+    expect(sceneStreamer.hasCompiled('kifs')).toBe(true)
+    expect(sceneStreamer.status('kifs')).toBeUndefined()
+  })
+
+  it('reset (the test seam / a new source) forgets everything', () => {
+    sceneStreamer.markCompiled('kifs')
+    sceneStreamer.reset()
+    expect(sceneStreamer.hasCompiled('kifs')).toBe(false)
+  })
+})

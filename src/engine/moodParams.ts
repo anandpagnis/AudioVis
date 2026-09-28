@@ -1,6 +1,7 @@
 import { audioEngine, beatPulse } from '../audio/AudioEngine'
 import type { AudioFeatures } from '../audio/types'
 import { useStore, type BandSource, type VisualParams } from '../store'
+import { currentTempoRate } from './tempoRate'
 
 const out: VisualParams = { intensity: 1, speed: 1, reactivity: 1 }
 
@@ -47,6 +48,11 @@ export function getEffectiveParams(): VisualParams {
     out.speed = params.speed
     out.reactivity = params.reactivity
   }
+
+  // Tempo: independent of `moodDrive` (the song's actual, measured tempo, not a mood classification), so this
+  // applies whichever branch above ran, same as the band routing below. HOW MUCH the tempo matters is the mood's
+  // call (its `tempoCoupling`), resolved in tempoRate.ts; 1 (no-op) until the tempo read is trustworthy.
+  out.speed *= currentTempoRate()
 
   // Band routing: each mapping scales its target by 1 + amount × envelope.
   for (const m of bandMappings) {

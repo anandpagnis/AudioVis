@@ -190,3 +190,52 @@ describe('TransitionCapture.dispose', () => {
     expect(cap.inTarget).not.toBeNull()
   })
 })
+
+describe('TransitionCapture.render — skips the redundant world-matrix update on the second capture', () => {
+  it('the first capture updates matrices as usual; the second runs with matrixWorldAutoUpdate off; it is restored after', () => {
+    const cap = new TransitionCapture()
+    cap.ensureTargets(200, 200)
+    const camera = new THREE.PerspectiveCamera()
+    const scene = new THREE.Scene()
+    const seen: boolean[] = []
+    const gl = {
+      setRenderTarget: vi.fn(),
+      render: vi.fn(() => {
+        seen.push(scene.matrixWorldAutoUpdate)
+      }),
+    }
+    expect(scene.matrixWorldAutoUpdate).toBe(true)
+    cap.render(gl as unknown as THREE.WebGLRenderer, scene, camera)
+    expect(seen).toEqual([true, false])
+    expect(scene.matrixWorldAutoUpdate).toBe(true)
+  })
+
+  it('leaves a scene that had auto-update OFF still off (restores what it found, not a hard-coded true)', () => {
+    const cap = new TransitionCapture()
+    cap.ensureTargets(200, 200)
+    const camera = new THREE.PerspectiveCamera()
+    const scene = new THREE.Scene()
+    scene.matrixWorldAutoUpdate = false
+    cap.render({ setRenderTarget: vi.fn(), render: vi.fn() } as unknown as THREE.WebGLRenderer, scene, camera)
+    expect(scene.matrixWorldAutoUpdate).toBe(false)
+  })
+
+  it('restores auto-update and the camera layer mask even when the render throws', () => {
+    const cap = new TransitionCapture()
+    cap.ensureTargets(200, 200)
+    const camera = new THREE.PerspectiveCamera()
+    camera.layers.enable(4)
+    const savedMask = camera.layers.mask
+    const scene = new THREE.Scene()
+    let calls = 0
+    const gl = {
+      setRenderTarget: vi.fn(),
+      render: vi.fn(() => {
+        if (++calls === 2) throw new Error('GPU lost')
+      }),
+    }
+    expect(() => cap.render(gl as unknown as THREE.WebGLRenderer, scene, camera)).toThrow('GPU lost')
+    expect(scene.matrixWorldAutoUpdate).toBe(true)
+    expect(camera.layers.mask).toBe(savedMask)
+  })
+})

@@ -41,16 +41,21 @@ describe('BpmEstimator', () => {
     expect(est.hitScore).toBeGreaterThan(0.9)
   })
 
-  it('reports a low hitScore when the same nominal tempo is jittered off-grid', () => {
+  it('reports a low hitScore when the same nominal tempo is jittered randomly off-grid', () => {
+    // Uniformly random offsets over the WHOLE period: there is no beat to lock onto, so neither the PLL nor phase
+    // acquisition can align to it. (This used to alternate +-0.4 period, which is a real comb half a period from
+    // the starting grid; phase acquisition now, correctly, moves the grid onto that.)
     const est = new BpmEstimator()
     const period = 0.5
+    let seed = 12345
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed / 0x7fffffff
+    }
     let t = 0
-    let i = 0
     while (t < 20) {
-      const jitter = i % 2 === 0 ? period * 0.4 : -period * 0.4
-      est.addOnset(t + jitter, 1)
+      est.addOnset(t + (rand() - 0.5) * period, 1)
       est.update(t)
-      i++
       t += period
     }
     expect(est.hitScore).toBeLessThan(0.5)
@@ -345,5 +350,158 @@ describe('reconcileModelBpm', () => {
       t += 0.25
     }
     expect(Math.abs(est.bpm - 152)).toBeLessThan(8)
+  })
+})
+
+/**
+ * Feed a strictly periodic onset comb (period P, first onset at `first`) and tick every 50 ms, like AudioEngine.
+ * Returns the final time and the time of the last onset fed.
+ */
+function feedComb(
+  est: BpmEstimator,
+  period: number,
+  first: number,
+  seconds: number,
+  startT = 0,
+): { t: number; lastOnset: number } {
+  let t = startT
+  let next = first
+  let last = -Infinity
+  const end = startT + seconds
+  while (t < end) {
+    while (next <= t) {
+      est.addOnset(next, 1)
+      last = next
+      next += period
+    }
+    est.update(t)
+    t += 0.05
+  }
+  return { t, lastOnset: last }
+}
+
+/** How far (in periods, signed) the grid is from the most recent comb onset. */
+function errAtOnset(est: BpmEstimator, onset: number): number {
+  return est.gridError(onset) / est.period
+}
+
+describe('BpmEstimator phase acquisition', () => {
+  it('pulls a grid that starts far outside the PLL capture range onto the onset comb', () => {
+    // 80 BPM (0.75 s). The grid starts 0.4 period away: beyond the 0.3-period tolerance, so the per-onset PLL
+    // alone never moves it (this is the measured "230 ms off a 750 ms beat for 14 s" failure).
+    const est = new BpmEstimator()
+    const period = 0.75
+    est.phase = 0.4 * period
+    const { lastOnset } = feedComb(est, period, 0, 20)
+    expect(Math.abs(est.bpm - 80)).toBeLessThan(2)
+    expect(Math.abs(errAtOnset(est, lastOnset))).toBeLessThan(0.1)
+  })
+
+  it('locks from any starting phase around the circle', () => {
+    for (const startFrac of [0.15, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85]) {
+      const est = new BpmEstimator()
+      const period = 0.5
+      est.phase = startFrac * period
+      const { lastOnset } = feedComb(est, period, 0, 25)
+      expect(Math.abs(errAtOnset(est, lastOnset)), `start ${startFrac}`).toBeLessThan(0.1)
+    }
+  })
+
+  it('a tempo estimate a fraction of a percent off no longer leaves the grid drifting unlocked', () => {
+    // 128 BPM: the estimate settles ~0.25% off the truth, which slides the comb across the grid; once it was
+    // outside the PLL's range nothing pulled it back. Start off-range and check the grid stays on the comb.
+    const est = new BpmEstimator()
+    const trueP = 60 / 128
+    est.phase = 0.45 * trueP
+    let r = feedComb(est, trueP, 0, 40)
+    const errs: number[] = []
+    for (let i = 0; i < 20; i++) {
+      r = feedComb(est, trueP, r.lastOnset + trueP, 1, r.t)
+      errs.push(Math.abs(errAtOnset(est, r.lastOnset)))
+    }
+    expect(Math.max(...errs)).toBeLessThan(0.15)
+  })
+
+  it('leaves an already-locked grid on the comb (acquisition does not disturb a good lock)', () => {
+    const est = new BpmEstimator()
+    const period = 0.5
+    let r = feedComb(est, period, 0, 20)
+    const errs: number[] = []
+    for (let i = 0; i < 10; i++) {
+      r = feedComb(est, period, r.lastOnset + period, 1, r.t)
+      errs.push(Math.abs(errAtOnset(est, r.lastOnset)))
+    }
+    expect(Math.max(...errs)).toBeLessThan(0.05)
+  })
+
+  it('does nothing without a periodic comb, and needs enough onsets', () => {
+    type Priv = { acquirePhase: (n: number) => void; onsets: { t: number; s: number }[] }
+    const est = new BpmEstimator()
+    const priv = est as unknown as Priv
+    est.period = 0.5
+    est.phase = 0.123
+    // Too few onsets.
+    priv.onsets = [
+      { t: 1, s: 1 },
+      { t: 1.3, s: 1 },
+    ]
+    priv.acquirePhase(2)
+    expect(est.phase).toBe(0.123)
+    // Plenty, but spread evenly around the period (concentration ~0): no periodic comb to acquire.
+    priv.onsets = Array.from({ length: 40 }, (_, k) => ({ t: 2 + k * 0.1, s: 1 })) // 0.1 s apart = 5 phases/period
+    priv.acquirePhase(6)
+    expect(est.phase).toBe(0.123)
+  })
+
+  it('does not move a grid that is already within the PLL range of the comb', () => {
+    type Priv = { acquirePhase: (n: number) => void; onsets: { t: number; s: number }[] }
+    const est = new BpmEstimator()
+    const priv = est as unknown as Priv
+    est.period = 0.5
+    est.phase = 0.05 // comb at 0 -> 0.1 period away, under ACQ_MIN_OFFSET (0.12): the PLL's job
+    priv.onsets = Array.from({ length: 10 }, (_, k) => ({ t: 1 + k * 0.5, s: 1 }))
+    priv.acquirePhase(6)
+    expect(est.phase).toBe(0.05)
+  })
+
+  it('slews toward a clearly displaced comb by half the offset, never changing the period', () => {
+    type Priv = { acquirePhase: (n: number) => void; onsets: { t: number; s: number }[] }
+    const est = new BpmEstimator()
+    const priv = est as unknown as Priv
+    est.period = 0.5
+    est.phase = 0.1 // comb at 0 -> the grid is 0.2 period AHEAD of it (delta = -0.2 periods = -0.1 s)
+    priv.onsets = Array.from({ length: 10 }, (_, k) => ({ t: 1 + k * 0.5, s: 1 }))
+    priv.acquirePhase(5)
+    expect(est.period).toBe(0.5)
+    expect(est.phase).toBeCloseTo(0.1 - 0.2 * 0.5 * 0.5, 9) // gain 0.5 of the 0.1 s offset
+  })
+
+  it('caps one step at 0.15 of a period, so a big displacement is closed over several evaluations, not one lurch', () => {
+    type Priv = { acquirePhase: (n: number) => void; onsets: { t: number; s: number }[] }
+    const est = new BpmEstimator()
+    const priv = est as unknown as Priv
+    est.period = 0.5
+    est.phase = 0.2 // 0.4 period ahead of the comb: uncapped, gain 0.5 would move it 0.2 period
+    priv.onsets = Array.from({ length: 10 }, (_, k) => ({ t: 1 + k * 0.5, s: 1 }))
+    priv.acquirePhase(5)
+    expect(est.phase).toBeCloseTo(0.2 - 0.15 * 0.5, 9)
+  })
+
+  it('never produces NaN or changes the period on garbage', () => {
+    const est = new BpmEstimator()
+    est.phase = 0.2
+    est.period = 0.5
+    const acq = (est as unknown as { acquirePhase: (n: number) => void }).acquirePhase.bind(est)
+    acq(0)
+    acq(NaN)
+    expect(est.period).toBe(0.5)
+    expect(Number.isFinite(est.phase)).toBe(true)
+  })
+
+  it('is unaffected by an external clock (the estimator returns before evaluating)', () => {
+    const est = new BpmEstimator()
+    est.setExternalTempo(120, 0.25, 0)
+    for (let t = 0; t < 4; t += 0.05) est.update(t)
+    expect(est.phase).toBe(0.25)
   })
 })

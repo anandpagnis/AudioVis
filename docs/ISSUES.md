@@ -12647,7 +12647,762 @@ per-frame canvas heavy enough to distort the reading.
       the one failure is the pre-existing, unrelated `checkDistLicences.test.ts`
       flake first confirmed in F258.
 
-- [~] **F261 · A primary that declares `blending: THREE.NoBlending` never
+- [x] **F261 · Structural reactivity (verse/chorus/build/drop) rebuilt on a
+      clean-room, always-on detector; BPM-driven visual speed** — *2026-09-23,
+      user report ("more than 50% of the time it does not realise that a
+      song is building, and does not see a drop, that cannot happen"),
+      approved plan, executed in auto mode with agents* `src/audio/tempoSpeed.ts`,
+      `src/engine/moodParams.ts`, `src/engine/CameraDirector.tsx`,
+      `src/audio/essentia/structureDsp.ts`, `src/audio/structure/` (new:
+      `onsetDensity.ts`, `timbreBands.ts`, `dropStateMachine.ts`,
+      `StructureAnalyzer.ts`, `structureFlags.ts`), `src/audio/AudioEngine.ts`,
+      `scripts/calibrate/features.ts`, `scripts/calibrate/structure-sanity.calib.ts`,
+      `src/ui/DebugPanel.tsx`
+
+      **Root cause, found by reading the code before touching anything.** The
+      engine already had a real structure detector —
+      `structureDsp.ts` implements Foote checkerboard-kernel self-similarity
+      segmentation plus a multi-term build/drop riser score, roughly
+      state-of-the-art for causal, real-time structure analysis. It had
+      simply never run for the user: its feature extraction
+      (`structure.worker.ts`) depended on `essentia.js` (AGPL-3.0), gated
+      behind `VITE_ENABLE_ESSENTIA=1`, off in every real build for the same
+      licensing reason F252's mood-engine firewall exists. `structureValid`
+      was therefore permanently false in practice, and every director fell
+      back to a blind wall-clock timer plus a crude instantaneous heuristic
+      — exactly the F153 bug, fixed once in principle, never actually
+      reaching a real user because the one piece feeding it features never
+      got the clean-room treatment every *other* Essentia dependency here
+      already has (key/mode, harmonic tension, tempo).
+
+      **Part A — clean-room structure detector, shipped in four waves:**
+      1. *Richer segmentation cues* (`structureDsp.ts`): `BeatCell` gained
+         `mid`/`high`/`onsetDensity`. Two novelty-kernel widths (8/32 beats)
+         run in parallel and fuse, instead of one fixed width — short for
+         fast EDM-scale cuts, long for slower verse/chorus-scale ones.
+         `riserScore` gained a `highRise` term and swapped its "hat
+         acceleration" term for a blend of flux-accel and real onset-density
+         acceleration (an accelerating snare roll — one of the most reliable
+         build cues in the literature — was previously invisible). Weights
+         rebalanced across six terms. 32 tests added to the existing 13.
+      2. *A fast, independent drop detector* (`dropStateMachine.ts`): an
+         explicit breakdown → dip → snap-back state machine watching
+         sub+bass against a trailing baseline that freezes while "deep" (so
+         an extended breakdown can't drag its own comparison point down),
+         confirming on `f.flux` (not the smoothed `f.transient`) within
+         ~0.5s — running every frame, not waiting on the slow batch cycle.
+         Wired into `AudioEngine.detectStructure()` alongside the existing
+         broadband threshold, not replacing it.
+      3. *The always-on orchestrator* (`StructureAnalyzer.ts`, ~330 lines):
+         runs on the main thread (no worker — the only reason one existed
+         was Essentia's WASM module). Accumulates a running per-frame
+         average — a second, fast 2s-tau `ChromaKeyEstimator` instance for
+         harmonic content, `timbreBands.ts`'s log-mel filterbank (no DCT —
+         the segmenter only needs cosine similarity) for timbre,
+         `onsetDensity.ts`'s leaky-integrator rate for onset density, plus
+         the multi-band/centroid/flux/flatness fields `AudioEngine` already
+         computes every frame — into the current beat cell, folds it on
+         `f.beat` (mirroring the old worker's `foldToBeats` shape), and
+         periodically (self-throttling cadence, further backed off at
+         higher `quality.tier`) runs `segment()`/`riserScore()` over a
+         200-beat rolling window. `AudioEngine.ts`'s one integration line
+         became `this.intel.updateStructure(f) ?? this.structureAnalyzer.update(f, this.lowFreqDb, ctx.sampleRate)`
+         — Essentia still wins the rare frame it has a fresh read (dev
+         builds only), the new analyzer fills every other frame, which is
+         *all* frames in a real build. Warm-up shrunk from the old
+         Essentia-readiness-driven ~30-38s to ~20-25s, since that
+         dependency no longer exists. A `?structure=off` kill switch
+         reproduces exactly the old (degraded) behaviour as an escape
+         hatch. `SectionTracker.ts` needed zero changes — its contract was
+         already source-agnostic.
+      4. *Offline firing-sanity harness + debug visibility*:
+         `scripts/calibrate/structure-sanity.calib.ts` (new) steps the real
+         `StructureAnalyzer` over decoded corpus audio and checks it isn't
+         silently inert — not an accuracy gate (no labeled boundary ground
+         truth exists), a regression gate, since an *inert* detector is
+         exactly what happened here undetected for months. Run against 40
+         real PMEmo clips: **88% fired at least one boundary**, mean 3.13
+         boundaries/clip, mean batch cost 2.6ms (max 10.4ms, confirming the
+         plan's "cheap enough inline" estimate). `f.spectrum` turned out to
+         have never been populated in the calibration harness at all — fixed
+         as part of wiring this in, or the new detector's timbre channel
+         would have silently run on an all-zero array offline.
+         `DebugPanel.tsx`'s structure row now shows the analyzer's live
+         novelty/boundary/build/history/ETA/run-count whenever
+         `!f.structureValid`, and distinguishes "not valid yet" from
+         "`?structure=off`" explicitly.
+
+      **Part B — BPM-driven visual speed**, shipped first (smaller,
+      independent, fully unit-testable without audio):
+      `tempoSpeedMultiplier(bpm, confidence)` in the new `tempoSpeed.ts`:
+      `clamp(1 + 0.6*log2(bpm/120), 0.6, 1.6)`, log-scaled because tempo is
+      *perceived* logarithmically (doubling/halving are equal perceptual
+      steps, a linear ratio would make 200 BPM look absurd next to 60),
+      confidence-gated toward neutral (1.0) below a trust threshold using
+      the same "ease toward neutral when untrustworthy" shape already used
+      elsewhere in this codebase. Takes the tempo estimator's already
+      octave-corrected `f.bpm` directly — no re-solving octave errors here.
+      Multiplied once into `moodParams.ts`'s `getEffectiveParams().speed`
+      (the one global reactivity multiplier every scene reads) and into
+      `CameraDirector.tsx`'s motion-rate calculation (which had zero BPM
+      term before this). Smoothed with a multi-second time constant so it
+      settles at the pace the underlying tempo read itself stabilizes.
+      Deliberately NOT touched: `sceneSteer.ts`'s speed dial (a different,
+      existing rule about mood *pretending* tempo changed) and
+      `AnimationDirector.ts`'s existing fine-grained BPM terms (would
+      double-count tempo specifically there).
+
+      **What a prior investigation already settled and this did not
+      reopen:** F153 explicitly scoped and rejected training/distilling an
+      ML model for structure segmentation (multi-week GPU pipeline, a
+      realistic offline ceiling around 0.6 boundary-F, against the need for
+      something causal in a browser) — this plan's research pull confirmed
+      that call still holds.
+
+      **Verification.** `npm run check` (typecheck × 2 configs, lint,
+      full test suite, build, licence gate) all pass. 2554/2557 tests pass;
+      the sole failure is the pre-existing, unrelated
+      `checkDistLicences.test.ts` flake (first confirmed in F258). The
+      offline firing-sanity harness ran against real corpus audio, not
+      just typechecked (numbers above). **Not yet watched live against real
+      music** — no browser/GPU in this environment, same limitation as
+      every other DSP/visual change this session; the extended
+      `?lookdebug`/`DebugPanel` structure row exists specifically so this
+      check is fast once it can be watched. Every threshold in Part A
+      (kernel widths, the breakdown-dip ratio, the snap-back window, the
+      quality-tier cadence backoff) and Part B's formula constants are
+      reasoned starting points from the plan's research, not tuned against
+      real listening — expect a by-ear pass, the same as the mood engine's
+      rows needed.
+
+- [x] **F262 · Three dead paths in F261's structure detector fixed; the song's
+      BPM now sets motion speed by a per-mood coupling and reaches every scene**
+      — *2026-09-24, user request ("look into the section change analyser and
+      see what improvements we can do compared to state of the art ... I want
+      bpm and mood to directly affect the raw speed of the scenes ... a
+      multiplier that is changed by mood")* `src/audio/SectionTracker.ts`,
+      `src/audio/structure/StructureAnalyzer.ts`, `src/audio/AudioEngine.ts`,
+      `src/audio/essentia/structureDsp.ts`, `src/audio/tempoSpeed.ts`,
+      `src/engine/tempoRate.ts`, `src/engine/createShaderScene.tsx`,
+      `src/engine/look/{lookRow,moodRows,lookFlags,lookDebug}.ts`,
+      `src/engine/{moodParams.ts,CameraDirector.tsx}`
+
+      **F261 shipped a detector that was running but largely ineffective.** An
+      audit of the analyser against the code (three claims re-verified by hand)
+      found three defects, all in or around what F261 built:
+      1. **SectionTracker could never use the analyser's boundaries.**
+         `checkerboardNovelty` zeroes the newest M cells (a boundary needs future
+         context), so the newest boundary sits >= 8 beats behind the live beat;
+         the tracker only acted on a boundary within 4 beats. Dead as a result:
+         build-to-drop by boundary, committing a section kind at a boundary, and
+         `beatsTillBoundary`. The old tests hid it by injecting boundaries in the
+         future. The analyser's edge-zeroing is correct and untouched; the
+         contract changed instead: a boundary is a CONFIRMED PAST boundary. It
+         dates the section (`beatsInSection` counts from it), adopts the covering
+         segment's kind promptly, resolves a build retroactively (a boundary
+         older than 2 beats fires NO late drop event, since a drop cue 10 beats
+         late is worse than none; the instant path is `f.drop`), and predicts the
+         next boundary as the last plus the median spacing, snapped to the 8/4
+         beat grid. The old boundary-driven drop latch also could never commit
+         `'drop'` (8-beat hold on an 8-beat latch); fixed.
+      2. **The build (riser) score was read only per batch**, every 15 s or more
+         (after a 20 s warm-up), while a 16-bar build lasts ~30 s at 120 BPM. It
+         is now read every beat between batches (cached segments, fresh riser),
+         batch cadence is 8 s, and the riser uses a hysteresis exit
+         (`riserScore`'s new optional `enter` argument) so a per-beat read does
+         not flicker around its threshold. Frequent raws exposed three latent
+         SectionTracker bugs, fixed with regression tests: the staleness clock
+         was refreshed by replays, the still-active riser window re-armed `build`
+         right after a drop, and a shrinking "beats till drop" countdown fizzled
+         a 36-beat build at beat 29.
+      3. **`f.buildUp` was arithmetically unreachable in steady state.** It needed
+         a slope of 0.197/s, but energy is 0..1 over a 6 s window, so the ceiling
+         is ~0.167/s; it could only fire in a track's first seconds (the recorded
+         0.018% firing rate was that start-up transient, not builds). It is now a
+         least-squares fit over the window: slope > 0.03/s and R^2 > 0.8 (rejects
+         a single step, accepts a ramp or a staircase). NOTE: the formula is
+         duplicated in `scripts/calibrate/features.ts`; edit both.
+
+      **BPM -> motion speed, controlled by mood.** `rate = (bpm/120)^coupling`,
+      where `coupling` is the new per-mood row field `LookRow.tempoCoupling`
+      (0..1.2): driving/aggressive 1.0, groove 0.9, euphoric 0.85, playful 0.8,
+      uplifting 0.75, tense 0.7, epic 0.6, brooding 0.45, mysterious 0.4,
+      melancholic 0.35, tender/dreamy 0.3, serene 0.2. 120 BPM is neutral for
+      every mood; the mood only sets how far the tempo pulls, so a fast dreamy
+      track stays floaty while a fast driving one races. `f.tempoOctaves` (eased,
+      confidence-gated `log2(bpm/120)`) replaces F261's fixed-slope
+      `f.tempoSpeed`; `engine/tempoRate.ts` is the single choke point (global
+      speed, camera, shader scenes). `?tempo=off` disables it; `?lookdebug`
+      shows bpm, octaves, coupling and the resulting rate.
+      **Reach: F261's tempo multiplier only reached ~18 of the scenes.** The ~25
+      shader-factory scenes read only their own 0..1 dial via `drastic(P.speed)`,
+      never the global speed, so tempo, the mood's speed and the user's Speed
+      dial were all inert for them. `createShaderScene` now gives each instance a
+      private copy of its dials with the global speed folded into `P.speed` as an
+      exact multiplier on `drastic()` (`foldedSpeedDial`). Scenes already locked
+      to the beat grid (`beats`, `javazone`, `travelling`) opt out of the tempo
+      part with `tempoLocked`. OrbitGlow and SynthGrid had a private `bpm/120`
+      term on top of the global speed, which F261's multiplier double-counted;
+      removed.
+
+      **Found, NOT changed:** the director's mood-driven scene-dial steering
+      (`steerSpeed`, `steerComplexity`, `steerDensity`, `steerFill`,
+      `steerContrast`) never reaches the shader-factory scenes: only
+      `sceneFrame` calls `resolveSteeredParams`, and the factory reads its dials
+      from `useSceneParams`, which has no steering layer. Worth a decision.
+
+      **Verification.** typecheck (both configs), lint, build and the licence
+      gate pass; 2604/2607 tests pass (sole failure the pre-existing,
+      unrelated `checkDistLicences.test.ts` flake first seen in F258). Offline
+      harness on 30 calm PMEmo clips: fast `buildUp` 0.000% (was 0.015%),
+      analyser `build.active` 0.315%, boundaries/clip 3.47; 18 full Jamendo tracks
+      fired the new `buildUp` twice in 67 minutes. That only shows calm material
+      stays quiet. **Nothing here has been watched live** (no browser/GPU); the
+      slope/R^2/energy gates, the 3-beat jitter margin, the 48-beat age cap, the
+      24-beat re-arm block and every per-mood coupling value are reasoned
+      starting points that need a by-ear pass. Still open from the audit, in
+      order: fuse the fast phrase-change signal (`f.sectionChange`) into the
+      section read for quicker verse->chorus; z-score/threshold the similarity
+      matrix and add an absolute novelty floor; a ~4-beat causal lookahead;
+      loosen the drop machine's 1.5 s dip hold; real downbeat/bar tracking
+      (`beatInBar` is just `beatIndex % 4`).
+
+- [x] **F263 · Shader scenes now receive the mood's steering; tempo coupling
+      raised to 1.5; the structure detector's four open items; a real downbeat
+      estimate; the drop scene armed at build start (phase 1)** — *2026-09-25,
+      user requests ("do that, also do this ... increase the multiplier values,
+      maxing out at 1.5 ... keep something lined up and waiting for
+      confirmation")* `src/engine/{createShaderScene.tsx,sceneParams.ts,armedChange.ts,AutoPilot.tsx,SceneManager.tsx}`,
+      `src/store.ts`, `src/audio/{SectionTracker.ts,PhraseDetector.ts,AudioEngine.ts}`,
+      `src/audio/structure/{StructureAnalyzer.ts,dropStateMachine.ts,downbeat.ts}`,
+      `src/audio/essentia/structureDsp.ts`, `src/engine/look/{moodRows,lookRow,lookFlags,lookDebug}.ts`
+
+      **Steering gap closed.** The ~25 shader-factory scenes read their dials from
+      `useSceneParams`, which has no steering layer, so the director's mood steer
+      (speed, complexity, density, fill, contrast) only ever reached the older
+      scenes. The factory now takes the seven dials from the scene frame's `ctx.p`
+      (declared default -> mood steer -> the user's own dial, user wins) via the
+      pure `resolveFactoryDials`, keeping `mode`/`modeIndex` from `useSceneParams`.
+      **These scenes will now change look with the mood: unwatched, amounts unproven.**
+
+      **Tempo coupling raised.** Per-mood `tempoCoupling` scaled 1.5x so the
+      strongest reach 1.5 (driving/aggressive 1.5, groove 1.35, euphoric 1.3,
+      playful 1.2, uplifting 1.1, tense 1.05, epic 0.9, brooding 0.65, mysterious
+      0.6, melancholic 0.5, tender/dreamy 0.45, serene 0.3); neutral row and the
+      no-look default 0.9. Above 1 exaggerates tempo (160 BPM at 1.5 is x1.54). The
+      total rate is still clamped to [0.5, 2].
+
+      **Structure detector (F262's open list, four items).**
+      1. *Fast phrase-change hint*: `f.sectionChange` (strength >= 0.6) shortens the
+         kind-commit hold from 8 to 3 beats when an analyser boundary is pending and
+         within 8 beats. A lone phrase change never commits a kind.
+      2. *Cleaner SSM*: per-window mean-centring (essential: uncentred, no candidate
+         reached 0.12), a fixed absolute novelty scale, an absolute floor, and a
+         cross-batch persistence gate for weak boundaries.
+      3. *~4-beat lookahead*: an asymmetric checkerboard kernel (past 8/24, future
+         4) reports a seam ~4 beats after it happens instead of >= 8; cadence 8 s ->
+         4 s (mean batch 0.5 ms).
+      4. *Drop detector*: minimum dip 1.5 s -> 0.7 s, leaky dip timer, and a
+         low-band-only snap-back trigger.
+      **The floor was set to 0.16, overriding the implementation's first value of
+      0.22.** At 0.22 boundaries/clip fell from 3.47 to 0.63 and recall of
+      loudness steps from 73% to 42%: the deaf end, which is the failure this work
+      exists to fix. Measured on 30 PMEmo clips at 0.16: 1.20 boundaries/clip, 70%
+      of clips with one. Raise toward 0.20-0.22 if live listening shows spurious
+      section changes. Its persistence gate adds ~one cadence of delay for weak
+      boundaries (strong ones, >= 0.35, pass at once).
+
+      **Real downbeat (bar phase).** `beatInBar`/`bar`/`measure` were
+      `beatIndex % 4`: right one time in four. `DownbeatEstimator` (per-beat kick +
+      low-end salience into 4 decaying phase bins, effect-size + significance
+      confidence) adopts a phase only after ~10 bars, holds it through breakdowns,
+      re-anchors only after a sustained stronger challenger, and reads exactly the
+      legacy `% 4` whenever anything is ambiguous. Three phrase-edge tests that
+      could never be true after a shift now use `isPhraseEdge`; KifsRose uses the
+      real bar line. **On 60 real PMEmo clips it adopted nothing (0/60):** clips are
+      short and their tempo confidence is low, so on ordinary pop it is currently
+      legacy; synthetic accented drum tracks lock to the true phase 100% of the time
+      when locked (first lock 29-46 s) and unaccented ones never lock. Live effect
+      unproven and may be nil; first knobs are `DOWNBEAT_MIN_GRID_CONF` (0.3),
+      `enterConf`, `relFull`. The `DB85`/`db41` flag in the DebugPanel bpm row shows
+      locked / forming.
+
+      **Armed drop scene, phase 1** (`engine/armedChange.ts`, a pure state machine).
+      The old drop pick happened AT the drop, so a scene cold this session paid pick
+      -> chunk load -> shader compile inside `SceneManager`'s 0.35 s grace and then
+      committed cold; the old 1-3-beat pre-arm was usually refused by the 32-beat
+      dwell. Now, once per confirmed build (`structureValid && isSustain`),
+      AutoPilot picks the hype scene and holds it in the existing pending slot
+      (`store.heldSceneId`; `resolveCommit` will not commit it while held). A `f.drop`
+      rising edge releases it as an immediate hard cut; a projected drop beat (one
+      beat early, dwell enforced) releases it as a normal crossfade and suppresses
+      the ordinary drop pick for 8 beats. Disarms: 32-beat expiry, build fizzle, tier
+      above 2, manual/cue/cutaway states, supersession, new source. `?arm=off`
+      keeps the original pre-arm exactly; `?lookdebug` prints the armed scene, its
+      warmth and the last outcome. **Gaps:** a cancelled arm loses its compile; a
+      build the analyser misses is never armed; with `?arm` on at tier <= 2 the old
+      pre-arm no longer runs as a fallback if an arm was refused. **Not built (phases
+      2-3 of the plan):** pre-picking discrete look choices at arm time, and
+      committing section changes at the predicted boundary beat.
+
+      **Verification.** typecheck (both configs), lint, build and the licence gate
+      pass; 2793 of 2796 tests pass (sole failure the pre-existing, unrelated
+      `checkDistLicences.test.ts` flake first seen in F258). Lint caught two
+      `no-regex-spaces` errors in the armed-scene debug test that were committed
+      before lint was run; fixed in `da05d86`. **Nothing here has been watched
+      live** (no browser/GPU): every threshold, coupling value and ARM constant is a
+      reasoned starting point. Per-piece constants needing a by-ear pass are listed in
+      each commit message.
+
+- [x] **F264 · Tempo multiplier reduced; cheaper wipe transitions; a constantly
+      armed scene; the off-beat feel fixed and measured; mirrors stopped
+      flipping** — *2026-09-25, user report while going to sleep ("the multiplier is
+      too much ... the new transitions are too graphically taxing ... the armed scene
+      didn't work even once ... the visuals seem off beat ... mirrors are turning on
+      and off randomly ... auto plan and execute")*
+      `src/audio/{tempoSpeed,BpmEstimator,beatLead}.ts`, `src/audio/AudioEngine.ts`,
+      `src/engine/{armedChange,armedPick,armedDirector,mirrorGate}.ts`,
+      `src/engine/{WipeCompositorPass,TransitionCapture,transitionWipe,transitions,PostFXChain}.ts*`,
+      `src/engine/{AutoPilot,PerformanceDirector,PerformanceStateBridge,SceneManager}.tsx`
+
+      **Multiplier reduced.** Per-mood `tempoCoupling` scaled by 0.75 (driving and
+      aggressive 1.12, groove 1.0 ... serene 0.22; neutral and no-look default 0.68);
+      tempo rate clamped to [0.6, 1.7]; the global speed folded into a shader scene's
+      dial clamped to [0.6, 1.5] (the raw user x mood x tempo product spans
+      0.15..2.2). Scenes marked `tempoLocked` (beats, javazone, travelling) now get NO
+      fold at all: extra speed on beat-locked motion pulls it off the beat.
+
+      **Transitions made cheaper without changing their look** (read from the code,
+      never profiled on a GPU). The wipe compositor runs at full display resolution:
+      datamosh sampled both captures for each of three channels (7 taps, 3 hashes),
+      ink and iris always sampled both, ink also evaluated two value-noise fields per
+      pixel. Datamosh now takes ~2 taps typically (one where the channels agree), ink
+      and iris one tap outside the thin feather band (identical output); ink noise is a
+      128x128 tiling texture built once; the second capture render skips a redundant
+      world-matrix update (one scene-graph traversal saved per wipe frame).
+      `sortSlice` rode the pixel-sort lens (~17 dependent taps, ~28 sin per pixel,
+      full resolution, the priciest lens material) and now rides the 3-tap `ribs` lens
+      at a higher amount; it reads as hard fluted strips, not sort streaks. The
+      standing pixel-sort lens (harsh moods' ordinary look) and datamosh's three block
+      hashes are untouched. **Check by eye:** ink blob positions differ (same noise
+      kind and scale); `sortSlice` still suits the harsh moods.
+
+      **Constantly armed scene.** Why phase 1 (F263) never fired for the user:
+      `ARM.maxTier` was 2 but their sessions read tier 3-4 (F260), it only armed on a
+      CONFIRMED build, and only a drop released it. Now `armedChange.ts` keeps a scene
+      armed whenever nothing is pending, automation is allowed, no silence or
+      transition, and tier <= 3 (tier 4 off). `armedPick.ts` picks from the mood point
+      pushed toward hot or calm by the DSP trend, BPM against the scene's tempo trait,
+      the look's trait boost and a cost factor (above tier 2 only compiled or cheap
+      scenes). Re-scored every 4 beats, re-picked below 45% of the best (max once per
+      16 beats, never during a transition). Commit triggers: a real drop (hard cut),
+      and, behind the 32-beat dwell as a crossfade: a latched section boundary, a
+      strong fast phrase change (or a moderate one at the next phrase edge), a
+      sustained energy step, the projected drop beat, or age (48 beats + a phrase edge).
+      `AutoPilot` and `PerformanceDirector` now try the armed scene (`tryCommitArmed`)
+      before picking a cold one. **Cost:** a warm-complete hidden scene draws nothing
+      and skips its offscreen pass (`node.visible = false`; `createShaderScene` skips
+      at `vis <= 0.001`), but still runs one `useSceneFrame` callback per frame (~60
+      property writes); each fresh arm costs a one-off chunk load + shader compile +
+      4 warm frames, and a budgeted scene holds an offscreen render target while
+      mounted. Mitigated by preferring scenes compiled this session, no cold arms above
+      tier 2, rate-limited re-picks, and quality-frame sampling suspended while an armed
+      scene warms (else the compile spike would be read as load). `?arm=off` unchanged.
+
+      **Off-beat feel, measured.** Synthetic drums with known kick times (7 tempi
+      80-170 BPM; `scripts/calibrate/beat-latency.calib.ts`): the published beat was a
+      median 42 ms LATE, spread up to 55 ms, up to 100% of a track's beats off the kick
+      at 128 BPM, and the grid took 25 s to lock at 80 BPM (never within 60 s at 128).
+      After: median +1.4 ms, spread <= 7 ms, ~2 off-kick beats per track, lock in a
+      median 5.4 s (worst 7.0). Three fixes: `BpmEstimator.acquirePhase` re-locks a grid
+      that started or drifted more than 30% of a beat off (the per-onset PLL cannot);
+      `beatLead.ts` publishes the beat 40 ms ahead of the analysis clock
+      (`?beatoffset=<ms>` adds to it, positive = visuals earlier, for Bluetooth and
+      other output latency the page cannot measure); and `advanceGrid` no longer counts
+      the same beat twice after a small backward slew (which permanently shifted the
+      bar phase). **Not fixed:** `f.bass` and other band envelopes still peak ~40 ms
+      after the kick and kick-detector pulses lag ~23 ms; `AnimationDirector` keeps two
+      free-running BPM oscillators with no beat phase; soft kicks still read ~13-16 ms
+      late, hard ~0 (one constant lead). Only synthetic drums were measured.
+
+      **Mirrors.** The mirror was re-rolled with a fresh coin flip on every
+      `f.sectionChange` and phrase edge; a mood change, a section change and a stale
+      timer bypassed every minimum hold; a re-roll that stayed engaged snapped to a new
+      segment count. Those triggers fire far more often since this session's detector
+      work, so the flicker multiplied. `mirrorGate.ts` (pure) now decides only on a
+      beat: an engaged fold holds >= 32 beats, an off one rests >= 16, no two decisions
+      within 16 beats; triggers are a committed section boundary or a phrase-edge
+      backstop (64 beats engaged / 32 off), never a mood change; the choice is seeded
+      per (section, mood, re-decision); a reshape fades the old fold out and installs
+      the new one below 8% mix. Also fixed: the `collapse` transition's mirror rack
+      omitted the standing fold's `mix`, so a faded-out fold showed at full strength for
+      the transition and then vanished. Duty with the real mood rows: 16-36% engaged.
+      If mirrors now feel too rare, lower `MIRROR_GATE.maxOffBeats` (32).
+
+      **Verification.** typecheck (both configs), lint, build and the licence gate pass;
+      2922 of 2925 tests pass (sole failure the pre-existing, unrelated
+      `checkDistLicences.test.ts` flake, first seen in F258). **Nothing here has been
+      watched live** (no browser/GPU). Every constant (arm thresholds and weights, the
+      mirror gate's holds, the 40 ms lead, the acquisition gain, the coupling values)
+      is a reasoned starting point; the listed by-ear checks are in each commit message.
+
+- [x] **F265 · Section-change detection and scene switching redesigned top-down:
+      a pure show director, a bar-synchronous live event layer, a tap-to-mark
+      ground-truth tool, synthetic and whole-song evaluation, and the false-drop
+      churn fixed** — *2026-09-26, user report ("it doesn't feel like it identifies
+      section changes at all, it just keeps changing scenes and misses the actual
+      changes ... it currently looks horrible ... deep dive, compare against state of
+      the art, plan improvements or a top-down rewrite")* `src/engine/show/`,
+      `src/audio/events/`, `src/audio/plan/`, `src/audio/eval/`,
+      `src/engine/{structureLog,AutoPilot,PerformanceDirector,SceneManager,armedChange}.ts*`,
+      `src/audio/{AudioEngine.ts,structure/StructureAnalyzer.ts}`, `scripts/calibrate/`
+
+      **Diagnosis (evidence in the plan and the F265 commits).** Two design faults
+      compounded, and tuning detector constants (F261-F264) could not fix either.
+      1. *The deciding layer had no notion of change strength versus scene age.* Every
+         non-drop trigger was an OR feeding one 32-beat dwell; edges that arrived during
+         the dwell were discarded (86% of `f.sectionChange` and 90% of `boundaryChanged`
+         edges on 98 real tracks), so only level-type triggers survived and the change
+         landed at the first opportunity after the dwell. Replay of 98 real tracks
+         (`corpus/structure/baseline-cadence.md`): 6.35 scene changes/min, median gap
+         6.7 s = 4 bars, and 65% of commits were DROP-triggered: `f.drop` fires ~250/hr and
+         is the only trigger that bypasses the dwell, so false drops set the cadence.
+         (F262's "every 17-25 s" figure only held with drops removed.)
+      2. *The detector reported real changes in a form nothing listened to.*
+         `SectionTracker` fired `boundaryChanged` only when the section KIND changed, and
+         the analyser only produces intro/outro/breakdown/"section", so verse->chorus was
+         swallowed. On the synthetic suite `f.sectionChange` caught 24% of real changes
+         within a bar, 0/2 equal-loudness changes (key change, verse->chorus, for EVERY
+         detector), and fired near 10 of 22 negatives (fills, a +-6 dB volume step, a
+         silence gap).
+
+      **What was built (plan phases, all committed on `feat/structure-tempo`).**
+      - *Phase 0A, `?structurelog`:* an output-window overlay + hotkeys (`M`/Space at every
+        real section change, `U` undo, `E` twice to finish and download) that logs the
+        user's taps next to every detector edge and scene commit on the audio clock (JSON,
+        versioned schema). **The user must tap ~10 songs: it is the only human ground truth.**
+      - *Phase 0B:* 12 synthetic songs of known structure with the NEGATIVES a scene
+        detector must not act on (fills, volume steps, silence gaps, gradual morphs;
+        equal-loudness verse/chorus and key change verified equal in RMS, different in
+        chroma/bands), spliced-real-audio stimuli, and boundary metrics.
+      - *Phase 0C:* the offline harness now runs `SectionTracker` and caches per-frame
+        traces; `legacyCadence.ts` models the old show (a MODEL, not the running code).
+      - *Phase 1, the show director (`engine/show/`), on by default, `?director=legacy`
+        restores the old triggers bit-for-bit:* one pure `step(state, input)` owns WHEN the
+        visuals change. Score `S = strength * typeWeight * confidence` against a threshold
+        `T(age)` that falls with the scene's age in tempo-robust bars (`0.30 + 0.60 *
+        clamp((12-a)/8)`), pressure from mood/character/trend lowering it by up to 0.15
+        (pressure never cuts alone), a 4-bar refractory, a forced-change ceiling of
+        min(32 bars, 60 s), longer holds in breakdowns and through a confirmed build, and
+        three outcomes: HOLD (a logged decision), MICRO (a palette/mode/layer/effect
+        tweak) and CUT (a new scene on the coming bar line). Mood change, predicted
+        transition, character shift, the stale timer, the build one-shot, the armed
+        scene's confirm triggers and PerformanceDirector's `sectionChange`/16-beat-phrase
+        triggers no longer switch scenes: they feed pressure or arming.
+      - *False-drop fix (W2-B):* drops are graded by evidence (build within 4 bars 0.90,
+        breakdown 0.85, build within 32 bars 0.55, lone 0.35), the tracker's drop-section
+        echo is no longer counted as corroboration, drops are discounted by the detector's
+        own recent firing rate (rarity), and only the fast lane hard-cuts. Real-trace replay
+        of the director on the 98 cached tracks: 2.03 cuts/min (was 6.35), median 13.5 bars
+        (was 4.0), 92% of intervals in [4,32] bars (was 53%), forced 14.6% (electronic 21%),
+        96% of drops that follow a build still hard-cut. Tuned on the same tracks
+        (split-half stable), no held-out set.
+      - *Phase 2, the live event layer (`audio/events/`), the default source (`?events=v2`,
+        `?events=legacy` is the fallback):* bar-synchronous change scoring on every beat
+        (newest 4 beats vs the previous 16 over 8 channels, robust-z by MAD against
+        per-track noise floors, a gain-invariant raw-dB level tap so a volume-knob turn is
+        typed `gain` and never cuts, an 8-beat harmony window, a boundary-anchored bar
+        grid), typed change / fill / gain / breakdown, `sim` for returns to earlier
+        material. Synthetic suite: recall within +-1 bar 84% (88% excl. the gradual morph)
+        vs 24% for `sectionChange`; false alarms 0.30/min vs 2.11; 0 events near any of the
+        22 negatives; equal-loudness verse->chorus 3/3 and key change 2/2; median lag 2.9 s.
+        Real tracks: 1.31 scene events/min (electronic 1.74). Not detected: drumless
+        ambient 0/3; chord-only changes confirm ~7 s late.
+      - *Phase 4, a whole-song non-causal analyser (`audio/plan/`)*: the evaluation
+        reference (and, later, file-playback foresight). Synthetic recall within +-1 bar
+        0.96, tempo within 1%; real corpus 98 tracks at 0.7 s/track, median section 15
+        bars, 68% of boundaries on the dominant 4-bar phase (chance 25%). Downbeat
+        confidence is low on 28/98 tracks; circular with the live detector until taps
+        validate it.
+      - *W3:* `director-vs-silver` scoring of three shows against the whole-song
+        boundaries with a random-phase chance control; SceneManager commits on the v2
+        layer's anchored bar line when that grid is confident (else exactly
+        `f.beatInBar === 0`).
+
+      **Three-way result on the same 98 tracks** (legacy model / director + legacy events
+      / director + v2 events): cuts/min 6.42 / 2.04 / 1.80; interval median 4.0 / 13.3 /
+      14.0 bars; forced share 11% / 13% / 21%; strong-boundary coverage lift .24 / .17 /
+      .28; cuts 0-2 bars after a reference boundary 10% / 16% / 21% (chance 9%); v2 event F3
+      vs the reference .386 (pooled) vs .287 for `sectionChange`. **The default of
+      `?events` flipped to v2 against the lane's own decision** because the acceptance
+      criterion "cuts within +-1 bar of a reference boundary" cannot be met by a causal show
+      (it cuts ~1.7 bars after the change: 12% vs 12%); re-read lag-aware it is 2.1x. All
+      reference-based numbers are RELATIVE evidence (the reference is unvalidated and shares
+      features with the live detector; the constants were tuned on the same corpus).
+
+      **Not done / open.** Phase 3 (EDM event machine: build -> gap -> drop; the rarity
+      weighting above is the interim fix for the drop source); Phase 5 (file-playback
+      foresight: whole-song analysis before/while playing, round two); Phase 6 (cutover:
+      DjCam/Limitless cutaways, `mirrorGate`, `PerformanceStateBridge` still read
+      `f.sectionChange`/`songSection` directly; delete the legacy trigger blocks). `EffectDirector`
+      still fires its own raw `sectionChange` flare. Ambient/drumless material is at chance.
+      Commit lag: an event is detected ~6 beats (~3 s) after the change and a cut waits for the
+      bar line. **Nothing here has been watched live** (no browser/GPU).
+
+      **What the user must do.** Play with `?lookdebug` (the `show` line prints the last action,
+      S, T_eff, age, pressure, event source, time to the forced ceiling and HOLD/MICRO/CUT
+      counts), A/B against `?director=legacy` and `?events=legacy`, and TAP ~10 songs with
+      `?structurelog` (M/Space at every real change, E twice to save). Tap logs score the whole
+      chain via `structureLogToTruth` and are the only way to tune the pressure sizes, the
+      4-bar minimum, `liveGain` 1.75, the drop confidences and the event thresholds for real.
+
+      **Verification.** typecheck (both configs), lint, build and the licence gate pass; 3523
+      of 3526 tests pass (sole failure the pre-existing, unrelated `checkDistLicences.test.ts`
+      flake, first seen in F258). An external "Changes" snapshot commit (`b038766`, made by the
+      user's tooling, pushed to `origin/feat/structure-tempo`) captured half-finished lane work
+      mid-way; everything in it was finished or removed in later commits.
+
+- [x] **F266 · Why nothing reacted to section changes: a two-clock bug silenced all
+      automation; the forced-change timer and the 10 s / 20 s colour and mode floors
+      removed** — *2026-09-26, user report ("its not reacting, like on the actual section
+      changes? not even colour ... is there a timer or something? we shouldn't force scenes by
+      implementing timers, that is completely against the idea of the project")*
+      `src/store.ts`, `src/engine/{AutoPilot,PerformanceDirector}.tsx`,
+      `src/engine/show/{showDirector,showPolicy,showAdapter,showRuntime}.ts*`
+
+      **Root cause of "not reacting, not even colour".** The manual back-off ("the DJ touched
+      something, stay out of the way for 45 s") was stamped and compared on two different clocks.
+      `features.time` is `performance.now()/1000` while idle but `AudioContext.currentTime`
+      (0 at context creation) while audio runs, and `setSceneMode` stamped
+      `lastManualAt = performance.now()/1000` while AutoPilot, PerformanceDirector and the show
+      director compared `f.time - lastManualAt < 45`. After one click on a scene-mode button the
+      audio clock (small) minus a page-uptime stamp (large) was hugely negative, so ALL
+      automation, palette changes included, stayed off until the audio clock caught up with the
+      page's uptime (minutes); and `lastManualAt` started at 0, so every session had no
+      automation for its first 45 s. Fixed: `lastManualAt` lives only on the wall clock
+      (`store.wallSeconds`), starts at -1e9, every stamp uses it, and every director calls
+      `manualHoldActive()`; a regression test pins it. This predates the redesign (it silenced
+      the old triggers too), but event-driven reaction made it fatal.
+
+      **Timers removed (user principle: the visuals change only in response to the music).**
+      - The show director's forced-change ceiling (`min(32 bars, 60 s)`, 48 bars / 90 s in a
+        breakdown) is gone, with `forced-best/-bar/-wait`, `ShowAction.forced`, `stats.forced`,
+        `etaBars` and the best-score ring. I had built it ("so the show never stagnates") and it
+        made 15-21% of cuts in the replay. Under the director a scene now changes only when a real
+        event clears `T_eff`; an older scene is easier to change (threshold falls with age), but
+        nothing changes without an event. The overlay's show line prints `no timer`.
+      - AutoPilot's 10 s palette floor (`PALETTE_MIN_SEC`) and 20 s mode floor
+        (`MODE_VARY_MIN_SEC`) are off under the director (kept for `?director=legacy`): they
+        DROPPED, not delayed, a real reaction that came soon after the last tweak.
+      - **Still there (musical, in bars):** no cut in a scene's first 4 bars (a strong drop after
+        a build may cut from 2), a 4-bar refractory after a cut, a 4-bar MICRO cooldown. They stop
+        one real change (reported a few beats apart) causing a burst of reactions, but they can
+        also swallow a real change 3 bars after a cut. Their size is a judgement for the user's
+        ears.
+      - **Audit (director on):** the 25 s stale timer, the blind 16-beat phrase fallback, the
+        armed scene's age confirm and the old mood/character/build triggers are legacy-only
+        (`?director=legacy`) or unreachable under `directorOwns`; the SceneManager 2.5 s commit
+        backstop only lands an already-requested scene. **One genuine forcing timer remains, not
+        removed:** the DJ-cam / Limitless auto-cutaway RELEASE (`*_AUTO_HOLD_CEILING_BEATS` 64 /
+        `*_SEC` 45, `DjCamDirector.tsx` ~269, `LimitlessDirector.tsx` ~246): a cutaway enters on
+        an event but is force-released to the previous scene after 64 beats / 45 s if no boundary
+        arrives. It is opt-in and once per source; removing it risks stranding the show on the
+        camera, so it is left for a decision.
+
+      **Consequence of no timer (98 real tracks, replay, no musical ground truth).** Director with
+      v2 events: 1.50 cuts/min (was 1.80), interval median 12.8 bars / 20.9 s, p90 63 s; 5
+      intervals over 64 bars and 4 over 120 s; 9 of 98 tracks under 0.5 cuts/min (other 4,
+      electronic 2), the longest scene 268 s. No genre goes static, but quiet or event-poor
+      tracks hold a scene for minutes. Event-driven remedies NOT implemented: lower `T(age)`'s
+      floor for scenes over ~32 bars, cut on a strong-but-below-T event on an old scene instead
+      of a MICRO, more MICROs for medium events. Nothing here has been watched live.
+
+- [x] **F267 · First human ground truth: two tapped songs, and what they changed** —
+      *2026-09-26, user taps of "Floated By" (PCRC, 12 M + 5 N marks) and "HRT" (Girls Ritual,
+      5 M + 2 N marks) with `?structurelog`; instruction: "use my data as a reference, not a
+      hard set rule"* `src/audio/events/{EventLayer,changeScorer,eventMux,gapDrop,phrasePrior}.ts`,
+      `src/audio/structure/dropStateMachine.ts`, `src/audio/eval/{tapEval,tapDirector}.ts`,
+      `scripts/calibrate/tap-eval.calib.ts`
+
+      **n = 2 songs, 23 merged marks (16 M, 7 N): everything below is an indication, not a
+      validation.** The data was used to CHECK mechanisms, never as numbers to fit: nothing
+      derived from these two songs (no 21 s / 22 s period, no tempo, no per-song threshold, no
+      fixed human lag) is hard-coded; a tweak that helped only one song in the
+      leave-one-song-out check was not shipped.
+
+      **What the taps showed (measured).**
+      - *Human lag is small and varies per song:* tap minus audio onset (found in the log's
+        raw-dB cells) median +0.27 s on Floated By, -0.04 s on HRT (12 marks have no level/low/high
+        step at all). A fixed 0.5 s would over-correct HRT, so lag only sizes evaluation
+        windows.
+      - *Scene taps are very regular* (~21 s and ~22 s gaps: 8-bar phrases), but the detector
+        cannot yet use that: confirmed boundaries are too irregular to learn the period from
+        (a soft phrase-length prior, `phrasePrior.ts`, rescued 0 of 17 near-misses and is built
+        but NOT wired in).
+      - *Floated By's scene changes are drops after a bass/level dropout* (sub and level fall
+        ~10-30 dB for 4-8 s, then snap back at the tap). The legacy `f.drop` fires within
+        0.1-0.4 s of those taps, but ALSO fired 37 times in 277 s (12 scene taps), including a
+        cluster of 14 in 28 s in a pumping/sidechained passage.
+      - *In that log 8 of 12 scene commits fired on lone legacy drops:* a lone drop scored S
+        0.44, above the director's age-decayed floor of 0.30, so it acted like a timer, which is
+        why commits missed the taps.
+      - *HRT's changes are hi-hats/upper layers entering* (high band +8..+25 dB) with the
+        overall level barely moving. Legacy `sectionChange` fired 0.1-3.2 s after all 7 taps
+        (recall 94% within [-1.5,+4] s, precision 33%, 5.0 false alarms/min); v2 saw most changes
+        but typed the first hump `fill` and reported the `change` 2-4 s late.
+      - *No channel tells a small (N) tap from a big (M) one* (median score/threshold 0.56 vs
+        0.55), and nothing beats chance at N marks except legacy `sectionChange` (71% vs 64%), so
+        there is currently no basis for a "small change" event source: N marks got 0/7 cuts and
+        0/7 MICROs.
+
+      **What changed (v2 events, the default).**
+      1. *Fill vs change typing:* persistence was a ratio to a saturating peak, so a real change's
+         first hump read as a fill. A candidate is now a fill only if it also drops back under
+         0.8 of the threshold; ambiguous ones are held 2 beats and typed 4 beats after the peak
+         (0.8 is the smallest value that keeps 0/22 synthetic negatives). Taps: scene-class F1
+         unchanged; 98 real tracks: v2 F3 vs the whole-song reference 0.386 -> 0.409.
+      2. *Gap drop (`gapDrop.ts`, wired into the layer):* sub+bass at least 10 dB under its frozen
+         trailing median for >= 4 beats and >= 1.75 s, then whole again (within 6 dB), 6 s
+         refractory. On the taps: 6 drops, all near a mark, none on HRT (no drops there); on the
+         synthetic drops 2 of 4 (legacy 4 of 4), 0/22 negatives. Under `?events=v2` lone legacy
+         drops are now demoted (`MUX.legacyDrops = 'release'`: only drops the mapper graded as a
+         build/breakdown release still pass); `'all'` / `'none'` are one-line alternatives.
+      3. *`dropStateMachine.ts`:* 4 s refractory plus a repeat guard (each fire in the last 20 s
+         adds one dip-minimum to the next), to stop the pumping-cluster repeats. Not replayable on
+         the logs (no 60 Hz sub/bass/flux in them): verified by unit tests only.
+      4. *Tooling:* `tapEval.ts`, `tapDirector.ts` (the real `showDirector.step` over the logged
+         cells), `tap-eval.calib.ts` (`TAPLOG_DIR`, writes `corpus/structure/tap-eval.md`), with
+         leave-one-song-out and periodicity sections, ready for more songs.
+
+      **Result on the taps (director replay, 13 cuts, 1.75/min), scene taps cut within 4 s:**
+      v2 before 2/16 (cuts at a scene tap 17%), legacy events 4/16 (25%), v2 now 6/16 (46%); within
+      6 s 8/16 (62%). Small taps: 0/7.
+
+      **Regression gates held:** synthetic suite (v2 recall within +-1 bar 84%, 0.30 false
+      alarms/min, 0/22 events near negatives, identical fired set), legacy-event director replay on
+      98 tracks (identical: 1.84 cuts/min, 13.0 bars median), director-vs-silver with v2 (1.50 ->
+      1.37 cuts/min, median 11.6 bars, strong-boundary coverage 49 -> 55%, cuts within +-1 bar of a
+      boundary 13 -> 16%).
+
+      **Deliberately not changed (data did not support it):** the director; the phrase-periodicity
+      prior (built, not wired); build-hold (it blocked HRT's strongest change but that is one
+      song); breakdown cuts (2 of 3 breakdown CUTs sat at N marks; n=3); `MUX = 'none'` (better on
+      the taps but the synthetic build-then-drop needs the legacy drop); `fillRecentFrac` 0.3
+      (helped only Floated By, fails the synthetic negatives). `?events=legacy` and
+      `?director=legacy` untouched.
+
+      **More tapped songs would settle:** whether N and M differ in any channel; the gap-drop
+      constants (needs songs with drops other than Floated By); whether release-backed legacy drops
+      should be dropped entirely; whether breakdown starts should cut or hold; the fill-typing
+      threshold (0.3 vs 0.8); a real test of the phrase prior. **Nothing here has been watched live.**
+
+- [x] **F268 · Watched live for the first time: legacy events back as default; rose, maze and wingfold fixed** —
+      Watching the app (dev server :5183) the user found `?events=legacy` and `?director=legacy` both
+      looked better than the v2 default ("it doesn't detect sections at all"), so `?events=legacy` is the
+      default again and `?events=v2` is the opt-in (`directorFlags.ts`). Offline v2 numbers were not
+      contradicted, only outweighed: v2 emits ~1.3 events/min, so most of a show sat in one scene.
+
+      **Root cause of three scene complaints: the mood steer added on 2026-09-25 (bcc651b) reaches every
+      shader-factory scene.** It overrode each scene's authored `complexity` / `density` / `fill` with a
+      per-mood value (0.25-0.8), eased at 6/s on a drop. New contract field `steerExempt` (per scene, out
+      of the five steered dials); `resolveSteeredParams` honours it.
+      - **Fractal Rose Window bounced in and out:** the steer moved `fill` (the zoom) ~1.9x between moods and
+        within a beat on a drop, and steered `shape` (wedge count, an integer under a round). Now exempt
+        (`fill`, `complexity`), no `directorSteers`. Also removed: the per-bar step of wedge count and fold
+        config (a stepped input to a chaotic Kaliset map swings its extent however it is eased) -> the fold
+        config is a slow continuous wave over 4 bars; the 2% bar zoom breath. The beat now reaches the rose
+        as a pure, eased rotation (cannot change the extent). `tempoLocked`.
+      - **Maze Flight simpler than it was:** exempt (`complexity`, `density`, `fill`); `complexity` default
+        tried 0.8 (third nesting level on) and it ran ~50 fps on the user's machine, so it is back at
+        0.7 (two levels, the authored look); the slider still reaches the third level.
+      - **Wingfold Julia looked like an mp4:** wall-clock phase plus kick-triggered whole-frame zoom pulses
+        and a randomly gated `c` leap. Rebuilt around `engine/beatMotion.ts` (new, pure, tested): `c` steps
+        along its orbit once per beat on an eased curve (front-loaded, settles before the next beat), bar
+        accent pattern, a bigger step on the first downbeat of every 4th bar, a smooth per-beat swell of orbit
+        radius / wing seam, no zoom pulse at all, `fill` exempt. Free-runs at the tempo when no grid is
+        delivered. `tempoLocked`.
+
+      **Not watched after these changes** (no browser in the session): the three scenes' new motion, and
+      Maze's frame cost at complexity 0.8, are unverified by eye. The v2 director/events code is untouched.
+
+- [x] **F269 · Section-change detection made more sensitive (legacy events, the live default)** —
+      User, after watching it live: "make the section change threshold and analysis more sensitive".
+      Three changes, all on the legacy `f.sectionChange` path; the director's thresholds, the drop
+      grading and v2 are untouched (lowering the director's threshold would also have let lone drops,
+      ~250/h, cut scenes again, so the sensitivity is put in the event, not the director).
+      - `PhraseDetector`: firing threshold 0.45 -> 0.30; high band weight 0.8 -> 1.2 (the tapped songs'
+        changes were hi-hats / upper layers entering, a small absolute move of a quiet band); cooldown
+        8 -> 6 beats.
+      - `legacyEvents`: novelty -> strength re-anchored 0.425..0.94 -> 0.15..0.66. Median real edge
+        (novelty 0.58) went strength 0.30 (a tweak) -> 0.84 (S ~0.80: cuts a scene of ~5 bars); a weak
+        edge (0.3) is S ~0.28, a tweak straight away; a p90 edge cuts at the minimum age.
+      **Measured (98 cached traces, threshold replay with the old weights, so a floor on the effect):**
+      events/min 5.6 at 0.45 -> 9.2 at 0.30 (x1.6); downbeat novelty p50 0.25, p75 0.40, p90 0.58.
+      **Costs, accepted:** more cuts, less precise ones (cadence-sim hit rate ~0.81 -> ~0.67, cuts/min
+      ~2.7 vs the old <= 3 ceiling still holding); a steady synthetic four-on-floor now fires one section
+      change (start-up), which softens the key tracker (`chromaKey.soften(0.35)`), so the `four_on_floor`
+      golden digest was re-recorded (only sectionChange*, phrase and the key fields moved). Cadence-sim
+      bounds loosened with comments (hit rate 0.75 -> 0.6, 2x -> 1.6x fewer cuts than legacy, ...). Floors
+      that guard regressions are kept: zero cuts on an event-free stream, no hard cut on a lone drop.
+      **Not watched live.** If it strobes: raise `THRESHOLD` in `PhraseDetector.ts` toward 0.38 first.
+
+- [x] **F270 · How to map a song by hand (the tap tool) and score the detectors against it** —
+      *Instructions, written 2026-09-27 after F268/F269 were watched live. The taps are still the ONLY human
+      ground truth; every detector number in this ledger is relative evidence until ~10 songs exist. The
+      most valuable next step is more tapped songs: several with clear drops, some drumless/ambient, and
+      some where `N` (small change) is tapped.* `src/ui/StructureLog.tsx`, `src/engine/structureLog.ts`,
+      `src/engine/structureLogHotkeys.ts`, `src/audio/eval/tapEval.ts`, `scripts/calibrate/tap-eval.calib.ts`
+
+      **1. Record a song.**
+      1. Start the dev server (`npm run dev`, or `npx vite --port 5183`) and open the OUTPUT window (the
+         one that runs the engine) with `?structurelog` on the URL, e.g. `http://localhost:5183/?structurelog`.
+         The overlay (bottom-right, yellow on black) appears only with the flag and only in that window; turn
+         the flag off before any screen recording. It works with either event source (`?events=v2` is
+         recorded as a shadow stream when the show runs on legacy events), so tap on the default URL.
+      2. Click the output window once so it has keyboard focus.
+      3. Type the SONG NAME into the overlay's name field BEFORE pressing play. It becomes the file name
+         (`structurelog-<name>.json`); an unnamed log falls back to `structurelog-YYYYMMDD-HHMMSS.json`.
+      4. Start the audio (file, mic, or system capture; a Spotify / YouTube capture is fine, the log stores
+         per-beat feature cells so no audio file is needed later).
+      5. While it plays, tap keys at the moment you HEAR a change:
+         - **`M` or `Space`: BIG change**, one you would want a NEW SCENE for (verse to chorus, a drop,
+           a breakdown starting, a new layer group).
+         - **`N`: SMALL change**, one where colours or effects should react but the scene should stay
+           (a hi-hat or extra layer entering, a fill).
+         - **`U`: undo** the most recent tap of either kind.
+         Tap when you hear it, not early; the tool measures your lag against the audio, so do not try to
+         compensate. Tap every real change through the whole song, and do not tap noise.
+      6. Press **`E` twice** at the end: it downloads the JSON (to your browser's download folder,
+         normally `C:\Users\aryan\Downloads`) and starts the next track. A finished segment with taps is
+         archived (last 5 kept), so a forgotten export can still be re-downloaded from the overlay.
+      The recorder is bounded (rings with a `dropped` counter, ~35 KB per minute of cells) and costs one
+      boolean check when the flag is off.
+
+      **2. Score the detectors against the taps.**
+      ```
+      TAPLOG_DIR=C:\Users\aryan\Downloads node --max-old-space-size=3072 ./node_modules/vitest/vitest.mjs run --config vitest.calibration.config.ts scripts/calibrate/tap-eval.calib.ts --reporter=verbose
+      ```
+      It reads every `structurelog-*.json` in `TAPLOG_DIR` (default `C:\Users\aryan\Downloads`; the logs are
+      NEVER copied into the repo) and writes `corpus/structure/tap-eval.md` (gitignored). Sections: the
+      songs; the measured human lag per mark (tap minus audio onset); every detector at several windows,
+      per song and pooled, M marks vs N marks, next to the score of the same stream shifted (chance); which
+      signals respond at each mark kind; what the director did; the v2 layer with each candidate config
+      (leave-one-song-out from two songs up). With no logs it skips. The machine is memory-tight (~1 GB
+      free): run it alone, and use targeted test runs.
+
+      **3. Rules for using the results.** Nothing here is a target. With n songs small every number carries a
+      wide interval (Wilson 95% shown). Do not hard-code anything derived from one song (a period, a tempo,
+      a per-song threshold, a fixed human lag), and do not ship a change that helped only one song in the
+      leave-one-song-out check. Files already recorded: `structurelog-floated-by-pcrc.json` (12 M, 5 N) and
+      `structurelog-hrt-girls-ritual.json` (5 M, 2 N).
+
+      **This session (F268, F269, one push).** Watched live for the first time: legacy events are the default
+      again (`?events=v2` opts in); rose window bounce, maze complexity and wingfold's mp4 feel were the mood
+      steer (`steerExempt`, new `engine/beatMotion.ts`); Maze `complexity` is 0.7 (0.8 ran ~50 fps); section
+      detection made more sensitive (F269). Still open: the detector needs ~6 beats to notice a change; the
+      EDM event machine; migrating DjCam / Limitless / mirrorGate / PerformanceStateBridge / EffectDirector
+      off raw `f.sectionChange`; the wired phrase prior; the forcing DJ-cam / Limitless cutaway auto-release.
+- [~] **F271 · A primary that declares `blending: THREE.NoBlending` never
       cross-dissolves — it hard-cuts, and reads as fading up from black** —
       *2026-09-25, user report on `snowflake` ("the flake split[s] are
       translucent, they should be solid — looks great on buildups, then

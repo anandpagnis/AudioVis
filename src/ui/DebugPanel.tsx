@@ -18,6 +18,13 @@ const W = 280
  * two of them silently shared y=48 for a while — the later draw simply painted
  * over the earlier one, which looks like a missing readout rather than a
  * collision. Add a row here before adding one below.
+ *
+ * Row 120 (structure) folds TWO sources onto one line when `!f.structureValid`:
+ * `structureBridge.status` (meaningful only in a `VITE_ENABLE_ESSENTIA=1` dev
+ * build) and `audioEngine.structureAnalyzerStatus` (the always-on, non-Essentia
+ * `StructureAnalyzer` fallback — meaningful in every real build, where the
+ * bridge's own status is permanently `missing`/`runs===0`). Folded rather than
+ * given its own row on purpose, per the note above.
  */
 const H = 166
 
@@ -91,6 +98,13 @@ export function DebugPanel() {
             ? 'ess:err'
             : null,
         oct !== 1 ? `oct×${oct}` : null,
+        // Bar phase (structure/downbeat.ts): `DB85` = downbeat locked at 85% confidence (beatInBar is
+        // bar-aligned); `db41` = a candidate is forming but beatInBar is still the legacy phase.
+        f.downbeatLocked
+          ? `DB${(f.downbeatConfidence * 100).toFixed(0)}`
+          : f.downbeatConfidence >= 0.25
+            ? `db${(f.downbeatConfidence * 100).toFixed(0)}`
+            : null,
         f.silence ? 'silence' : null,
         f.buildUp ? 'build' : null,
         f.drop ? 'DROP' : null,
@@ -195,9 +209,16 @@ export function DebugPanel() {
           108,
         )
       }
-      // Song structure — latched section read + the async analyzer's health.
+      // Song structure — latched section read + the async analyzer's health. `st` (structureBridge)
+      // only ever means anything in a `VITE_ENABLE_ESSENTIA=1` dev build; `sa` (StructureAnalyzer, via
+      // AudioEngine's narrow getter) is the always-on, non-Essentia fallback that runs in every real
+      // build — see StructureAnalyzer.ts's own header. The `!structureValid` branch below folds `sa`
+      // onto the SAME row (y=120) rather than adding a new one — see this file's header row-layout grid.
+      // (The `structureValid` branch doesn't need `sa` — the latched section read is already the more
+      // useful thing to show once a source, whichever it was, has actually produced a valid read.)
       const ss = f.songSection
       const st = structureBridge.status
+      const sa = audioEngine.structureAnalyzerStatus
       ctx.fillStyle = f.structureValid ? 'rgba(140, 200, 255, 0.9)' : 'rgba(255,255,255,0.35)'
       if (f.structureValid) {
         const bd = ss.beatsTillDrop >= 0 ? ` drop~${ss.beatsTillDrop}b` : ''
@@ -209,8 +230,15 @@ export function DebugPanel() {
           120,
         )
       } else {
+        // `!structureValid`: either no analyzer has produced a fresh-enough read yet (the common case
+        // for the first ~20-25s of a track), or the `?structure=off` kill switch is set — a real,
+        // deliberately different state a developer testing the switch needs to tell apart from a bug,
+        // not just another flavour of "not valid yet".
+        const saText = sa.enabled
+          ? `sa: hist ${sa.historyBeats}b  nov ${sa.lastNoveltyPeak.toFixed(2)}  bnd ${sa.lastBoundaries}  bld ${sa.buildActive ? 'Y' : 'N'} ${sa.buildScore.toFixed(2)}  eta ${sa.nextBatchEtaSec.toFixed(0)}s  runs ${sa.runs}`
+          : 'sa: OFF (?structure=off)'
         ctx.fillText(
-          `structure: ${st.missing ? 'wasm unavailable' : st.runs > 0 ? 'warming' : 'no read yet'}`,
+          `structure: ${st.missing ? 'wasm unavailable' : st.runs > 0 ? 'warming' : 'no read yet'}  ${saText}`,
           6,
           120,
         )

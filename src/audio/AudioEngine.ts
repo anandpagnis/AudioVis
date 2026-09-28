@@ -1,4 +1,6 @@
 import { BpmEstimator } from './BpmEstimator'
+import { tempoOctaves } from './tempoSpeed'
+import { beatLeadSec } from './beatLead'
 import { CharacterClassifier } from './CharacterClassifier'
 import { LookVizTracker, characterLookEnabled, lookState } from './characterLook'
 import { ChromaKeyEstimator } from './chromaKey'
@@ -24,6 +26,18 @@ import { meanSquareToLufs } from './loudness'
 import { SectionTracker } from './SectionTracker'
 import { TimbreDescriptors } from './TimbreDescriptors'
 import { createEmptyFeatures, type AudioFeatures } from './types'
+import { DropStateMachine } from './structure/dropStateMachine'
+import { StructureAnalyzer, type StructureAnalyzerStatus } from './structure/StructureAnalyzer'
+import type { BeatCell } from './essentia/structureDsp'
+import { structureOff } from './structure/structureFlags'
+import { EventLayer } from './events/EventLayer'
+import { RawTap } from './events/rawTap'
+import {
+  BeatSalienceGatherer,
+  DownbeatEstimator,
+  barPosition,
+  type BeatSalienceFrame,
+} from './structure/downbeat'
 
 export type SourceKind = 'system' | 'mic' | 'file'
 
@@ -39,6 +53,14 @@ const SILENCE_CONFIG: SilenceConfig = { enterRatio: 0.004, exitRatio: 0.01 }
 
 /** Age-based length of the onset-flux ring — see {@link AudioEngine.fluxHistory}. */
 const FLUX_WINDOW_SEC = 1.0
+
+/** Time constant `f.tempoOctaves` eases toward its target at — see `advanceGrid` and `tempoSpeed.ts`'s header for
+ *  why this matches `BpmEstimator.confidence`'s own ~3.3s settle time rather than being faster or slower. */
+const TEMPO_OCTAVES_TAU_SEC = 3.3
+
+/** Grid confidence below which a beat is unusable evidence for the downbeat estimator (a shaky grid has
+ *  no trustworthy bar phase to learn or move). Same order as SceneManager's `gridTrusted` (> 0.25). */
+const DOWNBEAT_MIN_GRID_CONF = 0.3
 
 const FFT_SIZE = 2048
 
@@ -335,6 +357,13 @@ class AudioEngine {
   private lastFrameTime = 0
   private lastGridIndex = -1
   private beatHoldUntil = -1
+  /** How far ahead of the analysis clock the published beat grid runs (s): the built-in lead plus `?beatoffset`.
+   *  See `beatLead.ts` for why and for the measurements behind it. 0 = the grid exactly as the estimator has it. */
+  private beatLeadSec = beatLeadSec()
+  /** Newest beat crossing (`now`), and the strongest `f.bass` seen since the previous one: with a lead the grid
+   *  crosses BEFORE the kick reaches the analysed bands, so `beatStrength` reads the previous beat's peak instead. */
+  private lastBeatAt = -1
+  private beatPeakBass = 0
   /**
    * Probe state for {@link fftAdvanced}: last frame's time-domain samples at
    * three indices. When all three are unchanged the `AnalyserNode` has not
@@ -365,9 +394,26 @@ class AudioEngine {
   /** Peak reference for `midWaveform` — see normalizeWave. */
   private waveRef = 0
   private dropUntil = -1
+  /** Fast breakdown->dip->snap-back drop trigger — a second, independent way to set `dropUntil`
+   * alongside the broadband heuristic in `detectStructure`. See its header for the state machine and
+   * threshold rationale. */
+  private readonly dropStateMachine = new DropStateMachine()
 
   readonly bpmEstimator = new BpmEstimator()
   readonly phraseDetector = new PhraseDetector()
+  /** Conservative 4/4 downbeat (bar-phase) estimate over the beat grid; `offset` stays 0 (the legacy
+   * `beatIndex % 4`) unless it is confident. Fed per beat by `advanceGrid`; see structure/downbeat.ts. */
+  private readonly downbeat = new DownbeatEstimator()
+  private readonly beatSalience = new BeatSalienceGatherer()
+  /** Reused every frame (fully overwritten in `advanceGrid`) so the per-frame feed allocates nothing. */
+  private readonly salienceFrame: BeatSalienceFrame = {
+    pos: 0,
+    kickTrigger: false,
+    kickStrength: 0,
+    low: 0,
+    dt: 0,
+    usable: false,
+  }
   readonly moodEstimator = new MoodEstimator()
   readonly percussionDetector = new PercussionDetector()
   readonly sectionTracker = new SectionTracker()
@@ -376,6 +422,39 @@ class AudioEngine {
    * below ~250 Hz). Runs in every build, with or without the Essentia provider. */
   private readonly chromaKey = new ChromaKeyEstimator()
   private readonly harmTension = new HarmonicTensionEstimator()
+  /** Always-on, non-Essentia structure segmentation — the fallback `StructureRaw` source in every
+   * real build (Essentia's `StructureBridge`, via `this.intel`, takes priority the rare frame it has
+   * a fresh read; see the `sectionTracker.update` call below). `structureOff()` is read once here,
+   * matching how other URL-flag-gated behaviour in this codebase is read once at construction rather
+   * than polled every frame (e.g. `characterLookOn` just below). */
+  private readonly structureAnalyzer = new StructureAnalyzer({
+    disabled: structureOff(),
+    // The live event layer (`?events=v2`) rides the analyser's freshly folded beat cells: no second feature extraction.
+    onCell: (cell, f) => {
+      this.events.push(cell, f.beatIndex, f.time, f.bpm, {
+        locked: f.downbeatLocked,
+        offset: (((f.beatIndex - f.beatInBar) % 4) + 4) % 4,
+      })
+      this.cellSink?.(cell, f)
+    },
+  })
+  /** Optional observer of every freshly folded beat cell: the `?structurelog` recorder (`engine/structureLog.ts`) uses it
+   *  so a tapped song can be replayed through a retuned event layer without its audio. Null (the default) costs one
+   *  null check per beat; see `setCellSink`. */
+  private cellSink: ((cell: BeatCell, f: AudioFeatures) => void) | null = null
+  setCellSink(fn: ((cell: BeatCell, f: AudioFeatures) => void) | null): void {
+    this.cellSink = fn
+  }
+  /** Raw (un-normalised) dB tap: 6 bands + RMS, written beside the band normaliser and averaged into the beat cell. */
+  private readonly rawTap = new RawTap()
+  /** Bar-synchronous change events (`audio/events`): `events.drain(out)` is the allocation-free read. Silent under `?structure=off`. */
+  readonly events = new EventLayer()
+  /** Read-only view of the fallback structure analyzer's live diagnostics — `DebugPanel`'s "structure
+   *  not yet valid" row reads this in every real (non-Essentia) build, where `structureBridge.status`
+   *  is permanently uninformative (Essentia's provider never runs there). */
+  get structureAnalyzerStatus(): StructureAnalyzerStatus {
+    return this.structureAnalyzer.status
+  }
   /** CHARACTER layer: valence/arousal/tension/pulse from audio features (percentile-calibrated),
    * then a soft 14-mood classification with a held primary. Runs in every build. */
   private readonly emotion = new EmotionDimensionEstimator()
@@ -827,18 +906,27 @@ class AudioEngine {
     this.lastFrameTime = 0
     this.lastGridIndex = -1
     this.beatHoldUntil = -1
+    this.lastBeatAt = -1
+    this.beatPeakBass = 0
     // Force the next frame to count as "FFT advanced" — a fresh source's first
     // frame must never be mistaken for a duplicate of the previous source's last.
     this.waveProbe = makeWaveProbe()
     this.silenceSince = 0
     this.dropUntil = -1
+    this.dropStateMachine.reset()
     this.bpmEstimator.reset()
     this.phraseDetector.reset()
+    // A new source must never inherit the previous track's bar phase.
+    this.downbeat.reset()
+    this.beatSalience.reset()
     this.moodEstimator.reset()
     this.percussionDetector.reset()
     this.sectionTracker.reset()
     this.chromaKey.reset()
     this.harmTension.reset()
+    this.structureAnalyzer.reset()
+    this.events.reset()
+    this.rawTap.reset()
     this.emotion.reset()
     this.characterClassifier.reset()
     this.timbre.reset()
@@ -942,6 +1030,8 @@ class AudioEngine {
     f.vocal = norm(this.bands.vocal, spectral.vocal)
     f.air = norm(this.bands.air, spectral.air)
     f.sparkle = norm(this.bands.sparkle, spectral.sparkle)
+    // Raw dB tap for the event layer (before any normalisation; used only through differences).
+    this.rawTap.write(spectral, subRaw, rmsRaw)
     // BS.1770 K-weighting loudness (issue 12). `f.loudness` is the momentary
     // (~400 ms) K-weighted RMS through a BandNormalizer, so it is
     // loudness-invariant and on the same 0..1 scale as the bands.
@@ -1097,8 +1187,19 @@ class AudioEngine {
 
     // --- Song structure: latched section read. `intel.updateStructure` drains
     // any completed worker segmentation (usually null) and schedules the next
-    // job; the tracker fuses it with the synchronous drop/build flags. ---
-    this.sectionTracker.update(f, this.intel.updateStructure(f))
+    // job; the tracker fuses it with the synchronous drop/build flags.
+    // `structureAnalyzer` is the always-on, non-Essentia fallback source: it
+    // only runs (and only does its per-frame accumulation) when `intel` has
+    // no fresh read this frame, which is every frame in a real/commercial
+    // build (NullProvider) and all but the rare frame a batch lands on the
+    // Essentia dev build. Fed the same `lowFreqDb`/sample rate this frame's
+    // key-detection `chromaKey.update` above already read, at zero new FFT
+    // cost — see StructureAnalyzer's own header for why those are explicit
+    // args rather than read off `f`. ---
+    this.sectionTracker.update(
+      f,
+      this.intel.updateStructure(f) ?? this.structureAnalyzer.update(f, this.lowFreqDb, ctx.sampleRate, this.rawTap),
+    )
   }
 
   /**
@@ -1132,9 +1233,22 @@ class AudioEngine {
     f.bpm = est.bpm
     f.confidence = est.confidence
     f.beatGridAccuracy = est.hitScore
-    const idx = Math.floor((now - est.phase) / est.period)
-    f.beatProgress = (now - est.phase) / est.period - idx
-    f.nextBeatTime = est.phase + (idx + 1) * est.period
+    // Eased toward the target rather than snapped, at roughly the same ~3.3s time constant `est.confidence`
+    // itself settles on (see tempoSpeed.ts's header) — the tempo converges alongside the read that drives it,
+    // not ahead of or behind it. Eased in OCTAVE space (not in rate space) because the mood's coupling exponent is
+    // applied later, per consumer: easing the octaves keeps a mood change and a tempo change independent.
+    // `f.delta` may be 0/NaN on the very first frame; the exponential guards that (k=0 leaves tempoOctaves at 0).
+    const targetOctaves = tempoOctaves(f.bpm, f.confidence)
+    const k = f.delta > 0 && Number.isFinite(f.delta) ? 1 - Math.exp(-f.delta / TEMPO_OCTAVES_TAU_SEC) : 0
+    f.tempoOctaves += (targetOctaves - f.tempoOctaves) * k
+    // The grid is read `lead` seconds AHEAD of the analysis clock (see beatLead.ts): it is phase-locked to onset
+    // DETECTION times, which trail the kick by the FFT window + threshold latency, so left as is every scene's
+    // beat lands ~40 ms late. `lead` 0 makes `gridNow === now` exactly (and the `- lead` below a no-op).
+    const lead = this.beatLeadSec
+    const gridNow = now + lead
+    const idx = Math.floor((gridNow - est.phase) / est.period)
+    f.beatProgress = (gridNow - est.phase) / est.period - idx
+    f.nextBeatTime = est.phase + (idx + 1) * est.period - lead
     f.beat = false
     if (idx !== this.lastGridIndex) {
       if (this.lastGridIndex !== -1 && idx > this.lastGridIndex) {
@@ -1144,15 +1258,62 @@ class AudioEngine {
         // under-count (which drifts beat-anchored cue/phrase timing off the
         // music). Cap the catch-up so a tempo re-lock that jumps the grid index
         // can't inject a burst of phantom beats.
-        f.beatIndex += Math.min(idx - this.lastGridIndex, 4)
-        f.beatInBar = f.beatIndex % 4
-        f.bar = Math.floor(f.beatIndex / 4)
-        f.measure = Math.floor(f.beatIndex / 16)
-        f.beatStrength = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+        const crossed = idx - this.lastGridIndex
+        f.beatIndex += Math.min(crossed, 4)
+        // The catch-up was capped: the grid moved further than `beatIndex` followed, so the music's bar
+        // phase relative to `beatIndex` may have slipped. The estimator forgets its bins (an adopted
+        // offset is kept until fresh evidence disagrees) - see DownbeatEstimator.discontinuity().
+        if (crossed > 4) this.downbeat.discontinuity()
+        // Bar position from the (conservatively) estimated downbeat. `downbeat.offset` is 0 unless the
+        // estimator is confident, and barPosition(_, 0) is exactly the legacy `% 4` / `/ 4` / `/ 16`.
+        // Changes only here, at a beat crossing, so `beatInBar` and `beatProgress` stay coherent; at an
+        // (rare) adoption / re-anchor `beatInBar` jumps once - see structure/downbeat.ts's contract.
+        const bp = barPosition(f.beatIndex, this.downbeat.offset)
+        f.beatInBar = bp.beatInBar
+        f.bar = bp.bar
+        f.measure = bp.measure
+        // With a lead the crossing precedes the kick's arrival in the analysed bands, so `f.bass` here is still
+        // the DECAYED previous hit and would read the pulse weak: use the previous beat's peak as the prediction
+        // (a steady kick repeats), and let the running max below raise it once the real hit shows up.
+        const bassForStrength = lead > 0 ? Math.max(f.bass, this.beatPeakBass * 0.9) : f.bass
+        f.beatStrength = Math.min(1, 0.25 + bassForStrength * 0.9) * (0.35 + 0.65 * f.confidence)
         this.beatHoldUntil = now + 0.05
+        this.lastBeatAt = now
+        this.beatPeakBass = 0
       }
-      this.lastGridIndex = idx
+      // A step BACK of exactly one grid index is a phase slew (the PLL / `BpmEstimator.acquirePhase` moved the grid
+      // LATER across this frame's boundary): keep the higher index, or the same crossing is counted a second time
+      // when the grid catches up (a ~30 ms double beat that shifts every `beatInBar` for good). A larger step back
+      // is a genuine re-anchor (new source, external clock, big tempo jump): resync without firing.
+      if (idx > this.lastGridIndex || idx < this.lastGridIndex - 1 || this.lastGridIndex === -1) {
+        this.lastGridIndex = idx
+      }
     }
+    if (lead > 0) {
+      if (f.bass > this.beatPeakBass) this.beatPeakBass = f.bass
+      // Catch the real attack: for ~120 ms after a crossing the strength may only be RAISED to what the bass now says.
+      if (this.lastBeatAt >= 0 && now - this.lastBeatAt < 0.12) {
+        const live = Math.min(1, 0.25 + f.bass * 0.9) * (0.35 + 0.65 * f.confidence)
+        if (live > f.beatStrength) f.beatStrength = live
+      }
+    }
+
+    // --- Downbeat evidence. One salience per beat (kick hit + low-band rise within +-half a beat of the
+    // crossing), fed once the beat's window closes. Unusable while the grid is shaky or the program is
+    // silent, so neither can adopt or move the bar phase. Runs on the idle (no-audio) path too, where
+    // everything reads zero / unusable and the estimator stays at its legacy defaults.
+    const kick = f.percussion.kick
+    const sf = this.salienceFrame
+    sf.pos = f.beatIndex + f.beatProgress
+    sf.kickTrigger = kick.trigger
+    sf.kickStrength = kick.strength
+    sf.low = (f.sub + f.bass) * 0.5
+    sf.dt = f.delta
+    sf.usable = !f.silence && f.confidence >= DOWNBEAT_MIN_GRID_CONF
+    const closed = this.beatSalience.frame(sf)
+    if (closed) this.downbeat.update(closed.beatIndex, closed.salience, closed.usable)
+    f.downbeatConfidence = this.downbeat.confidence
+    f.downbeatLocked = this.downbeat.locked
   }
 
   private detectStructure(now: number, f: AudioFeatures) {
@@ -1191,17 +1352,68 @@ class AudioEngine {
       if (recent > before * 1.573 && recent > 0.447 && f.bass > 0.507 && now > this.dropUntil + 4) {
         this.dropUntil = now + 0.6
       }
-      // Build-up: sustained rise over the window.
-      const span = now - oldest
-      const first = this.energyLog[0]
-      const slope = span > 3 ? (recent - first.e) / span : 0
-      // Re-derived the same way. `slope` is the term that moved most (0.09 ->
-      // 0.197) because it is an absolute rate of change in `energy`, so it
-      // scales with the band range the fix restored: left at 0.09 it fired 43x
-      // too often. Build rate at 0.25x / 1x / 4x gain:
-      //   before  0.000% / 0.016% / 0.446%   (28x more builds when loud)
-      //   after   0.018% / 0.018% / 0.018%
-      f.buildUp = slope > 0.197 && recent > 0.295 && recent > before
+      // Build-up: a sustained, roughly linear CLIMB of `energy` over the log window.
+      //
+      // The previous form, `(recent - firstSample) / span > 0.197`, was
+      // unreachable in steady state: the log is trimmed to 6 s (`update()`), so
+      // `span` is ~6 and `energy` is a 0..1 mean, which caps that slope near
+      // 1/6 = 0.167 < 0.197. It could only fire in a track's first few seconds,
+      // while the log was still short - the "0.018%" recorded for it was that
+      // start-up transient, not builds. It was also meant to be gain-invariant
+      // (0.09 -> 0.197, re-derived after the normalizer fix); that intent stays:
+      // `energy` comes out of the normalised band pipeline, so the absolute
+      // 0..1 numbers below do not move with playback volume.
+      //
+      // Now a least-squares fit of `energy` against time over the whole log
+      // (one pass, no allocation):
+      //   slope > 0.03 / s   a climb of >= ~0.18 over the 6 s window. A build
+      //                      going 0.3 -> 0.8 in 6-8 s (~0.07 / s) clears it
+      //                      with room to spare; a slow 0.4 -> 0.5 drift
+      //                      (~0.017 / s) does not.
+      //   R^2   > 0.8        the climb is roughly LINEAR, so a single step
+      //                      (verse -> chorus, R^2 <= ~0.75 wherever it sits in
+      //                      the window) does not look like a ramp; a staircase
+      //                      of layers being added does.
+      //   recent > 0.295 && recent > before   the old floor / still-rising guards.
+      let n = 0
+      let sx = 0
+      let sy = 0
+      let sxx = 0
+      let sxy = 0
+      let syy = 0
+      for (const s of this.energyLog) {
+        const x = s.t - now
+        n++
+        sx += x
+        sy += s.e
+        sxx += x * x
+        sxy += x * s.e
+        syy += s.e * s.e
+      }
+      const cov = n * sxy - sx * sy
+      const varX = n * sxx - sx * sx
+      const varY = n * syy - sy * sy
+      f.buildUp =
+        now - oldest > 4 &&
+        varX > 1e-9 &&
+        varY > 1e-12 &&
+        cov > 0 &&
+        cov / varX > 0.03 &&
+        (cov * cov) / (varX * varY) > 0.8 &&
+        recent > 0.295 &&
+        recent > before
+    }
+
+    // Fast breakdown -> dip -> snap-back trigger: a second, independent path
+    // into the same `dropUntil` pulse-latch above. Unlike the ratio test
+    // above — which fires on any sudden broadband jump, with no memory of
+    // what preceded it — this one requires sub+bass to have genuinely
+    // dipped and stayed down first, then confirms the snap-back on a
+    // concurrent transient in well under half a second. See
+    // dropStateMachine.ts's header for the full rationale and thresholds.
+    // Both paths run every frame and either one can set `dropUntil`.
+    if (this.dropStateMachine.update(f.sub + f.bass, f.flux, f.delta)) {
+      this.dropUntil = now + 0.6
     }
     f.drop = now < this.dropUntil
   }

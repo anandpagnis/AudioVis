@@ -38,6 +38,12 @@ export const MAX_PENDING = 1
 
 class SceneStreamer {
   private registry = new CandidateRegistry()
+  /**
+   * Scene ids whose shaders have been compiled at least once this session (reached READY, or were boot-prewarmed).
+   * three.js keeps the program, so re-mounting one is far cheaper than a first mount; the constantly armed scene
+   * prefers these (`armedPick.ts`) so re-picking does not keep paying first-compile spikes. Survives `release`.
+   */
+  private compiled = new Set<string>()
 
   /** Begin (or continue) bringing `id` toward READY. Safe to call every frame. */
   preload(id: string, nowSec: number, priority = 0): StreamCandidate {
@@ -61,6 +67,17 @@ class SceneStreamer {
   /** Shader work finished (warm frames elapsed, or compileAsync confirmed). */
   noteReady(id: string): void {
     this.registry.get(id)?.lifecycle.transition('READY')
+    this.compiled.add(id)
+  }
+
+  /** Record a scene as compiled without it having been mounted (the boot prewarm pump compiles it off to the side). */
+  markCompiled(id: string): void {
+    this.compiled.add(id)
+  }
+
+  /** Has this scene been compiled at least once this session (cheap to arm)? */
+  hasCompiled(id: string): boolean {
+    return this.compiled.has(id)
   }
 
   status(id: string): SceneLifecycleStatus | undefined {
@@ -168,6 +185,7 @@ class SceneStreamer {
   /** Test seam — drops all bookkeeping. */
   reset(): void {
     this.registry = new CandidateRegistry()
+    this.compiled = new Set<string>()
   }
 }
 
