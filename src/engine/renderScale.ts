@@ -258,8 +258,9 @@ export class RenderScaleSolver {
    *
    * Distinct from `solve()`, which is the scale the current inputs ASK for —
    * the two differ while a tier-driven change is waiting out its hold. Scenes
-   * that own offscreen render targets (`trail`'s accumulator, `panic`'s four
-   * feedback passes) size those buffers from this, which is the only way their
+   * that own offscreen render targets (as `trail`'s accumulator and `panic`'s
+   * four feedback passes did, before F274 deleted both) size those buffers from
+   * this, which is the only way their
    * offscreen half is inside the budget at all: those targets are allocated in
    * CSS pixels and are therefore invisible to the canvas DPR the solve moves.
    *

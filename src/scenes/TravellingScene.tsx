@@ -62,8 +62,7 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  *   `const float rep`/`sm` -> now driven by uRep, so no longer `const`
  *   colour                 -> KEPT native. The hsv2rgb hue-cycle in weird() is
  *                             the piece; routing it through the 5 palette slots
- *                             throws away what makes it recognisable (same call
- *                             as KaleidoPulseScene / JuliaWingsScene).
+ *                             throws away what makes it recognisable.
  *
  * `postProcess` does `pow(col, 1.0/std_gamma)` — a real 1/2.2 encode. three's
  * renderer ALSO encodes linear->sRGB, so this would double-gamma. Swapped for
@@ -728,7 +727,7 @@ export const TravellingScene = createShaderScene<TravellingState>({
   state: () => ({ clock: 0, kick: impulseClock(), hitAmp: 0, travelZ: 0 }),
   update({ u, s, P, st, dt, ctx }) {
     // Source drove everything off iTime. Accumulate so a changing rate stays
-    // continuous; energy leans on the throttle (cf. NeonJungleScene).
+    // continuous; energy leans on the throttle.
     st.clock += dt * (1 + s.energy * 0.4) * drastic(P.speed)
     u.uClock.value = st.clock
 

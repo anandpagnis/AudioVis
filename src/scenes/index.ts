@@ -29,19 +29,7 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   dissolve: () => import('./DissolveCageScene').then((m) => ({ default: m.DissolveCageScene })),
   chrome: () => import('./ChromeFormScene').then((m) => ({ default: m.ChromeFormScene })),
   ribbons: () => import('./FlowRibbonScene').then((m) => ({ default: m.FlowRibbonScene })),
-  network: () => import('./NetworkConstellationScene').then((m) => ({ default: m.NetworkConstellationScene })),
   pointcloud: () => import('./PointCloudScanScene').then((m) => ({ default: m.PointCloudScanScene })),
-  inversion: () => import('./InversionMachineScene').then((m) => ({ default: m.InversionMachineScene })),
-  foldpath: () => import('./FoldPathScene').then((m) => ({ default: m.FoldPathScene })),
-  torusfold: () => import('./TorusFoldScene').then((m) => ({ default: m.TorusFoldScene })),
-  juliawings: () => import('./JuliaWingsScene').then((m) => ({ default: m.JuliaWingsScene })),
-  heap: () => import('./HeapCorruptionScene').then((m) => ({ default: m.HeapCorruptionScene })),
-  tunnel: () => import('./TunnelDriftScene').then((m) => ({ default: m.TunnelDriftScene })),
-  orbs: () => import('./OrbitGlowScene').then((m) => ({ default: m.OrbitGlowScene })),
-  kaleido: () => import('./KaleidoPulseScene').then((m) => ({ default: m.KaleidoPulseScene })),
-  trail: () => import('./TrailLineScene').then((m) => ({ default: m.TrailLineScene })),
-  synthgrid: () => import('./SynthGridScene').then((m) => ({ default: m.SynthGridScene })),
-  panic: () => import('./KernelPanicScene').then((m) => ({ default: m.KernelPanicScene })),
   malachite: () => import('./MalachiteScene').then((m) => ({ default: m.MalachiteScene })),
   matrix: () => import('./MatrixRainScene').then((m) => ({ default: m.MatrixRainScene })),
   kifs: () => import('./KifsRoseScene').then((m) => ({ default: m.KifsRoseScene })),
@@ -50,19 +38,14 @@ const loaders: Record<string, () => Promise<{ default: ComponentType }>> = {
   tribalentity: () => import('./TribalEntityScene').then((m) => ({ default: m.TribalEntityScene })),
   mothwings: () => import('./MothWingsScene').then((m) => ({ default: m.MothWingsScene })),
   inkfluid: () => import('./InkFluidScene').then((m) => ({ default: m.InkFluidScene })),
-  crystalfold: () => import('./CrystalFoldScene').then((m) => ({ default: m.CrystalFoldScene })),
   shock: () => import('./ShockRingScene').then((m) => ({ default: m.ShockRingScene })),
   flare: () => import('./SectionFlareScene').then((m) => ({ default: m.SectionFlareScene })),
   spark: () => import('./TransientSparkScene').then((m) => ({ default: m.TransientSparkScene })),
-  lumen: () => import('./LumenMaskScene').then((m) => ({ default: m.LumenMaskScene })),
-  neonjungle: () => import('./NeonJungleScene').then((m) => ({ default: m.NeonJungleScene })),
   snowflake: () => import('./SnowflakeScene').then((m) => ({ default: m.SnowflakeScene })),
   truchet: () => import('./TruchetKaleidoScene').then((m) => ({ default: m.TruchetKaleidoScene })),
   beats: () => import('./BeatsScene').then((m) => ({ default: m.BeatsScene })),
-  harkonnen: () => import('./FortressHarkonnenScene').then((m) => ({ default: m.FortressHarkonnenScene })),
   travelling: () => import('./TravellingScene').then((m) => ({ default: m.TravellingScene })),
   web: () => import('./OversaturatedWebScene').then((m) => ({ default: m.OversaturatedWebScene })),
-  gyroid: () => import('./GyroidFluxScene').then((m) => ({ default: m.GyroidFluxScene })),
   fridaylines: () => import('./FridayLinesScene').then((m) => ({ default: m.FridayLinesScene })),
   lattesfold: () => import('./LattesFoldScene').then((m) => ({ default: m.LattesFoldScene })),
   javazone: () => import('./JavaZoneLatticeScene').then((m) => ({ default: m.JavaZoneLatticeScene })),
@@ -150,19 +133,7 @@ const PlasmaFilamentScene = lazyScene('plasma')
 const DissolveCageScene = lazyScene('dissolve')
 const ChromeFormScene = lazyScene('chrome')
 const FlowRibbonScene = lazyScene('ribbons')
-const NetworkConstellationScene = lazyScene('network')
 const PointCloudScanScene = lazyScene('pointcloud')
-const InversionMachineScene = lazyScene('inversion')
-const FoldPathScene = lazyScene('foldpath')
-const TorusFoldScene = lazyScene('torusfold')
-const JuliaWingsScene = lazyScene('juliawings')
-const HeapCorruptionScene = lazyScene('heap')
-const TunnelDriftScene = lazyScene('tunnel')
-const OrbitGlowScene = lazyScene('orbs')
-const KaleidoPulseScene = lazyScene('kaleido')
-const TrailLineScene = lazyScene('trail')
-const SynthGridScene = lazyScene('synthgrid')
-const KernelPanicScene = lazyScene('panic')
 const MalachiteScene = lazyScene('malachite')
 const MatrixRainScene = lazyScene('matrix')
 const KifsRoseScene = lazyScene('kifs')
@@ -171,19 +142,14 @@ const WingfoldJuliaScene = lazyScene('wingfold')
 const TribalEntityScene = lazyScene('tribalentity')
 const MothWingsScene = lazyScene('mothwings')
 const InkFluidScene = lazyScene('inkfluid')
-const CrystalFoldScene = lazyScene('crystalfold')
 const ShockRingScene = lazyScene('shock')
 const SectionFlareScene = lazyScene('flare')
 const TransientSparkScene = lazyScene('spark')
-const LumenMaskScene = lazyScene('lumen')
-const NeonJungleScene = lazyScene('neonjungle')
 const SnowflakeScene = lazyScene('snowflake')
 const TruchetKaleidoScene = lazyScene('truchet')
 const BeatsScene = lazyScene('beats')
-const FortressHarkonnenScene = lazyScene('harkonnen')
 const TravellingScene = lazyScene('travelling')
 const OversaturatedWebScene = lazyScene('web')
-const GyroidFluxScene = lazyScene('gyroid')
 const FridayLinesScene = lazyScene('fridaylines')
 const LattesFoldScene = lazyScene('lattesfold')
 const JavaZoneLatticeScene = lazyScene('javazone')
@@ -273,9 +239,8 @@ export type SceneIntensity = 'calm' | 'medium' | 'high'
  *    a worker; their first benchmark run caught them partly unfilled and their
  *    tags are still the original guesses. Re-run and re-tag them.
  *  - The bench frames scenes with the default camera rather than
- *    CameraDirector, so scenes that read the real camera (`chrome`,
- *    `inversion`, `torusfold`) may be measured from an unrepresentative
- *    distance. Treat theirs as a floor.
+ *    CameraDirector, so scenes that read the real camera (`chrome`) may be
+ *    measured from an unrepresentative distance. Treat theirs as a floor.
  */
 export type ScenePerformanceCost = 'low' | 'medium' | 'high'
 
@@ -1044,7 +1009,7 @@ export const SCENES: SceneDef[] = [
     metadata: {
       // LIVE BY THE OWNER'S EXPLICIT DECISION (2026-09-22), NOT CLEARED.
       // The fractal core derives from the same @christinacoffin Shadertoy piece
-      // as the quarantined `juliawings`; a 2026-09-12 provenance audit found it
+      // as the since-deleted `juliawings` (F274); a 2026-09-12 provenance audit found it
       // derivative, so this is `unverified` (restricted) rather than `original`.
       // `commerciallyShippableScenes()` excludes it (so the free /demo pool never
       // draws it), and it is the one named exception to the "live roster is
@@ -1053,7 +1018,7 @@ export const SCENES: SceneDef[] = [
       license: 'unverified',
       provenance: {
         source:
-          "Owner's Shadertoy iteration of @christinacoffin's Julia-set piece (Shadertoy, 2015-05-07) — the same source as the quarantined juliawings port; no URL recorded",
+          "Owner's Shadertoy iteration of @christinacoffin's Julia-set piece (Shadertoy, 2015-05-07); no URL recorded",
         author: '@christinacoffin; iterated by the Lilim owner',
         spdx: 'NOASSERTION',
       },
@@ -1103,7 +1068,7 @@ export const SCENES: SceneDef[] = [
       // LIVE BY THE OWNER'S EXPLICIT REQUEST (2026-09-22), NOT CLEARED — same
       // basis as `tribalentity`. The owner's Shadertoy piece, but its fractal
       // core is the same log-map fold iteration as `tribalentity`, which
-      // descends from @christinacoffin's Shadertoy piece (the quarantined
+      // descends from @christinacoffin's Shadertoy piece (the since-deleted
       // `juliawings` source), so this is `unverified` (restricted) rather than
       // `original`. `commerciallyShippableScenes()` excludes it (the free /demo
       // pool never draws it), and it is a named exception to the "live roster
@@ -1433,8 +1398,8 @@ export const SCENES: SceneDef[] = [
     metadata: {
       // Original content, written directly for this slot (see F20's history:
       // `orbs` claimed the `effect` role once, then lost it when the licence
-      // sweep quarantined its Shadertoy-derived source into the withheld
-      // list below. The ledger's own prescribed fix was "a LICENSED scene
+      // sweep quarantined its Shadertoy-derived source (since deleted, F274).
+      // The ledger's own prescribed fix was "a LICENSED scene
       // willing to claim the role" — the pattern `malachite` already used for
       // `background` — so this is that scene for `effect`, not a revival of
       // `orbs`.
@@ -1449,8 +1414,7 @@ export const SCENES: SceneDef[] = [
       compatibleWith: [],
       moodFit: { groove: 0.7, building: 0.85, peak: 0.95, aggressive: 0.9 },
       // Flat 2D screen-space math, no camera concept at all — inert here,
-      // declared only for CameraDirector.test.ts's variety invariant, same
-      // reasoning as `heap`/`kaleido` in the withheld list below.
+      // declared only for CameraDirector.test.ts's variety invariant.
       cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
       cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
     },
@@ -1834,7 +1798,7 @@ export const SCENES: SceneDef[] = [
       //
       // `speed` -> clock rate. `shape` -> Lattes iteration depth. `complexity`
       // -> inner-fold depth (user dial only, never tier-gated -- same
-      // reasoning as harkonnen's fractal depth). `density` -> lattice cell
+      // reasoning as kifs F129 / maze F139). `density` -> lattice cell
       // size. `contrast` -> brightness divisor. `fill` -> zoom. `tilt` ->
       // rotates the coordinate feeding the Lattes warp.
       license: 'original',
@@ -2079,8 +2043,8 @@ export const SCENES: SceneDef[] = [
         // `density`/`tilt` omitted: nothing in any of the 15 modes reads
         // either one. `shape` only does something in `infinite` (the
         // rect-to-circle frame morph) — hidden everywhere else, lilim's own
-        // "dead slider" rule, same mechanism `harkonnen`'s `tilt` and
-        // `beats`'s `shape` already use elsewhere in this file.
+        // "dead slider" rule, same mechanism `beats`'s `shape` already uses
+        // elsewhere in this file.
         paramLabels: { '*': { shape: null }, infinite: { shape: 'shape' } },
       },
       // Subject only — the shader paints every pixel including its own
@@ -2215,884 +2179,28 @@ export const HIDDEN_PICKER_IDS = new Set(['djcam', 'limitless'])
 /**
  * Registered, built, and deliberately WITHHELD from the roster.
  *
- * Kept as real entries rather than deleted or commented out: the loaders and
- * lazy components stay live, so these still typecheck and build, and
- * re-enabling one is moving its entry back into `SCENES`. Nothing selects from
- * this array — automation, the HUD scene bar and `getScene()` all read `SCENES`
- * only, so a disabled id degrades to the `SCENES[0]` fallback exactly like an
- * unknown one.
+ * The quarantine for a scene that must not be live yet — a licence or
+ * provenance that has not cleared, or a cost that has not benched under budget.
+ * Entries are real `SceneDef`s rather than deleted or commented out: their
+ * loaders and lazy components stay live, so they still typecheck and build,
+ * and re-enabling one is moving its entry back into `SCENES`. Nothing selects
+ * from this array — automation, the HUD scene bar and `getScene()` all read
+ * `SCENES` only, so a disabled id degrades to the `SCENES[0]` fallback exactly
+ * like an unknown one.
  *
- * `tunnel`, `panic`, and `gyroid` are here on request while their look/cost is
- * still being worked on. Note `panic` is ALSO non-commercial; see KNOWN_NC_SOURCE_IDS,
- * which deliberately tracks licence independently of whether a scene is
- * currently in the roster.
+ * Empty since F274 (2026-09-28): the seventeen scenes it held were deleted
+ * outright on request and survive only in git history (the list is in
+ * docs/ISSUES.md F274). The array stays as the place the next held-out scene
+ * goes.
  *
- * **Six of these carry no `provenance` and that is the finding, not an
- * oversight.** `foldpath`, `torusfold`, `orbs` and `trail` were ported from
- * Shadertoy pastes that named no author, title or URL; `panic` and `synthgrid`
- * name a licence but not the work it belongs to (`synthgrid`'s source states
- * CC BY-NC-SA 3.0 outright, and there is still nothing to point at that it
- * covers); `crystalfold` and `lumen` were pasted in with no external
- * attribution at all. Nothing truthful goes in a `provenance` record for those,
- * and a plausible-looking one would only make the gap harder to find later.
- * They are permanently unclearable in their current state, which is the real
- * cost of not recording provenance at the moment of import — and the reason
- * the tripwire in `sceneLicensing.test.ts` guards the live roster, where new
- * imports actually land.
+ * A quarantined entry is not required to carry `provenance` — the tripwire in
+ * `sceneLicensing.test.ts` guards the live roster, where new imports actually
+ * land. Several of the deleted ones were permanently unclearable because their
+ * pastes recorded no author, title or URL at all; nothing truthful goes in a
+ * `provenance` record for a scene like that, and a plausible-looking one would
+ * only make the gap harder to find later.
  */
-export const DISABLED_SCENES: SceneDef[] = [
-  {
-    id: 'harkonnen',
-    name: 'Fortress Harkonnen',
-    component: FortressHarkonnenScene,
-    metadata: {
-      // Disabled on explicit request, unlike its neighbours below — this one's
-      // licence was already cleared (CC0-based, `license: 'original'`, same
-      // basis as `maze` / `malachite` / `truchet`) and its cost estimate was
-      // never flagged over budget. Re-enabling is moving this entry back into
-      // `SCENES`; nothing else needs to change.
-      license: 'original',
-      // `speed` -> zoom/macro-cycle rate (drastic + mids). `complexity` ->
-      // fractal iteration depth (user dial only, never tier-gated — kifs F129 /
-      // maze F139). `fill` -> zoom scale. `tilt` -> static frame roll.
-      // `contrast` -> the postProcess S-curve strength. No `shape`/`density`.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
-        paramLabels: {
-          '*': { complexity: 'iterations', fill: 'zoom', tilt: 'roll', contrast: 'grade' },
-        },
-      },
-      // Subject only — a full-frame lit fractal relief, same as `kifs` /
-      // `wingfold`.
-      roles: ['primary'],
-      // A slow, monumental zoom — architectural, not frantic. Sits mid-range;
-      // the kick-pop and energy swell carry it up to `peak`.
-      moods: ['mellow', 'groove', 'building', 'peak'],
-      // `bass` stands in for the kick-onset routing (`s.onKick` -> specular pop
-      // + brightness punch), same convention as `malachite` / `matrix`.
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT /bench-MEASURED — documented op-count estimate (see sceneCost.ts).
-      // ~52 fractal iterations/px at the neutral `complexity`, rendered
-      // offscreen and upscaled. Heavier than `wingfold`; confirm with /bench.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a full-bleed fractal relief.
-      compatibleWith: [],
-      moodFit: { mellow: 0.66, groove: 0.78, building: 0.84, peak: 0.8 },
-      // The shader frames itself — flat screen-space fractal math, no engine
-      // camera. Declared only for CameraDirector.test.ts's variety invariant,
-      // same as `kifs` / `wingfold`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'gyroid',
-    name: 'Gyroid Flux',
-    component: GyroidFluxScene,
-    metadata: {
-      // Shadertoy source, supplied directly by the requester and credited as
-      // CC0 -> `license: 'original'`, same basis as `beats` / `harkonnen` /
-      // `web`. No URL was given with the paste — see GyroidFluxScene.tsx's
-      // header if a source page turns up later. Disabled on explicit request
-      // (2026-09-17), same as `harkonnen` above — cost, not licence.
-      //
-      // A 150-step march with NO hit-based early-out (every pixel accumulates
-      // glow for every step it is given — same shape as `beats`, not `maze`).
-      // Op-count against the two nearest analogues lands 7-22 ms at tier 0
-      // depending on method (kifs-scaled vs beats-scaled — see the .tsx
-      // header for both), well past `slotBudget.test.ts`'s
-      // `< sceneBudget(0)/2` = 5.05 ms bar either way. `SCENE_COST_MS.gyroid`
-      // is priced at the pessimistic (kifs-scaled) end of that range — a
-      // documented worst-case estimate, not a fabricated ceiling built to
-      // clear the test. Re-enabling is moving this entry back into `SCENES`
-      // once `/bench` gives a real number.
-      //
-      // `speed` -> flight/orbit + domain-warp clock rate. `shape` -> warp
-      // amount. `complexity` -> lattice cell frequency. `density` -> glow-band
-      // thickness. `contrast` -> glow falloff sharpness. `fill` -> zoom.
-      // `tilt` -> static camera-wobble offset (replaces the source's mouse
-      // look, which this project has no equivalent input for).
-      license: 'original',
-      contract: {
-        version: 1,
-        params: {
-          speed: 0.5,
-          shape: 0.5,
-          complexity: 0.5,
-          density: 0.5,
-          contrast: 0.5,
-          fill: 0.5,
-          tilt: 0.5,
-        },
-        paramLabels: {
-          '*': {
-            shape: 'warp',
-            complexity: 'scale',
-            density: 'thickness',
-            fill: 'zoom',
-            tilt: 'wobble',
-          },
-        },
-      },
-      // Subject only — a full-bleed drift through an infinite lattice that
-      // owns its own camera, same as `maze` / `neonjungle` / `tunnel`.
-      roles: ['primary'],
-      // Slow orbital drift and a soft glow-accumulation look read cooler and
-      // more hypnotic than a committed flythrough like `tunnel` — starts at
-      // `ambient` rather than `groove`. No inherent chaos in the structure
-      // itself (same reasoning as `tunnel`), so it stops at `building`
-      // rather than reaching `peak`/`aggressive`.
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'medium',
-      // See the licence note above and SCENE_COST_MS.gyroid in sceneCost.ts
-      // for the worst-case estimate this ceiling is priced from.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a full-bleed flythrough.
-      compatibleWith: [],
-      moodFit: { ambient: 0.7, mellow: 0.85, groove: 0.84, building: 0.76 },
-      // The shader flies its own scripted path and never reads the engine
-      // camera — declared only for CameraDirector.test.ts's variety
-      // invariant, same as `maze` / `tunnel` / `neonjungle`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'tunnel',
-    name: 'Tunnel Drift',
-    component: TunnelDriftScene,
-    metadata: {
-      // Shadertoy-derived (see TunnelDriftScene.tsx header) with no licence
-      // attached to the source, so — same reasoning as its neighbours below —
-      // treated as non-commercial until confirmed otherwise, independent of
-      // why it is disabled (which is look/quality, not licensing).
-      license: 'unverified',
-      // The one quarantined scene whose port recorded an actual URL, so this
-      // is the only one where "confirm with the author" is a task somebody can
-      // start rather than a dead end. `NOASSERTION` because the source page
-      // carried no licence — not because nobody looked.
-      provenance: {
-        source: 'https://www.shadertoy.com/view/MfVfz3',
-        spdx: 'NOASSERTION',
-      },
-      // Subject only. A fullscreen flythrough owns the whole frame by
-      // construction — there is no ground to sit behind it and nothing sensible
-      // to composite over a moving tunnel.
-      roles: ['primary'],
-      // Hypnotic and DRIVING, not violent — the opposite pole from `heap`.
-      // Constant forward motion needs somewhere to be going, which is why it
-      // starts at `groove` rather than `ambient`, and why it stops short of
-      // `aggressive`: the piece has no chaos in it, so at full aggression it
-      // would read as too composed for the music.
-      moods: ['groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // 99-step march with a nested 4-iteration fractal warp per step, each
-      // iteration doing sin/cos on vec3s plus an axis rotation. Comfortably the
-      // most expensive scene in the roster; `uMaxSteps` is wired to the
-      // governor exactly as TorusFold/Inversion do it.
-      performanceCost: 'high',
-      compatibleWith: [],
-      // Peaks at `building` on purpose: a tunnel flying toward something IS the
-      // build, visually. Held inside the roster's 0.6-0.9 band.
-      moodFit: {
-        groove: 0.86,
-        building: 0.88,
-        peak: 0.86,
-      },
-      // The scene flies its own scripted path and never reads the shared
-      // camera, exactly like FoldPathScene — the flythrough IS the piece.
-      // Declared anyway for CameraDirector.test.ts's variety invariant.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'panic',
-    name: 'Kernel Panic',
-    component: KernelPanicScene,
-    metadata: {
-      // ===== NON-COMMERCIAL — see the banner in KernelPanicScene.tsx =====
-      // Unlicensed Shadertoy source; Shadertoy's default is CC BY-NC-SA 3.0, so
-      // this is NC absent an explicit grant. Excluded from
-      // commerciallyShippableScenes() via this field.
-      license: 'noncommercial',
-      // Subject only. A full-frame terminal has no room for anything over or
-      // under it, and the text needs the whole grid to be legible at all.
-      roles: ['primary'],
-      // Peaked at `peak` rather than `aggressive` on purpose: `heap` already
-      // owns the aggressive end (0.90) and is also a glitch scene. Two of them
-      // topping out in the same place would just substitute for each other,
-      // where the point of carrying both is that one is a grid of decaying
-      // memory and this one is readable text tearing itself apart.
-      moods: ['building', 'peak', 'aggressive'],
-      bands: ['mid', 'high', 'energy'],
-      intensity: 'high',
-      // The full five-stage chain: four offscreen fullscreen passes plus the
-      // display pass, and SIX HalfFloat render targets (ping-pong pairs for A
-      // and B, singles for C and D) — roughly 100 MB resident at 1080p. The
-      // per-pixel work is modest, but four extra passes and that much target
-      // memory put it above `trail`, which pays for one pass and two targets.
-      // As with `trail`, the budget model counts fragment work and has no
-      // concept of render-target memory, so this tier is a judgement call.
-      performanceCost: 'high',
-      compatibleWith: [],
-      moodFit: {
-        building: 0.7,
-        peak: 0.86,
-        aggressive: 0.82,
-      },
-      // Flat 2D screen-space text; no camera concept. Declared for
-      // CameraDirector.test.ts's variety invariant.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'network',
-    name: 'Network Constellation',
-    component: NetworkConstellationScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Source states an explicit non-commercial licence. See
-      // KNOWN_NC_SOURCE_IDS and docs/ISSUES.md for the audit this came from.
-      license: 'noncommercial',
-      // The strongest provenance in the quarantine: a named work, a named
-      // author and a licence the source states itself, rather than Shadertoy's
-      // presumed default. No URL was recorded by the port, and one is not
-      // invented here — the citation is what exists.
-      provenance: {
-        source: '"The Universe Within" (Shadertoy) — no URL recorded by the port',
-        author: 'Martijn Steinrucken (BigWings)',
-        spdx: 'CC-BY-NC-SA-3.0',
-      },
-      // Now primary-capable: a fullscreen procedural network shader, bold
-      // enough to stand alone rather than only composite under/over another
-      // scene.
-      //
-      // Deliberately NOT tagged 'background' despite being a plausible fit.
-      // The background slot exists but has no authored content yet, and this
-      // scene was composed as a subject — letting it default into the new slot
-      // would debut the composition model with a scene never art-directed for
-      // it. Re-add once intentional background scenes exist to compare against.
-      roles: ['accent', 'overlay', 'primary'],
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'medium',
-      // Fullscreen shader, ~36 hash evals/pixel — cheaper than the CPU
-      // O(n^2) link scan it replaced.
-      performanceCost: 'high', // measured 6.26 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'chrome', 'pointcloud'],
-      moodFit: {
-        ambient: 0.90,
-        mellow: 0.84,
-        groove: 0.76,
-        building: 0.70,
-      },
-      // The scene's own rendering ignores these entirely (fullscreen quad,
-      // no ctx.camera read — its motion is audio/autonomous-driven, see
-      // NetworkConstellationScene's header comment). But CameraDirector's
-      // test suite (CameraDirector.test.ts) enforces that every registered
-      // scene — not just primary ones — declares enough camera-mode variety
-      // to be framed meaningfully, since the director doesn't know per-scene
-      // whether the camera matters. Restored rather than left off: found via
-      // a failing `npm run check` I should have run before the first push.
-      cameraAnchor: { target: [0, 0, 0], distance: 14.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'inversion',
-    name: 'Inversion Machine',
-    component: InversionMachineScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Shadertoy-derived with no licence attached to the source. Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
-      // is treated as non-commercial until someone actually confirms otherwise
-      // with the original author -- not a neutral "maybe fine".
-      license: 'unverified',
-      // Title and author both recorded by the port; no URL and no licence
-      // were. A named author is what separates this from `foldpath`/`torusfold`
-      // below, which carry no provenance at all because there is nothing
-      // truthful to put in one.
-      provenance: {
-        source: '"The Inversion Machine" (Shadertoy) — no URL recorded by the port',
-        author: 'Kali',
-        spdx: 'NOASSERTION',
-      },
-      // The first true raymarched-SDF scene in the roster: a sphere-inversion
-      // fractal, dense and alien enough to carry a frame on its own.
-      roles: ['primary'],
-      // Fills a real gap: aggressive was previously only covered by
-      // wireframe/plasma, and nothing else brought lit-surface raymarching.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // ~60-step raymarch + 6 calcNormal() calls/pixel, governed by uMaxSteps.
-      performanceCost: 'medium', // measured 3.06 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        groove: 0.68,
-        building: 0.82,
-        peak: 0.92,
-        aggressive: 0.9,
-      },
-      // The field's own coordinate scale is small (see InversionMachineScene's
-      // ANCHOR_DISTANCE comment) — a much closer anchor than other scenes'
-      // 8-17 range, tuned to the source shader's original ~1.2-unit distance.
-      cameraAnchor: { target: [0, 0, 0], distance: 1.4, height: 0.15 },
-      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
-    },
-  },
-  {
-    id: 'foldpath',
-    name: 'Fold Path',
-    component: FoldPathScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Shadertoy-derived with no licence attached to the source. Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
-      // is treated as non-commercial until someone actually confirms otherwise
-      // with the original author -- not a neutral "maybe fine".
-      license: 'unverified',
-      // Dense and glowing enough to carry a frame alone, same reasoning as
-      // pointcloud/inversion.
-      roles: ['primary'],
-      // A hypnotic flythrough rather than a violent one — sits alongside
-      // inversion's aggressive slot instead of doubling up on it.
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // Fixed-step heightfield march, up to 600 steps/pixel plus a 20-step
-      // binary-search refine and 4 normal() samples — the heaviest scene in
-      // the roster; see FoldPathScene's own quality-governor comment.
-      performanceCost: 'high',
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        ambient: 0.72,
-        mellow: 0.8,
-        groove: 0.76,
-        building: 0.7,
-      },
-      // The scene flies its own scripted path() camera rather than reading
-      // the real one (see FoldPathScene's header comment — the flythrough IS
-      // the piece, unlike inversion's orbit-a-static-object case), so these
-      // are inert to its own rendering. Declared anyway: every registered
-      // scene needs enough camera-mode variety for CameraDirector's own
-      // bookkeeping, per CameraDirector.test.ts — same fix as network.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'torusfold',
-    name: 'Torus Fold',
-    component: TorusFoldScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Shadertoy-derived with no licence attached to the source. Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
-      // is treated as non-commercial until someone actually confirms otherwise
-      // with the original author -- not a neutral "maybe fine".
-      license: 'unverified',
-      // A fixed, orbitable fold+torus structure — dense enough to carry a
-      // frame alone, same reasoning as the other raymarch scenes.
-      roles: ['primary'],
-      // Hypnotic ring-pulse rather than glitchy or violent — spans a wider
-      // mood range than foldpath since it has real punch at peak too.
-      moods: ['mellow', 'groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // 100-step adaptive SDF march, 6-iteration fold per step — cheaper
-      // than inversion (no per-step normal calc) but still substantial.
-      performanceCost: 'medium', // measured 1.99 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        mellow: 0.7,
-        groove: 0.8,
-        building: 0.78,
-        peak: 0.74,
-      },
-      // Real camera, like inversion: the fold+torus structure sits fixed at
-      // the origin (only its internal fold rotates), so orbiting it is the
-      // natural fit — see TorusFoldScene's header comment for the
-      // camera-vs-self-contained decision this session settled on.
-      cameraAnchor: { target: [0, 0, 0], distance: 3.3, height: 0 },
-      cameraModes: ['orbit', 'push', 'hover', 'handheld', 'cinematic'],
-    },
-  },
-  {
-    id: 'juliawings',
-    name: 'Julia Wings',
-    component: JuliaWingsScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Shadertoy-derived with no licence attached to the source. Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
-      // is treated as non-commercial until someone actually confirms otherwise
-      // with the original author -- not a neutral "maybe fine".
-      license: 'unverified',
-      // Handle and date are all the source gave; JuliaWingsScene's header
-      // quotes its description verbatim. No title, no URL, no licence.
-      provenance: {
-        source: 'Shadertoy, 2015-05-07 ("1st version, need to optim and do some proper AA") — no URL recorded by the port',
-        author: '@christinacoffin',
-        spdx: 'NOASSERTION',
-      },
-      // Vivid and dense enough to hold a frame alone — deliberately not
-      // accent/overlay: this one was explicitly tuned brighter than the
-      // roster's usual budget (see JuliaWingsScene's BRIGHTNESS comment),
-      // which would read as too loud composited as a layer over a primary.
-      roles: ['primary'],
-      // Broad range on purpose — a hypnotic, colorful piece rather than a
-      // violent one, versatile enough to hold peak too.
-      moods: ['ambient', 'mellow', 'groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // 64 iterations x up to 3 AA taps/pixel, quality-gated on both axes
-      // (iteration count and whether the extra taps run at all).
-      performanceCost: 'high', // measured 4.69 ms GPU @ tier 1 (/bench)
-      compatibleWith: ['wireframe', 'network', 'ribbons'],
-      moodFit: {
-        ambient: 0.8,
-        mellow: 0.85,
-        groove: 0.8,
-        building: 0.78,
-        peak: 0.82,
-      },
-      // Pure 2D math, no ray/camera concept at all (unlike inversion/
-      // torusfold) — inert to this scene's own rendering, same as network/
-      // foldpath. Declared anyway for CameraDirector.test.ts's invariant:
-      // every registered scene needs real camera-mode variety.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'heap',
-    name: 'Heap Corruption',
-    component: HeapCorruptionScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch product decision).
-      // Unlike its neighbours here this one genuinely has commercial
-      // permission already: CC BY 4.0 allows commercial use, conditioned on
-      // crediting the author. Held out anyway on request, pending a decision
-      // on where that credit would live (about/credits screen).
-      license: 'attribution',
-      // The record that makes `attribution` mean something. CC BY 4.0 obliges
-      // this project to credit the author and to indicate modification, and
-      // until this field existed the only place that credit lived was a prose
-      // comment in HeapCorruptionScene.tsx — unreadable to the credits screen
-      // that decision is waiting on. `noticePath` is absent because the licence
-      // text is not vendored: naming CC BY 4.0 is not the same as shipping it,
-      // and that gap is part of what "pending where the credit lives" means.
-      provenance: {
-        source: 'https://www.pvv.ntnu.no/~torhr/shaders/',
-        author: 'Tor Ringstad, 2026 — "Heap Corruption"',
-        spdx: 'CC-BY-4.0',
-      },
-      // Subject only. It fills the frame with a dense, high-contrast grid, so
-      // compositing anything over it — or it over anything — just fights.
-      roles: ['primary'],
-      // Its whole character is decay under pressure, which needs energy to read
-      // as anything. In `ambient` it would sit near-healthy and inert, so it is
-      // deliberately not offered there.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // Fullscreen, but cheap per pixel: hashes and one value-noise pair, no
-      // march and no fbm. Comparable to `network`, nothing like the raymarchers.
-      performanceCost: 'high', // measured 5.24 ms GPU @ tier 1 (/bench)
-      compatibleWith: [],
-      // Kept in the roster's 0.6-0.9 band on purpose. Strongest at `aggressive`,
-      // where glitch and decay are the point, and weakest at `groove`.
-      moodFit: {
-        groove: 0.74,
-        building: 0.84,
-        peak: 0.88,
-        aggressive: 0.9,
-      },
-      // Pure 2D screen-space math — no ray, no camera concept at all, so these
-      // are inert to its own rendering. Declared because CameraDirector.test.ts
-      // requires every registered scene to offer real framing variety, the same
-      // reason network/foldpath/juliawings declare them.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'orbs',
-    name: 'Orbit Glow',
-    component: OrbitGlowScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Shadertoy-derived with no licence attached to the source. Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
-      // is treated as non-commercial until someone actually confirms otherwise
-      // with the original author -- not a neutral "maybe fine".
-      license: 'unverified',
-      // Layer-only, exactly like `ribbons` — three soft orbs on black have
-      // nowhere near enough structure to carry a frame as the subject, but they
-      // composite beautifully over one.
-      //
-      // This is the roster's strongest BACKGROUND and EFFECT candidate: it is
-      // the cheapest scene here by a wide margin, and its per-orb glow gives it
-      // the contrast dynamics a dimmed ground needs to still read as alive.
-      // Neither role is claimed yet because both are inert — nothing selects
-      // `background`, and an `effect` scene must additionally drive itself to
-      // visual zero by `slotProgress` 1, which this does not yet do.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, density: 0.5, fill: 0.5, contrast: 0.5 },
-        paramLabels: { '*': { density: 'spread', fill: 'orbit', contrast: 'glow' } },
-      },
-      roles: ['accent', 'overlay'],
-      // The calm end of the roster. Deliberately stops at `building`: three
-      // drifting orbs have no punch to offer a peak, and pretending otherwise
-      // would just put a soft layer under a loud moment.
-      moods: ['ambient', 'mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'calm',
-      // Three length() calls and three divides per pixel. No march, no noise,
-      // no loop — comfortably the cheapest scene in the roster, cheaper even
-      // than `network`.
-      performanceCost: 'low',
-      compatibleWith: ['wireframe', 'chrome', 'dissolve', 'pointcloud', 'foldpath', 'juliawings'],
-      // Sits just above `ribbons` at the calm end where it belongs and below it
-      // by `groove`, so the two layer scenes trade places across the range
-      // rather than one always winning. Both are inside the roster's 0.6-0.9
-      // band after `ribbons` showed what a 0.98 outlier does to selection.
-      moodFit: {
-        ambient: 0.78,
-        mellow: 0.75,
-        groove: 0.63,
-        building: 0.58,
-      },
-      // Flat 2D screen-space math, no camera concept at all — inert here, and
-      // declared only for CameraDirector.test.ts's variety invariant.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'kaleido',
-    name: 'Kaleido Pulse',
-    component: KaleidoPulseScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Shadertoy-derived with no licence attached to the source. Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
-      // is treated as non-commercial until someone actually confirms otherwise
-      // with the original author -- not a neutral "maybe fine".
-      license: 'unverified',
-      // Two upstreams, neither licensed in the source given: the structure is
-      // kishimisu's teaching shader, and `palette()` is Quilez's cosine
-      // palette, which does have a URL. Recorded as the tutorial rather than
-      // the article because the article covers one function, not the scene.
-      provenance: {
-        source: 'kishimisu, "An Introduction to Shader Art Coding" — no URL recorded by the port',
-        author: 'kishimisu; palette() after Inigo Quilez (https://iquilezles.org/articles/palettes)',
-        spdx: 'NOASSERTION',
-      },
-      // Subject only. A centred mandala owns the middle of the frame by
-      // construction; composited over another subject the two symmetries fight,
-      // and behind one it is entirely hidden by its own dark centre.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 1, density: 0.5, contrast: 0.5 },
-        paramLabels: { '*': { complexity: 'layers', density: 'fold', contrast: 'edge' } },
-      },
-      roles: ['primary'],
-      // Same territory as `tunnel` — rhythmic and hypnotic — but the silhouette
-      // is radial rather than forward, which is the reason to carry both. The
-      // moodFit peaks differ so they do not simply substitute for each other:
-      // `tunnel` peaks at `building` (flying toward something IS a build), this
-      // one at `peak` (a mandala pulsing on the beat is an arrival).
-      moods: ['groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // Four iterations of fract/length/sin/pow plus a cosine palette each.
-      // No march, no noise field, no hashing — cheaper than `network`'s ~36
-      // hash evaluations per pixel, and an order of magnitude under the
-      // raymarchers. Iteration count is still governed; see uIters.
-      performanceCost: 'medium', // measured 3.15 ms GPU @ tier 1 (/bench)
-      compatibleWith: [],
-      // Inside the roster's 0.6-0.9 band, and deliberately a little under
-      // `tunnel` at `building` so the two trade rather than one shadowing the
-      // other across their shared range.
-      moodFit: {
-        groove: 0.84,
-        building: 0.86,
-        peak: 0.88,
-      },
-      // Flat 2D fractal math — no ray, no camera concept at all, exactly like
-      // `juliawings`. Inert to its own rendering; declared only because
-      // CameraDirector.test.ts requires every registered scene to offer real
-      // framing variety.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'trail',
-    name: 'Trail Line',
-    component: TrailLineScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Shadertoy-derived with no licence attached to the source. Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so this
-      // is treated as non-commercial until someone actually confirms otherwise
-      // with the original author -- not a neutral "maybe fine".
-      license: 'unverified',
-      // Subject only. Sparse enough on paper to make a good accent — one thin
-      // glowing stroke on black — but it is the roster's only scene that pays
-      // for a render-target pair, and spending two extra fullscreen passes on a
-      // decoration is the wrong trade. Revisit if it ever earns its keep.
-      roles: ['primary'],
-      // Gestural and unhurried. The trail is the piece, and a trail needs time
-      // to be read, so this sits at the calmer end and stops before `peak`
-      // rather than pretending a smear can land a drop.
-      moods: ['mellow', 'groove', 'building'],
-      bands: ['bass', 'mid', 'energy'],
-      intensity: 'medium',
-      // Two fullscreen passes rather than one — the accumulate pass plus the
-      // display pass — and a pair of HalfFloat render targets resident for as
-      // long as it is mounted. The per-pixel work is modest (five sin() from
-      // f()/grad(), one texture fetch), so the tier is driven by the extra pass
-      // and the VRAM, not by shader complexity. This is a different KIND of
-      // cost from the rest of the roster: the budget model counts fragment
-      // work, and nothing in it accounts for render-target memory.
-      performanceCost: 'medium',
-      compatibleWith: [],
-      // Deliberately overlapping `orbs` and `ribbons` at the calm end without
-      // beating them — those are layers, this is a subject, so they coexist
-      // rather than compete. Peaks at `groove` where a drifting stroke has
-      // something to move against.
-      moodFit: {
-        mellow: 0.86,
-        groove: 0.88,
-        building: 0.78,
-      },
-      // Flat 2D screen-space, no camera concept — the `juliawings` pattern.
-      // Declared only for CameraDirector.test.ts's variety invariant.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'synthgrid',
-    name: 'Synth Grid',
-    component: SynthGridScene,
-    metadata: {
-      // MOVED OUT OF THE LIVE ROSTER (commercial-launch licence pass).
-      // Source states an explicit non-commercial licence. See
-      // KNOWN_NC_SOURCE_IDS and docs/ISSUES.md for the audit this came from.
-      // ===== NON-COMMERCIAL — see the banner in SynthGridScene.tsx =====
-      // CC BY-NC-SA 3.0. Must not ship in a commercial build, marketplace
-      // listing or paid release without separate permission from the author.
-      // nonCommercialSceneIds() derives the packaging exclusion list from this
-      // field, and sceneLicensing.test.ts fails if it is ever removed.
-      license: 'noncommercial',
-      // Subject only. A full raymarched city with its own post chain owns the
-      // frame completely.
-      roles: ['primary'],
-      // Retro-futurist and propulsive rather than chaotic. Needs energy to
-      // justify the forward travel, and tops out before `aggressive` — the
-      // palette is neon nostalgia, not violence.
-      moods: ['groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'energy'],
-      intensity: 'high',
-      // By a wide margin the most expensive scene in the roster: a 200-step
-      // primary march whose map() evaluates a ground plane, a repeating
-      // skyline and four car fields, a shadow march of up to 110 steps at every
-      // hit, three map() calls per normal, and then a second full pass doing a
-      // 40-tap bloom plus three 14-tap chroma flares. Mitigated by rendering
-      // the buffer at 0.6x and governing every loop, but it is still the
-      // heaviest thing here.
-      performanceCost: 'medium', // measured 2.22 ms GPU @ tier 1 (/bench)
-      compatibleWith: [],
-      // Sits under `tunnel` and `kaleido` in their shared range: it is the most
-      // expensive scene registered, so it should not also be the most likely to
-      // be picked.
-      moodFit: {
-        groove: 0.8,
-        building: 0.86,
-        peak: 0.84,
-      },
-      // The scene flies its own drifting camera and never reads the shared one,
-      // like FoldPath and Tunnel Drift. Declared for CameraDirector.test.ts.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'crystalfold',
-    name: 'Crystal Fold',
-    component: CrystalFoldScene,
-    metadata: {
-      // HELD OUT ON ARRIVAL, not moved out — added directly from a pasted,
-      // unattributed Shadertoy-style snippet (`mainImage`/`iTime`/
-      // `iResolution` API, no author or licence comment attached). Shadertoy's
-      // OWN default licence for an unmarked upload is CC BY-NC-SA 3.0, so per
-      // F01/F02 in docs/ISSUES.md this is treated as non-commercial until the
-      // actual source is confirmed original or permissively licensed — not a
-      // neutral "maybe fine". Move this entry into SCENES once that happens.
-      license: 'unverified',
-      // Subject only. An orbiting-camera 3D fractal raymarch owns the frame by
-      // construction, same reasoning as `torusfold`/`inversion`.
-      // Ported from the lilim branch, which declared these three as flat
-      // metadata. Same fields, same values, wrapped in the versioned
-      // envelope this side uses — see ./contract.ts.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, shape: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
-        paramLabels: {
-        // The source's own knob names — none of the canonical keys say this
-        // on their own.
-        '*': { shape: 'fold width', complexity: 'iterations', fill: 'zoom', tilt: 'elevation' },
-        },
-      },
-      roles: ['primary'],
-      // A slow, ornate orbit rather than anything violent — closest in spirit
-      // to `torusfold`'s hypnotic ring-pulse, so it shares that range.
-      moods: ['mellow', 'groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT MEASURED. Up to 64 march steps, each evaluating up to 12 fold
-      // iterations of rotate/abs/subtract — cheaper per-iteration than
-      // `kifs`'s fold (no division) but wrapped in an outer march loop `kifs`
-      // doesn't have, and both loops are quality/param-governed. Tagged `high`
-      // on comparison with the roster's other raymarchers rather than
-      // guessed in isolation; confirm with `/bench`.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a full-bleed 3D fractal.
-      compatibleWith: [],
-      moodFit: {
-        mellow: 0.7,
-        groove: 0.8,
-        building: 0.84,
-        peak: 0.78,
-      },
-      // The shader drives its own orbiting camera internally and never reads
-      // the engine's real one — inert here, declared only for
-      // CameraDirector.test.ts's variety invariant, same as `kifs`/`wingfold`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-      // No `density` — nothing in an iterated box-fold has a discrete element
-      // count for it to bind to, same reasoning as `kifs`/`wingfold`.
-    },
-  },
-  {
-    id: 'lumen',
-    name: 'Lumen Mask',
-    component: LumenMaskScene,
-    metadata: {
-      // HELD OUT ON ARRIVAL, same as `crystalfold`: added from a shader the
-      // user pasted in, written in a Shadertoy idiom (`mainImage` / `iTime` /
-      // `iChannel0` FFT-texture path) with a descriptive header but NO author,
-      // licence or source URL. The header does carry an "AudioVis:"-prefixed
-      // porting note, which suggests it was written for this project — but that
-      // is a style signal, not provenance. Per F01/F02 in docs/ISSUES.md it is
-      // `unverified` (Shadertoy's default for an unmarked upload is CC
-      // BY-NC-SA 3.0) until the user confirms it is their original work or
-      // permissively licensed. Move this entry into `SCENES` when that happens.
-      license: 'unverified',
-      // `zoom` (fill) / `glow` (contrast -> emissive gain) / `detail`
-      // (complexity -> greeble density) / signed framing `tilt`. `speed` runs
-      // the shader's authored 1x clock at neutral. No `shape`/`density` — a
-      // fixed-composition SDF face has no silhouette family or element count.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
-        paramLabels: {
-          '*': { complexity: 'detail', fill: 'zoom', tilt: 'framing', contrast: 'glow' },
-        },
-      },
-      // Subject only: a wall + floor + machined head that owns the whole frame,
-      // same as the other full-bleed shader primaries.
-      roles: ['primary'],
-      // Industrial, brutalist, mechanical — the jaw pumps on the kick, the eyes
-      // track mids, the digits extend on highs. Sits in the driving/hard half,
-      // not the calm one; same lane as `kifs`.
-      moods: ['groove', 'building', 'peak', 'aggressive'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT MEASURED. Multi-octave fbm called several times per pixel, a 4-tap
-      // floor reflection that re-runs `wallColor`, and ~40 SDF ops across the
-      // wall + reflection paths. Rendered offscreen at `pixelBudget` 1.5 MP and
-      // upscaled. Heavier than `kifs`; confirm with `/bench`.
-      performanceCost: 'high',
-      compatibleWith: [],
-      // Same 0.6-0.9 band as `kifs`, weighted a touch harder toward the top —
-      // the hard-edged machined look reads more aggressive than a fractal.
-      moodFit: { groove: 0.78, building: 0.82, peak: 0.86, aggressive: 0.84 },
-      // Flat 2D SDF, no camera concept — the shader frames itself. Declared
-      // only for CameraDirector.test.ts's variety invariant, same as `kifs`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-  {
-    id: 'neonjungle',
-    name: 'Neon Jungle',
-    component: NeonJungleScene,
-    metadata: {
-      // Ported from glslop "NEON // JUNGLE v7" (ISF), credited in-source to
-      // "Craig". CC0-1.0 — same provenance basis as `maze` (`gstbkfmm`) and
-      // `malachite`: platform generation, no fork lineage — so `original`, not
-      // `unverified`. The in-source credit is kept in NeonJungleScene.tsx's
-      // header. NOTE: the plan's `SceneProvenance` field (source URL / author /
-      // SPDX / credit string) would replace this comment; it does not exist yet.
-      license: 'original',
-      // HELD OUT ON ARRIVAL, not moved out. This is a full two-world volumetric
-      // raymarcher — STEPS 190 primary march PLUS a second RSTEPS 60 reflection
-      // march on every water/puddle pixel, per-step volumetric integration in
-      // both, calcNormal(4x)/calcAO(5x)/softShadow(up to 20x) each re-running
-      // the whole scene SDF. It will NOT clear slotBudget.test.ts's tier-0
-      // `< sceneBudget(0)/2` = 5.05 ms bar as-is, and `/bench` (the only
-      // instrument) cannot run from CI. Move into SCENES once an optimised pass
-      // benches under that bar AND a SCENE_COST_MS row is measured for it.
-      //
-      // `speed` -> flight rate (drastic + energy). `complexity` -> the D1/D2/D3
-      // detail tiers. `fill` -> lens width. `tilt` -> sun azimuth. `contrast`
-      // -> neon gain. No `shape`/`density` — a scripted flythrough has no
-      // silhouette family or element count to bind them to.
-      contract: {
-        version: 1,
-        params: { speed: 0.5, complexity: 0.5, fill: 0.5, tilt: 0.5, contrast: 0.5 },
-        paramLabels: {
-          '*': { complexity: 'detail', fill: 'lens', tilt: 'sun', contrast: 'neon' },
-        },
-      },
-      // Subject only: a first-person flythrough that owns the whole frame and
-      // its own camera, same as `maze`/`tunnel`/`crystalfold`.
-      roles: ['primary'],
-      // Starts at `mellow` for the lagoon leg, tops out at `peak` — the neon
-      // city + rain + transit flashes are the loud half. Sits in `kifs`/`maze`
-      // territory but the lagoon side pulls its low end down.
-      moods: ['mellow', 'groove', 'building', 'peak'],
-      bands: ['bass', 'mid', 'high', 'energy'],
-      intensity: 'high',
-      // NOT MEASURED — see the licence note above. Heavier than every disabled
-      // raymarcher (`tunnel`, `crystalfold`): two full SDF worlds, a second
-      // reflection march, per-step volumetrics. `/bench` before promotion.
-      performanceCost: 'high',
-      // Owns the frame; nothing composites with a first-person flythrough.
-      compatibleWith: [],
-      // Held inside the roster's 0.6-0.9 band, weighted toward the build.
-      moodFit: { mellow: 0.62, groove: 0.78, building: 0.84, peak: 0.8 },
-      // The shader flies its own scripted path and never reads the engine
-      // camera — declared only for CameraDirector.test.ts's variety invariant,
-      // same as `maze`/`tunnel`/`crystalfold`.
-      cameraAnchor: { target: [0, 0, 0], distance: 10.0, height: 1.5 },
-      cameraModes: ['orbit', 'spiral', 'cinematic', 'handheld', 'hover'],
-    },
-  },
-]
+export const DISABLED_SCENES: SceneDef[] = []
 
 /**
  * Every scene whose SOURCE is non-commercial, tracked independently of the
@@ -3102,8 +2210,11 @@ export const DISABLED_SCENES: SceneDef[] = [
  * is exactly when someone would re-enable it later having forgotten. The
  * licensing test asserts against this list intersected with what is actually
  * registered.
+ *
+ * Empty since F274: its two entries (`synthgrid`, `panic`) were deleted along
+ * with the rest of `DISABLED_SCENES`, not re-enabled.
  */
-export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic']
+export const KNOWN_NC_SOURCE_IDS: readonly string[] = []
 
 /**
  * Scenes whose source licence forbids, or has not been confirmed to permit,
@@ -3117,7 +2228,7 @@ export const KNOWN_NC_SOURCE_IDS: readonly string[] = ['synthgrid', 'panic']
  * Does this scene's licence forbid, or fail to confirm permission for,
  * commercial use? A pure predicate over one scene's metadata — exported (not
  * just inlined into {@link nonCommercialSceneIds}) so the licensing test can
- * exercise the real check against `DISABLED_SCENES` entries directly, rather
+ * exercise the real check against constructed scenes directly, rather
  * than duplicating the condition or depending on the live roster happening to
  * contain a restricted scene, which will not always be true — the whole point
  * of the roster is to drive that count toward zero.

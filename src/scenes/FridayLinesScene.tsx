@@ -25,9 +25,9 @@ import { bipolar, drastic } from './contract'
  * ## Port notes (Shadertoy -> AudioVis prelude)
  *
  *   iResolution.xy       -> uRes (focal length generalised into `uFocal`)
- *   iTime                -> uRawT, JS-accumulated (see `GyroidFluxScene` for
- *                            why this has to be an accumulator, not
- *                            `elapsed * speed` — the same "jump on a speed
+ *   iTime                -> uRawT, JS-accumulated (an accumulator, not
+ *                            `elapsed * speed`: the product jumps whenever
+ *                            the speed changes — the same "jump on a speed
  *                            change" failure applies to a pure oscillator
  *                            phase too, not just a position)
  *   mainImage/fragColor  -> main() / gl_FragColor, final * uFade

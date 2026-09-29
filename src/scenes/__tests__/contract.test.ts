@@ -35,7 +35,7 @@ import {
  * still address it, so most of these tests are written from that caller's side:
  * they use only the seven canonical names and the contract's own accessors, and
  * never reach into a specific scene's internals. A test that had to know
- * `kaleido` calls `density` "fold" in order to pass would be testing the wrong
+ * `wireframe` calls `complexity` "facets" in order to pass would be testing the wrong
  * thing.
  */
 

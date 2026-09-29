@@ -38,11 +38,6 @@ const AUTO_LIVE = SCENES.filter((s) => s.metadata.moods.length > 0).map((s) => s
 const LIVE_PRIMARIES = SCENES.filter(
   (s) => s.metadata.moods.length > 0 && s.metadata.roles.includes('primary') && s.id !== 'hold',
 ).map((s) => s.id)
-/** Everything authored, live or quarantined, that mood-based selection could ever pick. */
-const ALL_AUTO = [
-  ...AUTO_LIVE,
-  ...DISABLED_SCENES.filter((s) => s.metadata.moods.length > 0).map((s) => s.id),
-]
 
 /**
  * Scenes allowed to be absent from every mood's top-8. `hold` is the authored
@@ -211,17 +206,6 @@ describe('mood pools are genuinely different (the old pools shared ~90%)', () =>
   it('every live primary is a top-6 fit for at least one mood', () => {
     const inSome = new Set(poolsFor(LIVE_PRIMARIES, 6).flat())
     expect(LIVE_PRIMARIES.filter((id) => !inSome.has(id))).toEqual([])
-  })
-
-  it('the 14 moods reach at least 30 distinct scenes over the whole authored roster (live + quarantined)', () => {
-    // The live roster only has 27 auto-selectable scenes, so 30 is only reachable
-    // once the quarantined ones are counted; that is the roster the engine is
-    // designed against, and this pins that promoting them costs nothing.
-    const distinct = new Set(poolsFor(ALL_AUTO, 8).flat())
-    console.info(
-      `[character] authored roster (N=${ALL_AUTO.length}) distinct in top-8 pools = ${distinct.size}`,
-    )
-    expect(distinct.size).toBeGreaterThanOrEqual(30)
   })
 
   it('the live roster reaches nearly all of its auto scenes (>= 24 of 27) across the 14 pools', () => {

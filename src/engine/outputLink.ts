@@ -30,7 +30,7 @@ import { useStore } from '../store'
  * That split exists to satisfy one requirement — *the main processing happens
  * once*. The obvious two-window design renders the show twice, once per window,
  * and doubles the cost of exactly the scenes that can least afford it
- * (`synthgrid` and `network` are ~22 ms each on the bench GPU). Here nothing is
+ * (`synthgrid` and `network` were ~22 ms each on the bench GPU). Here nothing is
  * rendered twice: the mini mirror is a `MediaStream` off the output canvas, so
  * the DJ's preview costs a frame copy rather than a frame.
  *

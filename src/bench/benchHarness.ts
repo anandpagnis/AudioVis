@@ -7,9 +7,9 @@ import { FEEDBACK_MS, POST_CHAIN_MS } from '../engine/frameLoad'
  *
  * `performanceCost` in the scene registry — `low` / `medium` / `high` — is
  * assigned by eye. `juliawings`, `torusfold`, `foldpath`, `synthgrid` and
- * `plasma` all carry `high`, and they are certainly not within 4× of each
- * other, so the composition budget in slotBudget.ts cannot tell them apart and
- * has been allocating against a number nobody measured.
+ * `plasma` all carried `high` when this was written, and they were certainly
+ * not within 4× of each other, so the composition budget in slotBudget.ts
+ * could not tell them apart and was allocating against a number nobody measured.
  *
  * Every performance decision so far has been made by reading shaders and
  * counting operations. That found real things, but op-counting cannot tell you

@@ -69,9 +69,10 @@ const sc = (
 
 /**
  * One explicit entry per scene id: every LIVE scene (`SCENES`) and every
- * quarantined one (`DISABLED_SCENES`), so promoting a scene out of quarantine
- * needs no new authoring. Validated by characterSelection.test.ts in both
- * directions (missing entry for a live scene; entry for an unknown id).
+ * quarantined one (`DISABLED_SCENES`, empty since F274), so promoting a scene
+ * out of quarantine needs no new authoring. Validated by
+ * characterSelection.test.ts in both directions (missing entry for a live
+ * scene; entry for an unknown id).
  */
 export const SCENE_CHARACTER: Record<string, SceneCharacter> = {
   // --- Live primaries ------------------------------------------------------
@@ -334,144 +335,6 @@ export const SCENE_CHARACTER: Record<string, SceneCharacter> = {
     0.55,
     0.6,
     'Live camera cutaway to the DJ: mood-neutral, only reached by its own director; wide spread.',
-  ),
-
-  // --- Quarantined (DISABLED_SCENES): authored now so promotion is free -----
-  harkonnen: sc(
-    0.18,
-    0.45,
-    0.68,
-    0.3,
-    0.24,
-    'Lit carved relief of an escape fractal, slow macro zoom, brutalist fortress feel: heavy, dark, imposing.',
-  ),
-  gyroid: sc(
-    0.52,
-    0.38,
-    0.3,
-    0.4,
-    0.28,
-    'Glowing gyroid minimal-surface lattice with an orbiting drifting camera: organic, curious, unhurried.',
-  ),
-  tunnel: sc(
-    0.5,
-    0.62,
-    0.36,
-    0.88,
-    0.26,
-    'Winding glowing tunnel flight, "hypnotic and driving rather than violent": steady propulsion, calm valence.',
-  ),
-  panic: sc(
-    0.08,
-    0.82,
-    0.92,
-    0.4,
-    0.22,
-    'Corrupted terminal crash screen on a 40 s scripted timeline: alarm, glitch, dread.',
-  ),
-  network: sc(
-    0.6,
-    0.28,
-    0.3,
-    0.22,
-    0.26,
-    'Living web of sparkling jittered nodes with layered parallax ("The Universe Within"): wonder, quiet awe.',
-  ),
-  inversion: sc(
-    0.3,
-    0.58,
-    0.6,
-    0.5,
-    0.26,
-    'Kali sphere-inversion fractal, raymarched: obsessive, cold, intricate; tension without hostility.',
-  ),
-  foldpath: sc(
-    0.45,
-    0.45,
-    0.4,
-    0.4,
-    0.3,
-    'Fixed-step heightfield flythrough over IFS-fold terrain: a wandering, neutral landscape drift.',
-  ),
-  torusfold: sc(
-    0.5,
-    0.52,
-    0.44,
-    0.5,
-    0.3,
-    'Mandelbox fold intersected with a torus, ring patterns: mechanical, mid-everything.',
-  ),
-  juliawings: sc(
-    0.78,
-    0.38,
-    0.12,
-    0.3,
-    0.24,
-    'The only light-background scene: delicate moth-wing Julia symmetry, airy and gentle.',
-  ),
-  heap: sc(
-    0.14,
-    0.72,
-    0.85,
-    0.55,
-    0.22,
-    'Allocator grid rotting from cold teal to hot magenta with row-tearing glitches: decay and corruption.',
-  ),
-  orbs: sc(
-    0.72,
-    0.1,
-    0.06,
-    0.15,
-    0.22,
-    'Three soft orbs drifting on Lissajous paths: floating and calm, the opposite pole from glitch.',
-  ),
-  kaleido: sc(
-    0.84,
-    0.75,
-    0.15,
-    0.9,
-    0.22,
-    'Pulsing ring mandala in a cosine palette: bright, rhythmic, celebratory.',
-  ),
-  trail: sc(
-    0.42,
-    0.42,
-    0.3,
-    0.32,
-    0.28,
-    'Rotating zooming sine stroke smearing a light trail: gestural, oscilloscope-like, contemplative.',
-  ),
-  synthgrid: sc(
-    0.68,
-    0.78,
-    0.32,
-    0.9,
-    0.24,
-    'Retro-futurist mirrored city under a hot magenta horizon with heavy bloom: nostalgic, glossy, driving.',
-  ),
-  crystalfold: sc(
-    0.6,
-    0.6,
-    0.42,
-    0.4,
-    0.28,
-    'Orbiting-camera twisted Mandelbox: glassy, ornate, majestic without hostility.',
-  ),
-  lumen: sc(
-    0.22,
-    0.5,
-    0.58,
-    0.55,
-    0.24,
-    'Machined light-panel head on a beton-brut wall: cold, industrial, watchful.',
-  ),
-  neonjungle: sc(
-    0.82,
-    0.66,
-    0.3,
-    0.7,
-    0.24,
-    'Portal between a tropical lagoon and a rain-slicked neon city: lush, colourful, adventurous.',
   ),
 }
 

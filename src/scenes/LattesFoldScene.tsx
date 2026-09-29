@@ -39,9 +39,9 @@ import { bipolar, drastic } from './contract'
  * ## Port notes (Shadertoy -> AudioVis prelude)
  *
  *   iResolution.xy  -> uRes (focal length generalised into `uFocal`)
- *   iTime           -> uRawT, JS-accumulated (see `GyroidFluxScene`'s header
- *                      for why an oscillator phase needs this too, not just
- *                      a position)
+ *   iTime           -> uRawT, JS-accumulated (`elapsed * speed` jumps
+ *                      whenever the speed changes, and an oscillator phase
+ *                      needs this too, not just a position)
  *   mainImage/O     -> main() / gl_FragColor, final * uFade. The source's `O`
  *                      is vec4 but only `.xyz` ever reaches the screen — same
  *                      simplification `beats`' port already made ("Only o.rgb
@@ -54,12 +54,12 @@ import { bipolar, drastic } from './contract'
  *                      entirely rather than trust it; behaviour is identical.
  *   `for(...;++i<N.;...)` -> rewritten to `for(int idx=0;idx<N;idx++)`
  *                      (GLSL ES 1.00 needs a constant-shaped loop; same fix
- *                      class `beats`/`tunnel` document). Verified neither
+ *                      class `beats` documents). Verified neither
  *                      loop counter (`i`, inner `i`) is ever READ inside its
  *                      own body — both are pure iteration counts — so this
  *                      is a mechanical rewrite with no off-by-one subtlety
- *                      to preserve (contrast `tunnel`'s `fi`/`fj`, which DO
- *                      need the source's post-increment offset reproduced).
+ *                      to preserve (a loop whose counter IS read would need
+ *                      the source's post-increment offset reproduced).
  *
  * The inner fold's per-iteration `e` and its offset vector
  * (`vec3(5.+cos(...)*3.,120.,8.+cos(...)*5.)`) depend only on `uRawT`/
@@ -74,8 +74,7 @@ import { bipolar, drastic } from './contract'
  *
  * The `R(p,a,r)` macro, and the `unit` / `factor` / `q` locals, are declared
  * in the source and never referenced anywhere in `mainImage`. Dropped rather
- * than carried — same call `TunnelDriftScene`'s port makes for its source's
- * unused `pal()` function.
+ * than carried.
  *
  * ## An uninitialised local, made explicit
  *
@@ -97,8 +96,8 @@ import { bipolar, drastic } from './contract'
  *   speed + mids  -> the one clock (uRawT)
  *   shape         -> Lattès iteration depth (source const 3, fixed)
  *   complexity    -> inner-fold depth (source const 8) — a user dial only,
- *                    never tier-gated, same reasoning `harkonnen` gives for
- *                    its own fractal depth (iteration count changing under
+ *                    never tier-gated, same reasoning as `kifs` F129 /
+ *                    `maze` F139 (iteration count changing under
  *                    load reads as glitching, not as a quality drop)
  *   density       -> lattice cell half-size (source const 10.0); sub adds a
  *                    continuous swell on top, distinct from onKick

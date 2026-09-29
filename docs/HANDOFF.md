@@ -33,9 +33,11 @@ Personal tool, run locally, `npm run dev` → <http://localhost:5183>.
    dead black. Target exposure is roughly ≤15% of frame lit, mean luma <20, and
    **0% blown to white**. Full rationale in `docs/09_Rendering_Engine.md`.
 
-**Current roster (11, all primary-capable)** — every scene not listed here has
-been moved to `DISABLED_SCENES` pending a licence/provenance sweep; see F01/
-F105 in `docs/ISSUES.md`, not a missing table row.
+**Current roster (11, all primary-capable)** — the scenes that were parked in
+`DISABLED_SCENES` pending a licence/provenance sweep were deleted in F274
+(2026-09-28, recoverable from git at `206a4bf`), and that array is now empty;
+see F01/F105/F274 in `docs/ISSUES.md`. `SCENES` in `src/scenes/index.ts` is the
+authoritative live list.
 
 | id | name | technique |
 |---|---|---|
@@ -476,45 +478,30 @@ http://localhost:5183/?scene=wireframe&palette=ember&ui=hidden&quality=low&autop
 
 ## 6. Known limitations and risks
 
-### ⚠️ Licence blocker — `synthgrid` and `panic` must be removed before any commercial release
+### ✅ Resolved (F274) — the NonCommercial and unverified ported scenes were deleted
 
-**Two scenes are CC BY-NC-SA 3.0 — NonCommercial, personal use only:**
+The CC BY-NC-SA 3.0 scenes `synthgrid` and `panic`, and the ports whose provenance was never
+confirmed (`tunnel`, `orbs`, `kaleido`, `trail`, plus `heap`, which was CC BY 4.0), were all in
+`DISABLED_SCENES` and were deleted with the rest of it on 2026-09-28 (F274 in
+`docs/ISSUES.md`; recoverable from git at `206a4bf`). `DISABLED_SCENES` and
+`KNOWN_NC_SOURCE_IDS` are now empty, so the `KNOWN_NC_SOURCE_IDS` checks in
+`sceneLicensing.test.ts` have nothing to check until an id is added there again.
 
-- **`synthgrid`** (Synth Grid) — source carried an explicit CC BY-NC-SA 3.0 header.
-- **`panic`** (Kernel Panic) — source was unlicensed; Shadertoy's default is CC BY-NC-SA 3.0,
-  so it is NC absent an explicit grant. Its displayed text was rewritten from scratch, but
-  the shader mechanism is still the original author's.
+The rule still stands for the next port. Shadertoy's default licence is CC BY-NC-SA 3.0
+unless a shader states otherwise, so a port with no explicit licence header is *not*
+commercially clear. Never try to relicense an NC/ShareAlike source; remove it or replace it.
+Enforcement stays mechanical:
 
-Neither may appear in a commercial build, a marketplace or asset-store listing, or any public
-revenue-generating release without separate written permission. The ShareAlike term is the
-second problem: distributing a derivative would require licensing it alike, which would
-encumber the rest of this codebase. **Remove or replace them — do not attempt to relicense.**
-
-Enforcement is mechanical, not a note to remember:
-
-- each scene declares `license: 'noncommercial'` in its `SceneMetadata`;
+- each scene declares `license` in its `SceneMetadata`, and an absent one reads as
+  `unverified` (restricted);
 - `nonCommercialSceneIds()` / `commerciallyShippableScenes()` in `src/scenes/index.ts` derive
-  the packaging exclusion list from that field — **a release build should be assembled from
+  the packaging exclusion list from that field. **A release build should be assembled from
   `commerciallyShippableScenes()`**, which does not exist as a build step yet;
-- `src/scenes/__tests__/sceneLicensing.test.ts` fails if either marking is ever removed, and
-  also asserts a restricted scene can never be `SCENES[0]` (the `getScene()` fallback, which
-  would otherwise be reachable from a stale preset even in a build that excluded it).
-
-**Other ported scenes need their provenance confirmed before they can be called safe.**
-Shadertoy's default licence is CC BY-NC-SA 3.0 unless a shader states otherwise, so a port
-carrying no explicit licence header is *not* commercially clear by default:
-
-| scene | source | status |
-| --- | --- | --- |
-| `heap` | Tor Ringstad, explicit CC BY 4.0 | **safe** with attribution |
-| `tunnel` | Shadertoy `MfVfz3`, no licence stated | **assume NC** until author confirms |
-| `orbs` | unattributed paste, provenance unknown | **unknown** — needs sourcing |
-| `kaleido` | kishimisu tutorial + IQ cosine palette | **verify** — tutorial code, licence unstated |
-| `trail` | multi-pass Shadertoy, no licence stated | **assume NC** until author confirms |
-
-Only `heap` is presently confirmed shippable. The other four are unmarked in metadata (so
-they are *not* currently excluded by `nonCommercialSceneIds()`) because guessing would be as
-wrong as ignoring it — they need someone to actually check, then mark.
+- `src/scenes/__tests__/sceneLicensing.test.ts` pins the live roster's restricted set to the
+  owner-approved exceptions (`tribalentity`, `mothwings`), requires a provenance record on
+  every non-`original` live scene, and asserts a restricted scene can never be `SCENES[0]`
+  (the `getScene()` fallback, which would otherwise be reachable from a stale preset even in
+  a build that excluded it).
 
 ### ⚠️ Licence blocker — MusiCNN mood / voice weights (`public/models/`) are CC BY-NC-SA 4.0
 

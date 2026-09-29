@@ -15,9 +15,9 @@ import type { ScenePerformanceCost } from '../scenes'
  * display, each scene's own `pixelBudget` solve) says the labels were not
  * merely imprecise, they were unrelated to cost:
  *
- *   - `synthgrid` is labelled **medium** and is the single most expensive scene
- *     in the roster — 18.4 ms of GPU on its own, more than a whole 60 Hz frame.
- *     It was charged 2 units of 11.
+ *   - `synthgrid` (since deleted, F274) was labelled **medium** and was the
+ *     single most expensive scene in the roster — 18.4 ms of GPU on its own,
+ *     more than a whole 60 Hz frame. It was charged 2 units of 11.
  *   - `pointcloud` is labelled **high** and costs **0.12 ms**. It was charged 4.
  *     So the roster's cheapest-but-one scene was charged twice what its most
  *     expensive one was.
@@ -139,12 +139,6 @@ import type { ScenePerformanceCost } from '../scenes'
  * flat per-tier table above is now correct. Regenerate `SCENE_COST_MODEL`
  * from a `/bench` run that records `internalMP` per cell before trusting
  * resolution-aware pricing for those eleven again.
- *
- * Not part of this sweep, still unmeasured: `harkonnen` (an op-count
- * estimate, see its own row) and every `DISABLED_SCENES` entry
- * (`neonjungle`, and the ten quarantined rows below, which also predate this
- * file's CPU-surcharge correction and use a different, incompatible
- * methodology — do not compare a number there against one above).
  */
 
 /** Tiers, richest to survival. Every row in the table has exactly this many entries. */
@@ -166,7 +160,6 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   dustfield: [0.36, 0.36, 0.36, 0.36, 0.33],
   flare: [0.38, 0.38, 0.38, 0.33, 0.33],
   fridaylines: [0.98, 0.98, 0.98, 0.98, 0.98],
-  gyroid: [0.7, 0.7, 0.7, 0.7, 0.54],
   hold: [0.35, 0.35, 0.35, 0.33, 0.33],
   // `inkfluid` — NOT part of the F236 /bench sweep. Measured standalone
   // (2026-09-25) through the scene's own solver and render code on a real
@@ -227,59 +220,14 @@ export const SCENE_COST_MS: Readonly<Record<string, readonly number[]>> = {
   web: [0.25, 0.24, 0.22, 0.22, 0.22],
   wingfold: [4.23, 4.23, 3.9, 3.76, 3.76],
   wireframe: [1.73, 1.73, 1.73, 1.47, 1.47],
-
-  // --- Quarantined (F105), swept 2026-08-26 --------------------------------
-  // Different methodology: these rows carry a per-scene CPU surcharge that the
-  // 2026-08-27 sweep found no evidence for (see the note above). Do NOT compare
-  // a number here against one above - `network` at 22.42 and `kifs` at 2.97 were
-  // not measured the same way. Re-bench any scene promoted back into the roster.
-  foldpath: [14.09, 13.03, 12.6, 12.6, 11.53],
-  heap: [5.94, 5.94, 5.89, 5.89, 0.3],
-  inversion: [0.16, 0.16, 0.16, 0.16, 0.16],
-  juliawings: [13.48, 9.69, 9.69, 9.69, 8.77],
-  kaleido: [0.38, 0.38, 0.38, 0.38, 0.36],
-  network: [22.42, 20.75, 20.75, 15.51, 14.05],
-  orbs: [0.06, 0.06, 0.06, 0.06, 0.06],
-  synthgrid: [22.35, 16.94, 15.46, 12.91, 9.91],
-  torusfold: [0.11, 0.1, 0.1, 0.1, 0.1],
-  trail: [0.76, 0.76, 0.7, 0.7, 0.69],
-
-  // `harkonnen` (Shadertoy "Fortress Harkonnen" port) — NOT part of the F236
-  // sweep, still an op-count estimate: this one has real inner loops. The
-  // source's ~118 fractal iterations/px (a 25-iter field sampled 4x for the
-  // normal, no early-out) were cut to a 3-tap normal + `complexity`-controlled
-  // 10..16 iters + two `pow`->mul swaps, then rendered offscreen via
-  // `pixelBudget` (1.4 MP tiers 0-1, 0.8 MP below). At the neutral
-  // `complexity` that is ~52 iters/px. Priced by comparison against
-  // `wingfold` (2.54 ms pre-F236, escape-time WITH an early-out, native res)
-  // and `kifs` (2.97 ms pre-F236): denser per-iteration and no early-out,
-  // offset by the lower internal resolution. Given F236 just found this
-  // entire estimation METHOD unreliable in both directions for seven other
-  // scenes, this row should be treated with the same suspicion until it is
-  // actually benched — ACTION: run `/bench` and replace with a measurement.
-  harkonnen: [3.5, 3.2, 2.4, 2.0, 1.6],
-
-  // `neonjungle` (glslop "NEON // JUNGLE v7", ISF, CC0-1.0, credited to
-  // "Craig") — NOT /bench-measured, NOT part of F236 (in `DISABLED_SCENES`,
-  // not live — `slotBudget.test.ts`'s roster sweep never sees this row at
-  // all). A full two-world volumetric raymarcher: STEPS 190 primary march +
-  // RSTEPS 60 reflection march on water/puddle pixels, each surface hit
-  // paying calcNormal (4 taps) + calcAO (5 taps) + softShadow (up to 20
-  // taps), all re-running the scene's map() (a multi-primitive SDF combine
-  // with a 4-octave value-noise FBM). Same op-count methodology F236 just
-  // found unreliable for seven other scenes — this row is exactly as
-  // suspect. ACTION: run `/bench` and replace with a measurement before ever
-  // promoting this out of `DISABLED_SCENES`.
-  neonjungle: [38.0, 32.0, 27.0, 23.0, 20.0],
 }
 
 /**
  * Price for a scene the sweep never reached.
  *
- * Every scene in `SCENES` is measured today, so nothing in the live roster is
- * priced from here. It is the path for a `DISABLED_SCENES` entry that never got
- * swept (`tunnel`, `panic`) if either is ever promoted, and for any scene added
- * after the sweep.
+ * Every scene in `SCENES` has a row today, so nothing in the live roster is
+ * priced from here. It is the path for any scene added after the sweep, or
+ * promoted out of `DISABLED_SCENES`, before it has been benched.
  *
  * Deliberately **pessimistic** relative to the measured medians of each label:
  * an unmeasured scene should have to earn its way into a composition, not be
@@ -368,11 +316,7 @@ export const FALLBACK_COST_MS: Readonly<Record<ScenePerformanceCost, readonly nu
  * the actual measured artefact; this table is derived from it, not a
  * replacement for it.
  *
- * Only the eleven scenes swept 2026-08-27 have a model — the ten quarantined
- * rows carry a documented CPU-timing contamination this file's own header
- * already disqualifies from comparison, and fitting a slope to a contaminated
- * number would manufacture false precision on top of a value already known to
- * be wrong.
+ * Only the eleven scenes swept 2026-08-27 have a model.
  */
 export interface SceneCostModel {
   /** Ms this scene costs regardless of internal resolution. */

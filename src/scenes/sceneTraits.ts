@@ -95,8 +95,8 @@ function derive(c: SceneCharacter): SceneTraits {
  * keys listed replace the derived value. Roster checked against `scenes/index.ts` + `scenes/character.ts`.
  *
  * `radial` (authored for every scene that is, or is not, symmetric about the centre):
- *  - kifs .95 / snowflake .95 / kaleido 1: literal fold counts (rose window, six-fold crystal, ring mandala).
- *  - travelling .85: kaleidoscope of eyes; truchet .8: rolling kaleidoscope planes; tunnel .85: one-point tunnel.
+ *  - kifs .95 / snowflake .95: literal fold counts (rose window, six-fold crystal).
+ *  - travelling .85: kaleidoscope of eyes; truchet .8: rolling kaleidoscope planes.
  *  - plasma .75: one hot core spraying filaments outward.
  *  - shock 1 / flare .9: ring and cross flashes centred on the frame (effects, never primaries).
  *  - wireframe .5 / chrome .4 / dissolve .4 / hold .5: one centred hero; wingfold .5 / javazone .5 / beats .5:
@@ -155,14 +155,6 @@ export const TRAIT_OVERRIDES: Readonly<Record<string, Readonly<Partial<SceneTrai
   // --- Cutaways: neutral build fit -----------------------------------------------------------------
   limitless: { buildFit: 0.5 },
   djcam: { buildFit: 0.5 },
-
-  // --- Quarantined scenes whose symmetry is obvious (promotion is free) -----------------------------
-  kaleido: { radial: 1 },
-  tunnel: { radial: 0.85 },
-  inversion: { radial: 0.7 },
-  juliawings: { radial: 0.6 },
-  torusfold: { radial: 0.6 },
-  crystalfold: { radial: 0.6 },
 }
 
 const traitCache = new Map<string, Readonly<SceneTraits>>()

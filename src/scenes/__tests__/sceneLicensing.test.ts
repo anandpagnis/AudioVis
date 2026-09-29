@@ -51,15 +51,28 @@ describe('scene licensing', () => {
 
   it('exercises the real predicate against known-restricted scenes', () => {
     // NOT asserted against the live SCENES roster: a commercial-launch pass
-    // moved every non-original/non-attribution scene out of it into
-    // DISABLED_SCENES, so the live roster can legitimately contain zero
-    // restricted scenes — that is the intended end state, not a gap to guard
-    // against. DISABLED_SCENES exists specifically to hold restricted-licence
-    // scenes, so it is guaranteed non-empty and is what proves the predicate
-    // itself still correctly identifies them.
-    const restricted = DISABLED_SCENES.filter(isNonCommercial)
-    expect(restricted.length).toBeGreaterThan(0)
-    for (const s of restricted) {
+    // moved every non-original/non-attribution scene out of it, so the live
+    // roster can legitimately contain zero restricted scenes — that is the
+    // intended end state, not a gap to guard against. This used to run over
+    // DISABLED_SCENES, which held them; F274 deleted those scenes and left the
+    // quarantine empty, so the restricted and permitted scenes are constructed
+    // here instead — one per licence value, so the predicate is proven on
+    // every posture rather than on whichever ones a roster happens to hold.
+    const withLicense = (license: SceneDef['metadata']['license']): SceneDef => ({
+      id: `__${license}__`,
+      name: `Licence ${license}`,
+      component: SCENES[0].component,
+      metadata: { ...SCENES[0].metadata, license },
+    })
+    for (const l of ['noncommercial', 'unverified'] as const) {
+      expect(isNonCommercial(withLicense(l)), l).toBe(true)
+    }
+    for (const l of ['original', 'attribution'] as const) {
+      expect(isNonCommercial(withLicense(l)), l).toBe(false)
+    }
+    // And anything quarantined today that the predicate flags really is
+    // restricted, as before.
+    for (const s of DISABLED_SCENES.filter(isNonCommercial)) {
       expect(s.metadata.license, s.id).not.toBe('original')
       expect(s.metadata.license, s.id).not.toBe('attribution')
     }
@@ -128,8 +141,8 @@ describe('scene licensing', () => {
     // anything other than "we wrote it", it must say where it came from.
     //
     // Scoped to SCENES, not DISABLED_SCENES, and deliberately: quarantined
-    // scenes cannot ship, and several of them are permanently unclearable
-    // because their pastes recorded no author, title or URL at all (see the
+    // scenes cannot ship, and a quarantined paste can be permanently
+    // unclearable because it recorded no author, title or URL at all (see the
     // DISABLED_SCENES doc comment). Asserting over them would only invite
     // someone to fill the field with something invented to make it green,
     // which destroys the one thing the field is for. The live roster is where
@@ -146,9 +159,10 @@ describe('scene licensing', () => {
 
   it('keeps every provenance record it does have well-formed, quarantine included', () => {
     // Weaker than the roster gate above on purpose. A quarantined scene is not
-    // required to have provenance — nothing truthful exists for six of them —
-    // but a record that IS present is what a future re-enablement or a credits
-    // screen would be built from, so a half-filled one is a trap.
+    // required to have provenance — nothing truthful existed for six of the
+    // ones F274 deleted — but a record that IS present is what a future
+    // re-enablement or a credits screen would be built from, so a half-filled
+    // one is a trap.
     for (const s of [...SCENES, ...DISABLED_SCENES]) {
       const p = s.metadata.provenance
       if (!p) continue

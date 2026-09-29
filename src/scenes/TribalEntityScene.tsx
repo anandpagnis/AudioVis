@@ -10,8 +10,8 @@ import { bipolar, drastic } from './contract'
  * ## Provenance — NOT original work
  *
  * The fractal core is the log-map Julia iteration from @christinacoffin's
- * Shadertoy piece (2015) — the same source as the quarantined `juliawings`
- * (`JuliaWingsScene.tsx`) — iterated on by the owner in Shadertoy (retuned
+ * Shadertoy piece (2015) — the same source as the since-deleted `juliawings`
+ * port (F274) — iterated on by the owner in Shadertoy (retuned
  * framing, line shaping, the three-pose "flap") and then given an eerie pass:
  * eyes placed in the fractal's measured sockets, anti-static, flicker, smoke.
  * A 2026-09-12 provenance audit found this construction derivative of that

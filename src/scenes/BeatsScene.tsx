@@ -115,9 +115,8 @@ import { drastic } from '../engine/sceneParams'
  *    snaps on a tempo re-lock; the JS integral never received that
  *    correction and drifted from the track's real kicks). Now `uBeats` reads
  *    the grid directly each frame — `grid * (1 + energy*0.4) * drastic(speed)`
- *    — the same fix TunnelDriftScene's `uBeatPhase` uses (see that scene's
- *    header, "The glow phase, and why it is not `b.pulse` directly"), with
- *    speed/energy kept as a multiplier ON the grid position rather than the
+ *    — the same fix the since-deleted TunnelDriftScene's `uBeatPhase` used,
+ *    with speed/energy kept as a multiplier ON the grid position rather than the
  *    sole driver of it. At neutral (energy 0, speed dial 0.5) `uBeats` tracks
  *    the real beat position exactly; away from neutral it runs faster/slower
  *    than the track on purpose, same as the old dial did — only the baseline
@@ -131,7 +130,7 @@ import { drastic } from '../engine/sceneParams'
  *    at mount, a multi-radian jump minutes in. Every sibling scene instead
  *    folds a band term into the RATE of a JS-accumulated phase (KifsRoseScene
  *    `st.phase += dt * rate * (1 + s.mids*0.5) * drastic(P.speed)`,
- *    MazeFlightScene/MalachiteScene/NeonJungleScene all the same shape), so
+ *    MazeFlightScene/MalachiteScene all the same shape), so
  *    this scene now does too: `uSpin` (replacing `uMids` as a shader uniform)
  *    is JS-accumulated in `update()` from `dt`, not multiplied against a
  *    growing GLSL value, so the sensitivity to a given mids wobble stays
@@ -142,9 +141,8 @@ import { drastic } from '../engine/sceneParams'
  *    being evaluated (and its constant factor re-applied) on every one of 77
  *    iterations for a value that only needs it once — every sibling raymarch
  *    applies its kick/flash burst ONCE per pixel after the loop instead
- *    (MazeFlightScene's `light` used once inside `shade()`, NeonJungleScene's
- *    `col += NEON*exp(...)*uPortalFlash` one-shot after the march,
- *    KifsRoseScene's `glowAmt` computed once post-loop). The glow term is now
+ *    (MazeFlightScene's `light` used once inside `shade()`, KifsRoseScene's
+ *    `glowAmt` computed once post-loop). The glow term is now
  *    accumulated WITHOUT the kick factor inside the loop, and `exp(uKick*1.4)`
  *    is computed once and applied once to that accumulated subtotal after the
  *    loop — algebraically the same result (the factor is constant, so it was
@@ -247,7 +245,7 @@ export const FRAG = /* glsl */ `
     // glow subtotal after the loop is the exact same result — the constant
     // factor always distributed linearly out of the sum — for one exp() per
     // pixel instead of 77, and it now reads as a one-shot burst (matching
-    // MazeFlightScene/NeonJungleScene/KifsRoseScene's own kick/flash terms)
+    // MazeFlightScene/KifsRoseScene's own kick/flash terms)
     // instead of looking like it compounds per step.
     float kickGlow = exp(uKick * 0.8);
     vec3 glow = vec3(0.0);
@@ -435,7 +433,7 @@ export const BeatsScene = createShaderScene<BeatsState>({
     // `createEmptyFeatures`'s own comment: "the beat grid free-runs at a sane
     // default ... so idle motion is musical rather than frozen"), so a track
     // with no beat grid still turns — the roster's "frozen reads as broken"
-    // rule (cf. KaleidoPulseScene) — with no separate fallback needed here.
+    // rule — with no separate fallback needed here.
     st.beats = beatsPosition(ctx.f.beatIndex, ctx.f.beatProgress, (1 + s.energy * 0.2) * drastic(P.speed))
 
     // Rotation phase (Finding 2): JS-accumulated from `dt` at a tempo-scaled

@@ -173,9 +173,9 @@ describe('advanceEffects', () => {
         candidates: scenes,
         budget: TIER_BUDGET_MS[4],
         tier: 4,
-        // A genuinely expensive subject at the survival tier: 8.77 ms measured,
+        // A genuinely expensive subject at the survival tier: 9.6 ms measured,
         // against a 6.5 ms total frame budget. Nothing else may be admitted.
-        committedMs: slotCostMs('juliawings', 4, 'primary'),
+        committedMs: slotCostMs('mothwings', 4, 'primary'),
       }),
     ).toHaveLength(0)
   })

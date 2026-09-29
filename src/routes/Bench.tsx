@@ -16,10 +16,10 @@ import { BenchStage } from '../bench/BenchStage'
  *
  * Sweeps every registered scene across every quality tier, in isolation, and
  * reports GPU milliseconds per frame. That is the table `performanceCost`
- * should have been set from: today `juliawings`, `torusfold`, `foldpath`,
- * `synthgrid` and `plasma` all carry `high` and are certainly not within 4x of
- * each other, so slotBudget.ts has been allocating against a number assigned by
- * eye.
+ * should have been set from: when this was written `juliawings`, `torusfold`,
+ * `foldpath`, `synthgrid` and `plasma` all carried `high` and were certainly not
+ * within 4x of each other, so slotBudget.ts was allocating against a number
+ * assigned by eye.
  *
  * Three columns, and the pairing is the point:
  *

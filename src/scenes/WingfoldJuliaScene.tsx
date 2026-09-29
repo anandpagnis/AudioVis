@@ -6,7 +6,7 @@ import { PALETTE_RAMP_GLSL } from '../engine/shaderLib'
 /**
  * Wingfold Julia — an animated, beat-locked Julia-set fractal.
  *
- * Started as a clean-room recreation attempt for the (now-disabled, unverified-licence) `juliawings` scene, built
+ * Started as a clean-room recreation attempt for the (since-deleted, unverified-licence) `juliawings` scene, built
  * from nothing but the classic escape-time Julia formula (`z -> z^2 + c`, Gaston Julia, 1918 — public-domain
  * mathematics) plus a fold trick of my own devising. `c` orbits a small circle just outside the Mandelbrot set's
  * main cardioid, which keeps the set richly connected and constantly morphing.

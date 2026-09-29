@@ -529,7 +529,7 @@ export const performanceState: PerformanceState = {
  * stays tuned), asymptotic rather than clamped (so it can never snap), and
  * genuinely independent of how the elapsed time is chopped into frames.
  *
- * This is the same correction TrailLineScene's header already describes for its
+ * This is the same correction the since-deleted TrailLineScene made for its
  * own decay — that lesson simply never reached the shared helper, which is used
  * in seventeen places including the whole camera system.
  */

@@ -14,10 +14,11 @@ import type { EffectTrigger } from '../index'
  * three.js/R3F plumbing: what each scene declares about itself.
  */
 describe('the licensed effect roster (shock / flare / spark / strobe)', () => {
-  it('is exactly four scenes, none of them the withheld orbs', () => {
+  it('is exactly four scenes', () => {
+    // (Used to also assert the withheld `orbs` was not among them; F274
+    // deleted it, and the exact list already says so.)
     const ids = getEffectScenes().map((s) => s.id)
     expect(ids.sort()).toEqual(['flare', 'shock', 'spark', 'strobe'])
-    expect(ids).not.toContain('orbs')
   })
 
   it('is entirely original-licensed — the whole reason this could ship', () => {

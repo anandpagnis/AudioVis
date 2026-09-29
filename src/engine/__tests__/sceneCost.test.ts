@@ -21,11 +21,11 @@ describe('the table itself', () => {
     // A stale row is worse than a missing one: it prices a scene that no longer
     // exists and silently stops pricing the one that replaced it.
     //
-    // DISABLED_SCENES counts. The licence sweep (F105) moved ten measured
-    // scenes out of the live roster without deleting them — files, loaders and
-    // metadata all stay, so re-enabling one is moving its entry back. Dropping
-    // their measurements would mean re-running the bench for a scene that has
-    // not changed a line.
+    // DISABLED_SCENES counts. A quarantined scene keeps its file, loader and
+    // metadata, so re-enabling one is moving its entry back. Dropping its
+    // measurement would mean re-running the bench for a scene that has not
+    // changed a line. (The quarantine is empty since F274, which deleted its
+    // scenes outright — and their rows with them.)
     const known = new Set([...SCENES, ...DISABLED_SCENES].map((s) => s.id))
     for (const id of Object.keys(SCENE_COST_MS)) expect(known.has(id), id).toBe(true)
   })
@@ -51,14 +51,14 @@ describe('the table itself', () => {
 
 describe('sceneCostMs', () => {
   it('reads the measured row when there is one', () => {
-    expect(sceneCostMs('synthgrid', 0)).toBe(SCENE_COST_MS.synthgrid[0])
-    expect(sceneCostMs('synthgrid', 4)).toBe(SCENE_COST_MS.synthgrid[4])
+    expect(sceneCostMs('plasma', 0)).toBe(SCENE_COST_MS.plasma[0])
+    expect(sceneCostMs('plasma', 4)).toBe(SCENE_COST_MS.plasma[4])
   })
 
   it('prefers the measurement over the declared label', () => {
-    // `synthgrid` declares `medium`, whose fallback is 3 ms. It measures 22.35.
+    // `snowflake` declares `low`, whose fallback is 0.5 ms. It measures 3.7.
     // If this ever inverts, the label is back in charge of the budget.
-    expect(sceneCostMs('synthgrid', 0, 'medium')).toBeGreaterThan(FALLBACK_COST_MS.medium[0])
+    expect(sceneCostMs('snowflake', 0, 'low')).toBeGreaterThan(FALLBACK_COST_MS.low[0])
   })
 
   it('falls back to the label for an unmeasured scene', () => {
@@ -78,21 +78,21 @@ describe('sceneCostMs', () => {
    */
   it('returns a usable number for every garbage tier', () => {
     for (const tier of [-1, 0.4, 4.6, 99, NaN, Infinity, -Infinity]) {
-      const ms = sceneCostMs('synthgrid', tier)
+      const ms = sceneCostMs('plasma', tier)
       expect(Number.isFinite(ms), `tier ${tier}`).toBe(true)
       expect(ms, `tier ${tier}`).toBeGreaterThan(0)
     }
   })
 
   it('clamps a tier past the end of the ladder rather than reading undefined', () => {
-    expect(sceneCostMs('synthgrid', 99)).toBe(SCENE_COST_MS.synthgrid[COST_TIERS - 1])
-    expect(sceneCostMs('synthgrid', -5)).toBe(SCENE_COST_MS.synthgrid[0])
+    expect(sceneCostMs('plasma', 99)).toBe(SCENE_COST_MS.plasma[COST_TIERS - 1])
+    expect(sceneCostMs('plasma', -5)).toBe(SCENE_COST_MS.plasma[0])
   })
 })
 
 describe('isSceneCostMeasured', () => {
   it('tells the truth about which scenes have been weighed', () => {
-    expect(isSceneCostMeasured('synthgrid')).toBe(true)
+    expect(isSceneCostMeasured('plasma')).toBe(true)
     expect(isSceneCostMeasured('never-benched')).toBe(false)
   })
 
@@ -108,22 +108,12 @@ describe('isSceneCostMeasured', () => {
     const missing = SCENES.filter((s) => !isSceneCostMeasured(s.id)).map((s) => s.id)
     expect(missing).toEqual([])
   })
-
-  it('does not price the disabled scenes it was never asked to', () => {
-    // `tunnel` and `panic` live in DISABLED_SCENES, so they cannot be composed
-    // and were not in the sweep. They must still price if either is promoted —
-    // through the fallback, pessimistically.
-    for (const id of ['tunnel', 'panic']) {
-      expect(isSceneCostMeasured(id), id).toBe(false)
-      expect(sceneCostMs(id, 0, 'high')).toBe(FALLBACK_COST_MS.high[0])
-    }
-  })
 })
 
 /**
- * The eleven scenes swept 2026-08-27, as distinguished in sceneCost.ts's own
- * comments from the ten quarantined rows swept 2026-08-26 under a different,
- * documented-contaminated methodology.
+ * The eleven scenes swept 2026-08-27. The ten quarantined rows swept
+ * 2026-08-26 under a different, documented-contaminated methodology were
+ * deleted with their scenes (F274).
  */
 const MEASURED_2026_08_27 = [
   'chrome',
@@ -141,9 +131,9 @@ const MEASURED_2026_08_27 = [
 
 describe('SCENE_COST_MODEL — the ms/MP fit (F162/F164 audit)', () => {
   it('models exactly the eleven scenes swept 2026-08-27, no more and no fewer', () => {
-    // The ten quarantined rows carry a documented CPU-timing contamination —
-    // fitting a slope to a number already known to be wrong would manufacture
-    // false precision on top of it, so they must not gain a model.
+    // Every other row came from a different sweep (or a standalone timing)
+    // that recorded no per-cell resolution to fit a slope against, so none of
+    // them may gain a model without a new sweep.
     expect(Object.keys(SCENE_COST_MODEL).sort()).toEqual(MEASURED_2026_08_27)
   })
 
@@ -263,9 +253,9 @@ describe('sceneCostMs — internalMP-aware pricing', () => {
   })
 
   it('falls through to the legacy table for a scene the MP model does not cover', () => {
-    // synthgrid is quarantined — no SCENE_COST_MODEL entry — so passing
+    // mothwings has a measured row but no SCENE_COST_MODEL entry, so passing
     // internalMP must not silently invent a price for it.
-    expect(sceneCostMs('synthgrid', 0, undefined, 8.29)).toBe(SCENE_COST_MS.synthgrid[0])
+    expect(sceneCostMs('mothwings', 0, undefined, 8.29)).toBe(SCENE_COST_MS.mothwings[0])
   })
 
   it('is total for a garbage internalMP: falls back rather than producing NaN', () => {

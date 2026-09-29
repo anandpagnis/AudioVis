@@ -9,8 +9,8 @@ import { sceneCostMs } from './sceneCost'
  *
  * It used to be an abstract unit, priced from a hand-written `low`/`medium`/
  * `high` label through `{ 1, 2, 4 }`. The `/bench` sweep showed that label was
- * unrelated to cost — `synthgrid` is labelled `medium` and costs 18.4 ms, while
- * `pointcloud` is labelled `high` and costs 0.12 ms, so the roster's second
+ * unrelated to cost — `synthgrid` was labelled `medium` and cost 18.4 ms, while
+ * `pointcloud` was labelled `high` and cost 0.12 ms, so the roster's second
  * cheapest scene was charged twice what its most expensive one was. Inside the
  * `medium` label alone the spread is a factor of 650.
  *

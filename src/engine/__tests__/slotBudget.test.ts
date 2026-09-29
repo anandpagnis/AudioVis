@@ -36,22 +36,19 @@ const EXPENSIVE = 'kifs' // 2.97 ms at tier 0 — dearest licensed scene
 const CHEAP = 'maze' // 0.42 ms, and declared `high`, which is its own point
 
 /**
- * A primary that genuinely cannot fund a layer at any tier.
+ * A primary too dear to fund an accent or overlay layer at any tier.
  *
- * Deliberately a QUARANTINED scene, and that is safe here for the one reason
- * the note above cares about: `synthgrid` still has its measured row in
- * `SCENE_COST_MS` (a disabled scene keeps its metadata so re-enabling it is
- * moving one entry back), so it prices from 22.35 ms of measurement rather than
- * from a label.
+ * `mothwings`, measured at 9.6 ms flat (see its SCENE_COST_MS row) — one of
+ * the FORCED_LIVE_OVER_BUDGET exceptions below, and the dearest measured scene
+ * left. This used to be the quarantined `synthgrid` (22.35 ms), kept here
+ * because no licensed scene was dear enough; F274 deleted the quarantine.
  *
- * It has to come from outside the live roster because **nothing inside it is
- * expensive enough any more**. The dearest licensed scene is now 2.97 ms
- * against an 8 ms tier-0 composition budget, so every live scene can fund a
- * layer at every tier. That is a real and welcome change, pinned by its own
- * test below — but it leaves the "budget outranks pool" branch with no live
- * scene able to exercise it.
+ * Unlike `synthgrid` it does not swamp the whole ladder: at tier 0 it leaves
+ * 0.5 ms of the composition budget. That is less than any accent- or
+ * overlay-capable scene costs, so the "budget outranks pool" tests below draw
+ * their layer from those pools rather than from CHEAP, which would still fit.
  */
-const OVER_BUDGET = 'synthgrid'
+const OVER_BUDGET = 'mothwings'
 
 describe('slotCostMs', () => {
   it('charges the measured cost in the primary slot', () => {
@@ -77,7 +74,7 @@ describe('slotCostMs', () => {
     // The headroom the measurement bought, stated as a fact rather than left
     // implicit in fixtures. Every licensed scene now fits inside a tier-0
     // composition budget with room to spare for a second one — which is why
-    // OVER_BUDGET above has to reach outside the roster.
+    // OVER_BUDGET above has to be one of the forced-live exceptions.
     //
     // ## Collect-then-assert, deliberately (F199)
     //
@@ -170,11 +167,11 @@ describe('slotCostMs', () => {
   })
 
   it('falls back to the declared label for a scene the sweep never reached', () => {
-    // Nothing in SCENES needs this today. It is the path for DISABLED_SCENES if
-    // one is promoted, and for any scene added after the sweep — and it must
-    // price pessimistically, not freely. See FALLBACK_COST_MS.
+    // Nothing in SCENES needs this today. It is the path for a DISABLED_SCENES
+    // entry if one is promoted, and for any scene added after the sweep — and
+    // it must price pessimistically, not freely. See FALLBACK_COST_MS.
     const measured = sceneCostMs(CHEAP, 0)
-    expect(slotCostMs('tunnel', 0, 'primary', false, 'high')).toBeGreaterThan(measured)
+    expect(slotCostMs('never-swept', 0, 'primary', false, 'high')).toBeGreaterThan(measured)
   })
 
   it('prices an unknown scene as expensive rather than free', () => {
@@ -252,12 +249,13 @@ describe('canFundOverlap', () => {
   const at = (id: string, tier: number) => slotCostMs(id, tier, 'primary')
 
   it('refuses to crossfade the roster’s two dearest scenes at any tier', () => {
-    // `synthgrid` alone is 22.4 ms at tier 0 — more than a whole 60 Hz frame.
-    // Fading it into `network` is over 44 ms of scene work. The old currency
-    // valued that pair at 2 + 4 units and funded it at tiers 0 and 1.
+    // `mothwings` (9.6 ms) fading into `tribalentity` (7.2 ms) is 16.8 ms of
+    // scene work, over a whole 60 Hz frame on its own. (The pair this was
+    // written against, `synthgrid` into `network`, was over 44 ms; the old
+    // currency valued it at 2 + 4 units and funded it at tiers 0 and 1.)
     for (let tier = 0; tier < TIER_BUDGET_MS.length; tier++) {
       expect(
-        canFundOverlap(TIER_BUDGET_MS[tier], at('synthgrid', tier), at('network', tier), FIXED),
+        canFundOverlap(TIER_BUDGET_MS[tier], at('mothwings', tier), at('tribalentity', tier), FIXED),
         `tier ${tier}`,
       ).toBe(false)
     }
@@ -270,7 +268,7 @@ describe('canFundOverlap', () => {
     // styles were unreachable on any machine sitting at the bottom tier.
     for (let tier = 0; tier < TIER_BUDGET_MS.length; tier++) {
       expect(
-        canFundOverlap(TIER_BUDGET_MS[tier], at(CHEAP, tier), at('kaleido', tier), FIXED),
+        canFundOverlap(TIER_BUDGET_MS[tier], at(CHEAP, tier), at('butterfly', tier), FIXED),
         `tier ${tier}`,
       ).toBe(true)
     }
@@ -289,22 +287,25 @@ describe('canFundOverlap', () => {
   })
 
   it('counts the layers that stay on screen through the fade', () => {
-    // The original regression, now with the real numbers. `network` fading to
-    // `heap` while `ribbons` was live measures 22.4 + 5.9 + 13.1 = 41.4 ms in a
-    // 16.7 ms frame; the old currency called it 4 + 4 of 8 and funded it. That
-    // is where the 33-35 ms transition frames came from.
+    // The original regression: `network` fading to `heap` while `ribbons` was
+    // live measured 22.4 + 5.9 + 13.1 = 41.4 ms in a 16.7 ms frame; the old
+    // currency called it 4 + 4 of 8 and funded it. That is where the 33-35 ms
+    // transition frames came from. Restated on live scenes (F274 deleted that
+    // pair): `kifs` fading to `wingfold` fits tier 0 on its own, and the
+    // `ribbons` layer that stays up through the fade is what tips it over.
     const live = at('ribbons', 0)
+    expect(canFundOverlap(TIER_BUDGET_MS[0], at('kifs', 0), at('wingfold', 0), FIXED)).toBe(true)
     expect(
-      canFundOverlap(TIER_BUDGET_MS[0], at('network', 0), at('heap', 0), FIXED + live),
+      canFundOverlap(TIER_BUDGET_MS[0], at('kifs', 0), at('wingfold', 0), FIXED + live),
     ).toBe(false)
   })
 
   it('treats a first-ever switch (no outgoing scene) as cheaper', () => {
     // Nothing is fading out on the very first commit, so only the incoming
     // scene and the layers count — and that can be the difference.
-    expect(canFundOverlap(TIER_BUDGET_MS[4], 0, at('heap', 4), FIXED)).toBe(true)
-    expect(canFundOverlap(TIER_BUDGET_MS[4], at('heap', 4), at('heap', 4), FIXED)).toBe(true)
-    expect(canFundOverlap(TIER_BUDGET_MS[4], 0, at('juliawings', 4), FIXED)).toBe(false)
+    expect(canFundOverlap(TIER_BUDGET_MS[4], 0, at('kifs', 4), FIXED)).toBe(true)
+    expect(canFundOverlap(TIER_BUDGET_MS[4], at('kifs', 4), at('kifs', 4), FIXED)).toBe(false)
+    expect(canFundOverlap(TIER_BUDGET_MS[4], 0, at(OVER_BUDGET, 4), FIXED)).toBe(false)
   })
 })
 
@@ -356,11 +357,12 @@ describe('composition with the background slot filled', () => {
   })
 
   it('still refuses it under a primary that leaves no room', () => {
-    // The budget outranks the pool. `synthgrid` is 22 ms measured; a ground
-    // layer under it is not a composition, it is a dropped frame.
+    // The budget outranks the pool. `mothwings` is 9.6 ms measured, over the
+    // whole tier-4 composition budget; a ground layer under it is not a
+    // composition, it is a dropped frame.
     const out = composeLayers({
       primaryId: OVER_BUDGET,
-      primaryCost: 'medium',
+      primaryCost: 'high',
       budget: sceneBudget(4),
       tier: 4,
       pools: {
@@ -375,15 +377,16 @@ describe('composition with the background slot filled', () => {
   it('runs a genuinely expensive primary solo at every tier', () => {
     // The old version of this test said "a HIGH primary runs solo from tier 2
     // down", which was a statement about a label. It is now a statement about
-    // 22 ms of measured GPU: `synthgrid` leaves nothing for a layer anywhere on
-    // the ladder, including tier 0.
+    // measured GPU: `mothwings` (9.6 ms) leaves no room for an accent layer
+    // anywhere on the ladder, including tier 0. Its `high` label caps it at
+    // one layer, not zero, so the budget is what empties the slot here.
     for (let tier = 0; tier < TIER_BUDGET_MS.length; tier++) {
       const out = composeLayers({
         primaryId: OVER_BUDGET,
-        primaryCost: 'medium', // its declared label, which is part of the point
+        primaryCost: 'high', // its declared label
         budget: sceneBudget(tier),
         tier,
-        pools: { accent: [SCENES.find((s) => s.id === CHEAP)!] },
+        pools: { accent: SCENES.filter((s) => s.metadata.roles.includes('accent')) },
         mood: 'groove',
         recentIds: [],
       })
@@ -415,8 +418,10 @@ describe('composition with the background slot filled', () => {
     // never add it.
     // sceneBudget, not TIER_BUDGET_MS: the composition is funded out of what is
     // left after the fixed per-frame costs, which is what production passes.
-    const admitted = admitSlots(sceneBudget(3), slotCostMs('heap', 3, 'primary'), [
-      { slot: 'accent', ms: slotCostMs('foldpath', 3, 'accent') },
+    // (Was `heap` + `foldpath`, both deleted in F274: `kifs` at tier 3 leaves
+    // under 2 ms, and an `inkfluid` accent costs 2.5.)
+    const admitted = admitSlots(sceneBudget(3), slotCostMs('kifs', 3, 'primary'), [
+      { slot: 'accent', ms: slotCostMs('inkfluid', 3, 'accent') },
     ])
     expect(admitted).toEqual([])
   })

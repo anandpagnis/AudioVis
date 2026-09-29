@@ -73,9 +73,9 @@ describe('Credits wiring', () => {
   })
 
   it('filters SCENES (the live roster) for non-original licence, not DISABLED_SCENES', () => {
-    // `DISABLED_SCENES` is where every currently-restricted scene actually
-    // lives (see sceneLicensing.test.ts) — importing it here would be the
-    // easy mistake, since it is what currently has non-empty content to show.
+    // `DISABLED_SCENES` is where a restricted scene is held until it clears
+    // review (see sceneLicensing.test.ts) — importing it here would be the
+    // easy mistake whenever it has content to show (it is empty since F274).
     // Credits.tsx must read the live roster so the moment a scene clears
     // review and moves into SCENES, it appears with no code change.
     expect(CREDITS_SRC).toContain("import { SCENES } from '../scenes'")

@@ -179,12 +179,10 @@ part of the model licence) - not verified here.
      declares CC0 (attributed in comments to mrange); `web` is a derivative of
      BigWing's shader, and `travelling` bundles IQ / hg_sdf helper code (MIT)
      whose attribution should be checked against the ISF-style notice rules.
-   - The non-`original` entries in `DISABLED_SCENES` (`panic`, `synthgrid`,
-     `network` are NonCommercial; `tunnel`, `inversion`, `juliawings`,
-     `kaleido`, `orbs`, `trail`, `foldpath`, `torusfold`, `crystalfold`,
-     `lumen` are unverified, several with NOASSERTION provenance; `heap` is
-     CC BY 4.0 and needs attribution) must stay out of commercial builds. See `docs/HANDOFF.md`
-     §6 and `docs/ISSUES.md` F01 / F105 / F178.
+   - The NonCommercial and unverified scenes that sat in `DISABLED_SCENES`
+     were deleted in F274 (2026-09-28, recoverable from git at `206a4bf`);
+     `DISABLED_SCENES` is now empty. See `docs/HANDOFF.md` §6 and
+     `docs/ISSUES.md` F01 / F105 / F178 / F274.
 6. **Publish the notices.** `THIRD_PARTY_NOTICES.md` is not yet reachable by
    end users; decide where to serve it (e.g. a page linked from Credits).
 7. **Screenshots** in `public/proof/` (see inventory): confirm provenance.

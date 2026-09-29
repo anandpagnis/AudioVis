@@ -302,8 +302,8 @@ export const JavaZoneLatticeScene = createShaderScene<JavaZoneState>({
     // `s.energy` term riding on top of the lock, which used to read the raw
     // band straight into the multiplier every frame — a live, unsmoothed
     // signal directly speeding up and slowing down a beat-locked clock reads
-    // as jerky rather than musical. Slewed the same way `GyroidFluxScene`'s
-    // mids term now is, and its own swing cut by more than half (0.4 -> 0.15)
+    // as jerky rather than musical. Slewed the same way the since-deleted
+    // `GyroidFluxScene`'s mids term was, and its own swing cut by more than half (0.4 -> 0.15)
     // for "slow down" — the lock at neutral energy is unchanged either way.
     //
     // Still reported "too fast" after that fix (2026-09-11) — a DIFFERENT

@@ -94,11 +94,11 @@ describe('resolveLayerIds — all-pairs collision', () => {
 
   it('keeps distinct, non-colliding layers', () => {
     const out = resolveLayerIds(
-      { background: 'network', accent: 'ribbons', overlay: null },
+      { background: 'malachite', accent: 'ribbons', overlay: null },
       'wireframe',
       'chrome',
     )
-    expect(out).toEqual({ background: 'network', accent: 'ribbons', overlay: null })
+    expect(out).toEqual({ background: 'malachite', accent: 'ribbons', overlay: null })
   })
 
   it('passes empty slots straight through', () => {
@@ -278,7 +278,7 @@ describe('composeLayers — editorial layer cap', () => {
  * 8.5).
  */
 describe('resolveLayerIds — budget enforcement', () => {
-  const ids = { background: 'orbs', accent: 'ribbons', overlay: 'network' }
+  const ids = { background: 'malachite', accent: 'ribbons', overlay: 'matrix' }
   /** Every layer costs 2 ms, so the arithmetic is easy to read. */
   const msFor = () => 2
 
@@ -291,7 +291,7 @@ describe('resolveLayerIds — budget enforcement', () => {
     // 4 ms buys two of the three. LAYER_ROLES order is background, accent,
     // overlay — so overlay is the one that goes, and the ground layer stays.
     const out = resolveLayerIds(ids, 'wireframe', null, { remaining: 4, msFor })
-    expect(out.background).toBe('orbs')
+    expect(out.background).toBe('malachite')
     expect(out.accent).toBe('ribbons')
     expect(out.overlay).toBeNull()
   })
@@ -315,25 +315,25 @@ describe('resolveLayerIds — budget enforcement', () => {
     // than the frame actually needs.
     const out = resolveLayerIds(ids, 'wireframe', null, {
       remaining: 1,
-      msFor: (id) => (id === 'network' ? 1 : 4),
+      msFor: (id) => (id === 'matrix' ? 1 : 4),
     })
     expect(out.background).toBeNull()
     expect(out.accent).toBeNull()
-    expect(out.overlay).toBe('network')
+    expect(out.overlay).toBe('matrix')
   })
 
   it('still resolves collisions while enforcing the budget', () => {
     // The two rules compose: a layer duplicating the primary is dropped for
     // identity reasons, and its budget is not consumed by the corpse.
     const out = resolveLayerIds(
-      { background: 'wireframe', accent: 'ribbons', overlay: 'network' },
+      { background: 'wireframe', accent: 'ribbons', overlay: 'matrix' },
       'wireframe',
       null,
       { remaining: 4, msFor },
     )
     expect(out.background).toBeNull()
     expect(out.accent).toBe('ribbons')
-    expect(out.overlay).toBe('network')
+    expect(out.overlay).toBe('matrix')
   })
 
   it('is unlimited when no budget is supplied', () => {
@@ -400,7 +400,7 @@ describe('layerPoolForRole', () => {
   it('THE BUG: a compatible set that is entirely primary-only used to starve every layer role', () => {
     // Mood fits a background scene AND a primary-only scene; the SUBJECT is
     // compatible with only the primary-only one — exactly the live-roster
-    // shape (`network`/`orbs`'s compatible lists are primary-only; nothing
+    // shape (`ribbons`/`plasma`'s compatible lists are primary-only; nothing
     // lists `malachite`/`nebula`/`dustfield`/`hold` at all).
     const layerFits = [bg('ground'), primaryOnly('compatible-primary')]
     const compatibleIds = new Set(['compatible-primary'])

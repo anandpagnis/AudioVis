@@ -14,7 +14,7 @@ import { bipolar, drastic } from './contract'
  * angle(a)) + c` over `a = (z.x, |z.y|)`, with the same CX/CY and `trap`
  * accumulation, only the pivot (0.11), clamp floor and constants retuned —
  * which descends from @christinacoffin's Shadertoy Julia piece (2015), the
- * source of the quarantined `juliawings`. So it carries the same
+ * source of the since-deleted `juliawings`. So it carries the same
  * `license: 'unverified'` and provenance record as `tribalentity`, not
  * `original`. Resolving the licence with the author is outstanding.
  *

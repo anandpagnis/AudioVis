@@ -280,8 +280,8 @@ interface NebulaDriftState {
    * Smoothed mid-band level -- feeds the drift-phase-rate nudge and the
    * warp-amount lift, never spikes. Added this pass: both destinations were
    * previously reading raw `s.mids` directly, which is the "raw band feeds
-   * a per-frame rate/multiplier" bug (see GyroidFlux/JavaZoneLattice/
-   * TruchetKaleido/ButterflyField for the same fix elsewhere this session) --
+   * a per-frame rate/multiplier" bug (see JavaZoneLattice/TruchetKaleido/
+   * ButterflyField for the same fix elsewhere this session) --
    * a live envelope that jitters frame-to-frame even under steady mids was
    * landing straight on a dt-integrated rate and on the whole domain-warp
    * field's turbulence amount every frame, so its own frame noise never had

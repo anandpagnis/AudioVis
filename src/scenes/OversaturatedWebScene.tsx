@@ -139,7 +139,7 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  *   terms on x/y. That is BOUNDED motion: each axis turns around and heads
  *   back the moment its own sin() term crests, no matter how smoothly z
  *   itself advances -- the textbook "back and forth" bug, same class as
- *   GyroidFluxScene's old camera-rotation swing (see that file's header).
+ *   GyroidFluxScene's old camera-rotation swing (that scene is since deleted).
  *   Replaced with a helix driven by ONE monotonically-increasing angle
  *   (`pathRadius`/`pathRate`, declared right above `offset()`), which can only
  *   ever revolve one way. `pathA`/`pathB` are gone; see the offset() doc for
@@ -169,8 +169,8 @@ import { TRAVELLING_PULSE_GLSL } from '../engine/shaderLib'
  * position, just missed here because it was added in a separate pass and
  * never connected to the same complaint.
  *
- * `GyroidFluxScene`'s header already worked out why the general fix has to be
- * removal, not damping: "ANY term riding on a rotation ANGLE that rises and
+ * `GyroidFluxScene`'s header (that scene is since deleted) had already worked
+ * out why the general fix has to be removal, not damping: "ANY term riding on a rotation ANGLE that rises and
  * falls makes the camera swing out and back by definition — no amount of
  * smoothing changes that, only removing it from the angle does." A
  * half-rectified or scaled-down `uBeatSin4` would still rise and fall inside
@@ -315,9 +315,9 @@ export const FRAG = /* glsl */ `
   // neither can pan or roll on its own by construction. If a "gentle drift"
   // is wanted back later, it has to be a bounded, EXPLICITLY re-centring
   // wobble (e.g. eased toward 0 between kicks), never a revolving angle --
-  // see this file's own Round 2/3 history and GyroidFluxScene's header for
-  // why a revolving OR oscillating term on camera position/orientation always
-  // reads as shake/pan, regardless of speed or amplitude.
+  // see this file's own Round 2/3 history for why a revolving OR oscillating
+  // term on camera position/orientation always reads as shake/pan, regardless
+  // of speed or amplitude.
 
   const vec4 U = vec4(0.0, 1.0, 2.0, 3.0);
 

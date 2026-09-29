@@ -301,8 +301,8 @@ export function HUD() {
         {keys.map((key) => (
           <label key={key} className="param-row">
             {/* The scene's word, not the canonical name: a human tuning
-                `kaleido` should read "fold", while automation still addresses
-                `density`. Both are true at once, which is the whole point of
+                `wireframe` should read "facets", while automation still addresses
+                `complexity`. Both are true at once, which is the whole point of
                 the label layer. */}
             <span>{paramLabel(contract, mode, key)}</span>
             <input

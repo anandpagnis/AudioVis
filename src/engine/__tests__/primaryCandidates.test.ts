@@ -35,8 +35,11 @@ describe('selectPrimaryCandidates', () => {
   })
 
   it('is not narrowed by the current scene compatibleWith', () => {
-    // The specific pools that used to collapse to wireframe alone.
-    for (const from of ['inversion', 'foldpath', 'torusfold', 'juliawings']) {
+    // The closed clique described above: from inside it, the old intersection
+    // could only ever offer another clique member. (The four scenes originally
+    // pinned here, whose pools collapsed to wireframe alone, were deleted in
+    // F274; an unknown id would silently test wireframe's pool instead.)
+    for (const from of ['wireframe', 'plasma', 'dissolve', 'chrome']) {
       const compatible = new Set(getCompatibleScenes(from).map((c) => c.id))
       const ids = selectPrimaryCandidates('peak', from).map((c) => c.id)
       expect(ids.length, `${from} @ peak`).toBeGreaterThan(1)

@@ -13595,3 +13595,42 @@ per-frame canvas heavy enough to distort the reading.
       every F272 checkpoint from stage 5 on until it is done. Watch for
       shimmer on per-pixel hashes (snowflake's star dust), thin lines and
       point sprites while the scale is moving.
+
+- [x] **F274 · Deleted the 17 DISABLED_SCENES scenes at the user's request, 2026-09-28** —
+      *2026-09-28, user request*
+      `src/scenes/index.ts`, `src/engine/sceneCost.ts`, `src/scenes/character.ts`,
+      `src/scenes/sceneTraits.ts`
+
+      Deleted outright, not re-enabled: `harkonnen`, `gyroid`, `tunnel`, `panic`, `network`,
+      `inversion`, `foldpath`, `torusfold`, `juliawings`, `heap`, `orbs`, `kaleido`, `trail`,
+      `synthgrid`, `crystalfold`, `lumen`, `neonjungle`. Gone with them: their scene files (plus
+      `shaders/kernelPanicGlsl.ts`, used only by `panic`), lazy loaders and registry entries, their
+      `SCENE_COST_MS` rows (the F105 "Quarantined" block, `gyroid`, `harkonnen`, `neonjungle`), their
+      `SCENE_CHARACTER` entries and their `TRAIT_OVERRIDES` rows. All of it is recoverable from git
+      history (last present at `206a4bf`). The 32 live scenes in `SCENES` are unchanged.
+
+      **The quarantine mechanism stays.** `DISABLED_SCENES` and `KNOWN_NC_SOURCE_IDS` in
+      `src/scenes/index.ts` are kept, as empty arrays with their doc comments, as the place the next
+      scene held back on licence, provenance or cost goes; `Credits.tsx`, `sceneLicensing.test.ts`,
+      `characterSelection.test.ts` and `sceneTraits.test.ts` still read them. Tests that used deleted
+      ids as fixtures were retargeted to live scenes (or synthetic `SceneDef`s) with the same
+      property. Two whose whole subject was deleted scenes were removed: `characterSelection.test.ts`
+      "the 14 moods reach at least 30 distinct scenes over the whole authored roster (live +
+      quarantined)" and `sceneCost.test.ts` "does not price the disabled scenes it was never asked to"
+      (`tunnel`/`panic`; the fallback path it pinned is still covered by "falls back to the label for
+      an unmeasured scene").
+
+      **One runtime difference, and it is an improvement.** `preloadAllScenes()` walks every lazy
+      loader, so at `206a4bf` the boot-time idle preload also downloaded and parsed the 17
+      quarantined chunks even though nothing could render them. It now fetches only the 32 live
+      chunks, and the build emits 17 fewer. Rendering, selection, cost, character and traits of the
+      live scenes are unchanged.
+
+      Current-state docs were updated to match: HANDOFF.md (the roster note, and §6's
+      `synthgrid`/`panic` licence blocker and provenance table, now marked resolved), LICENSES.md
+      item 5, and the `bufferScale()` line in 09_Rendering_Engine.md (its only callers were
+      `trail`, `panic` and `synthgrid`, so it has no production caller today). Older entries in
+      this file and the dated CAPABILITIES.md snapshot still name these scenes as history.
+      The live `tribalentity` scene's `provenance.source`, which Credits prints verbatim, named
+      "the quarantined juliawings port"; on the owner's call the juliawings clause was dropped
+      (the source and "no URL recorded" stay).

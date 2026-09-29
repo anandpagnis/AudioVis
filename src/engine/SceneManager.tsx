@@ -702,7 +702,7 @@ export function SceneManager() {
       // next worst first mount, paid exactly once, on the only scene that asks
       // for an env map.
       //
-      // The codebase already assumed this was handled: TrailLineScene cites
+      // The codebase already assumed this was handled: TrailLineScene cited
       // envMap.ts as "PMREM (one-shot prefilter at startup)", and envMap.ts's
       // own header explains the sharing exists so nothing has to "pay PMREM
       // generation per mount". Both were half right — once rather than per

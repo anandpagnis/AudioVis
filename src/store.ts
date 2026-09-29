@@ -1496,8 +1496,8 @@ export const useStore = create<AppState>()(
           ...(p.cues && p.cues.length > 0 ? { cues: p.cues.map((c) => ({ ...c })) } : {}),
           // Only this scene's entry is rewritten. A preset says what one scene
           // should look like, so it must not silently reset the dials on the
-          // other seventeen — a user who tunes `kaleido`, applies a `wireframe`
-          // preset, and comes back expects to find `kaleido` as they left it.
+          // other seventeen — a user who tunes `kifs`, applies a `wireframe`
+          // preset, and comes back expects to find `kifs` as they left it.
           ...(contract
             ? {
                 sceneParams: {

@@ -12,8 +12,8 @@ import { drastic } from '../engine/sceneParams'
  *
  * 1. **Colour now comes from the palette**, not a hardcoded green. The source
  *    shader wrote `vec3 green = vec3(0.05, 1.0, 0.15)` directly; this reads
- *    `uMid`/`uGlow` instead, the same move `HeapCorruptionScene` already makes
- *    for its "healthy phosphor" colour (see `col.a` there). Under most palettes
+ *    `uMid`/`uGlow` instead, the same move the since-deleted
+ *    `HeapCorruptionScene` made for its "healthy phosphor" colour. Under most palettes
  *    that still reads green-adjacent, and under the rest it recolors instead of
  *    fighting the mix.
  * 2. **It is now audio-reactive.** The source was pure `TIME`-driven with no

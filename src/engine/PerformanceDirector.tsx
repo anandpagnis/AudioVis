@@ -103,8 +103,8 @@ export function composeLayers(opts: {
 
   // A scene may only hold ONE slot in a composition.
   //
-  // The pools overlap heavily — `orbs` carries background, accent and overlay
-  // between them — so without this the same scene is picked for two slots, and
+  // The pools overlap heavily — `plasma` and `ribbons` each carry accent and
+  // overlay — so without this the same scene is picked for two slots, and
   // `resolveLayerIds` then drops the later one at mount time for being a
   // duplicate. The composition the director chose and the composition that
   // renders are different, which is the flicker F19 describes: a layer chosen

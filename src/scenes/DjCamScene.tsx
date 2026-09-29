@@ -121,8 +121,7 @@ export function DjCamScene() {
     t.minFilter = THREE.LinearFilter
     t.magFilter = THREE.LinearFilter
     t.generateMipmaps = false
-    // Raw values — the shader does the sRGB->linear decode explicitly, the same
-    // way KernelPanicScene keeps its atlas untouched.
+    // Raw values — the shader does the sRGB->linear decode explicitly.
     t.colorSpace = THREE.NoColorSpace
     return t
   }, [])
