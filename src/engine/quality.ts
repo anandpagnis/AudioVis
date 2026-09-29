@@ -5,9 +5,9 @@ import { TIER_BUDGET_MS } from './slotBudget'
  * Central runtime quality governor — the single source of truth for how hard
  * every heavy scene is allowed to push each frame.
  *
- * The key idea: it scales COMPLEXITY, not just canvas resolution. Fixed-cost
+ * The key idea: it scales COMPLEXITY, not just resolution. Fixed-cost
  * GPU work — the fluid sim's Jacobi passes, the particle count, a raymarcher's
- * per-pixel step count and noise octaves — is invisible to plain DPR scaling
+ * per-pixel step count and noise octaves — is invisible to plain resolution scaling
  * (those targets/buffers/loops don't shrink when the framebuffer does). The
  * governor exposes those knobs directly so an overloaded frame actually makes
  * the expensive scenes lighter, which is the only thing that keeps butter-smooth
@@ -23,7 +23,7 @@ export interface QualityKnobs {
    *
    * Not a device-pixel-ratio multiplier — that was the old shape, and it made
    * one number stand for every scene on every display. The engine now solves
-   * the actual canvas scale from the budget the live composition declares (see
+   * the frame's render scale from the budget the live composition declares (see
    * engine/renderScale.ts); this is the tier's hand on that solve.
    *
    * It scales the BUDGET rather than the resulting scale because budget is in
@@ -156,11 +156,15 @@ const FIXED_TIER: Record<'low' | 'medium' | 'high', number> = { low: 4, medium: 
  * cost about what one undiscounted scene did. The frame stays inside its budget
  * without the transition losing its shape.
  *
- * This is affordable ONLY because a tier's knobs split into two kinds (see
- * RENDER_SCALE_HOLD_SEC in PerfMonitor): complexity is free to change because
- * scenes read `quality.knobs` every frame, while `pixelBudgetScale` costs a
- * renderer resize. The discount therefore touches complexity only — resizing the
- * canvas at the start of every crossfade would cost far more than it saved.
+ * The discount touches complexity only, never `pixelBudgetScale`. Both are free
+ * to change now — scenes read `quality.knobs` every frame, and since F272 stage
+ * 5 a render-scale change is a sub-rect move rather than the renderer resize it
+ * used to be — but they are not equally visible. Complexity moving through a
+ * dissolve cannot be seen; the whole frame's resolution stepping down as every
+ * crossfade starts and back up as it ends would be, twice per transition, which
+ * is the sharpness pumping F272 set out to remove. (The per-scene budgets do dip,
+ * through `resolutionSteps` below — the one resolution saving the user chose to
+ * keep.)
  *
  * Nobody can resolve fine raymarch detail through a one-second dissolve, which
  * is what makes this the cheapest quality in the frame to sell.
@@ -596,8 +600,7 @@ export class QualityGovernor {
     }
     this.ceiling = FIXED_TIER[q]
     // Start AT the ceiling rather than wherever the ladder happens to be: the
-    // setting is an explicit instruction and should look immediate, which is
-    // the same argument PerfMonitor's hold makes for a user-pinned change.
+    // setting is an explicit instruction and should look immediate.
     if (this.tier < this.ceiling) this.setTier(this.ceiling)
   }
 
@@ -628,9 +631,10 @@ export class QualityGovernor {
 
     // Consecutive-overbudget emergency (see the constants' own doc). Tracked
     // and actable BEFORE the SETTLE_SEC gate below, on purpose — the whole
-    // point is reacting faster than the normal hysteresis allows, the same
-    // "a crisis earns an escape hatch" argument PerfMonitor's own
-    // SCALE_EMERGENCY_RATIO makes for the render-scale hold. A transition
+    // point is reacting faster than the normal hysteresis allows ("a crisis
+    // earns an escape hatch" — the argument PerfMonitor's render-scale hold
+    // once made for its own emergency bypass, before F272 stage 5 made scale
+    // steps instant and deleted the hold). A transition
     // discount means the frame is EXPECTED to run heavier for about a
     // second, so the streak is suspended (not merely paused mid-count) for
     // its duration rather than let a normal crossfade read as a crisis.
@@ -865,8 +869,8 @@ export class QualityGovernor {
     const a = this.discount
     const mix = (from: number, to: number) => from + (to - from) * a
 
-    // Resizing the canvas at the start of every crossfade would cost a renderer
-    // reallocation — far more than the discount saves.
+    // The frame's own resolution holds through a crossfade: a step at each end
+    // of every transition would be visible (see TRANSITION_DISCOUNT_TIERS).
     d.pixelBudgetScale = res.pixelBudgetScale
     // The per-scene budgets DO dip through a crossfade (a deliberate saving the
     // user chose to keep, F272) — from the held rung, not the caution rung.

@@ -1,5 +1,5 @@
 import { ProfileAccumulator, type SceneProfile } from './sceneProfile'
-import { FEEDBACK_MS, POST_CHAIN_MS } from '../engine/frameLoad'
+import { FEEDBACK_MS, POST_CHAIN_MS, postChainMP } from '../engine/frameLoad'
 /**
  * Scene cost benchmark: the measurement state machine.
  *
@@ -94,6 +94,14 @@ export interface BenchResult extends BenchCell {
    * routinely at different resolutions.
    */
   internalMP: number | null
+  /**
+   * The canvas's megapixels for that cell, or null alongside a null
+   * {@link internalMP}. Since F272 stage 5 the chain runs in the frame's
+   * sub-rect except its final pass, which upscales to the whole canvas, so the
+   * post-chain diff needs both to price a cell drawn below scale 1 (see
+   * `postChainMP` in frameLoad.ts).
+   */
+  fullMP: number | null
 }
 
 export type BenchPhase = 'warmup' | 'measure' | 'drain' | 'done'
@@ -162,8 +170,9 @@ export class BenchRunner {
   private jsSamples: number[] = []
   private gpuSamples: number[] = []
   private gpuWasSupported = false
-  /** Last value handed to {@link setInternalMP}; recorded with the cell. */
+  /** Last values handed to {@link setInternalMP}; recorded with the cell. */
   private internalMP: number | null = null
+  private fullMP: number | null = null
 
   readonly results: BenchResult[] = []
 
@@ -259,10 +268,12 @@ export class BenchRunner {
    * Called by the harness once per cell, after it has pinned the tier and
    * solved the render scale. Optional: a caller that never calls it gets
    * `internalMP: null` and the post-chain diff below refuses to run rather
-   * than assuming a resolution.
+   * than assuming a resolution. `fullMP` is the canvas the final pass
+   * upscales to; omitted, the frame is taken to fill the canvas.
    */
-  setInternalMP(mp: number): void {
+  setInternalMP(mp: number, fullMP: number = mp): void {
     this.internalMP = mp
+    this.fullMP = fullMP
   }
 
   /** Abandon the run, keeping completed cells. */
@@ -288,6 +299,7 @@ export class BenchRunner {
       // worse than admitting it.
       gpu: this.gpuWasSupported && this.gpuSamples.length > 0 ? stats(this.gpuSamples) : null,
       internalMP: this.internalMP,
+      fullMP: this.fullMP,
     })
     this.profile.reset()
     this.cpuSamples = []
@@ -319,13 +331,19 @@ export function formatResults(results: readonly BenchResult[]): string {
 /** One matched (scene, tier) pair from the two passes. See {@link postChainDelta}. */
 export interface PostChainCell extends BenchCell {
   internalMP: number
+  /** The canvas's megapixels, which the chain's final pass runs at. */
+  fullMP: number
   /** GPU mean with the post chain mounted, in ms. */
   withMs: number
   /** GPU mean without it, in ms. */
   withoutMs: number
   /** `withMs - withoutMs`: the chain's cost at this cell's resolution. */
   deltaMs: number
-  /** {@link deltaMs} normalised by resolution — the number the model wants. */
+  /**
+   * {@link deltaMs} normalised by resolution — the number the model wants.
+   * Divided by `postChainMP(internalMP, fullMP)`, the same split the live
+   * calibration applies, so the two rates are comparable.
+   */
   msPerMP: number
 }
 
@@ -333,7 +351,7 @@ export interface PostChainDelta {
   cells: PostChainCell[]
   /** Median `msPerMP` across matched cells. Median, not mean: see below. */
   medianMsPerMP: number
-  /** What {@link medianMsPerMP} implies at a given reference resolution. */
+  /** What {@link medianMsPerMP} implies for a scale-1 frame of `referenceMP`. */
   atReferenceMs: (referenceMP: number) => number
   /** Cells present in one pass but not usable in the diff, with the reason. */
   skipped: { sceneId: string; tier: number; why: string }[]
@@ -432,14 +450,21 @@ export function postChainDelta(
       continue
     }
     const deltaMs = on.gpu.meanMs - off.gpu.meanMs
+    // Every pass but the last runs in the cell's sub-rect; GradePass upscales it
+    // to the whole canvas (F272 stage 5). Dividing by internal MP alone would
+    // read a cell drawn below scale 1 as a dearer chain, more so the lower the
+    // scale, which is exactly the spread the median above is meant to expose.
+    const fullMP = on.fullMP ?? on.internalMP
+    const pricedMP = postChainMP(on.internalMP, fullMP)
     cells.push({
       sceneId: on.sceneId,
       tier: on.tier,
       internalMP: on.internalMP,
+      fullMP: Math.max(fullMP, on.internalMP),
       withMs: on.gpu.meanMs,
       withoutMs: off.gpu.meanMs,
       deltaMs,
-      msPerMP: on.internalMP > 0 ? deltaMs / on.internalMP : 0,
+      msPerMP: pricedMP > 0 ? deltaMs / pricedMP : 0,
     })
   }
 
@@ -462,10 +487,12 @@ export function postChainDelta(
 /** {@link postChainDelta} as markdown, for pasting into docs/ISSUES.md. */
 export function formatPostChainDelta(d: PostChainDelta, referenceMP: number): string {
   const head =
-    '| scene | tier | MP | GPU no chain | GPU with chain | delta | ms/MP |\n|---|---|---|---|---|---|---|'
+    '| scene | tier | MP | canvas MP | GPU no chain | GPU with chain | delta | ms/MP |\n' +
+    '|---|---|---|---|---|---|---|---|'
   const rows = d.cells.map(
     (c) =>
-      `| ${c.sceneId} | ${c.tier} | ${c.internalMP.toFixed(2)} | ${c.withoutMs.toFixed(2)}` +
+      `| ${c.sceneId} | ${c.tier} | ${c.internalMP.toFixed(2)} | ${c.fullMP.toFixed(2)}` +
+      ` | ${c.withoutMs.toFixed(2)}` +
       ` | ${c.withMs.toFixed(2)} | ${c.deltaMs.toFixed(2)} | ${c.msPerMP.toFixed(3)} |`,
   )
   const v = d.cells.map((c) => c.msPerMP)

@@ -1103,7 +1103,9 @@ export function SceneManager() {
     // here, unlike the identical sum published to `applyFrameLoad` below.
     const budgetMP = renderScale.internalMP(renderScale.applied)
     const fixedMs =
-      postChainMsFor(budgetMP) +
+      // The final pass runs at the canvas's megapixels whatever the scale (F272
+      // stage 5); the rest of the chain, and the three terms below, at the frame's.
+      postChainMsFor(budgetMP, renderScale.fullMP) +
       (feedbackMsFor(performanceState.trails) +
         mirrorRackMs(performanceState.mirror) +
         lensRackMs(performanceState.lens) +
@@ -1287,30 +1289,33 @@ export function SceneManager() {
     )
     // Everything on screen shares one framebuffer at one internal resolution, so
     // the budgets combine rather than compete — see combinePixelBudgets. Set at
-    // priority -100, which is what lets PerfMonitor treat a budget change as this
-    // frame's committed truth and resize immediately instead of holding it.
+    // priority -100; PerfMonitor solves from it at the start of the NEXT frame
+    // (priority -1000), so a budget change lands one frame later, all at once.
     //
-    // Three exclusions, all for the same reason: a change here costs a renderer
-    // resize and a reallocation of the post chain's mip pyramid, so the budget
-    // must only follow what actually needs to own the resolution.
+    // Three exclusions, all for the same reason: a change here is a visible
+    // step in the sharpness of the whole frame. It used to cost a renderer
+    // resize and a reallocation of the post chain as well, which is where the
+    // older reasoning below came from; since F272 stage 5 a step reallocates
+    // nothing, but it is still something a viewer sees, so the budget must only
+    // follow what actually needs to own the resolution.
     //
     //  - The outgoing and warming primaries (`dir !== 1`) are left out, even
     //    though mid-crossfade the frame really is paying for both. Including
-    //    them would resize the canvas twice per transition — once when the
-    //    overlap begins and once when it is pruned — landing a multi-hundred-ms
-    //    stall on each end of a musical transition, which is the exact hitch the
-    //    warm-up machinery exists to prevent. This is the same call the tier
-    //    discount already makes for the same reason (TRANSITION_DISCOUNT_TIERS
-    //    in quality.ts): the overlap is paid for in complexity, which is free to
-    //    change, never in resolution, which is not. The consequence is that one
-    //    resize happens per scene switch rather than two, and it happens as the
-    //    crossfade starts — where it is hidden, exactly as lilim hides it.
+    //    them would step the resolution twice per transition — once when the
+    //    overlap begins and once when it is pruned — on each end of a musical
+    //    transition (and, before stage 5, a multi-hundred-ms stall each time).
+    //    This is the same call the tier discount makes (TRANSITION_DISCOUNT_TIERS
+    //    in quality.ts): the overlap is paid for in complexity, which nobody
+    //    can see move through a dissolve, not in the whole frame's resolution,
+    //    which they can. The consequence is one step per scene switch rather
+    //    than two, as the crossfade starts — where it is hidden, exactly as
+    //    lilim hides it.
     //
     //  - Effects are left out because they are a lifecycle, not a tenancy: a
-    //    firing lasts a couple of seconds, and resizing the canvas for it would
-    //    cost more than the whole effect. Their per-frame cost is already gated,
-    //    on the composition budget above, which is the right instrument for a
-    //    transient.
+    //    firing lasts a couple of seconds, and stepping the resolution for it
+    //    would read as the effect blurring the frame. Their per-frame cost is
+    //    already gated, on the composition budget above, which is the right
+    //    instrument for a transient.
     //
     //  - Layers (background / accent / overlay) are left out too (F272). The
     //    director adds and drops them at section boundaries, and each one used

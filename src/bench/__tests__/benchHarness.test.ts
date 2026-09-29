@@ -8,6 +8,7 @@ import {
   type BenchCell,
   type BenchResult,
 } from '../benchHarness'
+import { postChainMP } from '../../engine/frameLoad'
 
 const OPTS = { warmupFrames: 3, measureFrames: 4, drainFrames: 2 }
 
@@ -195,6 +196,7 @@ describe('postChainDelta', () => {
     tier: number,
     gpuMean: number | null,
     internalMP: number | null = 2,
+    fullMP: number | null = internalMP,
   ): BenchResult => ({
     sceneId,
     tier,
@@ -203,6 +205,7 @@ describe('postChainDelta', () => {
     gpu: gpuMean === null ? null : st(gpuMean),
     profile: {} as BenchResult['profile'],
     internalMP,
+    fullMP,
   })
 
   it('subtracts matched cells and normalises by resolution', () => {
@@ -213,6 +216,28 @@ describe('postChainDelta', () => {
     // The number the model actually wants: what that implies at the reference
     // resolution frameLoad quotes its constants at.
     expect(d.atReferenceMs(2.07)).toBeCloseTo(3.105)
+  })
+
+  it('prices a cell below scale 1 with the final pass at canvas MP, as the live calibration does', () => {
+    // F272 stage 5: GradePass upscales the rect to the whole canvas, so a 2 MP
+    // frame on an 8 MP canvas costs more than 2 MP of chain. Two cells whose
+    // chain costs the same per priced megapixel must report the same rate
+    // whatever their scale; divided by internal MP alone the sub-1 cell would
+    // read ~1.5x dearer.
+    const full = 8
+    const low = 2
+    const perMP = 1.2
+    const deltaFull = perMP * postChainMP(full, full)
+    const deltaLow = perMP * postChainMP(low, full)
+    const d = postChainDelta(
+      [cell('a', 0, 4, full, full), cell('b', 3, 4, low, full)],
+      [cell('a', 0, 4 + deltaFull, full, full), cell('b', 3, 4 + deltaLow, low, full)],
+    )
+    expect(d.cells).toHaveLength(2)
+    expect(d.cells[1].fullMP).toBe(full)
+    expect(d.cells[0].msPerMP).toBeCloseTo(perMP)
+    expect(d.cells[1].msPerMP).toBeCloseTo(perMP)
+    expect(deltaLow / low).toBeGreaterThan(perMP * 1.4)
   })
 
   it('takes the MEDIAN, so one hiccuping cell cannot move the answer', () => {

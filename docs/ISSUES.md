@@ -13588,13 +13588,66 @@ per-frame canvas heavy enough to distort the reading.
         (total bloom energy +3%/-6%) — thin-line scenes are where it could
         show. Every texture read goes through a per-shader `read*` helper for
         stage 5.
+      - Stage 5 review fixes: budgeted-scene targets are sized once for the
+        rect their budget solves to on the FULL frame (`budgetedCapacity`,
+        grow-only), and `createShaderScene`'s sim buffers at 0.6 x full, so a
+        climb never reallocates or wipes a simulation (Limitless melt/mosh);
+        the bench records full-canvas MP and prices the final pass through
+        `postChainMP` like the live calibration; the ISF raw-texture guard
+        covers every EXT/ES3 lod/grad/proj/offset variant and `textureSize`.
+      - Stage 6 done: "Max resolution" dropdown next to Quality in the
+        control panel and the HUD menu — Native (default) / 3840x2160 /
+        2560x1600 / 2560x1440 / 1920x1080 / 1280x720, pixel-count caps
+        (`maxResolution.ts`). `solveRenderScale` applies
+        `min(capScaleFor(maxMP, fullMP), clamp(raw, FLOOR, 1))`, so an
+        explicit cap may go below the floor and the tier ladder works
+        underneath it. Persisted per machine next to `quality`, sanitised on
+        rehydrate (`mergePersistedSettings`), mirrored to the output window
+        through `LOOK_FIELDS`.
+      - **Open: F273** — add the slow glide-up once the user confirms the
+        instant steps. Remind at every checkpoint until done.
       - **Stage 5 must also:** give `<Canvas>` a fixed `dpr` (R3F's
         `configure` re-imposes its `[1, 2]` default on every Canvas render
         when no `dpr` prop is passed — seen on context restore and /demo
         start); make the composer sub-rect EXACTLY `internalW/H`; move
         BenchStage's non-profile `setDpr` onto the rect (or the bench frame
         scales twice); make IsfFilterPass (`uRes` = rect; three filters use
-        gl_FragCoord) and GradePass (`uTexel`) rect-aware.
+        gl_FragCoord) and GradePass (`uTexel`) rect-aware. (All done in
+        stage 5, below.)
+      - Stage 5 done (not yet watched on either machine): the
+        canvas is pinned (`<Canvas dpr>` = min(2, devicePixelRatio), following
+        a display-density change via a `resolution` media query), and a scale
+        step is a per-frame `renderScale.applied = solve()` in PerfMonitor's
+        priority -1000 hook — instant (F273 logs the glide-up). The chain is
+        allocated once at the drawing-buffer size (grow only) and renders in
+        `internalW x internalH`: `RectRenderPass` (the composer's scene pass)
+        aims both buffers each frame, every pass samples through
+        `frameRect.ts`'s `rectUv`/`rectTexel` (texel-centre clamp), history
+        passes keep the rect each stored frame was written at in the target's
+        `viewport` (trails full resolution, echo taps half), the bloom pyramid
+        draws each level into `round(rect * 0.5^(i+1))` with an exact
+        integer-space border test, ISF filters see `uRes` = rect through
+        rect-mapped `IMG_*` functions (a raw `texture2D` in a filter body is now
+        refused at import), and GradePass upscales the rect to the canvas —
+        the shared 5-tap Catmull-Rom on tiers 0-1 while upscaled, bilinear
+        otherwise, CAS at +-1 source texel. Deleted: `pairKey`,
+        `decideTierResize`, `worthReallocating`, `MIN_CLIMB_PIXEL_RATIO`,
+        `bufferScale`, and PerfMonitor's hold / emergency / coalesce / climb
+        ratchet and the `frameSampler.suspend()` on a scale change.
+        `frameLoad` prices the final pass at full MP (`FINAL_PASS_SHARE` 0.15,
+        an estimate between two M1 single-pass figures). The bench's cost pass
+        draws into the same rect of its pinned canvas. GPU check (browser pane,
+        WebGL2, 1280x800, the real chain with every pass on over a
+        budgeted-blit scene, every buffer poisoned outside its rect before
+        every frame, each run rendered twice with two poison colours): 0
+        differing pixels at 1.0, 0.6, 1.0 -> 0.6, 0.6 -> 1.0 (first frame after
+        the step too), all 8 lens materials, the 8 ISF filters that compile
+        (see below) and tier-3
+        bilinear at 0.4/0.73/0.99; the negative control (one pass forgetting
+        the rect) showed 654,400. 0.6 against 1.0 after a 16x16 box blur: mean
+        1.10/255, max 4.6/255. Every changed shader compiled; the one compile
+        error was the vendored `Broken LCD` filter redeclaring the built-in
+        `sign` (already blocked in `UNUSABLE_FILTERS`, F185).
 
 - [ ] **F273 · REMINDER: add the slow glide-up to resolution changes once the
       user confirms the instant steps** — *2026-09-28, user request*

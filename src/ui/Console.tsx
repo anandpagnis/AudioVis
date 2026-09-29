@@ -29,6 +29,7 @@ const LAYER_SCENES: Record<LayerRole, SceneDef[]> = {
 const EFFECT_SCENES = getEffectScenes()
 import { PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import type { ExportPreset } from '../engine/recorder'
+import { MAX_RESOLUTION_HINT, MAX_RESOLUTION_OPTIONS, type MaxResolution } from '../engine/maxResolution'
 import { useStore } from '../store'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { DebugPanel } from './DebugPanel'
@@ -666,6 +667,7 @@ function PhotoDrop() {
 function LookControls() {
   const params = useStore((s) => s.params)
   const quality = useStore((s) => s.quality)
+  const maxResolution = useStore((s) => s.maxResolution)
   return (
     <>
       <QcSlider label="Intensity" value={params.intensity} onChange={(v) => useStore.getState().setParam('intensity', v)} />
@@ -680,6 +682,21 @@ function LookControls() {
             </button>
           ))}
         </div>
+      </div>
+      <div className="quality-row">
+        <span className="meter-label">max resolution</span>
+        <select
+          className="sel3"
+          value={maxResolution}
+          title={MAX_RESOLUTION_HINT}
+          onChange={(e) => useStore.getState().setMaxResolution(e.target.value as MaxResolution)}
+        >
+          {MAX_RESOLUTION_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
       </div>
     </>
   )

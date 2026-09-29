@@ -6,6 +6,7 @@ import type { TransitionStyle } from './engine/transitions'
 import { disableMidiSync, enableMidiSync } from './audio/MidiClock'
 import { sanitizePreset, type Preset } from './engine/presets'
 import { startRecording, stopRecording, type ExportPreset } from './engine/recorder'
+import { DEFAULT_MAX_RESOLUTION, sanitizeMaxResolution, type MaxResolution } from './engine/maxResolution'
 import { canHoldPrimary, canHoldRole, getSceneContract, preloadScene, resolveSceneMode } from './scenes'
 import { RECENCY_DEPTH } from './scenes/character'
 import {
@@ -487,6 +488,13 @@ interface AppState {
   creditsOpen: boolean
   params: VisualParams
   quality: Quality
+  /**
+   * The user's ceiling on the frame's internal resolution (F272 stage 6; see
+   * maxResolution.ts). Persisted per machine next to `quality` — it describes
+   * this GPU and this panel, not the show — and mirrored to the output window,
+   * which is where PerfMonitor reads it.
+   */
+  maxResolution: MaxResolution
 
   /**
    * TEMPORARY: manual override VALUES for the post-fx fields
@@ -756,6 +764,8 @@ interface AppState {
   /** Return one scene's dials (and mode) to its authored defaults. */
   resetSceneParams: (sceneId: string) => void
   setQuality: (q: Quality) => void
+  /** Set the max render resolution. An unknown value becomes Native. */
+  setMaxResolution: (r: MaxResolution) => void
   /** Patch one or more `debugPostFx` VALUES. Does not by itself put anything
    *  under manual control — see {@link setDebugPostFxOverride}, which every
    *  slider/chip's `onChange` also calls, and {@link DebugPostFx}'s own doc
@@ -840,6 +850,26 @@ function describeStartError(err: unknown): string {
   return err instanceof Error ? err.message : 'Could not start audio capture.'
 }
 
+/**
+ * The persist `merge`: zustand's own default (`{...current, ...persisted}`)
+ * plus a check on `maxResolution` (F272 stage 6). A value this build does not
+ * know — written by a newer build, or edited by hand — would otherwise sit in
+ * the store behind a select with no matching option, and be mirrored to the
+ * output window as-is, while the renderer quietly treated it as Native;
+ * sanitised here, the store says Native too. A persisted value that is not an
+ * object is ignored. Exported for the tests, which run without `localStorage`
+ * and so without `useStore.persist`.
+ */
+export function mergePersistedSettings(persisted: unknown, current: AppState): AppState {
+  if (!persisted || typeof persisted !== 'object') return current
+  const p = persisted as Partial<AppState>
+  return {
+    ...current,
+    ...p,
+    maxResolution: sanitizeMaxResolution(p.maxResolution ?? current.maxResolution),
+  }
+}
+
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
@@ -872,6 +902,7 @@ export const useStore = create<AppState>()(
       creditsOpen: false,
       params: { intensity: 1, speed: 1, reactivity: 1 },
       quality: 'auto',
+      maxResolution: DEFAULT_MAX_RESOLUTION,
       debugPostFx: {
         bloom: 1,
         bloomThreshold: 0.18,
@@ -1467,6 +1498,7 @@ export const useStore = create<AppState>()(
         }),
 
       setQuality: (q) => set({ quality: q }),
+      setMaxResolution: (r) => set({ maxResolution: sanitizeMaxResolution(r) }),
       setDebugPostFx: (patch) => set((s) => ({ debugPostFx: { ...s.debugPostFx, ...patch } })),
       setDebugPostFxOverride: (key, on) =>
         set((s) => ({ debugPostFxOverrides: { ...s.debugPostFxOverrides, [key]: on } })),
@@ -1672,6 +1704,7 @@ export const useStore = create<AppState>()(
         paletteId: s.paletteId,
         params: s.params,
         quality: s.quality,
+        maxResolution: s.maxResolution,
         autoPilot: s.autoPilot,
         moodDrive: s.moodDrive,
         djCamEnabled: s.djCamEnabled,
@@ -1688,6 +1721,7 @@ export const useStore = create<AppState>()(
         micDeviceId: s.micDeviceId,
         djCamDeviceId: s.djCamDeviceId,
       }),
+      merge: mergePersistedSettings,
       onRehydrateStorage: () => (state) => {
         // The engine reads tuning directly (no store subscription in the audio
         // layer) — push the persisted values into it once on load.

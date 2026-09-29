@@ -3,9 +3,11 @@ import {
   applyFrameLoad,
   committedMs,
   FILL_REFERENCE_MP,
+  FINAL_PASS_SHARE,
   frameLoad,
   observePostChainSample,
   postChainCalibration,
+  postChainMP,
   postChainMsFor,
   remainingMs,
   FEEDBACK_MS,
@@ -151,6 +153,61 @@ describe('post-chain calibration', () => {
     observePostChainSample(5, 0, NaN)
     expect(postChainCalibration.msPerMP).toBe(before)
     expect(postChainCalibration.samples).toBe(0)
+  })
+})
+
+/**
+ * F272 stage 5: every pass runs in the frame's sub-rect except the last, which upscales it to the canvas
+ * and so always runs at the canvas's full megapixels. The chain is priced as two terms, one calibrated rate.
+ */
+describe('the final pass is priced at full resolution', () => {
+  const seed = POST_CHAIN_MS / FILL_REFERENCE_MP
+  const FULL = 5.184 // a 2880x1800 canvas
+
+  beforeEach(() => {
+    postChainCalibration.msPerMP = seed
+    postChainCalibration.samples = 0
+  })
+
+  it('changes nothing at scale 1: both terms are the same megapixels', () => {
+    expect(postChainMP(FULL, FULL)).toBeCloseTo(FULL, 12)
+    expect(postChainMsFor(FULL, FULL)).toBeCloseTo(postChainMsFor(FULL), 12)
+  })
+
+  it('below scale 1 the final pass keeps its full-resolution cost while the rest follows the rect', () => {
+    const internal = FULL * 0.36 // scale 0.6
+    const expected = seed * ((1 - FINAL_PASS_SHARE) * internal + FINAL_PASS_SHARE * FULL)
+    expect(postChainMsFor(internal, FULL)).toBeCloseTo(expected, 12)
+    // More than pricing the whole chain at the rect would say, less than at full resolution.
+    expect(postChainMsFor(internal, FULL)).toBeGreaterThan(postChainMsFor(internal))
+    expect(postChainMsFor(internal, FULL)).toBeLessThan(postChainMsFor(FULL))
+  })
+
+  it('does not inflate the calibrated rate at low scale', () => {
+    // A device whose real chain costs `rate` ms per MP of work. At scale 0.6 the GPU timer sees the rect's
+    // share plus the full-size final pass; divided by the internal MP alone that would read as a much
+    // higher per-MP rate the lower the scale went. Divided by the chain's own MP, it reads the same.
+    const rate = 1.1
+    const internal = FULL * 0.36
+    const gpuMs = rate * ((1 - FINAL_PASS_SHARE) * internal + FINAL_PASS_SHARE * FULL)
+    for (let i = 0; i < 600; i++) observePostChainSample(gpuMs, 0, internal, FULL)
+    expect(postChainCalibration.msPerMP).toBeCloseTo(rate, 3)
+    // The same device at full scale converges to the same rate.
+    postChainCalibration.msPerMP = seed
+    for (let i = 0; i < 600; i++) observePostChainSample(rate * FULL, 0, FULL, FULL)
+    expect(postChainCalibration.msPerMP).toBeCloseTo(rate, 3)
+  })
+
+  it('reads a missing or unusable full size as the internal one (the pre-stage-5 reading)', () => {
+    expect(postChainMsFor(2, NaN)).toBeCloseTo(postChainMsFor(2), 12)
+    expect(postChainMsFor(2, 0)).toBeCloseTo(postChainMsFor(2), 12)
+    // A solver that has not seen the display yet (full < internal) is not read as a cheaper final pass.
+    expect(postChainMP(2, 1)).toBeCloseTo(2, 12)
+  })
+
+  it('is an estimate strictly between the two M1 single-pass bounds it was taken from', () => {
+    expect(FINAL_PASS_SHARE).toBeGreaterThan(0.1)
+    expect(FINAL_PASS_SHARE).toBeLessThan(0.17 + 1e-9)
   })
 })
 

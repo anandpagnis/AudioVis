@@ -111,7 +111,7 @@ const FLOOR_TIER = TIER_BUDGET_MS.length - 1
  * suspension-aware EMA as of F198 (see PerfMonitor.tsx), not this one; close
  * enough for a visual marker, not byte-exact. `perf.p95` is NOT reproducible
  * at all: it is the deliberately **unfiltered** display sampler, which
- * includes scene transitions, DPR resizes and shader compiles, while the
+ * includes scene transitions, display resizes and shader compiles, while the
  * governor reads the filtered `frameSampler`-derived figure
  * (`PerfMonitor.tsx:160-164, 418, 488` — the two must not be the same value).
  * Worse, that window is 10 s wide, so ORing it in would pin `FLOOR` on for ten
@@ -211,10 +211,9 @@ export function FpsMeter() {
       }
 
       // `T2` normally; `T3›2` while the render scale is still trailing the
-      // logical tier. The complexity knobs change the instant the tier does —
-      // only the DPR resize waits, deliberately (see RENDER_SCALE_HOLD_SEC in
-      // PerfMonitor), and without this the meter would look stuck on the old
-      // tier for three seconds while the frame was already getting cheaper.
+      // logical tier. Since F272 stage 5 the scale is re-solved at the start of
+      // every frame, so that is one frame at most — the resize hold that used
+      // to make it three seconds is gone.
       const tier =
         perf.appliedTier === perf.tier
           ? `T${perf.tier}`

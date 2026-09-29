@@ -13,9 +13,9 @@ import { Vector4, type Object3D, type ShaderMaterial, type Vector2 } from 'three
  * 0.35 / (baseDpr * applied) of the drawn frame (17.5% on a 2x display at
  * native) — and a shader that builds its coordinates from `gl_FragCoord`
  * against a frame-sized `uRes` drew only that bottom-left fraction of its
- * picture there, blown up to fill the capture: the wipe cropped it. From F272
- * stage 5 the whole frame is drawn into a sub-rect of full-size buffers, and
- * the canvas will not describe that either.
+ * picture there, blown up to fill the capture: the wipe cropped it. Since F272
+ * stage 5 the whole frame is drawn into a sub-rect of full-size buffers, which
+ * the canvas does not describe either.
  *
  * `WebGLRenderer.getCurrentViewport` does: it is the GL viewport in use right
  * now, in physical pixels — a render target's own `.viewport`, or for the

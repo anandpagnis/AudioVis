@@ -318,7 +318,7 @@ describe('GRADE_FRAG structure', () => {
   }
 
   it('runs sharpen, then gain, then the mood grade, then the fog, then the colour-space conversion', () => {
-    const sharpen = at('col = casSharpen(uv, col)')
+    const sharpen = at('col = casSharpen(pos, col)')
     const gain = at('col *= uGain')
     const grade = at('col = moodGrade(col)')
     const fog = at('if (uFog > 0.0001)')
@@ -351,7 +351,7 @@ describe('GRADE_FRAG structure', () => {
     const pass = new GradePass()
     const material = (pass as unknown as { material: ShaderMaterial }).material
     const declared = [...GRADE_FRAG.matchAll(/uniform\s+\w+\s+(\w+);/g)].map((m) => m[1])
-    expect(declared.length).toBe(11)
+    expect(declared.length).toBe(12)
     for (const name of declared) expect(Object.keys(material.uniforms), name).toContain(name)
   })
 

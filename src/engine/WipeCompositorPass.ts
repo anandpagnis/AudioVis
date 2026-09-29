@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
+import { FRAME_RECT_GLSL, rectOf } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
 import {
   buildWipeNoise,
@@ -59,7 +60,13 @@ import {
  *    keeps a hard block-glitch style from ever reading as a brightness flash
  *    the way an uncomplemented pair of masks could.
  *
- * ## Cost discipline (this pass runs at FULL display resolution, so per-pixel work is the cost)
+ * ## The frame's sub-rect (F272 stage 5)
+ *
+ * `tDiffuse` is drawn into a sub-rect of a full-size buffer and is read through `FRAME_RECT_GLSL`'s clamp, like
+ * every pass in the chain. The two captures are not: `TransitionCapture` draws each into the whole of its own
+ * target, so `vUv` (0..1 across the frame) already addresses them.
+ *
+ * ## Cost discipline (this pass runs at the frame's resolution, so per-pixel work is the cost)
  *
  *  - **Divergence early-outs, exact.** `maskIn` is exactly 0 or 1 outside the feather band (`smoothstep`), and
  *    the band is a thin, spatially coherent strip, so most pixels need ONE capture tap, not two. Same output
@@ -101,6 +108,8 @@ const NOISE_OCTAVE_2 = (13 / WIPE_NOISE_CELLS).toFixed(8)
 const WIPE_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
+  /** tDiffuse's rect in its buffer (frameRect.ts). */
+  uniform vec4 uInRect;
   uniform sampler2D uCaptureOut;
   uniform sampler2D uCaptureIn;
   // Baked, tiling value-noise field (R and G are independent lattices) — see buildWipeNoise().
@@ -117,7 +126,7 @@ const WIPE_FRAG = /* glsl */ `
   uniform float uAspect;
   uniform float uBlockCount;
   varying vec2 vUv;
-
+${FRAME_RECT_GLSL}
   // Ported from transitionWipe.ts's hash01(x, y) — same sin/fract formula,
   // same argument order. Keep the two in sync if either changes; they are
   // not expected to ever agree bit-for-bit (see this file's header).
@@ -135,7 +144,7 @@ const WIPE_FRAG = /* glsl */ `
   }
 
   void main() {
-    vec4 base = texture2D(tDiffuse, vUv);
+    vec4 base = texture2D(tDiffuse, rectUv(vUv, uInRect));
     vec3 wipeColor = vec3(0.0);
 
     if (uStyle < 0.5) {
@@ -228,6 +237,7 @@ export class WipeCompositorPass extends Pass {
       depthTest: false,
       uniforms: {
         tDiffuse: { value: null },
+        uInRect: { value: new THREE.Vector4(1, 1, 1, 1) },
         uCaptureOut: { value: null },
         uCaptureIn: { value: null },
         uNoise: { value: null },
@@ -290,6 +300,7 @@ export class WipeCompositorPass extends Pass {
   ): void {
     if (!inputBuffer) return
     this.material.uniforms.tDiffuse.value = inputBuffer.texture
+    rectOf(inputBuffer, this.material.uniforms.uInRect.value)
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
     renderer.render(this.fsScene, this.orthoCamera)
   }

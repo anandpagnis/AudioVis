@@ -2,8 +2,17 @@ import type { ScenePerformanceCost } from '../scenes'
 import { quality } from './quality'
 
 /**
- * Internal-resolution governor: solves the canvas scale from a DECLARED PIXEL
- * BUDGET instead of handing every scene the same fixed multiplier.
+ * Internal-resolution governor: solves the frame's render scale from a DECLARED
+ * PIXEL BUDGET instead of handing every scene the same fixed multiplier.
+ *
+ * Since F272 stage 5 the scale is not a canvas size. The canvas is pinned at
+ * base DPR and every post-chain buffer is allocated once at that size; the
+ * frame is drawn into their bottom-left `internalW x internalH` and `GradePass`
+ * upscales it to the canvas (see frameRect.ts). A scale change is therefore a
+ * number PerfMonitor writes each frame, not a reallocation, which is what let
+ * the resize machinery that used to live here (a hold, a coalesce cooldown, a
+ * climb ratchet, a climb-worth-it gate) be deleted: all of it existed only
+ * because moving the scale used to cost 20-200 ms.
  *
  * ## Why the multiplier was the wrong dial
  *
@@ -45,13 +54,23 @@ import { quality } from './quality'
  *    megapixels, so multiplying budgets is the operation that means "let this
  *    frame do 49% of the work" — which is what a tier is trying to say.
  *
+ * ## The user's ceiling (F272 stage 6)
+ *
+ * The "max render resolution" setting (maxResolution.ts) caps the frame's
+ * megapixels on top of all of the above: the scale is the smaller of the
+ * solve and `sqrt(cap / fullResMegapixels)` ({@link capScaleFor}). It is the
+ * one input allowed below {@link RENDER_SCALE_FLOOR} — the floor protects the
+ * picture from the solver, not from an explicit choice. Only PerfMonitor sets
+ * it, from the store; `/bench` measures uncapped.
+ *
  * ## Determinism
  *
- * The result is a pure function of (combined budget, display, tier). There is
- * no feedback from measured frame time into the scale — that path runs through
- * the tier ladder, which has its own hysteresis. So the scale settles to one
- * value per (scene, display, tier) triple and stays there instead of hunting,
- * which is what stops the sharpness from pulsing while the picture holds still.
+ * The result is a pure function of (combined budget, display, tier, cap). There
+ * is no feedback from measured frame time into the scale — that path runs
+ * through the tier ladder, which has its own hysteresis. So the scale settles to
+ * one value per (scene, display, tier) triple and stays there instead of
+ * hunting, which is what stops the sharpness from pulsing while the picture
+ * holds still.
  */
 
 /**
@@ -60,6 +79,9 @@ import { quality } from './quality'
  * 0.4 linear is 16% of the pixels — past that the picture is mush, and the
  * honest response to a machine that still cannot hold the frame is to drop
  * complexity (which the tier ladder is already doing) rather than resolution.
+ *
+ * A floor on the SOLVE only: the user's max-resolution cap may go below it
+ * (1280x720 on a 5K panel is 0.25), since that is a choice, not a guess.
  */
 export const RENDER_SCALE_FLOOR = 0.4
 
@@ -217,20 +239,48 @@ export function claimsResolution(e: { role: string; dir: number }): boolean {
  * The solve itself. Pure, so tests pin the arithmetic rather than a singleton's
  * accumulated state.
  *
- * Quantised to 1/100 because the value's only consumer is a renderer resize, and
- * a resize costs a full reallocation of the post chain's mip pyramid. A display
- * measured one CSS pixel differently must not buy that; a real change of scene
- * or tier must. 0.01 linear is ~2% of the pixels — below anything a viewer can
- * see and above anything a rounding wobble produces.
+ * Quantised to 1/100. Moving the scale no longer reallocates anything (F272
+ * stage 5), but it is still a visible change of sharpness, and PerfMonitor
+ * applies the solve every frame: a display measured one CSS pixel differently
+ * must not step the picture, and the session log records every change, so a
+ * rounding wobble would be noise in both. A real change of scene or tier moves
+ * it. 0.01 linear is ~2% of the pixels — below anything a viewer can see and
+ * above anything a rounding wobble produces.
  */
-export function solveRenderScale(budgetMP: number, fullMP: number, tierScale = 1): number {
+export function solveRenderScale(
+  budgetMP: number,
+  fullMP: number,
+  tierScale = 1,
+  maxMP = Infinity,
+): number {
   if (!(fullMP > 0) || !isFinite(fullMP)) return 1
+  const cap = capScaleFor(maxMP, fullMP)
   const tier = isFinite(tierScale) && tierScale > 0 ? tierScale : 1
   const budget = budgetMP * tier
-  if (!(budget > 0) || !isFinite(budget)) return 1
+  // An unusable budget falls back to full resolution — but still under the
+  // user's cap, which is a statement about this machine, not about the scene.
+  if (!(budget > 0) || !isFinite(budget)) return cap
   const raw = Math.sqrt(budget / fullMP)
   const clamped = Math.min(1, Math.max(RENDER_SCALE_FLOOR, raw))
-  return Math.round(clamped * 100) / 100
+  // The cap is applied AFTER the floor, so an explicit cap can go below it.
+  return Math.min(cap, Math.round(clamped * 100) / 100)
+}
+
+/**
+ * The linear scale the user's max-resolution cap allows on a display of
+ * `fullMP` (F272 stage 6): `sqrt(maxMP / fullMP)`, on the same 1/100 grid as
+ * the solve and rounded DOWN, so the frame never renders more pixels than the
+ * setting names. 1 when there is no cap (`Infinity`), no usable cap, or a cap
+ * at or above the display; never below 0.01.
+ */
+export function capScaleFor(maxMP: number, fullMP: number): number {
+  if (!(maxMP > 0) || !isFinite(maxMP) || !(fullMP > 0) || !isFinite(fullMP)) return 1
+  if (maxMP >= fullMP) return 1
+  // The epsilon keeps a cap that lands exactly on the grid (0.75 * 0.75 of the
+  // display) from flooring to the step below on a float that came out a hair
+  // under it.
+  const stepped = Math.floor(Math.sqrt(maxMP / fullMP) * 100 + 1e-6) / 100
+  return Math.max(0.01, stepped)
 }
 
 /**
@@ -239,11 +289,18 @@ export function solveRenderScale(budgetMP: number, fullMP: number, tierScale = 1
  * A mutable singleton in the same shape as `performanceState` and `frameLoad`:
  * one writer per input, many readers, nothing allocated in the render loop.
  * `SceneManager` owns the budget (it is the only component that knows every
- * mounted entry); `PerfMonitor` owns the display and applies the result.
+ * mounted entry); `PerfMonitor` owns the display and applies the result, once
+ * per frame, before anything else in the frame reads it.
  */
 export class RenderScaleSolver {
   /** Combined budget of everything currently drawing, in megapixels. */
   budgetMP = NATIVE_PIXEL_BUDGET
+  /**
+   * The user's max-resolution cap in megapixels, `Infinity` for none (F272
+   * stage 6, maxResolution.ts). Written by PerfMonitor from the store; left
+   * alone, and so uncapped, everywhere else.
+   */
+  maxMP = Infinity
   /** Full-resolution megapixels of the live display at base DPR. */
   fullMP = 1
   /** Base device pixel ratio before any scaling — what scale 1 would mean. */
@@ -253,33 +310,18 @@ export class RenderScaleSolver {
   cssH = 0
 
   /**
-   * The scale actually on the canvas right now, written by `PerfMonitor` when
-   * it applies one.
+   * The scale this frame is rendered at: the linear size of the sub-rect the
+   * frame is drawn into, as a fraction of the pinned canvas (F272 stage 5).
    *
-   * Distinct from `solve()`, which is the scale the current inputs ASK for —
-   * the two differ while a tier-driven change is waiting out its hold. Scenes
-   * that own offscreen render targets (as `trail`'s accumulator and `panic`'s
-   * four feedback passes did, before F274 deleted both) size those buffers from
-   * this, which is the only way their
-   * offscreen half is inside the budget at all: those targets are allocated in
-   * CSS pixels and are therefore invisible to the canvas DPR the solve moves.
-   *
-   * Read it, do not write it — the one writer is `applyRenderScale`.
+   * Written once per frame by `PerfMonitor` at the very start of the frame
+   * (priority -1000), so every director, scene and pass in the frame sees the
+   * same rect. It equals `solve()` from then on — steps are instant, by the
+   * user's choice (F273 logs the glide-up for later) — but it is a separate
+   * field because it is the value the frame was actually drawn at, and the
+   * budget `solve()` reads can move mid-frame (SceneManager publishes it at
+   * -100). `/bench` writes it too, pinning each cell's scale.
    */
   applied = 1
-
-  /**
-   * Identity of the current (scene, display) pair.
-   *
-   * PerfMonitor applies a change to this IMMEDIATELY — a scene switch hides its
-   * resize under the crossfade, and a window dragged to another monitor has
-   * already stalled — while a change that comes only from the tier waits out the
-   * hold. Without the distinction the two causes are indistinguishable at the
-   * call site and both would have to wait.
-   */
-  get pairKey(): string {
-    return `${this.budgetMP.toFixed(3)}|${this.fullMP.toFixed(3)}`
-  }
 
   /** Tell the solver what the live display is. CSS pixels plus base DPR. */
   setDisplay(cssWidth: number, cssHeight: number, baseDpr: number): void {
@@ -292,17 +334,16 @@ export class RenderScaleSolver {
 
   /**
    * Pixel size of the frame the scenes are drawn into, at the {@link applied}
-   * scale (F272 stage 3).
+   * scale: the sub-rect of the full-size buffers the whole chain renders in
+   * (F272 stage 5; `frameRect.ts` aims the composer's buffers at exactly this).
    *
-   * Equals the canvas drawing buffer today: R3F's `setDpr` hands three
-   * `baseDpr * applied` as the pixel ratio and three sizes the canvas
-   * `floor(css * pixelRatio)`, which is why the ratio is multiplied out first
-   * here — the same float, floored the same way, gives the same integer. In
-   * F272 stage 5 the canvas is pinned at base DPR and this becomes the
-   * rendered sub-rect instead, so anything that sizes a buffer "to the frame"
-   * reads it from here rather than from `size * viewport.dpr`, which will then
-   * describe the canvas, not the frame. At least 1, so a display not yet laid
-   * out cannot size a zero-pixel target.
+   * The ratio is multiplied out first, `floor(css * (baseDpr * applied))`,
+   * which is how three floors a canvas for the same pixel ratio — at
+   * `applied = 1` this is exactly the pinned canvas's drawing buffer, integer
+   * for integer. Anything that sizes a buffer "to the frame" reads it from
+   * here rather than from `size * viewport.dpr`, which describes the canvas,
+   * not the frame. At least 1, so a display not yet laid out cannot size a
+   * zero-pixel target.
    */
   get internalW(): number {
     return Math.max(1, Math.floor(this.cssW * (this.baseDpr * this.applied)))
@@ -313,10 +354,30 @@ export class RenderScaleSolver {
     return Math.max(1, Math.floor(this.cssH * (this.baseDpr * this.applied)))
   }
 
+  /**
+   * The frame at scale 1 — the pinned canvas's drawing buffer, and the largest
+   * {@link internalW} any scale can produce on this display. What a grow-only
+   * buffer sizes its capacity from, so a later climb of the scale finds the
+   * room already there instead of reallocating mid-show.
+   */
+  get fullW(): number {
+    return Math.max(1, Math.floor(this.cssW * this.baseDpr))
+  }
+
+  /** See {@link fullW}. */
+  get fullH(): number {
+    return Math.max(1, Math.floor(this.cssH * this.baseDpr))
+  }
+
   /** Tell the solver what is drawing. See {@link combinePixelBudgets}. */
   setSceneBudget(mp: number): void {
     if (!isFinite(mp) || mp <= 0) return
     this.budgetMP = mp
+  }
+
+  /** Set the user's cap, in megapixels. Anything unusable means no cap. */
+  setMaxMP(mp: number): void {
+    this.maxMP = mp > 0 ? mp : Infinity
   }
 
   /**
@@ -324,7 +385,7 @@ export class RenderScaleSolver {
    * governor's current one.
    */
   solve(tierScale = quality.knobs.pixelBudgetScale): number {
-    return solveRenderScale(this.budgetMP, this.fullMP, tierScale)
+    return solveRenderScale(this.budgetMP, this.fullMP, tierScale, this.maxMP)
   }
 
   /** Internal megapixels the current scale actually buys — for the debug panel. */
@@ -334,24 +395,6 @@ export class RenderScaleSolver {
 }
 
 export const renderScale = new RenderScaleSolver()
-
-/**
- * Quantise {@link RenderScaleSolver.applied} for a scene sizing its OWN
- * offscreen buffers.
- *
- * Reallocating a feedback target discards its contents — a trail loses its
- * smear, a reaction-diffusion buffer restarts from noise — so a scene must not
- * chase every 0.01 the canvas moves by. Rounding to quarters means the buffers
- * move at most three times between full resolution and the floor, and only when
- * the budget has really changed by something worth paying for.
- *
- * The floor is the solver's own, so a scene buffer never shrinks past what the
- * canvas would.
- */
-export function bufferScale(applied = renderScale.applied): number {
-  const q = Math.round(applied * 4) / 4
-  return Math.min(1, Math.max(RENDER_SCALE_FLOOR, q))
-}
 
 /**
  * Default budget per declared `performanceCost`, for a scene whose cost is
@@ -490,159 +533,4 @@ export function resolvePixelBudget(meta: PixelBudgetInputs, trusted = true): num
       ? (BUDGET_BY_COST[meta.performanceCost] ?? BUDGET_BY_COST.high)
       : NATIVE_PIXEL_BUDGET
   return trusted ? base : Math.min(base, UNTRUSTED_MAX_BUDGET)
-}
-
-/** What the frame loop should do about a tier change. See {@link decideTierResize}. */
-export type TierResizeAction =
-  /** Reallocate now (still subject to the caller's coalesce cooldown). */
-  | 'apply'
-  /** (Re)start the hold clock for this tier. */
-  | 'restart-hold'
-  /** Keep waiting out the hold. */
-  | 'wait'
-
-export interface TierResizeInput {
-  /** Scale the live tier asks for — `renderScale.solve()`. */
-  solved: number
-  /** Scale currently on the canvas — `renderScale.applied`. */
-  applied: number
-  /** Rolling p95 frame time, ms. */
-  p95Ms: number
-  /** Measured display refresh interval, ms. */
-  refreshMs: number
-  /** Is a crossfade in flight? */
-  txActive: boolean
-  /** Is the hold clock already running for THIS tier? */
-  heldForThisTier: boolean
-  /** Seconds the hold clock has been running. */
-  heldForSec: number
-  /** {@link TierResizeInput.p95Ms} multiple past which the hold is abandoned. */
-  emergencyRatio: number
-  /** Seconds a scale-RAISING tier change waits before it is applied. */
-  holdSec: number
-}
-
-/**
- * Should a pending tier change resize the canvas now, or wait? (F157)
- *
- * ## The asymmetry this encodes
- *
- * The hold exists so a tier change that might reverse does not pay a post-chain
- * reallocation for nothing. Every word of that is about a change making the
- * frame MORE expensive. A demote is not a guess about future load — it is the
- * governor having already decided, and holding it means rendering at a
- * resolution the controller has just declared unaffordable. The sibling
- * constant `MAX_RENDER_SCALE_STEP_UP` already states the rule for its own case:
- * *"Downward is never capped: shedding load must land the instant it is asked
- * for."* The hold did not follow it, and this is where it now does.
- *
- * Measured before the change, across three sessions and two window sizes: 22 of
- * 26, then 35 of 41, of the frames over 33 ms fell between a demote and the
- * resize that relieved it — 11% and 21% of session wall-clock. Observed lags
- * 0.43 s to 7.03 s.
- *
- * The 7.03 s case was this decision compounding. Three demotes about 2 s apart,
- * each one failing `heldForThisTier` and restarting the clock, so the ladder
- * conceded three whole rungs while the frame kept paying 4.67 MP throughout.
- * Applying a shed on sight removes that case by construction rather than by
- * tuning: a demote never reaches the hold branch at all.
- *
- * The clearest single sequence, from `audiovis-session-2026-08-30-09-47-58`:
- *
- *     67.42  promote 1 -> 0
- *     72.98  scale 0.91 -> 1.00     5.56 s later, the resize lands
- *     73.10  DEMOTE 0 -> 1          0.12 s after that, the frame collapses
- *     73.4-75.3                     75.6, 67.4, 64.7, 58.3, 50.1 ms
- *     75.55  scale 1.00 -> 0.75     relief, 2.45 s after the demote
- *
- * Five and a half seconds spent climbing to a resolution the machine held for
- * one tenth of a second. Slow up is the hold working; slow down is this bug.
- *
- * ## Why a crossfade still defers a shed
- *
- * The one case where waiting beats shedding. A commit has already reallocated
- * through its own budget change, and stacking a second reallocation on top of
- * it was the biggest cluster of 50-250 ms frames in the older logs. The caller
- * re-evaluates every frame, so this resolves on the first frame after the fade
- * rather than restarting any clock — bounded by the longest transition, under a
- * second, against the 3-7 s the hold was costing.
- *
- * Pure so it can be tested without a GPU or a React tree; the frame loop owns
- * the clock and the refs, this owns the policy.
- */
-export function decideTierResize(i: TierResizeInput): TierResizeAction {
-  // 0.005 is half the 0.01 grid `solveRenderScale` quantises to, so this is
-  // "the solve moved at all", not a tolerance.
-  const shedding = i.solved < i.applied - 0.005
-  const emergency = i.p95Ms > i.refreshMs * i.emergencyRatio
-  if ((shedding && !i.txActive) || emergency) return 'apply'
-  if (!i.heldForThisTier || i.txActive) return 'restart-hold'
-  return i.heldForSec >= i.holdSec ? 'apply' : 'wait'
-}
-
-/**
- * Pixel-count ratio a CLIMB must clear before it is worth a reallocation (F162).
- *
- * ## Why a climb needs a floor and a shed does not
- *
- * A render-scale change is not a cheap write. `PerfMonitor` moves the canvas
- * DPR and `PostFXChain` re-derives the whole chain from the new drawing-buffer
- * size, which reallocates the composer's read/write buffers, the bloom mip
- * pyramid and the feedback history. Measured in
- * `audiovis-session-2026-08-31-16-47-12`, worst frame within 0.15 s of the
- * change, by the scale being LEFT:
- *
- *       0.91 -> 0.75   196.9 ms
- *       0.84 -> 0.70   145.4 ms
- *       0.70 -> 0.59   103.7 ms
- *       0.97 -> 0.80    57.0 ms
- *       0.50 -> 0.63    19.5 ms
- *       0.40 -> 0.50    16.9 ms
- *
- * Against that, what a small change buys. Cost is linear in pixels, so a climb
- * of 6% (0.97 -> 1.00, which this session paid for at 98.75 s) adds about 1 ms
- * to a 16.7 ms frame and adds nothing a viewer can see — 3% more linear
- * resolution. It is the clearest case in the file of paying a two-figure
- * millisecond stall for a change below the threshold of perception.
- *
- * A SHED is the opposite trade and keeps the existing rule: relief is not
- * optional, it is the governor having already decided the frame is
- * unaffordable, and `decideTierResize` exists precisely to make it land on
- * sight. So this gate is asymmetric by construction — the same asymmetry
- * `MAX_RENDER_SCALE_STEP_UP` and `decideTierResize` already state, applied to
- * the third and last place that could pay for a resize nobody asked for.
- *
- * ## Why 1.25, in pixels
- *
- * It is `MAX_RENDER_SCALE_STEP_UP` squared, divided down to the largest value
- * that cannot fight it. The step-up cap is 1.25 LINEAR — 1.5625x the pixels —
- * so a capped climb always clears a 1.25x pixel floor and the ratchet still
- * terminates. Anything above ~1.56 would deadlock the walk: the cap would
- * refuse to take a big enough step for the gate to accept it, and the scale
- * would never climb again.
- *
- * Expressed as pixels rather than linear scale because that is the unit cost is
- * linear in — the same reason `pixelBudgetScale` scales a budget in megapixels
- * rather than naming a resolution.
- */
-export const MIN_CLIMB_PIXEL_RATIO = 1.25
-
-/**
- * Is moving the canvas from `applied` to `next` worth a reallocation? (F162)
- *
- * Total by construction: a non-finite or non-positive argument returns `true`,
- * because the honest response to an input this cannot reason about is to let
- * the resize through rather than to pin the canvas at a stale scale forever.
- *
- * Pure, so the policy is testable without a GPU. The frame loop owns the
- * decision to consult it; see {@link MIN_CLIMB_PIXEL_RATIO} for why climbs and
- * sheds are treated differently.
- */
-export function worthReallocating(applied: number, next: number): boolean {
-  if (!(applied > 0) || !(next > 0) || !isFinite(applied) || !isFinite(next)) return true
-  // Half the 0.01 grid `solveRenderScale` quantises to: "the solve moved at
-  // all", matching `decideTierResize`'s own epsilon.
-  if (next < applied - 0.005) return true // shedding — never gated
-  if (next <= applied + 0.005) return false // no material change either way
-  return (next * next) / (applied * applied) >= MIN_CLIMB_PIXEL_RATIO
 }

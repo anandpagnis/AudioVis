@@ -194,34 +194,95 @@ export const postChainCalibration = {
 const POST_CHAIN_CALIBRATION_ALPHA = 0.02
 
 /**
+ * Share of the post chain's per-megapixel cost that is its FINAL pass,
+ * `GradePass` (F272 stage 5).
+ *
+ * ## Why the chain is no longer one term at one resolution
+ *
+ * Every pass in the chain runs in the frame's sub-rect, at
+ * `renderScale.internalMP`, except the last: `GradePass` upscales that rect to
+ * the canvas and so always runs at the canvas's full megapixels. Priced as one
+ * term against internal MP, a scale drop would have two wrong effects: the
+ * final pass would be charged as if it had got cheaper when it had not, and
+ * the calibration, dividing a measured whole-chain cost by the smaller
+ * internal MP, would read the per-MP rate as rising the lower the scale went —
+ * a machine that sheds resolution would look slower at every step. So the
+ * chain's work is split into the part that follows the rect and the part that
+ * follows the canvas, and one calibrated rate prices both:
+ *
+ *     chain ms = msPerMP * ((1 - share) * internalMP + share * fullMP)
+ *
+ * One rate rather than two keeps the calibration per-device (a single GPU
+ * timer reading cannot be split into two unknowns), and the share is a ratio
+ * of two fullscreen-pass costs on the same GPU, which moves far less between
+ * devices than either absolute does.
+ *
+ * ## Why 0.15
+ *
+ * **ESTIMATE**, from F272's M1 harness at 2880x1800 (ANGLE/Metal): the whole
+ * `BloomFinishPass` stage measured 7.0 ms, and the two single-pass figures
+ * that bracket `GradePass` were a fullscreen RGBA16F read+write, 1.47 ms (a
+ * share of 1.47 / 8.47 = 0.17), and a bilinear upscale into an 8-bit canvas,
+ * ~0.6 ms at 2560x1600 (~0.76 ms scaled to 5.18 MP, a share of ~0.10). The
+ * calibration's gated frame is exactly bloom + grade (trails, racks and
+ * filter off), so those are the right two terms. 0.15 sits between the
+ * bounds, nearer the conservative end. At scale 1 the split changes nothing:
+ * both terms are the same megapixels.
+ */
+export const FINAL_PASS_SHARE = 0.15
+
+/**
+ * The megapixels the chain's work is priced at: internal for every pass but
+ * the last, full for the last. See {@link FINAL_PASS_SHARE}. `fullMP` below
+ * `internalMP` (a solver that has not seen the display yet) is read as equal.
+ */
+export function postChainMP(internalMP: number, fullMP: number): number {
+  const full = Math.max(fullMP, internalMP)
+  return (1 - FINAL_PASS_SHARE) * internalMP + FINAL_PASS_SHARE * full
+}
+
+/**
  * Fold in one gated GPU-timer sample (F238).
  *
  * Every argument is expected to already be the gated, single-primary,
  * nothing-else-live case described on {@link postChainCalibration} — this
  * function trusts the caller for that and only guards against non-finite or
  * degenerate input, the same posture `fillScale` takes on its own argument.
+ *
+ * `fullMP` is the canvas's megapixels, which the final pass runs at whatever
+ * the scale (F272 stage 5, {@link FINAL_PASS_SHARE}). Omitted (or not a
+ * usable number) it is taken as `internalMP`, the pre-stage-5 reading.
  */
-export function observePostChainSample(gpuMs: number, primaryMs: number, internalMP: number): void {
+export function observePostChainSample(
+  gpuMs: number,
+  primaryMs: number,
+  internalMP: number,
+  fullMP: number = internalMP,
+): void {
   if (!isFinite(gpuMs) || gpuMs <= 0) return
   if (!isFinite(primaryMs) || primaryMs < 0) return
   if (!isFinite(internalMP) || internalMP <= 0) return
-  const perMP = Math.max(0, gpuMs - primaryMs) / internalMP
+  const full = isFinite(fullMP) && fullMP > 0 ? fullMP : internalMP
+  const perMP = Math.max(0, gpuMs - primaryMs) / postChainMP(internalMP, full)
   postChainCalibration.msPerMP +=
     (perMP - postChainCalibration.msPerMP) * POST_CHAIN_CALIBRATION_ALPHA
   postChainCalibration.samples += 1
 }
 
 /**
- * The post chain's current reservation for a frame at `internalMP`, from the
- * live calibration rather than a flat `POST_CHAIN_MS * fillScale(...)`.
+ * The post chain's current reservation for a frame at `internalMP` on a
+ * canvas of `fullMP`, from the live calibration rather than a flat
+ * `POST_CHAIN_MS * fillScale(...)`. The final pass is priced at the canvas's
+ * megapixels, the rest at the frame's ({@link FINAL_PASS_SHARE}).
  *
  * Same fallback shape as `fillScale`: a non-finite or non-positive MP (no
  * resolution solved yet) reserves at the reference megapixel count rather
- * than at zero.
+ * than at zero, and an unusable `fullMP` (or none) is taken as `internalMP`.
  */
-export function postChainMsFor(internalMP: number): number {
+export function postChainMsFor(internalMP: number, fullMP: number = internalMP): number {
   const mp = isFinite(internalMP) && internalMP > 0 ? internalMP : FILL_REFERENCE_MP
-  return postChainCalibration.msPerMP * mp
+  const full = isFinite(fullMP) && fullMP > 0 ? fullMP : mp
+  return postChainCalibration.msPerMP * postChainMP(mp, full)
 }
 
 /**

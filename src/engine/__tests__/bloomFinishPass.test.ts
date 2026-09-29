@@ -26,8 +26,9 @@ import {
  * No GL context exists in this suite (vitest runs in `node`), so what is checked is what carries the
  * design without one: the constants the shaders are built from, the level sizes, the composite's stage
  * order, that every declared uniform has a JS value, that every texture read goes through the per-shader
- * helper stage 5 will extend, and the draw sequence against a stub renderer. Whether the GLSL compiles and
- * whether the picture matches the library's is the on-device parity check, and is not faked here.
+ * helper and its rect clamp, and the draw sequence and level rects (F272 stage 5) against a stub renderer.
+ * Whether the GLSL compiles and whether the picture matches the library's is the on-device parity check, and
+ * is not faked here.
  */
 
 type Private = {
@@ -43,49 +44,71 @@ const internals = (pass: BloomFinishPass) => pass as unknown as Private
 /** Declared uniform names in a shader source. */
 const declaredUniforms = (src: string) => [...src.matchAll(/uniform\s+\w+\s+(\w+);/g)].map((m) => m[1])
 
-/** A render target with just the fields the pass reads. */
-function stubBuffer(width: number, height: number, id: string) {
-  return { width, height, texture: { id } } as unknown as THREE.WebGLRenderTarget
+/**
+ * A render target with just the fields the pass reads: its allocation, and the rect (`viewport`) the frame
+ * occupies in it — the whole buffer unless `rectW x rectH` is given.
+ */
+function stubBuffer(width: number, height: number, id: string, rectW = width, rectH = height) {
+  return {
+    width,
+    height,
+    texture: { id },
+    viewport: new THREE.Vector4(0, 0, rectW, rectH),
+    scissor: new THREE.Vector4(0, 0, rectW, rectH),
+    scissorTest: rectW !== width || rectH !== height,
+  } as unknown as THREE.WebGLRenderTarget
 }
 
-/** A stand-in renderer that records every draw: the target, the material and a copy of its uniforms. */
+const v4 = (v: THREE.Vector4) => [v.x, v.y, v.z, v.w]
+
+/** A stand-in renderer that records every draw: the target and its rect, the material and a copy of its uniforms. */
 function stubRenderer() {
   type Draw = {
     target: unknown
+    /** The target's rect when drawn into, [w, h] (null for the screen). */
+    targetRect: [number, number] | null
     material: THREE.ShaderMaterial
     input: unknown
     support: unknown
-    texel: [number, number] | null
+    srcRect: number[] | null
+    supportRect: number[] | null
+    perDst: [number, number] | null
   }
   const draws: Draw[] = []
-  let target: unknown = undefined
+  let target: THREE.WebGLRenderTarget | null = null
   const gl = {
-    setRenderTarget(t: unknown) {
+    setRenderTarget(t: THREE.WebGLRenderTarget | null) {
       target = t
     },
     render(scene: THREE.Scene) {
       const material = (scene.children[0] as THREE.Mesh).material as THREE.ShaderMaterial
       const u = material.uniforms
-      const texel = u.uTexel ? (u.uTexel.value as THREE.Vector2) : null
+      const perDst = u.uSrcPerDst ? (u.uSrcPerDst.value as THREE.Vector2) : null
       draws.push({
         target,
+        targetRect: target ? [target.viewport.z, target.viewport.w] : null,
         material,
         input: u.tDiffuse.value,
         support: u.tSupport?.value,
-        texel: texel ? [texel.x, texel.y] : null,
+        srcRect: u.uSrcRect ? v4(u.uSrcRect.value) : null,
+        supportRect: u.uSupportRect ? v4(u.uSupportRect.value) : null,
+        perDst: perDst ? [perDst.x, perDst.y] : null,
       })
     },
   }
   return { gl: gl as unknown as THREE.WebGLRenderer, draws }
 }
 
+/** What `rectOf` writes for a buffer: its rect, then 1 / its allocation. */
+const rectUniform = (t: THREE.WebGLRenderTarget) => [t.viewport.z, t.viewport.w, 1 / t.width, 1 / t.height]
+
 describe('the constants the shaders are built from', () => {
   it('downsample weights sum to 1 (four inner taps, eight outer taps and the centre)', () => {
     expect(4 * DOWNSAMPLE_WEIGHT_INNER + 9 * DOWNSAMPLE_WEIGHT_OUTER).toBeCloseTo(1, 3)
     for (const src of [BLOOM_DOWNSAMPLE_THRESHOLD_FRAG, BLOOM_DOWNSAMPLE_FRAG]) {
-      expect(src.match(/c \+= W_INNER \* inBorder\(uv\) \* tap\(uv\);/g)).toHaveLength(4)
-      expect(src.match(/c \+= W_OUTER \* inBorder\(uv\) \* tap\(uv\);/g)).toHaveLength(8)
-      expect(src.match(/c \+= W_OUTER \* tap\(vUv\);/g)).toHaveLength(1)
+      expect(src.match(/c \+= W_INNER \* inBorder\(pos\) \* tap\(pos\);/g)).toHaveLength(4)
+      expect(src.match(/c \+= W_OUTER \* inBorder\(pos\) \* tap\(pos\);/g)).toHaveLength(8)
+      expect(src.match(/c \+= W_OUTER \* tap\(p\);/g)).toHaveLength(1)
       expect(src).toContain(`const float W_INNER = ${DOWNSAMPLE_WEIGHT_INNER};`)
       expect(src).toContain(`const float W_OUTER = ${DOWNSAMPLE_WEIGHT_OUTER};`)
     }
@@ -173,13 +196,17 @@ function libraryDownsampleTaps(vert: string, frag: string): Tap[] {
   return taps
 }
 
-/** Ours, tap by tap: `uv = vUv + uTexel * vec2(x, y); c += W_* * inBorder(uv) * tap(uv);`, centre last. */
+/**
+ * Ours, tap by tap: `pos = p + vec2(x, y); c += W_* * inBorder(pos) * tap(pos);`, centre last. `p` is the
+ * fragment's centre in SOURCE texels (the library's `vUv * srcSize`), so an offset of (x, y) source texels
+ * is the library's `texelSize * vec2(x, y)`.
+ */
 function ourDownsampleTaps(frag: string): Tap[] {
   const consts = new Map<string, number>()
   for (const m of frag.matchAll(/const float (W_\w+) = ([\d.]+);/g)) consts.set(m[1], Number(m[2]))
   const taps: Tap[] = []
   const token =
-    /uv = vUv \+ uTexel \* vec2\(\s*([-\d.]+),\s*([-\d.]+)\); c \+= (W_\w+) \* inBorder\(uv\) \* tap\(uv\);|c \+= (W_\w+) \* tap\(vUv\);/g
+    /pos = p \+ vec2\(\s*([-\d.]+),\s*([-\d.]+)\); c \+= (W_\w+) \* inBorder\(pos\) \* tap\(pos\);|c \+= (W_\w+) \* tap\(p\);/g
   for (const m of frag.matchAll(token)) {
     if (m[3]) taps.push({ offset: [Number(m[1]), Number(m[2])], weight: consts.get(m[3])!, clamped: true })
     else taps.push({ offset: [0, 0], weight: consts.get(m[4])!, clamped: false })
@@ -199,10 +226,10 @@ function libraryUpsampleTaps(vert: string, frag: string): Tap[] {
   }))
 }
 
-/** Ours: `c += readSource(vUv + uTexel * vec2(x, y)) * w;`, the centre as `readSource(vUv) * w`. */
+/** Ours: `c += readSource(p + vec2(x, y)) * w;` (offsets in source texels), the centre as `readSource(p) * w`. */
 function ourUpsampleTaps(frag: string): Tap[] {
   return [
-    ...frag.matchAll(/c \+= readSource\(vUv(?: \+ uTexel \* vec2\(\s*([-\d.]+),\s*([-\d.]+)\))?\) \* ([\d.]+);/g),
+    ...frag.matchAll(/c \+= readSource\(p(?: \+ vec2\(\s*([-\d.]+),\s*([-\d.]+)\))?\) \* ([\d.]+);/g),
   ].map((m) => ({
     offset: m[1] === undefined ? ([0, 0] as [number, number]) : ([Number(m[1]), Number(m[2])] as [number, number]),
     weight: Number(m[3]),
@@ -234,7 +261,8 @@ describe("tap for tap against the library's own mip-blur materials (postprocessi
     expect(ourUpsampleTaps(BLOOM_UPSAMPLE_FRAG)).toEqual(theirs)
     // Blended toward the same-size downsample at the pixel itself, by the radius.
     expect(up.fragmentShader).toContain('vec4 baseColor=texture2D(supportBuffer,vUv);gl_FragColor=mix(baseColor,c,radius);')
-    expect(BLOOM_UPSAMPLE_FRAG).toContain('gl_FragColor = mix(readSupport(vUv), c, uRadius);')
+    // Ours reads the support at this fragment's own texel (same size as the destination).
+    expect(BLOOM_UPSAMPLE_FRAG).toContain('gl_FragColor = mix(readSupport(gl_FragCoord.xy), c, uRadius);')
     lib.dispose()
   })
 })
@@ -309,8 +337,25 @@ describe('BloomFinishPass, built without a renderer', () => {
     p.downsampleTargets.forEach((t, i) => expect([t.width, t.height]).toEqual([sizes[i].width, sizes[i].height]))
     p.upsampleTargets.forEach((t, i) => expect([t.width, t.height]).toEqual([sizes[i].width, sizes[i].height]))
     // A degenerate size is clamped rather than handed to GL.
+    const fresh = new BloomFinishPass()
+    fresh.setSize(0, 0)
+    expect(internals(fresh).downsampleTargets[0].width).toBe(1)
+  })
+
+  it('only ever GROWS the pyramid (F272 stage 5): a smaller size keeps the allocation, a larger one extends it', () => {
+    const pass = new BloomFinishPass()
+    const p = internals(pass)
+    pass.setSize(2880, 1800)
+    const big = bloomLevelSizes(2880, 1800)
+    pass.setSize(1280, 720)
     pass.setSize(0, 0)
-    expect(p.downsampleTargets[0].width).toBe(1)
+    p.downsampleTargets.forEach((t, i) => expect([t.width, t.height]).toEqual([big[i].width, big[i].height]))
+    // Taller but narrower: each axis grows on its own, never shrinks.
+    pass.setSize(1920, 2400)
+    const tall = bloomLevelSizes(1920, 2400)
+    p.downsampleTargets.forEach((t, i) =>
+      expect([t.width, t.height]).toEqual([big[i].width, Math.max(big[i].height, tall[i].height)]),
+    )
   })
 
   it('allocates the targets once: a resize reuses the same objects', () => {
@@ -356,19 +401,20 @@ describe('BloomFinishPass, built without a renderer', () => {
     pass.render(gl, input, output)
 
     expect(draws).toHaveLength(BLOOM_LEVELS + (BLOOM_LEVELS - 1) + 1)
-    // Downsamples: level 0 reads the composer's input with the threshold material, texel = 1/input size.
+    // Downsamples: level 0 reads the composer's input with the threshold material; positions in source texels.
     expect(draws[0].material).toBe(p.downsampleThresholdMaterial)
     expect(draws[0].input).toBe(input.texture)
-    expect(draws[0].texel).toEqual([1 / 1920, 1 / 1080])
+    expect(draws[0].srcRect).toEqual([1920, 1080, 1 / 1920, 1 / 1080])
+    expect(draws[0].perDst).toEqual([2, 2])
     expect(draws[0].target).toBe(p.downsampleTargets[0])
     for (let i = 1; i < BLOOM_LEVELS; i++) {
       const src = p.downsampleTargets[i - 1]
       expect(draws[i].material).toBe(p.downsampleMaterial)
       expect(draws[i].input).toBe(src.texture)
-      expect(draws[i].texel).toEqual([1 / src.width, 1 / src.height])
+      expect(draws[i].srcRect).toEqual(rectUniform(src))
       expect(draws[i].target).toBe(p.downsampleTargets[i])
     }
-    // Upsamples: from the smallest downsample, support = same-size downsample, texel = 1/source size.
+    // Upsamples: from the smallest downsample, support = same-size downsample.
     let src = p.downsampleTargets[BLOOM_LEVELS - 1]
     for (let k = 0; k < BLOOM_LEVELS - 1; k++) {
       const i = BLOOM_LEVELS - 2 - k
@@ -376,7 +422,8 @@ describe('BloomFinishPass, built without a renderer', () => {
       expect(d.material).toBe(p.upsampleMaterial)
       expect(d.input).toBe(src.texture)
       expect(d.support).toBe(p.downsampleTargets[i].texture)
-      expect(d.texel).toEqual([1 / src.width, 1 / src.height])
+      expect(d.srcRect).toEqual(rectUniform(src))
+      expect(d.supportRect).toEqual(rectUniform(p.downsampleTargets[i]))
       expect(d.target).toBe(p.upsampleTargets[i])
       src = p.upsampleTargets[i]
     }
@@ -387,6 +434,60 @@ describe('BloomFinishPass, built without a renderer', () => {
     expect(last.target).toBe(output)
     expect(p.compositeMaterial.uniforms.tBloom.value).toBe(p.upsampleTargets[0].texture)
     expect(p.compositeMaterial.uniforms.uAspect.value).toBeCloseTo(1920 / 1080, 12)
+  })
+
+  it("draws each level into its share of the frame's rect, inside the full-size allocation (F272 stage 5)", () => {
+    const pass = new BloomFinishPass()
+    pass.setSize(2880, 1800)
+    const p = internals(pass)
+    // The frame drawn at scale 0.7 into the full-size composer buffers.
+    const input = stubBuffer(2880, 1800, 'input', 2016, 1260)
+    const output = stubBuffer(2880, 1800, 'output', 2016, 1260)
+    const { gl, draws } = stubRenderer()
+    pass.render(gl, input, output)
+
+    const alloc = bloomLevelSizes(2880, 1800)
+    const rects = bloomLevelSizes(2016, 1260)
+    for (let i = 0; i < BLOOM_LEVELS; i++) {
+      const t = p.downsampleTargets[i]
+      // The allocation is untouched by the frame's scale...
+      expect([t.width, t.height]).toEqual([alloc[i].width, alloc[i].height])
+      // ...and the level is drawn into the Math.round chain of the RECT, bottom-left, scissored.
+      expect(v4(t.viewport)).toEqual([0, 0, rects[i].width, rects[i].height])
+      expect(v4(t.scissor)).toEqual([0, 0, rects[i].width, rects[i].height])
+      expect(t.scissorTest).toBe(true)
+      expect(rects[i].width).toBeLessThanOrEqual(t.width)
+      expect(rects[i].height).toBeLessThanOrEqual(t.height)
+      expect(draws[i].targetRect).toEqual([rects[i].width, rects[i].height])
+      if (i < BLOOM_LEVELS - 1) expect(v4(p.upsampleTargets[i].viewport)).toEqual([0, 0, rects[i].width, rects[i].height])
+    }
+    // Level 0 reads the input's RECT (not its allocation) and maps each destination texel onto it.
+    expect(draws[0].srcRect).toEqual([2016, 1260, 1 / 2880, 1 / 1800])
+    expect(draws[0].perDst).toEqual([2016 / rects[0].width, 1260 / rects[0].height])
+    // Each later level reads the one above it through that level's rect and allocation.
+    for (let i = 1; i < BLOOM_LEVELS; i++) {
+      expect(draws[i].srcRect).toEqual([rects[i - 1].width, rects[i - 1].height, 1 / alloc[i - 1].width, 1 / alloc[i - 1].height])
+      expect(draws[i].perDst).toEqual([rects[i - 1].width / rects[i].width, rects[i - 1].height / rects[i].height])
+    }
+    // The composite samples the frame through the input's rect and the bloom map through level 0's.
+    const cu = p.compositeMaterial.uniforms
+    expect(v4(cu.uInputRect.value)).toEqual([2016, 1260, 1 / 2880, 1 / 1800])
+    expect(v4(cu.uBloomRect.value)).toEqual([rects[0].width, rects[0].height, 1 / alloc[0].width, 1 / alloc[0].height])
+    expect(cu.uAspect.value).toBeCloseTo(2016 / 1260, 12)
+  })
+
+  it('an odd rect rounds each level UP, like the allocation, so it still fits', () => {
+    const pass = new BloomFinishPass()
+    pass.setSize(1921, 1081)
+    const p = internals(pass)
+    const { gl } = stubRenderer()
+    pass.render(gl, stubBuffer(1921, 1081, 'in', 1345, 757), stubBuffer(1921, 1081, 'out', 1345, 757))
+    const rects = bloomLevelSizes(1345, 757)
+    p.downsampleTargets.forEach((t, i) => {
+      expect(v4(t.viewport)).toEqual([0, 0, rects[i].width, rects[i].height])
+      expect(t.viewport.z).toBeLessThanOrEqual(t.width)
+      expect(t.viewport.w).toBeLessThanOrEqual(t.height)
+    })
   })
 
   it('writes to the screen when it is the last pass, and swaps buffers like every house pass', () => {
@@ -426,12 +527,17 @@ describe('the shader sources', () => {
     at('if (shift.x != 0.0 || shift.y != 0.0)')
   })
 
-  it('routes every texture read through a per-shader read* helper (the one place F272 stage 5 edits)', () => {
+  it("routes every texture read through a per-shader read* helper that maps it into the source's rect (F272 stage 5)", () => {
     for (const [name, src] of all) {
       const reads = src.match(/texture2D\(/g) ?? []
-      const helpers = src.match(/vec4 read\w+\(vec2 uv\) \{\s*return texture2D\(\w+, uv\);\s*\}/g) ?? []
+      const helpers =
+        src.match(
+          /vec4 read\w+\(vec2 (uv|pos)\) \{\s*return texture2D\(\w+, rect(?:Uv|Texel)\(\1, u\w+Rect\)\);\s*\}/g,
+        ) ?? []
       expect(reads.length, name).toBeGreaterThan(0)
       expect(helpers.length, name).toBe(reads.length)
+      // ...and the rect functions are the shared, clamping ones.
+      expect(src, name).toContain('return clamp(pos, vec2(0.5), rect.xy - 0.5) * rect.zw;')
     }
   })
 
@@ -441,7 +547,12 @@ describe('the shader sources', () => {
 
   it('keeps the library clampToBorder: out-of-range taps weigh zero and are not renormalised', () => {
     for (const src of [BLOOM_DOWNSAMPLE_THRESHOLD_FRAG, BLOOM_DOWNSAMPLE_FRAG]) {
-      expect(src).toContain('return float(uv.s >= 0.0 && uv.s <= 1.0 && uv.t >= 0.0 && uv.t <= 1.0);')
+      // [0, 1] of the texture became [0, w] x [0, h] of the source RECT, in its texel space (F272 stage 5).
+      expect(src).toContain(
+        'return float(pos.x >= 0.0 && pos.x <= uSrcRect.x && pos.y >= 0.0 && pos.y <= uSrcRect.y);',
+      )
+      // From gl_FragCoord, which is exactly a texel centre, so a border tap is an exact integer.
+      expect(src).toContain('vec2 p = gl_FragCoord.xy * uSrcPerDst;')
       expect(src).toMatch(/gl_FragColor = c;/)
     }
   })

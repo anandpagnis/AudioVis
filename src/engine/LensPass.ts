@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
+import { FRAME_RECT_GLSL, rectOf } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
 import {
   isLensActive,
@@ -63,6 +64,8 @@ import {
 const LENS_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
+  /** tDiffuse's rect in its buffer (frameRect.ts, F272 stage 5). */
+  uniform vec4 uInRect;
   uniform float uAmt;
   uniform float uStyle;
   uniform float uAspect;
@@ -73,6 +76,12 @@ const LENS_FRAG = /* glsl */ `
   uniform float uSeed;
   uniform vec4 uRip[${RIP_SLOTS}];
   varying vec2 vUv;
+${FRAME_RECT_GLSL}
+  // Every read of the frame goes through here: a frame coordinate (0..1, anything outside clamps to the
+  // edge, as the old clamp(uv, 0.0, 1.0) did) mapped into the rect, so no refraction can reach a stale texel.
+  vec4 tap(vec2 uv) {
+    return texture2D(tDiffuse, rectUv(uv, uInRect));
+  }
 
   vec2 hash2(vec2 p) {
     return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
@@ -147,8 +156,8 @@ const LENS_FRAG = /* glsl */ `
         float xr = vUv.x + sp.x, xl = vUv.x - sp.x;
         float wr = w * smoothstep(0.0, 0.05, 1.0 - xr);
         float wl = w * smoothstep(0.0, 0.05, xl);
-        st += max(texture2D(tDiffuse, clamp(vUv + sp, 0.0, 1.0)).rgb - 0.55, 0.0) * wr;
-        st += max(texture2D(tDiffuse, clamp(vUv - sp, 0.0, 1.0)).rgb - 0.55, 0.0) * wl;
+        st += max(tap(vUv + sp).rgb - 0.55, 0.0) * wr;
+        st += max(tap(vUv - sp).rgb - 0.55, 0.0) * wl;
       }
       glow = st * fl * 0.22 * vec3(0.8, 0.95, 1.15);
     } else if (uStyle < 3.5) {
@@ -308,7 +317,7 @@ const LENS_FRAG = /* glsl */ `
       float bestOff = 0.0;
       for (int i = 1; i <= SORT_TAPS; i++) {
         float d = float(i) * step0;
-        vec3 s = texture2D(tDiffuse, clamp(vUv + dir * d, 0.0, 1.0)).rgb;
+        vec3 s = tap(vUv + dir * d).rgb;
         float lum = dot(s, vec3(0.299, 0.587, 0.114));
         // A run's real length varies pixel to pixel; a perfectly regular
         // window reads as a repeating grid instead of a sort, so the
@@ -326,9 +335,9 @@ const LENS_FRAG = /* glsl */ `
     // The shared traits, applied to every material: prismatic dispersion (each
     // channel refracts by a slightly different amount), then shade, sheen, glow.
     vec3 col;
-    col.r = texture2D(tDiffuse, clamp(vUv + off * 0.92, 0.0, 1.0)).r;
-    col.g = texture2D(tDiffuse, clamp(vUv + off, 0.0, 1.0)).g;
-    col.b = texture2D(tDiffuse, clamp(vUv + off * 1.08, 0.0, 1.0)).b;
+    col.r = tap(vUv + off * 0.92).r;
+    col.g = tap(vUv + off).g;
+    col.b = tap(vUv + off * 1.08).b;
     if (uStyle > 4.5 && uStyle < 5.5) col = floor(col * 6.0 + 0.5) / 6.0; // posterise the wall
     col *= shade;
     col += sheen * (col + 0.25);
@@ -398,6 +407,7 @@ export class LensPass extends Pass {
       depthTest: false,
       uniforms: {
         tDiffuse: { value: null },
+        uInRect: { value: new THREE.Vector4(1, 1, 1, 1) },
         uAmt: { value: 0 },
         uStyle: { value: 0 },
         uAspect: { value: 1 },
@@ -501,6 +511,7 @@ export class LensPass extends Pass {
   ): void {
     if (!inputBuffer) return
     this.material.uniforms.tDiffuse.value = inputBuffer.texture
+    rectOf(inputBuffer, this.material.uniforms.uInRect.value)
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
     renderer.render(this.fsScene, this.orthoCamera)
   }

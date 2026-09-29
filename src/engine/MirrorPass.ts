@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
+import { FRAME_RECT_GLSL, rectOf } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
 import { isMirrorActive, MIRROR_MIX_DEFAULT, type MirrorRackState } from './opticalRack'
 
@@ -34,6 +35,8 @@ import { isMirrorActive, MIRROR_MIX_DEFAULT, type MirrorRackState } from './opti
 const MIRROR_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
+  /** tDiffuse's rect in its buffer; both reads go through it (frameRect.ts, F272 stage 5). */
+  uniform vec4 uInRect;
   uniform float uSegments;
   uniform float uAspect;
   uniform float uAngle;
@@ -45,13 +48,13 @@ const MIRROR_FRAG = /* glsl */ `
   // even though segments/tiles are counts and still snap to their target.
   uniform float uMix;
   varying vec2 vUv;
-
+${FRAME_RECT_GLSL}
   float hash1(float n) { return fract(sin(n * 127.1) * 43758.5453); }
 
   void main() {
     // Sampled before uv is mutated below, so it is the untouched frame — the
     // blend target on the way out and the whole answer once uMix is 0.
-    vec4 original = texture2D(tDiffuse, vUv);
+    vec4 original = texture2D(tDiffuse, rectUv(vUv, uInRect));
     vec2 uv = vUv;
 
     // slice: alternating shear slabs — architectural, not glitch. Deterministic
@@ -108,7 +111,7 @@ const MIRROR_FRAG = /* glsl */ `
     // lilim shipped that bug (its comment records the upside-down analyser);
     // the constant is copied deliberately, not incidentally.
     uv = abs(fract(uv * 0.5 + 0.5) * 2.0 - 1.0);
-    vec4 mirrored = texture2D(tDiffuse, uv);
+    vec4 mirrored = texture2D(tDiffuse, rectUv(uv, uInRect));
     gl_FragColor = mix(original, mirrored, uMix);
   }
 `
@@ -134,6 +137,7 @@ export class MirrorPass extends Pass {
       depthTest: false,
       uniforms: {
         tDiffuse: { value: null },
+        uInRect: { value: new THREE.Vector4(1, 1, 1, 1) },
         uSegments: { value: 0 },
         uAspect: { value: 1 },
         uAngle: { value: 0 },
@@ -181,6 +185,7 @@ export class MirrorPass extends Pass {
   ): void {
     if (!inputBuffer) return
     this.material.uniforms.tDiffuse.value = inputBuffer.texture
+    rectOf(inputBuffer, this.material.uniforms.uInRect.value)
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
     renderer.render(this.fsScene, this.orthoCamera)
   }

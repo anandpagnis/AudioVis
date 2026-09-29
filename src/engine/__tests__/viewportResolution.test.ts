@@ -156,5 +156,5 @@ describe('runDirectSceneFrame (F272)', () => {
     } finally {
       Object.assign(renderScale, saved)
     }
-  })
+  }, 20_000) // imports the whole scene factory, slow under load
 })

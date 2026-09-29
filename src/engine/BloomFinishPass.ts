@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
+import { FRAME_RECT_GLSL, rectOf, setRect } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
 
 /**
@@ -15,9 +16,16 @@ import { FULLSCREEN_VERT } from './glsl'
  * the texture's own border. This pass reproduces them with code this repo owns, so stage 5 has somewhere
  * to put a rect.
  *
- * It is built at FULL extent today (no sub-rect uniforms yet). Every texture fetch in every shader below
- * goes through a small per-shader `read*` helper, so stage 5 has exactly one line per sampler to add its
- * uv scale/clamp to, rather than a hunt through thirty taps.
+ * ## The frame's sub-rect (F272 stage 5)
+ *
+ * The composer's buffers are full size and the frame is drawn into their bottom-left rect (frameRect.ts). The
+ * pyramid follows it: its fifteen targets are allocated once from the FULL size (and only grow), and each
+ * frame level `i` is drawn into the bottom-left `round(rect * 0.5^(i+1))` of its target, rounded through the
+ * same `Math.round` chain as the allocation ({@link bloomLevelSizes}), so every level's rect fits its
+ * target. Every texture fetch goes through the shader's `read*` helper, which maps into the source's rect and
+ * clamps to its texel centres; the downsample's border test runs in the source rect's own texel space, from
+ * `gl_FragCoord`, so it is exact (see the downsample shader). At full scale every rect is its whole target and
+ * the result is what it was.
  *
  * ## What it reproduces (read against `node_modules/postprocessing/build/index.js`)
  *
@@ -62,10 +70,10 @@ import { FULLSCREEN_VERT } from './glsl'
  * library to float rounding everywhere except taps that land EXACTLY on the frame border (every edge pixel
  * of every level, for an even-sized source). The library's `>= 0.0 && <= 1.0` test keeps those taps; whether
  * a given GPU's interpolation rounds them to just inside or just outside is an accident (the M1 drops them on
- * the left and bottom edges from level 1 down, keeps them at level 0 and on the right and top). Here they
- * are computed in the fragment shader and came out kept on every edge, so the bloom of content touching the
- * left or bottom edge of the frame is a little stronger than the library's on the M1. The aberration and
- * vignette composite matches the library to 2e-6.
+ * the left and bottom edges from level 1 down, keeps them at level 0 and on the right and top). Here the
+ * test is exact (stage 5 moved it into integer texel space) and keeps them on every edge, so the bloom of
+ * content touching the left or bottom edge of the frame is a little stronger than the library's on the M1.
+ * The aberration and vignette composite matches the library to 2e-6.
  *
  * ## No colour-space conversion
  *
@@ -78,10 +86,10 @@ import { FULLSCREEN_VERT } from './glsl'
  *
  * The house pattern (`GradePass`, `FeedbackPass`): a raw `Pass`, a private `Scene` + `OrthographicCamera` +
  * one `PlaneGeometry(2, 2)` mesh whose material is swapped per sub-pass, `needsSwap = true`, and
- * `setSize` sizing the pyramid. The composer calls `setSize` from `addPass` and from every
- * `composer.setSize` (PostFXChain's render-scale resize path), so the pyramid tracks the governor with no
- * wiring of its own. The fifteen targets are allocated once and only ever `setSize`d, which three turns into
- * a GPU reallocation only when the size actually changes. Nothing is allocated per frame.
+ * `setSize` sizing the pyramid. The composer calls `setSize` from `addPass` and from `composer.setSize`,
+ * which since stage 5 happens only on a real display change; the render scale reaches the pyramid through
+ * the rects, set per frame in `render`. The fifteen targets are created once and only ever grown. Nothing is
+ * allocated per frame.
  */
 
 /** Mip levels, the library's `MipmapBlurPass` default (8 downsamples, 7 upsamples). */
@@ -106,7 +114,9 @@ export const BLOOM_FINISH_INITIAL = { intensity: 0.8, threshold: 0.18, darkness:
  * Sizes of the pyramid's levels for a frame of `width` x `height`: level 0 is half the frame, each level
  * after it half the one before, every halving `Math.round`ed exactly as `MipmapBlurPass.setSize` does
  * (so an odd size rounds UP: 1921 -> 961). Downsample `i` and upsample `i` (for i < levels - 1) share
- * size `i`. Pure; allocates, so it is for `setSize` and tests, never the frame loop.
+ * size `i`. The allocation is this of the full size; each frame's level rects are this of the frame's rect
+ * (computed in place in `render`, not by calling this). Rounding is monotonic, so a rect's levels never
+ * exceed the allocation's. Pure; allocates, so it is for `setSize` and tests, never the frame loop.
  */
 export function bloomLevelSizes(
   width: number,
@@ -144,17 +154,19 @@ function downsampleFrag(threshold: boolean): string {
   return /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
-  /** 1 / the SOURCE level's size. */
-  uniform vec2 uTexel;
-${threshold ? '  uniform float uThreshold;\n' : ''}  varying vec2 vUv;
-
-  // Every read of the source goes through here (F272 stage 5 adds its uv scale/clamp in this one place).
-  vec4 readSource(vec2 uv) {
-    return texture2D(tDiffuse, uv);
+  /** The SOURCE's rect: (w, h) in texels, (1 / allocW, 1 / allocH) — frameRect.ts. */
+  uniform vec4 uSrcRect;
+  /** Source texels per destination texel, the source rect over this level's rect (about 2). */
+  uniform vec2 uSrcPerDst;
+${threshold ? '  uniform float uThreshold;\n' : ''}${FRAME_RECT_GLSL}
+  // Every read of the source goes through here: a position in the source rect's texel space, clamped to its
+  // texel centres, so no tap reaches the stale texels outside the rect.
+  vec4 readSource(vec2 pos) {
+    return texture2D(tDiffuse, rectTexel(pos, uSrcRect));
   }
 
-  vec4 tap(vec2 uv) {
-    vec4 t = readSource(uv);${
+  vec4 tap(vec2 pos) {
+    vec4 t = readSource(pos);${
       threshold
         ? `
     // The folded threshold: LuminanceMaterial's colour-output mask, applied per tap.
@@ -165,30 +177,35 @@ ${threshold ? '  uniform float uThreshold;\n' : ''}  varying vec2 vUv;
   }
 
   // The library's clampToBorder: a tap outside the source contributes nothing, and the rest are NOT
-  // renormalised, so the frame's edge darkens the bloom exactly as it did.
-  float inBorder(vec2 uv) {
-    return float(uv.s >= 0.0 && uv.s <= 1.0 && uv.t >= 0.0 && uv.t <= 1.0);
+  // renormalised, so the frame's edge darkens the bloom exactly as it did. Tested against the source RECT, in
+  // its texel space, where a tap on the border lands on an exact integer: gl_FragCoord is exactly a texel
+  // centre and the source is twice the destination for any even size, so the library's edge-of-[0, 1]
+  // rounding accident cannot happen here (see the header).
+  float inBorder(vec2 pos) {
+    return float(pos.x >= 0.0 && pos.x <= uSrcRect.x && pos.y >= 0.0 && pos.y <= uSrcRect.y);
   }
 
   const float W_INNER = ${glf(DOWNSAMPLE_WEIGHT_INNER)};
   const float W_OUTER = ${glf(DOWNSAMPLE_WEIGHT_OUTER)};
 
   void main() {
+    // This fragment's centre in the source's texel space (the library's vUv * srcSize).
+    vec2 p = gl_FragCoord.xy * uSrcPerDst;
     vec4 c = vec4(0.0);
-    vec2 uv;
-    uv = vUv + uTexel * vec2(-1.0,  1.0); c += W_INNER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2( 1.0,  1.0); c += W_INNER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2(-1.0, -1.0); c += W_INNER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2( 1.0, -1.0); c += W_INNER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2(-2.0,  2.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2( 0.0,  2.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2( 2.0,  2.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2(-2.0,  0.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2( 2.0,  0.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2(-2.0, -2.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2( 0.0, -2.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    uv = vUv + uTexel * vec2( 2.0, -2.0); c += W_OUTER * inBorder(uv) * tap(uv);
-    c += W_OUTER * tap(vUv);
+    vec2 pos;
+    pos = p + vec2(-1.0,  1.0); c += W_INNER * inBorder(pos) * tap(pos);
+    pos = p + vec2( 1.0,  1.0); c += W_INNER * inBorder(pos) * tap(pos);
+    pos = p + vec2(-1.0, -1.0); c += W_INNER * inBorder(pos) * tap(pos);
+    pos = p + vec2( 1.0, -1.0); c += W_INNER * inBorder(pos) * tap(pos);
+    pos = p + vec2(-2.0,  2.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    pos = p + vec2( 0.0,  2.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    pos = p + vec2( 2.0,  2.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    pos = p + vec2(-2.0,  0.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    pos = p + vec2( 2.0,  0.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    pos = p + vec2(-2.0, -2.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    pos = p + vec2( 0.0, -2.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    pos = p + vec2( 2.0, -2.0); c += W_OUTER * inBorder(pos) * tap(pos);
+    c += W_OUTER * tap(p);
     gl_FragColor = c;
   }
 `
@@ -206,31 +223,37 @@ export const BLOOM_UPSAMPLE_FRAG = /* glsl */ `
   uniform sampler2D tDiffuse;
   /** The downsample of this level's own size. */
   uniform sampler2D tSupport;
-  /** 1 / the SOURCE (smaller) level's size. */
-  uniform vec2 uTexel;
+  /** The source (smaller) level's rect, and the support's (this level's own) — frameRect.ts. */
+  uniform vec4 uSrcRect;
+  uniform vec4 uSupportRect;
+  /** Source texels per destination texel (about 0.5). */
+  uniform vec2 uSrcPerDst;
   uniform float uRadius;
-  varying vec2 vUv;
-
-  // Every read goes through one of these two (F272 stage 5 adds its uv scale/clamp here).
-  vec4 readSource(vec2 uv) {
-    return texture2D(tDiffuse, uv);
+${FRAME_RECT_GLSL}
+  // Every read goes through one of these two: a position in that texture's rect texel space, clamped to the
+  // rect's texel centres (the library's clamp-to-edge, on the rect instead of the texture).
+  vec4 readSource(vec2 pos) {
+    return texture2D(tDiffuse, rectTexel(pos, uSrcRect));
   }
-  vec4 readSupport(vec2 uv) {
-    return texture2D(tSupport, uv);
+  vec4 readSupport(vec2 pos) {
+    return texture2D(tSupport, rectTexel(pos, uSupportRect));
   }
 
   void main() {
+    // This fragment's centre in the source's texel space (the library's vUv * srcSize).
+    vec2 p = gl_FragCoord.xy * uSrcPerDst;
     vec4 c = vec4(0.0);
-    c += readSource(vUv + uTexel * vec2(-1.0,  1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
-    c += readSource(vUv + uTexel * vec2( 0.0,  1.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
-    c += readSource(vUv + uTexel * vec2( 1.0,  1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
-    c += readSource(vUv + uTexel * vec2(-1.0,  0.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
-    c += readSource(vUv) * ${glf(UPSAMPLE_WEIGHTS.centre)};
-    c += readSource(vUv + uTexel * vec2( 1.0,  0.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
-    c += readSource(vUv + uTexel * vec2(-1.0, -1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
-    c += readSource(vUv + uTexel * vec2( 0.0, -1.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
-    c += readSource(vUv + uTexel * vec2( 1.0, -1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
-    gl_FragColor = mix(readSupport(vUv), c, uRadius);
+    c += readSource(p + vec2(-1.0,  1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
+    c += readSource(p + vec2( 0.0,  1.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
+    c += readSource(p + vec2( 1.0,  1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
+    c += readSource(p + vec2(-1.0,  0.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
+    c += readSource(p) * ${glf(UPSAMPLE_WEIGHTS.centre)};
+    c += readSource(p + vec2( 1.0,  0.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
+    c += readSource(p + vec2(-1.0, -1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
+    c += readSource(p + vec2( 0.0, -1.0)) * ${glf(UPSAMPLE_WEIGHTS.edge)};
+    c += readSource(p + vec2( 1.0, -1.0)) * ${glf(UPSAMPLE_WEIGHTS.corner)};
+    // The support is this level's own size, so its texel is exactly this fragment's.
+    gl_FragColor = mix(readSupport(gl_FragCoord.xy), c, uRadius);
   }
 `
 
@@ -242,6 +265,9 @@ export const BLOOM_COMPOSITE_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
   uniform sampler2D tBloom;
+  /** The frame's rect in the input buffer, and the bloom map's (pyramid level 0's) — frameRect.ts. */
+  uniform vec4 uInputRect;
+  uniform vec4 uBloomRect;
   uniform float uIntensity;
   /** Aberration offset in uv, before the aspect correction. */
   uniform vec2 uCaOffset;
@@ -249,13 +275,14 @@ export const BLOOM_COMPOSITE_FRAG = /* glsl */ `
   uniform float uAspect;
   uniform float uDarkness;
   varying vec2 vUv;
-
-  // Every read goes through one of these two (F272 stage 5 adds its uv scale/clamp here).
+${FRAME_RECT_GLSL}
+  // Every read goes through one of these two: a frame coordinate (0..1) mapped into that texture's rect and
+  // clamped to its texel centres, so the aberration's offset taps cannot reach outside the frame.
   vec4 readInput(vec2 uv) {
-    return texture2D(tDiffuse, uv);
+    return texture2D(tDiffuse, rectUv(uv, uInputRect));
   }
   vec4 readBloom(vec2 uv) {
-    return texture2D(tBloom, uv);
+    return texture2D(tBloom, rectUv(uv, uBloomRect));
   }
 
   void main() {
@@ -314,6 +341,12 @@ function makeMaterial(fragmentShader: string, uniforms: Record<string, THREE.IUn
   })
 }
 
+/** Grow a target to at least `w x h`, never shrinking either axis. A fresh (1 x 1) target always takes the size. */
+function grow(target: THREE.WebGLRenderTarget, w: number, h: number): void {
+  if (target.width >= w && target.height >= h) return
+  target.setSize(Math.max(target.width, w), Math.max(target.height, h))
+}
+
 export class BloomFinishPass extends Pass {
   private readonly downsampleThresholdMaterial: THREE.ShaderMaterial
   private readonly downsampleMaterial: THREE.ShaderMaterial
@@ -336,22 +369,28 @@ export class BloomFinishPass extends Pass {
 
     this.downsampleThresholdMaterial = makeMaterial(BLOOM_DOWNSAMPLE_THRESHOLD_FRAG, {
       tDiffuse: { value: null },
-      uTexel: { value: new THREE.Vector2(1, 1) },
+      uSrcRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+      uSrcPerDst: { value: new THREE.Vector2(2, 2) },
       uThreshold: { value: BLOOM_FINISH_INITIAL.threshold },
     })
     this.downsampleMaterial = makeMaterial(BLOOM_DOWNSAMPLE_FRAG, {
       tDiffuse: { value: null },
-      uTexel: { value: new THREE.Vector2(1, 1) },
+      uSrcRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+      uSrcPerDst: { value: new THREE.Vector2(2, 2) },
     })
     this.upsampleMaterial = makeMaterial(BLOOM_UPSAMPLE_FRAG, {
       tDiffuse: { value: null },
       tSupport: { value: null },
-      uTexel: { value: new THREE.Vector2(1, 1) },
+      uSrcRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+      uSupportRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+      uSrcPerDst: { value: new THREE.Vector2(0.5, 0.5) },
       uRadius: { value: BLOOM_RADIUS },
     })
     this.compositeMaterial = makeMaterial(BLOOM_COMPOSITE_FRAG, {
       tDiffuse: { value: null },
       tBloom: { value: null },
+      uInputRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+      uBloomRect: { value: new THREE.Vector4(1, 1, 1, 1) },
       uIntensity: { value: BLOOM_FINISH_INITIAL.intensity },
       uCaOffset: { value: new THREE.Vector2(0, 0) },
       uAspect: { value: 1 },
@@ -395,14 +434,31 @@ export class BloomFinishPass extends Pass {
     const quad = this.quad
     const down = this.downsampleTargets
     const up = this.upsampleTargets
+    const composite = this.compositeMaterial
+    const inRect = rectOf(inputBuffer, composite.uniforms.uInputRect.value)
+
+    // Aim every level at its share of the frame's rect: the library's Math.round halving chain, run on the
+    // rect instead of the buffer, so the levels fit the targets `setSize` allocated from the full size.
+    let w = inRect.x
+    let h = inRect.y
+    for (let i = 0; i < down.length; i++) {
+      w = Math.max(1, Math.round(w * 0.5))
+      h = Math.max(1, Math.round(h * 0.5))
+      setRect(down[i], w, h)
+      if (i < up.length) setRect(up[i], w, h)
+    }
 
     // Downsample. Level 0 reads the composer's input with the threshold folded in; each later level reads
-    // the one above it. The texel size is always the SOURCE's, as in MipmapBlurPass.
+    // the one above it. Positions are in the SOURCE's texel space, as the library's uTexel was 1 / source.
     let src: THREE.WebGLRenderTarget = inputBuffer
     for (let i = 0; i < down.length; i++) {
       const material = i === 0 ? this.downsampleThresholdMaterial : this.downsampleMaterial
+      const srcRect = rectOf(src, material.uniforms.uSrcRect.value)
       material.uniforms.tDiffuse.value = src.texture
-      ;(material.uniforms.uTexel.value as THREE.Vector2).set(1 / src.width, 1 / src.height)
+      ;(material.uniforms.uSrcPerDst.value as THREE.Vector2).set(
+        srcRect.x / down[i].viewport.z,
+        srcRect.y / down[i].viewport.w,
+      )
       quad.material = material
       renderer.setRenderTarget(down[i])
       renderer.render(this.fsScene, this.orthoCamera)
@@ -411,37 +467,42 @@ export class BloomFinishPass extends Pass {
 
     // Upsample from the smallest downsample back to level 0, each blended toward its same-size downsample.
     const upMaterial = this.upsampleMaterial
+    const uu = upMaterial.uniforms
     quad.material = upMaterial
     for (let i = up.length - 1; i >= 0; i--) {
-      upMaterial.uniforms.tDiffuse.value = src.texture
-      upMaterial.uniforms.tSupport.value = down[i].texture
-      ;(upMaterial.uniforms.uTexel.value as THREE.Vector2).set(1 / src.width, 1 / src.height)
+      uu.tDiffuse.value = src.texture
+      uu.tSupport.value = down[i].texture
+      const srcRect = rectOf(src, uu.uSrcRect.value)
+      rectOf(down[i], uu.uSupportRect.value)
+      ;(uu.uSrcPerDst.value as THREE.Vector2).set(srcRect.x / up[i].viewport.z, srcRect.y / up[i].viewport.w)
       renderer.setRenderTarget(up[i])
       renderer.render(this.fsScene, this.orthoCamera)
       src = up[i]
     }
 
-    // Composite at full resolution. `tBloom` is bound once in the constructor (upsample 0 never changes
-    // object, only size).
-    const composite = this.compositeMaterial
+    // Composite at the frame's resolution. `tBloom` is bound once in the constructor (upsample 0 never
+    // changes object); its rect is level 0's.
+    rectOf(up[0], composite.uniforms.uBloomRect.value)
     composite.uniforms.tDiffuse.value = inputBuffer.texture
-    composite.uniforms.uAspect.value = inputBuffer.width / inputBuffer.height
+    composite.uniforms.uAspect.value = inRect.x / inRect.y
     quad.material = composite
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
     renderer.render(this.fsScene, this.orthoCamera)
   }
 
   /**
-   * Sizes the pyramid from the composer's size, as `MipmapBlurPass.setSize` did. Called by the composer
-   * from `addPass` and from every `composer.setSize` (PostFXChain's render-scale resize). Resizing a target
-   * only reallocates its GPU storage when the size actually changed.
+   * Allocates the pyramid for a frame of the composer's size (the full drawing buffer), as
+   * `MipmapBlurPass.setSize` did — but only ever GROWS a target, per axis. The composer calls this from
+   * `addPass` and on a real display change; the render scale never reaches it (F272 stage 5), and a
+   * smaller display is served by the rects `render` sets inside the larger allocation. Resizing a target
+   * only reallocates its GPU storage when the size actually changes.
    */
   setSize(width: number, height: number): void {
     const sizes = bloomLevelSizes(Math.max(1, width), Math.max(1, height))
     for (let i = 0; i < this.downsampleTargets.length; i++) {
       const { width: w, height: h } = sizes[i]
-      this.downsampleTargets[i].setSize(w, h)
-      if (i < this.upsampleTargets.length) this.upsampleTargets[i].setSize(w, h)
+      grow(this.downsampleTargets[i], w, h)
+      if (i < this.upsampleTargets.length) grow(this.upsampleTargets[i], w, h)
     }
   }
 

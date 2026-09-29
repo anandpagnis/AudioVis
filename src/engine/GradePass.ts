@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
+import { FRAME_RECT_CUBIC_GLSL, FRAME_RECT_GLSL, blitCubicFor, rectOf } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
+import { quality } from './quality'
 import { renderScale } from './renderScale'
 import { exposure } from './exposure'
 import { approach, performanceState } from './performanceState'
@@ -146,6 +148,24 @@ import { audioEngine } from '../audio/AudioEngine'
  * reaches a uniform, see {@link sanitizeGradeSat} and friends, and `gradeMath` in `look/gradeResidual.ts`
  * mirrors the shader operation for operation so the properties above are unit-tested rather than asserted.
  *
+ * ## It is the upscaler (F272 stage 5)
+ *
+ * The chain renders the frame into the bottom-left `renderScale.internalW x internalH` of full-size buffers
+ * (frameRect.ts), and this pass, last, draws to the canvas at its full, pinned resolution — so it is where
+ * the frame goes from the render scale back to the display. It samples the rect in its own texel space,
+ * `pos = iris(vUv) * rectSize`, every tap clamped to the rect's texel centres so nothing outside it (older,
+ * larger frames) can bleed in:
+ *
+ *  - **bicubic** (`FRAME_RECT_CUBIC_GLSL`, the same de-ringed 5-tap Catmull-Rom the budgeted-scene blit
+ *    uses) while the rect is genuinely smaller than the canvas and the quality tier is a top one
+ *    (`blitCubicFor`, the user's call: a struggling machine never pays for it);
+ *  - **bilinear** otherwise, which at 1:1 lands on texel centres and is an exact copy.
+ *
+ * Folding the iris push-in into the same resample means a zoomed frame is resampled once, not twice. The
+ * canvas used to be the scaled thing, stretched by the browser with plain bilinear; this pass replaces that
+ * stretch, so the 1.3 ms a 5-tap cubic costs at 2560x1600 on the M1 buys a sharper picture than the stretch
+ * it replaced, and only where the frame was scaled at all.
+ *
  * ## It also owns the output colour-space conversion
  *
  * Being last carries a duty beyond presenting the frame: the composer works in
@@ -200,28 +220,30 @@ export const GRADE_FRAG = /* glsl */ `
   uniform float uLuma;
   uniform vec3 uFogColor;
   uniform float uSharpen;
-  uniform vec2 uTexel;
+  /** The frame's rect in tDiffuse's buffer: (w, h) texels, (1 / allocW, 1 / allocH) — frameRect.ts. */
+  uniform vec4 uSrcRect;
+  /** Catmull-Rom tension for the upscale; 0 = bilinear (see blitCubicFor). */
+  uniform float uCubic;
   uniform float uGradeSat;
   uniform float uGradeTemp;
   uniform float uGradeContrast;
-
+${FRAME_RECT_GLSL}${FRAME_RECT_CUBIC_GLSL}
   /**
-   * Contrast-adaptive sharpening, run on the frame before the browser stretches
-   * it to the canvas (F122).
+   * Contrast-adaptive sharpening, run as part of the upscale (F122).
    *
    * ## Why sharpening, and why here
    *
-   * The render-scale governor lowers the DRAWING BUFFER and leaves the canvas's
-   * CSS size alone, so the browser stretches the result with plain bilinear
-   * filtering. On a 2560x1440 panel at scale 0.40 that is 1536x864 blown up to
-   * 2560x1440 — a 1.67x linear stretch with no reconstruction at all, which is
-   * exactly the "everything looks soft" the tier ladder trades away.
+   * The render-scale governor draws the frame at fewer pixels than the canvas
+   * has, and this pass stretches it back up (F272 stage 5; the browser did it,
+   * with plain bilinear, before). On a 2560x1440 panel at scale 0.40 that is
+   * 1536x864 blown up to 2560x1440 — a 1.67x linear stretch, which is exactly
+   * the "everything looks soft" the tier ladder trades away. A cubic upscale
+   * recovers some of it at the top tiers; this recovers more, at every tier.
    *
    * The ladder is not the thing to change: shedding pixels IS how the frame gets
    * cheap, and the recordings show it working. What was missing is that nothing
-   * ever put the detail back. Sharpening before the upscale is the standard
-   * answer — it is what FSR1's RCAS stage does, and it is deployed exactly this
-   * way, as the last thing before display scaling.
+   * ever put the detail back. Sharpening at the upscale is the standard answer
+   * — it is what FSR1's RCAS stage does, as the last thing before display.
    *
    * ## Why it lives inside the grade rather than as its own pass
    *
@@ -229,8 +251,8 @@ export const GRADE_FRAG = /* glsl */ `
    * because fullscreen draws are the dominant cost in this chain. GradePass is
    * already the final pass and already samples this texture, so folding the
    * filter in costs FOUR EXTRA TAPS instead of a full-frame read/write cycle.
-   * The taps are also at the INTERNAL resolution, so the pass gets cheaper at
-   * exactly the moment the sharpening is needed most.
+   * The neighbours are one SOURCE texel away (the frame's own pixel grid, not
+   * the canvas's), clamped to the rect like every other read here.
    *
    * ## The algorithm
    *
@@ -241,13 +263,14 @@ export const GRADE_FRAG = /* glsl */ `
    * contrast and sharpens INVERSELY to it, so a flat area gets a lot and an
    * already-crisp edge gets almost none.
    */
-  vec3 casSharpen(vec2 uv, vec3 centre) {
-    // Cross neighbourhood. The 3x3 corners are deliberately skipped: they cost
-    // four more taps for a difference that does not survive a 1.6x stretch.
-    vec3 up    = texture2D(tDiffuse, uv + vec2(0.0, -uTexel.y)).rgb;
-    vec3 down  = texture2D(tDiffuse, uv + vec2(0.0,  uTexel.y)).rgb;
-    vec3 left  = texture2D(tDiffuse, uv + vec2(-uTexel.x, 0.0)).rgb;
-    vec3 right = texture2D(tDiffuse, uv + vec2( uTexel.x, 0.0)).rgb;
+  vec3 casSharpen(vec2 pos, vec3 centre) {
+    // Cross neighbourhood, at +-1 source texel around pos (the rect's texel
+    // space). The 3x3 corners are deliberately skipped: they cost four more
+    // taps for a difference that does not survive a 1.6x stretch.
+    vec3 up    = texture2D(tDiffuse, rectTexel(pos + vec2(0.0, -1.0), uSrcRect)).rgb;
+    vec3 down  = texture2D(tDiffuse, rectTexel(pos + vec2(0.0,  1.0), uSrcRect)).rgb;
+    vec3 left  = texture2D(tDiffuse, rectTexel(pos + vec2(-1.0, 0.0), uSrcRect)).rgb;
+    vec3 right = texture2D(tDiffuse, rectTexel(pos + vec2( 1.0, 0.0), uSrcRect)).rgb;
 
     // Contrast is measured per channel and then reduced, which keeps a strongly
     // coloured edge (this roster is full of them) from being treated as flat
@@ -322,12 +345,21 @@ export const GRADE_FRAG = /* glsl */ `
     // which softened every frame of the show. Branch on a uniform, so every
     // fragment takes the same path.
     vec2 uv = uIris > 0.0 ? (vUv - 0.5) * (1.0 - uIris * 0.04) + 0.5 : vUv;
-    vec3 col = texture2D(tDiffuse, uv).rgb;
+    // The upscale (F272 stage 5, see the header): the frame's rect in its own
+    // texel space. At 1:1 and no iris, pos is a texel centre and the bilinear
+    // read is an exact copy.
+    vec2 pos = uv * uSrcRect.xy;
+    vec3 col;
+    if (uCubic > 0.0) {
+      col = rectCubic(tDiffuse, pos, uSrcRect, uCubic).rgb;
+    } else {
+      col = texture2D(tDiffuse, rectTexel(pos, uSrcRect)).rgb;
+    }
     // Sharpen BEFORE the gain, so the filter's clamp works in the same range it
-    // was derived for. Skipped entirely when the frame is already native — the
-    // branch is on a uniform, so every fragment takes the same path and the
-    // taps genuinely are not paid for at scale 1.
-    if (uSharpen > 0.001) col = casSharpen(uv, col);
+    // was derived for. Skipped entirely when uSharpen is 0 — the branch is on a
+    // uniform, so every fragment takes the same path and the taps genuinely are
+    // not paid for.
+    if (uSharpen > 0.001) col = casSharpen(pos, col);
     col *= uGain;
 
     // Mood grade: after the gain (contrast's pivot must sit on the level the servo has normalised) and
@@ -511,6 +543,8 @@ export class GradePass extends Pass {
    *  on why the raw per-frame band value is never read straight into a
    *  visual parameter. */
   private easedSparkle = 0
+  /** Scratch for the destination viewport read in render(). */
+  private readonly destViewport = new THREE.Vector4()
 
   constructor() {
     super('GradePass')
@@ -530,7 +564,8 @@ export class GradePass extends Pass {
         uLuma: { value: 0 },
         uFogColor: { value: new THREE.Color(0.05, 0.06, 0.09) },
         uSharpen: { value: 0 },
-        uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+        uSrcRect: { value: new THREE.Vector4(1920, 1080, 1 / 1920, 1 / 1080) },
+        uCubic: { value: 0 },
         uGradeSat: { value: 1 },
         uGradeTemp: { value: 0 },
         uGradeContrast: { value: 1 },
@@ -596,7 +631,7 @@ export class GradePass extends Pass {
     // of what it scatters through, and `bg` is exactly that slot.
     ;(u.uFogColor.value as THREE.Color).set(getPalette(useStore.getState().paletteId).slots.bg)
     // Sharpening tracks how far the frame is from native, because that is
-    // exactly how much bilinear stretching the browser is about to do to it.
+    // exactly how much stretching the upscale below is about to do to it.
     //
     // The ramp reaches its cap by scale 0.4, which is RENDER_SCALE_FLOOR — the
     // blurriest the governor is ever allowed to get, and so the case that needs
@@ -641,9 +676,15 @@ export class GradePass extends Pass {
       : 0
     this.easedSparkle = approach(this.easedSparkle, rawSparkle, SPARKLE_SHARPEN_EASE_RATE, dt)
     u.uSharpen.value = sharpenWithSparkle(sharpenForScale(renderScale.applied), this.easedSparkle)
-    ;(u.uTexel.value as THREE.Vector2).set(1 / inputBuffer.width, 1 / inputBuffer.height)
+    const src = rectOf(inputBuffer, u.uSrcRect.value)
     this.material.uniforms.tDiffuse.value = inputBuffer.texture
     renderer.setRenderTarget(this.renderToScreen ? null : outputBuffer)
+    // The upscale's filter, against what this draw actually covers: the whole
+    // canvas when last (always, in this chain), or the buffer's rect if not.
+    // Keyed on `resolutionTier`, not `tier`, so the new-scene caution rung
+    // (which trims detail only) does not flip the filter (F272).
+    renderer.getCurrentViewport(this.destViewport)
+    u.uCubic.value = blitCubicFor(src.x, this.destViewport.z, quality.resolutionTier)
     renderer.render(this.fsScene, this.orthoCamera)
   }
 

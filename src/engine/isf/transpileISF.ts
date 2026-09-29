@@ -1,3 +1,4 @@
+import { FRAME_RECT_GLSL } from '../frameRect'
 import { NOISE_GLSL } from '../glsl'
 import {
   CURL_NOISE_GLSL,
@@ -210,6 +211,17 @@ export const ISF_FILTER_IMAGE_UNIFORM = 'tDiffuse'
 export const ISF_FILTER_MIX_UNIFORM = 'uFilterMix'
 
 /**
+ * `1 / the allocated size` of the buffer `tDiffuse` lives in (F272 stage 5).
+ *
+ * The frame arrives drawn into the bottom-left `uRes` of a larger, full-size
+ * buffer (frameRect.ts), so a normalised coordinate has to be scaled into that
+ * rect before it can sample: `uRes * uFilterTexel` is the fraction of the
+ * texture the frame covers. In the `uFilter*` namespace for the reason
+ * {@link ISF_FILTER_MIX_UNIFORM} is: `isfUniformName` can never produce it.
+ */
+export const ISF_FILTER_TEXEL_UNIFORM = 'uFilterTexel'
+
+/**
  * ISF's image-sampling functions, implemented for this engine.
  *
  * **Nothing else in the adapter matters if these are missing**: 1371 of the
@@ -252,14 +264,26 @@ export const ISF_FILTER_MIX_UNIFORM = 'uFilterMix'
  * disagree, and a shader hand-written against the docs would otherwise fail to
  * compile for a reason no error message would explain. Three lines of alias is
  * cheaper than that.
+ *
+ * ## The frame is a sub-rect (F272 stage 5)
+ *
+ * The image is the post chain's buffer, and the frame occupies only its
+ * bottom-left `uRes` (frameRect.ts). So every function maps its coordinate into
+ * that rect and clamps it to the rect's texel centres — `IMG_NORM_PIXEL` via
+ * `rectUv`, `IMG_PIXEL` straight from pixel space via `rectTexel`, and the
+ * `THIS` forms through `IMG_NORM_PIXEL` — which is what `CLAMP_TO_EDGE` did on
+ * an exact-size buffer, and keeps a filter's out-of-frame reads (a ripple, a
+ * bump, a pixel shift) off the stale texels outside the rect. The filter itself
+ * still sees one frame, `uRes` pixels, from 0..1. A raw `texture2D` on the image
+ * would skip this, which is why `transpileISF` refuses one in a filter body.
  */
 export const ISF_IMAGE_SAMPLERS_GLSL = /* glsl */ `
   vec2 IMG_SIZE(sampler2D image) { return uRes; }
-  vec4 IMG_NORM_PIXEL(sampler2D image, vec2 normCoord) { return texture2D(image, normCoord); }
-  vec4 IMG_PIXEL(sampler2D image, vec2 pixelCoord) { return texture2D(image, pixelCoord / IMG_SIZE(image)); }
-  vec4 IMG_THIS_PIXEL(sampler2D image) { return texture2D(image, vUv); }
-  vec4 IMG_THIS_NORM_PIXEL(sampler2D image) { return texture2D(image, vUv); }
-  vec4 IMG_NORM_THIS_PIXEL(sampler2D image) { return texture2D(image, vUv); }
+  vec4 IMG_NORM_PIXEL(sampler2D image, vec2 normCoord) { return texture2D(image, rectUv(normCoord, vec4(uRes, ${ISF_FILTER_TEXEL_UNIFORM}))); }
+  vec4 IMG_PIXEL(sampler2D image, vec2 pixelCoord) { return texture2D(image, rectTexel(pixelCoord, vec4(uRes, ${ISF_FILTER_TEXEL_UNIFORM}))); }
+  vec4 IMG_THIS_PIXEL(sampler2D image) { return IMG_NORM_PIXEL(image, vUv); }
+  vec4 IMG_THIS_NORM_PIXEL(sampler2D image) { return IMG_NORM_PIXEL(image, vUv); }
+  vec4 IMG_NORM_THIS_PIXEL(sampler2D image) { return IMG_NORM_PIXEL(image, vUv); }
 `
 
 /**
@@ -277,7 +301,9 @@ export const ISF_IMAGE_SAMPLERS_GLSL = /* glsl */ `
  *
  * `uTime` is kept because ISF's `TIME` maps onto it and animated filters (`Bad
  * TV`'s rolling distortion) are most of the interesting ones. `uRes` is kept
- * because `RENDERSIZE` and `IMG_SIZE` both resolve to it.
+ * because `RENDERSIZE` and `IMG_SIZE` both resolve to it. `uFilterTexel` and
+ * frameRect.ts's two rect functions are what the image functions sample
+ * through (F272 stage 5).
  */
 export const ISF_FILTER_PRELUDE = /* glsl */ `
   precision highp float;
@@ -285,13 +311,15 @@ export const ISF_FILTER_PRELUDE = /* glsl */ `
 
   /** The frame arriving from the previous pass — ISF's \`inputImage\`. */
   uniform sampler2D ${ISF_FILTER_IMAGE_UNIFORM};
-  /** Render-buffer resolution in pixels — ISF's \`RENDERSIZE\` and \`IMG_SIZE\`. */
+  /** The frame's resolution in pixels, its rect in the buffer — ISF's \`RENDERSIZE\` and \`IMG_SIZE\`. */
   uniform vec2 uRes;
+  /** 1 / the buffer's allocated size. */
+  uniform vec2 ${ISF_FILTER_TEXEL_UNIFORM};
   /** Seconds since the pass was created — ISF's \`TIME\`. */
   uniform float uTime;
   /** Wet/dry: 0 passes the input through untouched, 1 is the filter at full. */
   uniform float ${ISF_FILTER_MIX_UNIFORM};
-${ISF_IMAGE_SAMPLERS_GLSL}`
+${FRAME_RECT_GLSL}${ISF_IMAGE_SAMPLERS_GLSL}`
 
 /** Every name {@link ISF_FILTER_PRELUDE} declares. Derived, never listed. */
 export const FILTER_PRELUDE_SYMBOLS: readonly string[] = glslChunkSymbols(ISF_FILTER_PRELUDE)
@@ -325,6 +353,53 @@ export const ISF_IMAGE_FUNCTIONS: readonly string[] = [
   'IMG_THIS_NORM_PIXEL',
   'IMG_NORM_THIS_PIXEL',
   'IMG_SIZE',
+]
+
+/**
+ * GLSL texture built-ins a FILTER body may not call (F272 stage 5).
+ *
+ * A filter has exactly one image, the post chain's buffer, and the frame is a
+ * sub-rect of it: a raw `texture2D(inputImage, uv)` would read the whole
+ * buffer, frame in one corner and stale pixels in the rest. The `IMG_*`
+ * functions are the only reads that know the rect, so a filter that bypasses
+ * them is refused at import rather than shipped reading garbage. Costs nothing
+ * in practice: every image read in the ISF corpus goes through `IMG_*` (see
+ * {@link ISF_IMAGE_SAMPLERS_GLSL}), and a filter has no other sampler a raw
+ * call could legitimately be aimed at.
+ *
+ * The list is every 2D read a filter can reach on WebGL2: the GLSL ES 1.00
+ * names (and the `*EXT` ones three's GLSL3 prelude `#define`s onto their ES 3.00
+ * forms), and every ES 3.00 lod/grad/proj/offset variant. `textureSize` is on
+ * it too: it returns the buffer's allocation, not the frame's, so coordinates
+ * built from it land outside the rect exactly as a raw read would (`IMG_SIZE`
+ * is the frame's size).
+ */
+export const ISF_FILTER_RAW_TEXTURE_CALLS: readonly string[] = [
+  'texture2D',
+  'texture2DProj',
+  'texture2DLod',
+  'texture2DProjLod',
+  'texture2DLodEXT',
+  'texture2DProjLodEXT',
+  'texture2DGradEXT',
+  'texture2DProjGradEXT',
+  'texture2DRect',
+  'texture2DRectProj',
+  'texture',
+  'textureProj',
+  'textureLod',
+  'textureProjLod',
+  'textureGrad',
+  'textureProjGrad',
+  'textureOffset',
+  'textureProjOffset',
+  'textureLodOffset',
+  'textureProjLodOffset',
+  'textureGradOffset',
+  'textureProjGradOffset',
+  'texelFetch',
+  'texelFetchOffset',
+  'textureSize',
 ]
 
 /* --------------------------------------------------------- ISF built-ins */
@@ -450,6 +525,9 @@ export const ISF_FADE_WRAPPER = `void main() { ${ISF_MAIN}(); gl_FragColor.rgb *
  * the 0 end exactly the input pixel, alpha and all, which is the only defensible
  * meaning of "off".
  *
+ * The dry side is read with `IMG_THIS_PIXEL`, not a raw `texture2D`, so it goes
+ * through the same sub-rect mapping as the filter's own reads (F272 stage 5).
+ *
  * Carrying the filter's alpha through at the wet end is harmless in this chain:
  * the pass's material has `transparent: false`, so three disables blending and
  * the value is written rather than composited, and `GradePass` — which is
@@ -459,7 +537,7 @@ export const ISF_FADE_WRAPPER = `void main() { ${ISF_MAIN}(); gl_FragColor.rgb *
  */
 export const ISF_FILTER_WRAPPER =
   `void main() { ${ISF_MAIN}(); gl_FragColor = ` +
-  `mix(texture2D(${ISF_FILTER_IMAGE_UNIFORM}, vUv), gl_FragColor, ${ISF_FILTER_MIX_UNIFORM}); }`
+  `mix(IMG_THIS_PIXEL(${ISF_FILTER_IMAGE_UNIFORM}), gl_FragColor, ${ISF_FILTER_MIX_UNIFORM}); }`
 
 /* --------------------------------------------------------------- tokenizer */
 
@@ -814,6 +892,28 @@ export function transpileISF(parsed: ParsedISF, opts: TranspileIsfOptions = {}):
             'path; this shader is a filter — transpile it with `kind: "filter"`.',
       origin,
     )
+  }
+
+  // A raw texture read on the FILTER path cannot know the frame is a sub-rect
+  // of its buffer; see ISF_FILTER_RAW_TEXTURE_CALLS. Only a CALL is refused, so
+  // a filter with a variable that happens to be named `texture` still imports.
+  if (isFilter) {
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i]
+      if (t.kind !== 'ident' || !ISF_FILTER_RAW_TEXTURE_CALLS.includes(t.text)) continue
+      let j = i + 1
+      while (j < tokens.length && (tokens[j].kind === 'ws' || tokens[j].kind === 'comment')) j++
+      if (tokens[j]?.text !== '(') continue
+      throw new IsfImportError(
+        `calls \`${t.text}\` directly. A filter must read its image through ` +
+          `the ISF image functions (${ISF_IMAGE_FUNCTIONS.join(', ')}): the frame ` +
+          'is a sub-rect of a larger buffer, and only those map into it, so a raw ' +
+          (t.text === 'textureSize'
+            ? 'size is the buffer’s, not the frame’s (use IMG_SIZE).'
+            : 'read would sample stale pixels outside the frame.'),
+        origin,
+      )
+    }
   }
 
   /* --- build the rename table ------------------------------------------- */

@@ -58,14 +58,20 @@ import { useStore } from '../store'
  * note: without the retain, a stalled render loop now goes black rather than
  * showing its last good frame.
  *
- * No `dpr` prop: PerfMonitor owns device pixel ratio, driving it from the
- * quality governor's current tier.
+ * A fixed `dpr` (F272 stage 5): the canvas is pinned at base DPR,
+ * `min(2, devicePixelRatio)`, and never moves with the render scale. The scale
+ * is a sub-rect of the post chain's full-size buffers that `GradePass`
+ * upscales (see frameRect.ts), so a resolution step reallocates nothing. The
+ * prop has to be given: R3F's `configure` re-imposes its `[1, 2]` default on
+ * every Canvas render when it is absent, which is what undid the old
+ * `setDpr`-driven scale on a context restore and on /demo start.
  */
 export function Stage() {
   // Bumped when the GPU context is lost and restored. Keying the
   // resource-holding subtrees on it forces their render targets / materials to
   // rebuild after a restore, instead of sampling dead GPU handles.
   const [glEpoch, setGlEpoch] = useState(0)
+  const dpr = useBaseDpr()
 
   const handleCreated = ({ gl }: { gl: { domElement: HTMLCanvasElement } }) => {
     const canvas = gl.domElement
@@ -102,13 +108,14 @@ export function Stage() {
   return (
     <Canvas
       className="stage"
+      dpr={dpr}
       gl={{ antialias: false, powerPreference: 'high-performance' }}
       camera={{ fov: 60, position: [0, 3, 13], near: 0.1, far: 400 }}
       onCreated={handleCreated}
     >
       <color attach="background" args={['#000000']} />
-      {/* PerfMonitor owns the DPR, so no static dpr prop — it sets it from the
-          quality governor on mount and as tiers change. */}
+      {/* Applies the render scale (the frame's sub-rect) at the very start of
+          every frame; the canvas itself stays at `dpr`. */}
       <PerfMonitor />
       {/* decide */}
       <PerformanceStateBridge />
@@ -130,6 +137,30 @@ export function Stage() {
       <MirrorPublisher />
     </Canvas>
   )
+}
+
+/**
+ * The canvas's pinned pixel ratio — the device's, capped at 2 — following the
+ * display. A window dragged to a monitor of a
+ * different density, or a browser zoom, changes `devicePixelRatio` without
+ * necessarily changing the canvas's CSS size, so a resize listener would miss
+ * it; a `resolution` media query fires exactly then. A change re-renders Stage,
+ * the Canvas takes the new `dpr`, and the post chain reallocates once — a
+ * display change, not a render-scale step.
+ */
+function useBaseDpr(): number {
+  // Keyed on the RAW ratio, not the capped one: the query only fires when its
+  // own match flips, so it has to be re-armed at every new ratio, including
+  // the ones the cap folds together (2 -> 2.5 -> 1.5 must still be seen).
+  const [raw, setRaw] = useState(() => (typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1))
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia(`(resolution: ${raw}dppx)`)
+    const onChange = () => setRaw(window.devicePixelRatio || 1)
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [raw])
+  return Math.min(2, raw)
 }
 
 /**

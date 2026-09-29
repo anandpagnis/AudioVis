@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
+import { FRAME_RECT_GLSL, RECT_COPY_FRAG, halfSize, rectOf, setFullRect, setRect } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
 import { ECHO_TAP_COUNT, isEchoActive, resolveEchoKnobs } from './echoParams'
 
@@ -84,6 +85,18 @@ import { ECHO_TAP_COUNT, isEchoActive, resolveEchoKnobs } from './echoParams'
  * hand-written-shader convention every other pass in this engine uses
  * (`LensPass.ts`'s seven materials are not programmatically generated
  * either) rather than building the GLSL source with a loop.
+ *
+ * ## Half resolution, and each tap remembers its own rect (F272 stage 5)
+ *
+ * The taps are stored at HALF the frame's resolution (the user's call: a ghost
+ * is a softened past frame by nature, and five full-size RGBA16F copies were
+ * ~207 MB at 2880x1800, ~52 MB at half). Each tap target is allocated once at
+ * half the full drawing buffer and only ever grows; a snapshot lands in the
+ * bottom-left half of the CURRENT frame's rect, and the target's `viewport`
+ * keeps that rect. The blend samples every tap through its own rect, so a
+ * ghost recorded before a resolution step stays the same picture after it
+ * rather than zooming, and the record rotates with the tap because it lives on
+ * the target itself.
  */
 
 /** Tap buffer format. Half-float for the same reason `FeedbackPass`'s history
@@ -109,18 +122,25 @@ const BLEND_FRAG = /* glsl */ `
   uniform sampler2D tTap2;
   uniform sampler2D tTap3;
   uniform sampler2D tTap4;
+  /** tDiffuse's rect, and each tap's own rect as it was recorded (frameRect.ts). */
+  uniform vec4 uInRect;
+  uniform vec4 uTapRect0;
+  uniform vec4 uTapRect1;
+  uniform vec4 uTapRect2;
+  uniform vec4 uTapRect3;
+  uniform vec4 uTapRect4;
   uniform float uDecay;
   uniform float uEcho;
   uniform vec3 uTint;
   varying vec2 vUv;
-
+${FRAME_RECT_GLSL}
   void main() {
-    vec3 cur = texture2D(tDiffuse, vUv).rgb;
-    vec3 t0 = texture2D(tTap0, vUv).rgb * uTint;
-    vec3 t1 = texture2D(tTap1, vUv).rgb * uTint;
-    vec3 t2 = texture2D(tTap2, vUv).rgb * uTint;
-    vec3 t3 = texture2D(tTap3, vUv).rgb * uTint;
-    vec3 t4 = texture2D(tTap4, vUv).rgb * uTint;
+    vec3 cur = texture2D(tDiffuse, rectUv(vUv, uInRect)).rgb;
+    vec3 t0 = texture2D(tTap0, rectUv(vUv, uTapRect0)).rgb * uTint;
+    vec3 t1 = texture2D(tTap1, rectUv(vUv, uTapRect1)).rgb * uTint;
+    vec3 t2 = texture2D(tTap2, rectUv(vUv, uTapRect2)).rgb * uTint;
+    vec3 t3 = texture2D(tTap3, rectUv(vUv, uTapRect3)).rgb * uTint;
+    vec3 t4 = texture2D(tTap4, rectUv(vUv, uTapRect4)).rgb * uTint;
     // uEcho multiplies every tap's weight (F232): echo is now the current
     // beat's pulse strength, sharply peaked at the beat and decayed by the
     // next one, so the ghosts must rise and fall WITH it rather than sitting
@@ -160,7 +180,7 @@ const RECENT_ECHO_FALL_PER_SEC = 0.7
 
 export class EchoPass extends Pass {
   private readonly blendMaterial: THREE.ShaderMaterial
-  private readonly copyMaterial: THREE.MeshBasicMaterial
+  private readonly copyMaterial: THREE.ShaderMaterial
   private readonly blendScene: THREE.Scene
   private readonly copyScene: THREE.Scene
   private readonly quadGeometry: THREE.PlaneGeometry
@@ -209,6 +229,12 @@ export class EchoPass extends Pass {
         tTap2: { value: null },
         tTap3: { value: null },
         tTap4: { value: null },
+        uInRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+        uTapRect0: { value: new THREE.Vector4(1, 1, 1, 1) },
+        uTapRect1: { value: new THREE.Vector4(1, 1, 1, 1) },
+        uTapRect2: { value: new THREE.Vector4(1, 1, 1, 1) },
+        uTapRect3: { value: new THREE.Vector4(1, 1, 1, 1) },
+        uTapRect4: { value: new THREE.Vector4(1, 1, 1, 1) },
         uDecay: { value: 0 },
         uEcho: { value: 0 },
         uTint: { value: new THREE.Color(1, 1, 1) },
@@ -217,7 +243,16 @@ export class EchoPass extends Pass {
     this.blendScene = new THREE.Scene()
     this.blendScene.add(new THREE.Mesh(this.quadGeometry, this.blendMaterial))
 
-    this.copyMaterial = new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false })
+    this.copyMaterial = new THREE.ShaderMaterial({
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: RECT_COPY_FRAG,
+      depthWrite: false,
+      depthTest: false,
+      uniforms: {
+        tDiffuse: { value: null },
+        uRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+      },
+    })
     this.copyScene = new THREE.Scene()
     this.copyScene.add(new THREE.Mesh(this.quadGeometry, this.copyMaterial))
   }
@@ -278,14 +313,23 @@ export class EchoPass extends Pass {
     // backgrounded-tab resume, a context-restore frame) must not poison the
     // accumulator for the rest of the session.
     const dt = Number.isFinite(deltaTime) ? (deltaTime as number) : 0
+    const u = this.blendMaterial.uniforms
+    const inRect = rectOf(inputBuffer, u.uInRect.value)
+    // Where this frame's snapshot lands: the bottom-left half of the frame's rect.
+    const tapW = halfSize(inRect.x)
+    const tapH = halfSize(inRect.y)
 
+    // Whole targets cleared, then each one's recorded rect set to this frame's,
+    // so a tap read before it is next written reads black, never an old frame.
     if (this.tapsStale) {
       this.tapsStale = false
       this.elapsed = 0
       const prevTarget = renderer.getRenderTarget()
       for (const tap of this.taps) {
+        setFullRect(tap)
         renderer.setRenderTarget(tap)
         renderer.clear(true, false, false)
+        setRect(tap, tapW, tapH)
       }
       renderer.setRenderTarget(prevTarget)
     }
@@ -302,19 +346,27 @@ export class EchoPass extends Pass {
       // a per-second rate.
       this.elapsed -= this.tapSpacingSec
       this.taps.unshift(this.taps.pop()!)
-      this.copyMaterial.map = inputBuffer.texture
+      const cu = this.copyMaterial.uniforms
+      cu.tDiffuse.value = inputBuffer.texture
+      ;(cu.uRect.value as THREE.Vector4).copy(inRect)
+      setRect(this.taps[0], tapW, tapH)
       renderer.setRenderTarget(this.taps[0])
       renderer.render(this.copyScene, this.orthoCamera)
     }
 
     const knobs = resolveEchoKnobs()
-    const u = this.blendMaterial.uniforms
+    const taps = this.taps
     u.tDiffuse.value = inputBuffer.texture
-    u.tTap0.value = this.taps[0].texture
-    u.tTap1.value = this.taps[1].texture
-    u.tTap2.value = this.taps[2].texture
-    u.tTap3.value = this.taps[3].texture
-    u.tTap4.value = this.taps[4].texture
+    u.tTap0.value = taps[0].texture
+    u.tTap1.value = taps[1].texture
+    u.tTap2.value = taps[2].texture
+    u.tTap3.value = taps[3].texture
+    u.tTap4.value = taps[4].texture
+    rectOf(taps[0], u.uTapRect0.value)
+    rectOf(taps[1], u.uTapRect1.value)
+    rectOf(taps[2], u.uTapRect2.value)
+    rectOf(taps[3], u.uTapRect3.value)
+    rectOf(taps[4], u.uTapRect4.value)
     u.uDecay.value = knobs.decay
     u.uEcho.value = this.echo
 
@@ -322,15 +374,22 @@ export class EchoPass extends Pass {
     renderer.render(this.blendScene, this.orthoCamera)
   }
 
+  /**
+   * The composer's size (the full drawing buffer). The taps are allocated at
+   * half of it and only GROW — the same trade `FeedbackPass.setSize` makes for
+   * its history: a shrink keeps the allocation, a grow reallocates once and
+   * the ghosts restart from empty, which reads as the loop settling in. Never
+   * called for the render scale (F272 stage 5).
+   */
   setSize(width: number, height: number): void {
-    const w = Math.max(1, width)
-    const h = Math.max(1, height)
-    // Reallocates, which discards whatever taps were held — the same trade
-    // FeedbackPass.setSize makes for its history target. A resize is rare
-    // enough, and the ghosts restarting from empty reads as the loop
-    // settling in rather than as a glitch.
+    const w = halfSize(Math.max(1, width))
+    const h = halfSize(Math.max(1, height))
+    const first = this.taps[0]
+    if (first && first.width >= w && first.height >= h) return
+    const allocW = Math.max(w, first?.width ?? 0)
+    const allocH = Math.max(h, first?.height ?? 0)
     for (const tap of this.taps) tap.dispose()
-    this.taps = Array.from({ length: ECHO_TAP_COUNT }, (_, i) => makeTapTarget(w, h, i))
+    this.taps = Array.from({ length: ECHO_TAP_COUNT }, (_, i) => makeTapTarget(allocW, allocH, i))
     this.tapsStale = true
   }
 

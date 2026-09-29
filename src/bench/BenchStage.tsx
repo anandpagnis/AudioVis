@@ -26,9 +26,9 @@ import type { BenchRunner } from './benchHarness'
  * physically-shaded scenes (`chrome`) render as black plastic without it, so
  * leaving it out would measure the wrong thing rather than a smaller thing.
  *
- * There is also no `PerfMonitor`. The tier is pinned per cell and its DPR is
- * applied directly here, because the governor reacting mid-measurement is
- * precisely what a benchmark must not allow.
+ * There is also no `PerfMonitor`. The tier is pinned per cell and its render
+ * scale is applied directly here, because the governor reacting mid-measurement
+ * is precisely what a benchmark must not allow.
  *
  * The camera is placed on the scene's own declared `cameraAnchor` and held
  * still. Not `CameraDirector`, for the same reason: its modes orbit and drift,
@@ -72,7 +72,7 @@ const PROFILE_PASS =
  * benchHarness.ts does the subtraction and refuses any pair that disagrees.
  *
  * It cannot be the profile pass, which also mounts the chain and looks like a
- * free second sample. That pass holds one DPR across every cell, reads the
+ * free second sample. That pass holds one scale across every cell, reads the
  * canvas back with `getImageData` every frame, and does not time the GPU at all
  * — differencing against it would bill the post chain for a readback and a
  * resolution change.
@@ -118,10 +118,20 @@ const StablePostChain = memo(function StablePostChain() {
   return <PostFXChain />
 })
 
+/**
+ * The bench canvas's pixel ratio, pinned for the same reason the app's is
+ * (Stage.tsx, F272 stage 5): the render scale is a sub-rect of the canvas, not
+ * a canvas size, and R3F's `configure` re-imposes its `[1, 2]` default on
+ * every Canvas render when no `dpr` is passed — and `Bench` re-renders on
+ * every progress update.
+ */
+const BENCH_DPR = typeof window === 'undefined' ? 1 : Math.min(2, window.devicePixelRatio || 1)
+
 export function BenchStage({ runner, version }: { runner: BenchRunner; version: number }) {
   return (
     <Canvas
       className="bench-canvas"
+      dpr={BENCH_DPR}
       gl={{ antialias: false, powerPreference: 'high-performance' }}
       camera={{ fov: 60, position: [0, 3, 13], near: 0.1, far: 400 }}
     >
@@ -204,7 +214,6 @@ function driveSyntheticAudio(f: AudioFeatures): void {
 
 function BenchDriver({ runner, version }: { runner: BenchRunner; version: number }) {
   const gl = useThree((s) => s.gl)
-  const setDpr = useThree((s) => s.setDpr)
   const size = useThree((s) => s.size)
   const timer = useMemo(() => new GpuTimer(), [])
   /** Scratch for the role profile — allocated once, never in the loop. */
@@ -217,7 +226,7 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
     return c.getContext('2d', { willReadFrequently: true })
   }, [])
   const appliedTier = useRef(-1)
-  /** Scene the current DPR was solved for — the budget is per scene, not global. */
+  /** Scene the current scale was solved for — the budget is per scene, not global. */
   const appliedScene = useRef('')
 
   useEffect(() => {
@@ -272,42 +281,34 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
       appliedTier.current = cell.tier
       appliedScene.current = cell.sceneId
       quality.pinTier(cell.tier)
-      // The pixel-budget solve is a COST concern, and the profile pass skips it.
+      // The pixel-budget solve is a COST concern, and the profile pass skips it:
+      // the profile measures composition, not resolution, and holding one scale
+      // across every cell means every scene is sampled identically — which is
+      // what makes the numbers comparable. (It once had a second, fatal reason:
+      // resizing the canvas under the composer re-ran a `JSON.stringify` memo
+      // over R3F's circular `__r3f` graph and killed the sweep, F48. Nothing
+      // resizes the canvas for a scale any more.)
       //
-      // Two reasons, one of them fatal. The profile measures composition, not
-      // resolution, and holding one DPR across every cell means every scene is
-      // sampled identically — which is what makes the numbers comparable.
-      //
-      // The fatal one: `setDpr` resizes the canvas, `EffectComposer`
-      // subscribes to size internally, and a resize therefore re-renders it and
-      // re-runs its `JSON.stringify(props)` memo over children whose refs carry
-      // R3F's circular `__r3f` graph. That throws, and it killed this sweep at
-      // cell 8 even with the composer wrapped in `memo` — the wrapper stops the
-      // PARENT re-rendering it and cannot stop the composer re-rendering
-      // itself. Same root cause as F48, third appearance.
       // The POST-CHAIN pass pins the scale too, and must (F160): its whole
       // purpose is to be subtractable from the cost pass, and two sweeps can
       // only be differenced cell-for-cell if both drew the cell at the same
-      // resolution. The composer-resize hazard described above is specific to
-      // the profile pass's fixed-DPR requirement, not to resizing itself — the
-      // app changes DPR with the chain mounted on every tier move, and
-      // PostFXChain's own resize hook exists for exactly that.
+      // resolution.
+      //
+      // The scale is the frame's sub-rect, exactly as in the app (F272 stage
+      // 5), and never a canvas DPR: with the chain mounted its scene pass aims
+      // the composer at `internalW x internalH` and GradePass upscales, and the
+      // cost pass below draws straight into the same rect of the canvas. A DPR
+      // change on top of that would scale the frame twice.
+      renderScale.setDisplay(size.width, size.height, gl.getPixelRatio())
       if (!PROFILE_PASS) {
-        renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
         renderScale.setSceneBudget(getScenePixelBudget(cell.sceneId))
         const scale = renderScale.solve()
         renderScale.applied = scale
-        setDpr(renderScale.baseDpr * scale)
         // Record what the cell was actually drawn at, so the diff can refuse a
         // pair that disagrees instead of reporting a resolution change as a
-        // post-chain cost.
-        runner.setInternalMP(renderScale.internalMP(scale))
+        // post-chain cost, and the canvas the chain's final pass upscales to.
+        runner.setInternalMP(renderScale.internalMP(scale), renderScale.fullMP)
       } else {
-        // The DPR stays R3F's default here, so tell `renderScale` what the
-        // canvas really is: scenes size their buffers from its
-        // `internalW/H` (F272 stage 3), which would otherwise describe a
-        // display nobody set.
-        renderScale.setDisplay(size.width, size.height, gl.getPixelRatio())
         renderScale.applied = 1
       }
       // Particle scenes scale through `performanceState.particleDensity`, which
@@ -344,9 +345,23 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
     // The profile pass reads no GPU timings; the post-chain pass does, and gets
     // them from the bracket below rather than from here.
     if (!CHAIN_MOUNTED) {
+      // Into the frame's rect, as the app's composer would: three takes the
+      // canvas viewport in CSS pixels and multiplies the pinned ratio back out,
+      // rounding, so internalW / ratio lands on internalW exactly. The scissor
+      // keeps the clear to the rect too. Restored straight after, so nothing
+      // else ever sees the rect on the canvas.
+      const ratio = gl.getPixelRatio()
+      const rw = renderScale.internalW / ratio
+      const rh = renderScale.internalH / ratio
+      gl.setViewport(0, 0, rw, rh)
+      gl.setScissor(0, 0, rw, rh)
+      gl.setScissorTest(true)
       timer.begin()
       gl.render(scene, camera)
       timer.end()
+      gl.setScissorTest(false)
+      gl.setViewport(0, 0, size.width, size.height)
+      gl.setScissor(0, 0, size.width, size.height)
     }
 
     // Do not feed the runner until the scene's lazy chunk has actually landed.

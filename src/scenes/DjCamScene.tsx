@@ -155,7 +155,7 @@ export function DjCamScene() {
   useDispose(texture, material, geometry)
 
   // Cover-fit against the target each draw lands in (viewportResolution.ts),
-  // not the canvas, which stops being the frame in F272 stage 5.
+  // not the canvas, which has not been the frame since F272 stage 5.
   useViewportResolution(mesh, material)
 
   useSceneFrame(

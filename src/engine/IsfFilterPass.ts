@@ -5,6 +5,7 @@ import { parseISF } from './isf/parseISF'
 import {
   ISF_FILTER_MIX_UNIFORM,
   ISF_FILTER_PRELUDE,
+  ISF_FILTER_TEXEL_UNIFORM,
   isfUniformSeed,
   transpileISF,
   type TranspiledISF,
@@ -157,6 +158,7 @@ export function getIsfFilterMaterial(
     uniforms: {
       tDiffuse: { value: null },
       uRes: { value: new THREE.Vector2(1, 1) },
+      [ISF_FILTER_TEXEL_UNIFORM]: { value: new THREE.Vector2(1, 1) },
       uTime: { value: 0 },
       [ISF_FILTER_MIX_UNIFORM]: { value: 1 },
       // Every `uIsf*` the transpile generated, seeded from the ISF DEFAULTs, so
@@ -300,10 +302,20 @@ export class IsfFilterPass extends Pass {
 
     const u = this.cached.material.uniforms
     u.tDiffuse.value = inputBuffer.texture
-    // The buffer's own size, not the canvas's: the render-scale governor moves
-    // this every time it changes tier, and `RENDERSIZE`, `IMG_SIZE` and every
-    // `gl_FragCoord` comparison in the filter body are all measured against it.
-    ;(u.uRes.value as THREE.Vector2).set(inputBuffer.width, inputBuffer.height)
+    // The FRAME's size — its rect in the buffer (F272 stage 5), which the
+    // render-scale governor moves — not the buffer's or the canvas's.
+    // `RENDERSIZE`, `IMG_SIZE` and every `gl_FragCoord` comparison in the
+    // filter body are measured against it (the rect starts at the buffer's
+    // origin, so `gl_FragCoord` runs 0..uRes), and the image functions map
+    // into the rect with it and the allocation's texel size.
+    ;(u.uRes.value as THREE.Vector2).set(
+      Math.max(1, inputBuffer.viewport.z),
+      Math.max(1, inputBuffer.viewport.w),
+    )
+    ;(u[ISF_FILTER_TEXEL_UNIFORM].value as THREE.Vector2).set(
+      1 / Math.max(1, inputBuffer.width),
+      1 / Math.max(1, inputBuffer.height),
+    )
     u.uTime.value = this.elapsed
     u[ISF_FILTER_MIX_UNIFORM].value = this.mix
     // Only present when the body actually referenced them — see

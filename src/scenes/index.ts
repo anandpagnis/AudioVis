@@ -290,7 +290,7 @@ export interface SceneMetadata {
    * Target internal megapixels, overriding what the engine would derive from
    * `performanceCost` and `fillBound`.
    *
-   * Optional, and normally omitted. The engine solves the canvas scale that
+   * Optional, and normally omitted. The engine solves the render scale that
    * holds this budget on whatever display is live — `sqrt(budget / fullResMP)`
    * — so a scene never reads the display itself and never names a resolution;
    * see engine/renderScale.ts.

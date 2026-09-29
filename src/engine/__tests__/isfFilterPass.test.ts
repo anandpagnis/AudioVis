@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
 import { compileIsfFilter, getIsfFilterMaterial, IsfFilterPass } from '../IsfFilterPass'
-import { ISF_FILTER_MIX_UNIFORM, ISF_FILTER_PRELUDE } from '../isf/transpileISF'
+import { ISF_FILTER_MIX_UNIFORM, ISF_FILTER_PRELUDE, ISF_FILTER_TEXEL_UNIFORM } from '../isf/transpileISF'
 import COLOR_INVERT_FS from '../../assets/isf/filters/Color Invert.fs?raw'
 import BAD_TV_FS from '../../assets/isf/filters/Bad TV.fs?raw'
 import POST_FX_CHAIN_SRC from '../PostFXChain.tsx?raw'
@@ -54,12 +54,16 @@ function stubRenderer() {
   return { gl: gl as unknown as THREE.WebGLRenderer, calls }
 }
 
-/** A render target with just the fields the pass reads. */
-function stubBuffer(width = 1920, height = 1080) {
+/**
+ * A render target with just the fields the pass reads: its allocation and the
+ * rect the frame occupies in it (`viewport`, the whole buffer by default).
+ */
+function stubBuffer(width = 1920, height = 1080, rectW = width, rectH = height) {
   return {
     width,
     height,
     texture: { id: `${width}x${height}` },
+    viewport: new THREE.Vector4(0, 0, rectW, rectH),
   } as unknown as THREE.WebGLRenderTarget
 }
 
@@ -141,7 +145,7 @@ describe('the material cache', () => {
   it('seeds every uniform the pass and the shader need', () => {
     const { gl } = stubRenderer()
     const u = getIsfFilterMaterial(gl, badTv()).material.uniforms
-    for (const name of ['tDiffuse', 'uRes', 'uTime', ISF_FILTER_MIX_UNIFORM]) {
+    for (const name of ['tDiffuse', 'uRes', ISF_FILTER_TEXEL_UNIFORM, 'uTime', ISF_FILTER_MIX_UNIFORM]) {
       expect(u[name], name).toBeDefined()
     }
     // Full wet by default: a filter that had to be dialled up before it did
@@ -184,24 +188,33 @@ describe('IsfFilterPass', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('binds the input buffer and its size, so the render-scale governor reaches it', () => {
+  it('binds the input buffer and the FRAME’s size, so the render-scale governor reaches it', () => {
     // `RENDERSIZE`, `IMG_SIZE` and every gl_FragCoord comparison in a filter
-    // body measure against uRes. Taking it from the canvas rather than the
-    // buffer would put every one of them a tier out of step the moment the
-    // quality governor moved.
+    // body measure against uRes. Since F272 stage 5 the frame is a sub-rect of
+    // a full-size buffer, so uRes is the rect — the buffer's allocation would
+    // put every one of them a tier out of step the moment the governor moved —
+    // and uFilterTexel is 1 / the allocation, which the image functions need
+    // to map a coordinate into the rect.
     const { gl, calls } = stubRenderer()
     const pass = new IsfFilterPass()
     pass.setFilter(invert())
-    const input = stubBuffer(1280, 720)
-    const output = stubBuffer()
+    const input = stubBuffer(2880, 1800, 1728, 1080)
+    const output = stubBuffer(2880, 1800, 1728, 1080)
     pass.render(gl, input, output, 1 / 60)
 
     const u = getIsfFilterMaterial(gl, invert()).material.uniforms
     expect(u.tDiffuse.value).toBe(input.texture)
-    expect((u.uRes.value as THREE.Vector2).x).toBe(1280)
-    expect((u.uRes.value as THREE.Vector2).y).toBe(720)
+    expect((u.uRes.value as THREE.Vector2).x).toBe(1728)
+    expect((u.uRes.value as THREE.Vector2).y).toBe(1080)
+    expect((u[ISF_FILTER_TEXEL_UNIFORM].value as THREE.Vector2).x).toBe(1 / 2880)
+    expect((u[ISF_FILTER_TEXEL_UNIFORM].value as THREE.Vector2).y).toBe(1 / 1800)
     expect(calls).toHaveLength(1)
     expect(calls[0].target).toBe(output)
+
+    // A full-size frame is the whole buffer, exactly as before stage 5.
+    pass.render(gl, stubBuffer(1280, 720), stubBuffer(1280, 720), 1 / 60)
+    expect((u.uRes.value as THREE.Vector2).x).toBe(1280)
+    expect((u[ISF_FILTER_TEXEL_UNIFORM].value as THREE.Vector2).x).toBe(1 / 1280)
   })
 
   it('advances ISF TIME from the composer’s own delta, clamped', () => {

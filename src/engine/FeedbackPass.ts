@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Pass } from 'postprocessing'
+import { FRAME_RECT_GLSL, RECT_COPY_FRAG, rectOf, setFullRect, setRect } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
 import { isFeedbackActive, resolveFeedbackKnobs, type FeedbackShape } from './feedbackParams'
 
@@ -30,8 +31,18 @@ import { isFeedbackActive, resolveFeedbackKnobs, type FeedbackShape } from './fe
  *     `outputBuffer`. This is what the rest of the post chain (bloom, CA,
  *     vignette — `BloomFinishPass`) sees.
  *  2. **Copy** — reads `outputBuffer` back, writes it into `history` for next
- *     frame. Cheap: an unlit `MeshBasicMaterial` sampling one texture, no
- *     warp math.
+ *     frame. Cheap: one texel-for-texel read, no warp math.
+ *
+ * ## The frame's sub-rect (F272 stage 5)
+ *
+ * The frame is drawn into a sub-rect of full-size buffers, and so is the
+ * history: it is allocated at the full drawing-buffer size once (it only ever
+ * grows, so a resolution step never wipes the trail) and each copy lands in the
+ * bottom-left rect of the frame it was taken from — full resolution, as the
+ * user chose for trails. The history target's `viewport` keeps that rect, so
+ * the blend samples last frame with LAST frame's rect: a coordinate normalised
+ * to the frame maps to the same picture whatever scale either frame was drawn
+ * at, and a resolution step does not zoom the trail.
  *
  * ## Sits BEFORE bloom, not after
  *
@@ -78,6 +89,10 @@ const BLEND_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D tDiffuse;
   uniform sampler2D tHistory;
+  /** This frame's rect in tDiffuse's buffer (frameRect.ts). */
+  uniform vec4 uInRect;
+  /** The rect the history frame was written at — the previous frame's, not necessarily this one's. */
+  uniform vec4 uHistRect;
   uniform float uPersist;
   uniform float uZoom;
   uniform float uRotate;
@@ -87,7 +102,7 @@ const BLEND_FRAG = /* glsl */ `
   uniform float uAspect;
   uniform vec3 uTint;
   varying vec2 vUv;
-
+${FRAME_RECT_GLSL}
   void main() {
     vec2 p = (vUv - 0.5) * vec2(uAspect, 1.0);
     float r = length(p);
@@ -108,10 +123,10 @@ const BLEND_FRAG = /* glsl */ `
     // across the whole visible margin).
     float edge = smoothstep(0.0, 0.03, huv.x) * smoothstep(1.0, 0.97, huv.x)
                * smoothstep(0.0, 0.03, huv.y) * smoothstep(1.0, 0.97, huv.y);
-    vec3 hist = texture2D(tHistory, clamp(huv, 0.0, 1.0)).rgb;
+    vec3 hist = texture2D(tHistory, rectUv(huv, uHistRect)).rgb;
     hist *= uPersist * uTint * edge;
 
-    vec3 cur = texture2D(tDiffuse, vUv).rgb;
+    vec3 cur = texture2D(tDiffuse, rectUv(vUv, uInRect)).rgb;
     // max, not add: an additive feedback loop is exactly the washout bug this
     // codebase's own exposure discipline (docs/09_Rendering_Engine.md) warns
     // against — persistent bright regions would compound every frame with no
@@ -123,7 +138,7 @@ const BLEND_FRAG = /* glsl */ `
 
 export class FeedbackPass extends Pass {
   private readonly blendMaterial: THREE.ShaderMaterial
-  private readonly copyMaterial: THREE.MeshBasicMaterial
+  private readonly copyMaterial: THREE.ShaderMaterial
   private readonly blendScene: THREE.Scene
   private readonly copyScene: THREE.Scene
   private readonly quadGeometry: THREE.PlaneGeometry
@@ -159,6 +174,8 @@ export class FeedbackPass extends Pass {
       uniforms: {
         tDiffuse: { value: null },
         tHistory: { value: null },
+        uInRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+        uHistRect: { value: new THREE.Vector4(1, 1, 1, 1) },
         uPersist: { value: 0 },
         uZoom: { value: 1 },
         uRotate: { value: 0 },
@@ -172,7 +189,16 @@ export class FeedbackPass extends Pass {
     this.blendScene = new THREE.Scene()
     this.blendScene.add(new THREE.Mesh(this.quadGeometry, this.blendMaterial))
 
-    this.copyMaterial = new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false })
+    this.copyMaterial = new THREE.ShaderMaterial({
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: RECT_COPY_FRAG,
+      depthWrite: false,
+      depthTest: false,
+      uniforms: {
+        tDiffuse: { value: null },
+        uRect: { value: new THREE.Vector4(1, 1, 1, 1) },
+      },
+    })
     this.copyScene = new THREE.Scene()
     this.copyScene.add(new THREE.Mesh(this.quadGeometry, this.copyMaterial))
   }
@@ -251,20 +277,29 @@ export class FeedbackPass extends Pass {
     const dt = Number.isFinite(deltaTime) ? (deltaTime as number) : 0
     this.time += dt
 
-    // First frame back after a bypass: drop the pre-bypass contents so the
-    // trail builds from this frame rather than blending against a frozen one.
+    const history = this.history
+    const u = this.blendMaterial.uniforms
+    const inRect = rectOf(inputBuffer, u.uInRect.value)
+
+    // First frame back after a bypass (or after the history grew): drop the
+    // pre-bypass contents so the trail builds from this frame rather than
+    // blending against a frozen one. The WHOLE target is cleared, and the
+    // recorded rect then set to this frame's, so whatever rect the blend reads
+    // is black rather than an older frame.
     if (this.historyStale) {
       this.historyStale = false
       const prevTarget = renderer.getRenderTarget()
-      renderer.setRenderTarget(this.history)
+      setFullRect(history)
+      renderer.setRenderTarget(history)
       renderer.clear(true, false, false)
+      setRect(history, inRect.x, inRect.y)
       renderer.setRenderTarget(prevTarget)
     }
 
     const knobs = resolveFeedbackKnobs(this.trails, this.shape)
-    const u = this.blendMaterial.uniforms
     u.tDiffuse.value = inputBuffer.texture
-    u.tHistory.value = this.history.texture
+    u.tHistory.value = history.texture
+    rectOf(history, u.uHistRect.value)
     u.uPersist.value = knobs.persist
     // Compounds multiplicatively per real elapsed time rather than per frame,
     // so the zoom rate reads the same at 30fps and 144fps — see
@@ -283,21 +318,36 @@ export class FeedbackPass extends Pass {
     // history: skip the copy rather than sampling a null texture.
     if (this.renderToScreen) return
 
-    this.copyMaterial.map = outputBuffer.texture
-    renderer.setRenderTarget(this.history)
+    // Stored at this frame's rect, which the target's viewport then remembers
+    // for next frame's blend (see the header).
+    const cu = this.copyMaterial.uniforms
+    cu.tDiffuse.value = outputBuffer.texture
+    const outRect = rectOf(outputBuffer, cu.uRect.value)
+    setRect(history, outRect.x, outRect.y)
+    renderer.setRenderTarget(history)
     renderer.render(this.copyScene, this.orthoCamera)
   }
 
+  /**
+   * The composer's size, i.e. the full drawing buffer. Called from `addPass`
+   * and on a real display change only — never for the render scale (F272
+   * stage 5).
+   *
+   * The history only GROWS. Reallocating discards the trail mid-decay, and a
+   * smaller display needs nothing more than the rect a larger allocation
+   * already holds, so a shrink keeps the allocation and a grow (a window made
+   * bigger, a denser monitor) pays one reallocation and restarts the trail —
+   * rare, and a restarting trail reads as the loop settling rather than as a
+   * glitch.
+   */
   setSize(width: number, height: number): void {
     const w = Math.max(1, width)
     const h = Math.max(1, height)
     this.blendMaterial.uniforms.uAspect.value = w / h
-    // Reallocates, which discards whatever trail was mid-decay — the same
-    // trade every resizable render target in this codebase makes (see
-    // bufferScale() in renderScale.ts). A resize is rare enough, and a
-    // restarting trail reads as the loop settling rather than as a glitch.
-    if (this.history) this.history.dispose()
-    this.history = makeHistoryTarget(w, h)
+    const history = this.history
+    if (history && history.width >= w && history.height >= h) return
+    history?.dispose()
+    this.history = makeHistoryTarget(Math.max(w, history?.width ?? 0), Math.max(h, history?.height ?? 0))
     this.historyStale = true
   }
 

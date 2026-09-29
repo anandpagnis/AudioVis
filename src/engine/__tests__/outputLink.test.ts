@@ -215,3 +215,15 @@ describe('the manual Limitless punch crosses the window boundary', () => {
     expect(LINK_SRC).toMatch(/limitlessActive:\s*performanceState\.limitless\.active/)
   })
 })
+
+/**
+ * F272 stage 6: the max-resolution cap is set on the console but read by
+ * PerfMonitor, which runs in the output window. Left off `LOOK_FIELDS`, the
+ * select would change the console's store and nothing on screen.
+ */
+describe('the max-resolution cap crosses the window boundary', () => {
+  it('mirrors maxResolution downward, next to quality', () => {
+    expect(LOOK_FIELDS).toContain('maxResolution')
+    expect(LOOK_FIELDS.indexOf('maxResolution')).toBe(LOOK_FIELDS.indexOf('quality') + 1)
+  })
+})

@@ -6,9 +6,14 @@ import { RollingWindow } from './RollingWindow'
  * ## The failure this exists to prevent
  *
  * The governor steps the quality tier down when the frame-time p95 is bad. But
- * stepping down is itself expensive: it changes the device pixel ratio, which
- * resizes the renderer, which reallocates the post chain's whole mip pyramid —
- * a multi-hundred-millisecond stall.
+ * stepping down used to be expensive in itself: it changed the device pixel
+ * ratio, which resized the renderer, which reallocated the post chain's whole
+ * mip pyramid — a multi-hundred-millisecond stall. (Since F272 stage 5 it is
+ * not: the render scale is a sub-rect of buffers allocated once, a step costs
+ * nothing, and nothing suspends the sampler for one — which also matters,
+ * because a step can now land every frame and suspending on each would blind
+ * the governor for good. The failure below is still what a compile or a commit
+ * would do without rule 1.)
  *
  * With one shared 10 s window that stall was fed straight back into the metric
  * that caused it. The governor's `SETTLE_SEC` is 2 s, so it re-checked five
@@ -23,8 +28,9 @@ import { RollingWindow } from './RollingWindow'
  * both are enforced here rather than in the component so they can be tested:
  *
  * 1. **The governor never measures a known one-off.** {@link FrameSampler.suspend}
- *    drops frames caused by an actuation or a transition — a DPR change, a scene
- *    commit's shader compile and crossfade, a context restore. Those frames are
+ *    drops frames caused by an actuation or a transition — a scene commit's
+ *    shader compile and crossfade, a context restore, the post chain's first
+ *    build. Those frames are
  *    real and the display still reports them; they are simply not evidence about
  *    *steady-state* load, which is the only thing the tier should respond to.
  *
@@ -77,9 +83,9 @@ export const GOVERNOR_WINDOW_SEC = 2
 /**
  * Frames dropped from the governor's view after a transition.
  *
- * ~0.5 s at 60 fps. Long enough to cover a DPR resize's reallocation and a
- * shader compile; short enough that a scene which is genuinely too heavy is
- * still caught within one `SETTLE_SEC` of settling down.
+ * ~0.5 s at 60 fps. Long enough to cover a shader compile and the frames
+ * around it; short enough that a scene which is genuinely too heavy is still
+ * caught within one `SETTLE_SEC` of settling down.
  */
 export const DEFAULT_SUSPEND_FRAMES = 30
 
@@ -94,8 +100,8 @@ export class FrameSampler {
    * Exclude the next `frames` frames from the governor's view.
    *
    * Takes the LONGER of any overlapping requests rather than resetting, so a
-   * scene commit landing inside a DPR resize's window cannot accidentally
-   * shorten it.
+   * scene commit landing inside a longer suspension (a context restore's)
+   * cannot accidentally shorten it.
    */
   suspend(frames = DEFAULT_SUSPEND_FRAMES): void {
     this.skip = Math.max(this.skip, frames)

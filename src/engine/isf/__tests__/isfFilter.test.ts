@@ -7,6 +7,8 @@ import {
   ISF_FILTER_IMAGE_UNIFORM,
   ISF_FILTER_MIX_UNIFORM,
   ISF_FILTER_PRELUDE,
+  ISF_FILTER_RAW_TEXTURE_CALLS,
+  ISF_FILTER_TEXEL_UNIFORM,
   ISF_FILTER_WRAPPER,
   ISF_IMAGE_FUNCTIONS,
   ISF_IMAGE_SAMPLERS_GLSL,
@@ -22,6 +24,7 @@ import BUMP_DISTORTION_FS from '../../../assets/isf/filters/Bump Distortion.fs?r
 import CMYK_HALFTONE_FS from '../../../assets/isf/filters/CMYK Halftone.fs?raw'
 import COLOR_INVERT_FS from '../../../assets/isf/filters/Color Invert.fs?raw'
 import CHECKERBOARD_FS from './fixtures/Checkerboard.fs?raw'
+import { rectTexelCoord, rectUvCoord } from '../../frameRect'
 
 /**
  * The filter half of the adapter — `kind: 'filter'` through `parseISF` and
@@ -187,11 +190,13 @@ describe('the filter prelude', () => {
     }
   })
 
-  it('declares exactly the four uniforms a post pass can honestly supply', () => {
+  it('declares exactly the five uniforms a post pass can honestly supply', () => {
     const uniforms = [...ISF_FILTER_PRELUDE.matchAll(/uniform\s+\w+\s+(\w+)\s*;/g)].map((m) => m[1])
     expect(uniforms.sort()).toEqual(
-      [ISF_FILTER_IMAGE_UNIFORM, ISF_FILTER_MIX_UNIFORM, 'uRes', 'uTime'].sort(),
+      [ISF_FILTER_IMAGE_UNIFORM, ISF_FILTER_MIX_UNIFORM, ISF_FILTER_TEXEL_UNIFORM, 'uRes', 'uTime'].sort(),
     )
+    // In the engine's own `uFilter*` namespace, which isfUniformName (always `uIsf…`) cannot reach.
+    expect(ISF_FILTER_TEXEL_UNIFORM.startsWith('uFilter')).toBe(true)
   })
 
   it('shares uRes/uTime/vUv with the scene prelude, so ISF built-ins map the same way', () => {
@@ -214,6 +219,10 @@ describe('the filter prelude', () => {
         ...ISF_IMAGE_FUNCTIONS,
         ISF_FILTER_IMAGE_UNIFORM,
         ISF_FILTER_MIX_UNIFORM,
+        ISF_FILTER_TEXEL_UNIFORM,
+        // frameRect.ts's rect functions, which the image functions sample through (F272 stage 5).
+        'rectTexel',
+        'rectUv',
         'uRes',
         'uTime',
         'vUv',
@@ -243,17 +252,25 @@ describe('the IMG_* image functions', () => {
     return (m as RegExpMatchArray)[1].trim()
   }
 
-  it('IMG_NORM_PIXEL samples at the normalised coordinate given', () => {
-    expect(impl('IMG_NORM_PIXEL')).toBe('return texture2D(image, normCoord);')
+  it('IMG_NORM_PIXEL samples at the normalised coordinate given, mapped into the frame’s rect', () => {
+    // F272 stage 5: the frame is the bottom-left uRes of a larger buffer, so the
+    // coordinate is scaled into that rect and clamped to its texel centres.
+    expect(impl('IMG_NORM_PIXEL')).toBe(
+      `return texture2D(image, rectUv(normCoord, vec4(uRes, ${ISF_FILTER_TEXEL_UNIFORM})));`,
+    )
   })
 
-  it('IMG_PIXEL divides pixel coordinates by the image size', () => {
+  it('IMG_PIXEL takes pixel coordinates in the frame’s own pixel space', () => {
     // The spec's own words: these take "either pixel-based coords or normalized
     // coords". A filter passing gl_FragCoord.xy straight to texture2D would
     // sample far outside 0..1 and clamp to one edge pixel — a solid colour, and
     // exactly the kind of plausible-but-wrong picture the adapter exists to
-    // prevent.
-    expect(impl('IMG_PIXEL')).toBe('return texture2D(image, pixelCoord / IMG_SIZE(image));')
+    // prevent. Pixel space is the rect's texel space, so it goes straight to
+    // rectTexel (IMG_PIXEL(p) is IMG_NORM_PIXEL(p / IMG_SIZE) without the
+    // round trip; see the rect mapping tests below).
+    expect(impl('IMG_PIXEL')).toBe(
+      `return texture2D(image, rectTexel(pixelCoord, vec4(uRes, ${ISF_FILTER_TEXEL_UNIFORM})));`,
+    )
   })
 
   it('IMG_THIS_PIXEL and IMG_THIS_NORM_PIXEL both resolve to the current fragment', () => {
@@ -261,16 +278,22 @@ describe('the IMG_* image functions', () => {
     // normalised form — "this pixel" means the pixel being rendered, not "in
     // pixel units". Getting that backwards would offset every use of
     // IMG_THIS_PIXEL by the full resolution.
-    expect(impl('IMG_THIS_PIXEL')).toBe('return texture2D(image, vUv);')
-    expect(impl('IMG_THIS_NORM_PIXEL')).toBe('return texture2D(image, vUv);')
+    expect(impl('IMG_THIS_PIXEL')).toBe('return IMG_NORM_PIXEL(image, vUv);')
+    expect(impl('IMG_THIS_NORM_PIXEL')).toBe('return IMG_NORM_PIXEL(image, vUv);')
   })
 
   it('carries IMG_NORM_THIS_PIXEL, the spelling the ISF docs actually print', () => {
     // docs.isf.video/ref_functions.html documents `IMG_NORM_THIS_PIXEL`; all
     // 104 uses across the corpus spell it `IMG_THIS_NORM_PIXEL`. The docs and
     // the format disagree, so both are accepted.
-    expect(impl('IMG_NORM_THIS_PIXEL')).toBe('return texture2D(image, vUv);')
+    expect(impl('IMG_NORM_THIS_PIXEL')).toBe('return IMG_NORM_PIXEL(image, vUv);')
     expect(ISF_IMAGE_FUNCTIONS).toContain('IMG_NORM_THIS_PIXEL')
+  })
+
+  it('every raw texture read in the image functions goes through a rect function', () => {
+    for (const m of ISF_IMAGE_SAMPLERS_GLSL.matchAll(/texture2D\(image, ([^;]+)\);/g)) {
+      expect(m[1]).toMatch(/^rect(Uv|Texel)\(/)
+    }
   })
 
   it('IMG_SIZE returns the render-buffer size as a vec2', () => {
@@ -337,10 +360,45 @@ describe('transpileISF in filter mode', () => {
     // be an exact pass-through of the input PIXEL, alpha included. `Bump
     // Distortion` writes vec4(0.0) out of bounds, so an .rgb-only mix would
     // leave an alpha of 0 behind on a frame that was meant to be untouched.
+    // The dry side is read through IMG_THIS_PIXEL, so it is mapped into the
+    // frame's rect like every other read (F272 stage 5).
     expect(ISF_FILTER_WRAPPER).toBe(
       'void main() { isf_main(); gl_FragColor = ' +
-        'mix(texture2D(tDiffuse, vUv), gl_FragColor, uFilterMix); }',
+        'mix(IMG_THIS_PIXEL(tDiffuse), gl_FragColor, uFilterMix); }',
     )
+  })
+
+  it('refuses a raw texture read in a filter body, which could not know the frame is a sub-rect', () => {
+    for (const call of ['texture2D', 'texture2DLod', 'texture', 'texture2DLodEXT', 'textureLodOffset']) {
+      expect(ISF_FILTER_RAW_TEXTURE_CALLS).toContain(call)
+      const extra = call === 'texture' || call === 'texture2D' ? '' : ', 0.0'
+      const src = filterIsf(
+        [IMAGE_INPUT],
+        `void main() { gl_FragColor = ${call} (inputImage, isf_FragNormCoord${extra}); }`,
+      )
+      expect(() => transpileFilter(src, 'Raw.fs')).toThrow(/sub-rect/)
+    }
+  })
+
+  it('refuses textureSize, which reports the buffer rather than the frame', () => {
+    expect(ISF_FILTER_RAW_TEXTURE_CALLS).toContain('textureSize')
+    const src = filterIsf(
+      [IMAGE_INPUT],
+      'void main() { vec2 s = vec2(textureSize(inputImage, 0)); ' +
+        'gl_FragColor = IMG_PIXEL(inputImage, s * 0.5); }',
+    )
+    expect(() => transpileFilter(src, 'Size.fs')).toThrow(/IMG_SIZE/)
+  })
+
+  it('lets a variable or a comment use a texture name — only a call is refused', () => {
+    const t = transpileFilter(
+      filterIsf(
+        [IMAGE_INPUT],
+        '// texture2D(inputImage, vUv) would be refused\n' +
+          'void main() { float texture = 0.5; gl_FragColor = IMG_THIS_PIXEL(inputImage) * texture; }',
+      ),
+    )
+    expect(code(t.frag)).toContain('float texture = 0.5;')
   })
 
   it('renames the source main so the wrapper can own the entry point', () => {
@@ -414,6 +472,52 @@ describe('transpileISF in filter mode', () => {
       'vec4 IMG_SIZE(sampler2D i) { return vec4(0.0); }\nvoid main() { gl_FragColor = vec4(1.0); }',
     )
     expect(() => transpileFilter(src, 'Own.fs')).toThrow(/ISF's own image functions/)
+  })
+})
+
+/**
+ * The image functions' rect mapping (F272 stage 5), in the same TypeScript as frameRect.ts's `rectUv` /
+ * `rectTexel` (one axis each). The frame is the bottom-left `uRes` of a buffer allocated at `alloc`.
+ */
+describe('the image functions map the frame’s rect, never past it', () => {
+  const IMG_NORM_PIXEL = (n: number, res: number, alloc: number) => rectUvCoord(n, res, alloc)
+  const IMG_PIXEL = (p: number, res: number, alloc: number) => rectTexelCoord(p, res, alloc)
+
+  it('at full size (rect = buffer) they are the old reads, clamped to the edge texel centre as CLAMP_TO_EDGE is', () => {
+    const W = 1920
+    for (const n of [0.25, 0.5, 0.9, 0.5 / W, 1 - 0.5 / W]) expect(IMG_NORM_PIXEL(n, W, W)).toBeCloseTo(n, 12)
+    // Outside the texel-centre band a bilinear tap of an exact-size texture returns the edge texel anyway.
+    expect(IMG_NORM_PIXEL(0, W, W)).toBeCloseTo(0.5 / W, 12)
+    expect(IMG_NORM_PIXEL(1, W, W)).toBeCloseTo(1 - 0.5 / W, 12)
+  })
+
+  it('in a sub-rect a normalised 0..1 lands inside the rect, however far out a filter reaches', () => {
+    const res = 1152
+    const alloc = 2880
+    for (const n of [-3, -0.2, 0, 0.3, 0.5, 1, 1.4, 7]) {
+      const u = IMG_NORM_PIXEL(n, res, alloc)
+      // Within the rect's texel centres: never a texel of an older, larger frame.
+      expect(u * alloc).toBeGreaterThanOrEqual(0.5 - 1e-9)
+      expect(u * alloc).toBeLessThanOrEqual(res - 0.5 + 1e-9)
+    }
+    // The frame's centre is the rect's centre, not the buffer's.
+    expect(IMG_NORM_PIXEL(0.5, res, alloc) * alloc).toBeCloseTo(res / 2, 9)
+  })
+
+  it('IMG_PIXEL(p) is IMG_NORM_PIXEL(p / RENDERSIZE), so pixel and normalised reads agree', () => {
+    const res = 1152
+    const alloc = 2880
+    for (const p of [0, 0.5, 17.5, 600, 1151.5, 1300]) {
+      expect(IMG_PIXEL(p, res, alloc)).toBeCloseTo(IMG_NORM_PIXEL(p / res, res, alloc), 12)
+    }
+  })
+
+  it('the current fragment (vUv at a pixel centre of the rect) reads exactly its own texel', () => {
+    const res = 1152
+    const alloc = 2880
+    for (const x of [0, 1, 575, 1151]) {
+      expect(IMG_NORM_PIXEL((x + 0.5) / res, res, alloc) * alloc).toBeCloseTo(x + 0.5, 9)
+    }
   })
 })
 

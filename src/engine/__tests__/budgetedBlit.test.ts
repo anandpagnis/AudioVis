@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { BLIT_CUBIC_MAX_TIER, BLIT_CUBIC_TENSION, DISPLAY_FRAG, blitCubicFor } from '../createShaderScene'
+import {
+  BLIT_CUBIC_MAX_TIER,
+  BLIT_CUBIC_TENSION,
+  DISPLAY_FRAG,
+  blitCubicFor,
+  budgetedCapacity,
+  solveScale,
+} from '../createShaderScene'
 
 /**
  * F272 stage 2: the budgeted-scene blit.
@@ -183,7 +190,64 @@ describe('DISPLAY_FRAG source', () => {
   })
 
   it('clamps every tap to the active rect', () => {
-    expect(DISPLAY_FRAG).toMatch(/clamp\(t, vec2\(0\.5\), uSrcSize - 0\.5\) \* uTexel/)
+    // Through the shared rect clamp (frameRect.ts), with the rect built from the blit's own uniforms.
+    expect(DISPLAY_FRAG).toContain('return clamp(pos, vec2(0.5), rect.xy - 0.5) * rect.zw;')
+    expect(DISPLAY_FRAG).toContain('vec4 rect = vec4(uSrcSize, uTexel);')
     expect(DISPLAY_FRAG).not.toMatch(/uUvMax/)
+    // Every texture read takes a clamped coordinate: rectTexel's output or one of its components.
+    for (const m of DISPLAY_FRAG.matchAll(/texture2D\((\w+), ([^;]+)\);/g)) {
+      expect(m[2], m[0]).toMatch(/^rectTexel\(|^t12\b|^vec2\(t(0|3|12)\.x, t(0|3|12)\.y\)\)?$/)
+    }
+  })
+})
+
+describe('budgetedCapacity (F272 stage 5)', () => {
+  // Displays as (css w, css h, dpr): the M1 fullscreen, a 4K and a 5K panel, a
+  // fractional-DPR laptop, and a small window, where the floors wobble most.
+  const DISPLAYS: [number, number, number][] = [
+    [1440, 900, 2],
+    [3840, 2160, 1],
+    [2560, 1440, 2],
+    [1280, 800, 1.5],
+    [1512, 982, 2],
+    [633, 417, 1],
+  ]
+  const BUDGETS = [0.3, 0.5, 0.7, 1, 1.2, 1.6, 1.8, 2, 3.9, 6.7, 7.2, 20]
+
+  it('holds the active rect at every scale, so a scale step never grows the target', () => {
+    // The render scale moves in 1/100 steps and, under a max-resolution cap,
+    // can go well below the solver's floor — so every step down to 0.01.
+    for (const [cssW, cssH, dpr] of DISPLAYS) {
+      const fullW = Math.floor(cssW * dpr)
+      const fullH = Math.floor(cssH * dpr)
+      for (const budget of BUDGETS) {
+        const atFull = solveScale(budget, fullW, fullH)
+        const capW = budgetedCapacity(fullW, atFull)
+        const capH = budgetedCapacity(fullH, atFull)
+        for (let i = 1; i <= 100; i++) {
+          const applied = i / 100
+          // renderScale.internalW/H and the budgeted solve, as the scene does it.
+          const frameW = Math.max(1, Math.floor(cssW * (dpr * applied)))
+          const frameH = Math.max(1, Math.floor(cssH * (dpr * applied)))
+          const s = solveScale(budget, frameW, frameH)
+          const w = Math.max(1, Math.floor(frameW * s))
+          const h = Math.max(1, Math.floor(frameH * s))
+          const at = `${cssW}x${cssH}@${dpr} budget ${budget} scale ${applied}`
+          expect(w, at).toBeLessThanOrEqual(capW)
+          expect(h, at).toBeLessThanOrEqual(capH)
+        }
+      }
+    }
+  })
+
+  it('never exceeds the frame, and stays near the budget rather than the whole frame', () => {
+    // The M1 fullscreen, 5.18 MP: a 1 MP scene's target is ~1 MP (plus slack),
+    // not the 5.18 MP a whole-frame capacity would keep resident for it.
+    const atFull = solveScale(1, 2880, 1800)
+    const capW = budgetedCapacity(2880, atFull)
+    const capH = budgetedCapacity(1800, atFull)
+    expect((capW * capH) / 1e6).toBeLessThan(1.1)
+    expect(budgetedCapacity(2880, 1)).toBe(2880)
+    expect(budgetedCapacity(1800, solveScale(20, 2880, 1800))).toBe(1800)
   })
 })

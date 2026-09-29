@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { bandClocks } from './bandClocks'
 import { beatOscillators } from './beatOscillators'
+import { FRAME_RECT_CUBIC_GLSL, FRAME_RECT_GLSL, blitCubicFor } from './frameRect'
 import { FULLSCREEN_VERT } from './glsl'
 import { createLilimState, updateLilimState, type LilimAudioState } from './lilimState'
 import { getNoiseLUT, NOISE_LUT_SIZE } from './noiseLUT'
@@ -279,10 +280,27 @@ const MIN_RENDER_SCALE = 0.4
 const WARM_RENDERS = 5
 
 /** Solve lilim's `scale = sqrt(budget / fullMP)`, clamped, for a frame of `width x height` pixels. */
-function solveScale(pixelBudget: number, width: number, height: number): number {
+export function solveScale(pixelBudget: number, width: number, height: number): number {
   const fullMP = (width * height) / 1e6
   if (!(fullMP > 0)) return 1
   return Math.min(1, Math.max(MIN_RENDER_SCALE, Math.sqrt(pixelBudget / fullMP)))
+}
+
+/**
+ * One side of a budgeted scene's offscreen capacity: the active rect its budget
+ * solves to on the frame at scale 1 (`full` pixels, `scaleAtFull` =
+ * `solveScale(budget, fullW, fullH)`), plus slack, never past the frame.
+ *
+ * The largest rect a budget can ask for on a display is the one at scale 1:
+ * below the budget's own clamp the rect is `sqrt(budget * aspect)` whatever the
+ * frame (the frame's size cancels), and where it is clamped the rect is the
+ * frame, which only shrinks with the scale. The slack covers the one thing
+ * that does not cancel exactly — each scaled frame is floored to integers, so
+ * its aspect, and with it the rect, wobbles by a pixel or two — so a scale
+ * step never lands one pixel past the allocation and reallocates for it.
+ */
+export function budgetedCapacity(full: number, scaleAtFull: number): number {
+  return Math.min(full, Math.ceil(full * scaleAtFull * 1.02) + 2)
 }
 
 /** A scene's compiled material + its (trivial, shared-shape) geometry. */
@@ -471,14 +489,21 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
     // Sim step, before the scene's own update: so tSim already holds THIS
     // frame's fresh result by the time the caller renders the main shader
     // that samples it. Sized off lilim's own choice for the same job
-    // (`getDrawingBufferSize().multiplyScalar(0.6)`), taken of the frame the
-    // scenes are drawn into (`renderScale.internalW/H`) — a simulation buffer
+    // (`getDrawingBufferSize().multiplyScalar(0.6)`) — a simulation buffer
     // does not need to match display resolution 1:1, and this scene's own
     // main offscreen budget (if any) is a separate, later-solved number
     // `runFrame` has no access to here.
+    //
+    // Taken of the frame at scale 1 (`renderScale.fullW/H`), not the scaled
+    // one: the sim renders its whole target and keeps its state in it, so a
+    // size that followed the scale would grow on every new session-high step
+    // (F272 stage 5 made those instant), and a grow disposes both ping-pong
+    // targets — a reallocation stall mid-show, and the simulation restarting
+    // from black. The grow-only buffer reached this size at the first frame
+    // drawn at scale 1 anyway; only a display change moves it now.
     if (spec.sim) {
-      const simW = Math.max(1, Math.floor(renderScale.internalW * 0.6))
-      const simH = Math.max(1, Math.floor(renderScale.internalH * 0.6))
+      const simW = Math.max(1, Math.floor(renderScale.fullW * 0.6))
+      const simH = Math.max(1, Math.floor(renderScale.fullH * 0.6))
       const rt = getSimRT(gl, spec, spec.sim, simW, simH)
       const prev = rt.flip ? rt.a : rt.b
       const next = rt.flip ? rt.b : rt.a
@@ -575,7 +600,8 @@ function createDirectScene<S>(spec: ShaderSceneSpec<S>): ComponentType {
  * below) but only the bottom-left `uSrcSize` texels hold this frame's actual
  * render — the rest is stale/uninitialised from whatever the target held
  * before. Every tap is clamped to texel centres inside that rect
- * (`rectUv`), so filtering can never pull the stale region in.
+ * (frameRect.ts's `rectTexel`, the same clamp every post pass uses since F272
+ * stage 5), so filtering can never pull the stale region in.
  *
  * ## Alignment (F272)
  *
@@ -588,7 +614,8 @@ function createDirectScene<S>(spec: ShaderSceneSpec<S>): ComponentType {
  * ## Upscale filter (F272)
  *
  * `uCubic` 0 is bilinear. Above 0 it is the cubic-convolution kernel with that
- * tension (0.5 = Catmull-Rom) in its 5-tap form: bilinear taps placed so the
+ * tension (0.5 = Catmull-Rom) in its 5-tap form (`rectCubic`, shared with
+ * GradePass's upscale): bilinear taps placed so the
  * hardware does most of the weighting, corners dropped and renormalised. The
  * result is clamped to the taps' own range, so a bright line on black cannot
  * ring into a dark halo or go negative — this roster is bright lines on black,
@@ -604,64 +631,22 @@ export const DISPLAY_FRAG = /* glsl */ `
   uniform vec2 uSrcSize;
   uniform vec2 uTexel;
   uniform float uCubic;
-  vec2 rectUv(vec2 t) { return clamp(t, vec2(0.5), uSrcSize - 0.5) * uTexel; }
+${FRAME_RECT_GLSL}${FRAME_RECT_CUBIC_GLSL}
   void main() {
+    vec4 rect = vec4(uSrcSize, uTexel);
     vec2 pos = vUv * uSrcSize;
     if (uCubic <= 0.0) {
-      gl_FragColor = texture2D(uScene, rectUv(pos));
+      gl_FragColor = texture2D(uScene, rectTexel(pos, rect));
       return;
     }
-    vec2 tc1 = floor(pos - 0.5) + 0.5;
-    vec2 f = pos - tc1;
-    float C = uCubic;
-    vec2 w0 = -C * f * (1.0 - f) * (1.0 - f);
-    vec2 w3 = -C * f * f * (1.0 - f);
-    vec2 w1 = 1.0 + f * f * ((C - 3.0) + (2.0 - C) * f);
-    vec2 w2 = 1.0 - w0 - w1 - w3;
-    vec2 w12 = w1 + w2;
-    vec2 t0 = rectUv(tc1 - 1.0);
-    vec2 t3 = rectUv(tc1 + 2.0);
-    vec2 t12 = rectUv(tc1 + w2 / w12);
-    vec4 cC = texture2D(uScene, t12);
-    vec4 cL = texture2D(uScene, vec2(t0.x, t12.y));
-    vec4 cR = texture2D(uScene, vec2(t3.x, t12.y));
-    vec4 cB = texture2D(uScene, vec2(t12.x, t0.y));
-    vec4 cT = texture2D(uScene, vec2(t12.x, t3.y));
-    float wC = w12.x * w12.y;
-    float wL = w0.x * w12.y;
-    float wR = w3.x * w12.y;
-    float wB = w12.x * w0.y;
-    float wT = w12.x * w3.y;
-    vec4 c = (cC * wC + cL * wL + cR * wR + cB * wB + cT * wT) / (wC + wL + wR + wB + wT);
-    vec4 mn = min(cC, min(min(cL, cR), min(cB, cT)));
-    vec4 mx = max(cC, max(max(cL, cR), max(cB, cT)));
-    gl_FragColor = max(clamp(c, mn, mx), 0.0);
+    gl_FragColor = rectCubic(uScene, pos, rect, uCubic);
   }
 `
 
-/** Catmull-Rom tension for {@link DISPLAY_FRAG}'s upscale. */
-export const BLIT_CUBIC_TENSION = 0.5
-
-/**
- * The cheapest quality tier that still gets the bicubic upscale (tiers run 0
- * richest → 4 survival). The user's call (F272): bicubic only while the machine
- * is running comfortably — the top two tiers — and plain bilinear once the
- * ladder has stepped down, so a struggling M1 never pays for it.
- */
-export const BLIT_CUBIC_MAX_TIER = 1
-
-/**
- * `uCubic` for a budgeted scene's blit: the Catmull-Rom tension when the
- * active rect is genuinely smaller than what it is drawn over AND the live
- * resolution tier is a top one, else 0 (bilinear — which at 1:1 is an exact
- * copy). Total against non-finite input. Pure, so the policy is testable
- * without a GPU.
- */
-export function blitCubicFor(srcW: number, destW: number, resolutionTier: number): number {
-  if (!Number.isFinite(srcW) || !Number.isFinite(destW) || !Number.isFinite(resolutionTier)) return 0
-  if (srcW >= destW - 0.5) return 0
-  return resolutionTier <= BLIT_CUBIC_MAX_TIER ? BLIT_CUBIC_TENSION : 0
-}
+// The upscale policy and its constants live with the shared rect sampling
+// (frameRect.ts) since GradePass uses them too; re-exported for the callers
+// and tests that have always found them here.
+export { BLIT_CUBIC_MAX_TIER, BLIT_CUBIC_TENSION, blitCubicFor } from './frameRect'
 
 /** The GPU-side pieces a budgeted scene needs: real allocations, not just JS state. */
 interface BudgetedRT {
@@ -698,14 +683,16 @@ interface BudgetedRT {
  * "pay once, keep it" trade `SceneManager` already makes for pinned effect
  * scenes.
  *
- * ## Fixed to the full canvas size, not the budgeted one (F139/F143)
+ * ## Sized once for the display, not for the current rect (F139/F143)
  *
- * `target.setSize()` is only ever called here for a real canvas/DPR change —
- * a rare, user-driven event. The quality governor's own resolution changes
- * (a tier demote, a render-scale step — dozens of times a minute) do NOT
- * resize this target at all; they move `target.viewport`/`target.scissor`
- * instead, which `WebGLRenderer.setRenderTarget()` reads directly with no
- * texture/framebuffer work.
+ * `target.setSize()` is only ever called here for a real display change (or a
+ * function budget first reaching a higher level this session) — rare events.
+ * The quality governor's own resolution changes (a tier demote, a render-scale
+ * step — dozens of times a minute) do NOT resize this target at all; they move
+ * `target.viewport`/`target.scissor` instead, which
+ * `WebGLRenderer.setRenderTarget()` reads directly with no texture/framebuffer
+ * work. The capacity is the rect the budget solves to at scale 1, which bounds
+ * the rect at every scale (`budgetedCapacity`, F272 stage 5).
  *
  * This replaces the previous behaviour, which called `setSize()` on
  * whatever budget the quality governor produced that frame. That used to be
@@ -824,8 +811,8 @@ function getSimRT<S>(
   if (existing) {
     // Grow only — same F147 trade `getBudgetedRT`'s own target already makes
     // and for the same reason: a live-resized render target is a real GPU
-    // stall hazard, and this buffer only has to be big enough for whatever
-    // the largest active size has been so far this session.
+    // stall hazard. The size asked for follows the display, not the render
+    // scale (see the caller), so this fires only when the display grows.
     if (width > existing.a.width || height > existing.a.height) {
       const w = Math.max(width, existing.a.width)
       const h = Math.max(height, existing.a.height)
@@ -891,7 +878,7 @@ function createBudgetedScene<S>(
     // uniform writes below — cheap individually, but there's no reason to
     // repeat them every frame — only happen when the solved size actually
     // changes. This is intentionally separate from `rt.target`'s own size:
-    // the target is fixed to the full canvas (see `getBudgetedRT`'s F139/
+    // the target is sized once for the display (see `getBudgetedRT`'s F139/
     // F143 doc comment) and essentially never changes, while this tracks the
     // viewport sub-rect the quality governor moves dozens of times a minute.
     // Tracks BOTH sizes the blit samples with — the active rect (`uSrcSize`)
@@ -927,17 +914,35 @@ function createBudgetedScene<S>(
     useSceneFrame((ctx) => {
       const budget = typeof pixelBudget === 'function' ? pixelBudget() : pixelBudget
       // The frame this scene's display pass draws into (F272 stage 3): the
-      // canvas today, the rendered sub-rect from stage 5 on.
+      // rendered sub-rect of the full-size composer buffers (stage 5).
       const frameW = renderScale.internalW
       const frameH = renderScale.internalH
       const scale = solveScale(budget, frameW, frameH)
       const w = Math.max(1, Math.floor(frameW * scale))
       const h = Math.max(1, Math.floor(frameH * scale))
 
-      // Real canvas/DPR change only — NOT a budget/tier change. `setSize()`
-      // resets `target.viewport`/`.scissor` to the full new size, which is
-      // why the active-viewport block below runs unconditionally after this
-      // rather than being folded into the same guard.
+      // Capacity follows the frame at SCALE 1, not the scaled frame (F272
+      // stage 5). Sized from `frameW/H`, a target first mounted at a low scale
+      // grew — a full reallocation, the stall described below — on the first
+      // later climb, and stage 5 made climbs instant and frequent. The rect
+      // the budget solves to on the full frame bounds every rect any scale
+      // produces (see `budgetedCapacity`), so a scale step never grows it;
+      // only a display change or a function budget first rising to its
+      // higher level this session does. Not the whole frame: most budgets are
+      // a fraction of it, and every budgeted scene keeps its target for the
+      // session, so that would hold several frames' worth of RGBA16F for
+      // pixels no scene draws.
+      const fullW = renderScale.fullW
+      const fullH = renderScale.fullH
+      const scaleAtFull = solveScale(budget, fullW, fullH)
+      const needW = Math.max(w, budgetedCapacity(fullW, scaleAtFull))
+      const needH = Math.max(h, budgetedCapacity(fullH, scaleAtFull))
+
+      // Real display change, or a higher budget than this target has held —
+      // NOT a scale step. `setSize()` resets `target.viewport`/`.scissor` to
+      // the full new size, which is why the active-viewport block below runs
+      // unconditionally after this rather than being folded into the same
+      // guard.
       //
       // GROWS only, never shrinks (F147). `RenderTarget.setSize()` — verified
       // directly in three's source — calls `.dispose()` whenever the size
@@ -958,8 +963,8 @@ function createBudgetedScene<S>(
       // so only re-pays the stall the next time DPR climbs back up. Same
       // "pay once, keep it" trade F138/F144 already made for the cache these
       // targets and materials live in.
-      if (frameW > rt.target.width || frameH > rt.target.height) {
-        rt.target.setSize(Math.max(frameW, rt.target.width), Math.max(frameH, rt.target.height))
+      if (needW > rt.target.width || needH > rt.target.height) {
+        rt.target.setSize(Math.max(needW, rt.target.width), Math.max(needH, rt.target.height))
         // F16: this target deliberately never goes through resourceCache's
         // acquire/release lifecycle (see that method's own doc comment) —
         // but budgetLedger.ts exists specifically for targets like this one,
@@ -972,19 +977,19 @@ function createBudgetedScene<S>(
           rt.target.width * rt.target.height * 8,
         )
       }
-      const fullW = rt.target.width
-      const fullH = rt.target.height
+      const allocW = rt.target.width
+      const allocH = rt.target.height
 
       if (
         w !== activeSize.current.w ||
         h !== activeSize.current.h ||
-        fullW !== activeSize.current.fullW ||
-        fullH !== activeSize.current.fullH
+        allocW !== activeSize.current.fullW ||
+        allocH !== activeSize.current.fullH
       ) {
         activeSize.current.w = w
         activeSize.current.h = h
-        activeSize.current.fullW = fullW
-        activeSize.current.fullH = fullH
+        activeSize.current.fullW = allocW
+        activeSize.current.fullH = allocH
         // The shader's idea of resolution is the ACTIVE viewport's, not the
         // allocated target's — it drives ray setup and pixel-space maths, so
         // passing the full target size here would draw a differently-shaped
@@ -994,7 +999,7 @@ function createBudgetedScene<S>(
         // The blit samples in texel space inside the active rect and clamps
         // every tap to it — see DISPLAY_FRAG's alignment note (F272).
         displayMaterial.uniforms.uSrcSize.value.set(w, h)
-        displayMaterial.uniforms.uTexel.value.set(1 / fullW, 1 / fullH)
+        displayMaterial.uniforms.uTexel.value.set(1 / allocW, 1 / allocH)
       }
       // Bicubic only while the rect is genuinely upscaled and the live
       // resolution tier is a top one (F272). A uniform write, so read every

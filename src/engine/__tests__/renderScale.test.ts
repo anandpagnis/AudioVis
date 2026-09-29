@@ -1,18 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_PIXEL_BUDGET,
-  MIN_CLIMB_PIXEL_RATIO,
   MIN_PIXEL_BUDGET,
   NATIVE_PIXEL_BUDGET,
   RENDER_SCALE_FLOOR,
   RenderScaleSolver,
-  bufferScale,
+  capScaleFor,
   claimsResolution,
   combinePixelBudgets,
-  decideTierResize,
   solveRenderScale,
-  worthReallocating,
 } from '../renderScale'
+import { maxResolutionMP } from '../maxResolution'
 
 /**
  * The internal-resolution governor.
@@ -86,9 +84,10 @@ describe('solveRenderScale', () => {
     }
   })
 
-  it('ignores a display change too small to be worth a resize', () => {
-    // A resize reallocates the post chain's mip pyramid. One CSS pixel of
-    // difference must not buy that.
+  it('ignores a display change too small to be worth a visible step', () => {
+    // A step no longer reallocates anything (F272 stage 5), but it is still a
+    // change of sharpness and a session-log event. One CSS pixel of difference
+    // must not buy either.
     const before = solveRenderScale(2, mp(1920, 1080))
     const after = solveRenderScale(2, mp(1921, 1080))
     expect(after).toBe(before)
@@ -170,7 +169,7 @@ describe('claimsResolution (F272)', () => {
     expect(claimsResolution({ role: 'primary', dir: 1 })).toBe(true)
   })
 
-  it('layers never do, so the director adding or dropping one cannot resize the canvas', () => {
+  it('layers never do, so the director adding or dropping one cannot step the resolution', () => {
     for (const role of ['background', 'accent', 'overlay']) {
       expect(claimsResolution({ role, dir: 1 })).toBe(false)
     }
@@ -180,14 +179,14 @@ describe('claimsResolution (F272)', () => {
     for (const dir of [1, 0, -1]) expect(claimsResolution({ role: 'effect', dir })).toBe(false)
   })
 
-  it('an outgoing or warming primary does not, so a crossfade resizes once rather than twice', () => {
+  it('an outgoing or warming primary does not, so a crossfade steps once rather than twice', () => {
     expect(claimsResolution({ role: 'primary', dir: 0 })).toBe(false)
     expect(claimsResolution({ role: 'primary', dir: -1 })).toBe(false)
   })
 
   it('a frame whose layers change keeps the same combined budget', () => {
     // The whole point: the same primary with and without an accent resolves to
-    // the same number, so the pair key PerfMonitor watches does not move.
+    // the same number, so the scale PerfMonitor applies does not move.
     const budgetOf = (entries: { role: string; dir: number; mp: number }[]) =>
       combinePixelBudgets(entries.filter(claimsResolution).map((e) => e.mp))
     const alone = budgetOf([{ role: 'primary', dir: 1, mp: 12.5 }])
@@ -200,27 +199,16 @@ describe('claimsResolution (F272)', () => {
   })
 })
 
-describe('bufferScale', () => {
-  it('quantises to quarters so feedback buffers are not wiped on every wobble', () => {
-    expect(bufferScale(0.97)).toBe(1)
-    expect(bufferScale(0.79)).toBe(0.75)
-    expect(bufferScale(0.72)).toBe(0.75)
-    expect(bufferScale(0.61)).toBe(0.5)
-  })
-
-  it('never goes below the solver floor or above native', () => {
-    expect(bufferScale(0.1)).toBe(RENDER_SCALE_FLOOR)
-    expect(bufferScale(2)).toBe(1)
-  })
-})
-
 /**
- * The frame's pixel size (F272 stage 3). Scenes size their own buffers from
- * this instead of `size * viewport.dpr`, so today it has to be exactly the
- * canvas three allocates for the same inputs, integer for integer.
+ * The frame's pixel size (F272 stage 3), and since stage 5 the sub-rect the
+ * whole chain renders into. Scenes size their own buffers from this instead of
+ * `size * viewport.dpr`. At scale 1 it has to be exactly the pinned canvas
+ * three allocates, integer for integer (a rect one pixel past the buffer would
+ * scale the frame); below 1 it is floored the same way, so the relationship
+ * three would give a canvas at that pixel ratio is the one pinned here.
  */
 describe('RenderScaleSolver.internalW/H', () => {
-  /** What R3F + three give the canvas: `setDpr(baseDpr * scale)`, then `floor(css * pixelRatio)`. */
+  /** What three gives a canvas at pixel ratio `baseDpr * scale`: `floor(css * pixelRatio)`. */
   const canvasPx = (css: number, baseDpr: number, scale: number) => Math.floor(css * (baseDpr * scale))
 
   const solver = (cssW: number, cssH: number, baseDpr: number, applied: number) => {
@@ -270,6 +258,35 @@ describe('RenderScaleSolver.internalW/H', () => {
     expect([s.internalW, s.internalH]).toEqual([400, 300])
   })
 
+  it('never exceeds the pinned canvas, at any scale the solver can return (F272 stage 5)', () => {
+    // The rect is drawn into buffers allocated at the canvas's drawing buffer;
+    // one pixel past it would stretch the frame by that pixel.
+    for (const [w, h, dpr] of [
+      [1440, 900, 2],
+      [1440.5, 899.75, 2],
+      [2560, 1440, 1.5],
+      [1728, 1117, 2],
+    ]) {
+      const canvasW = canvasPx(w, dpr, 1)
+      const canvasH = canvasPx(h, dpr, 1)
+      for (let scale = RENDER_SCALE_FLOOR; scale <= 1; scale = Math.round((scale + 0.01) * 100) / 100) {
+        const s = solver(w, h, dpr, scale)
+        expect(s.internalW).toBeLessThanOrEqual(canvasW)
+        expect(s.internalH).toBeLessThanOrEqual(canvasH)
+      }
+      expect(solver(w, h, dpr, 1).internalW).toBe(canvasW)
+    }
+  })
+
+  it('is monotonic in the scale, so a step up never shrinks the rect', () => {
+    let prev = 0
+    for (let scale = RENDER_SCALE_FLOOR; scale <= 1; scale = Math.round((scale + 0.01) * 100) / 100) {
+      const w = solver(1440, 900, 2, scale).internalW
+      expect(w).toBeGreaterThanOrEqual(prev)
+      prev = w
+    }
+  })
+
   it('is at least 1 before any display is known, so no buffer is sized to zero', () => {
     const s = new RenderScaleSolver()
     expect(s.internalW).toBe(1)
@@ -284,6 +301,112 @@ describe('RenderScaleSolver.internalW/H', () => {
     s.setDisplay(1000, 500, 0)
     expect([s.internalW, s.internalH]).toEqual([2000, 1000])
   })
+
+  it('fullW/H is the rect at scale 1, whatever scale is applied', () => {
+    // What a grow-only buffer sizes its capacity from, so it has to be the
+    // largest rect any scale produces and must not follow the applied scale.
+    for (const [w, h, dpr] of [
+      [1440, 900, 2],
+      [1440.5, 899.75, 2],
+      [2560, 1440, 1.5],
+    ]) {
+      const atOne = solver(w, h, dpr, 1)
+      for (const scale of [0.25, 0.4, 0.73, 1]) {
+        const s = solver(w, h, dpr, scale)
+        expect([s.fullW, s.fullH]).toEqual([atOne.internalW, atOne.internalH])
+        expect(s.internalW).toBeLessThanOrEqual(s.fullW)
+        expect(s.internalH).toBeLessThanOrEqual(s.fullH)
+      }
+    }
+  })
+})
+
+/**
+ * F272 stage 6: the user's "max render resolution" setting (maxResolution.ts),
+ * a ceiling on the frame's megapixels on top of the solve.
+ */
+describe('the max-resolution cap', () => {
+  /** The M1 Air fullscreen: 1440x900 CSS at 2x, 5.18 MP. */
+  const m1 = mp(1440, 900, 2)
+  const fiveK = mp(2560, 1440, 2)
+
+  it('binds: 2560x1600 on the M1 renders at 0.88 and never more pixels than it names', () => {
+    const cap = maxResolutionMP('2560x1600')
+    const scale = solveRenderScale(NATIVE_PIXEL_BUDGET, m1, 1, cap)
+    expect(scale).toBe(0.88)
+    expect(m1 * scale * scale).toBeLessThanOrEqual(cap)
+  })
+
+  it('is exactly the uncapped solve at Native', () => {
+    for (const full of Object.values(DISPLAYS)) {
+      for (const budget of [0.5, 1.3, 4, 12.5, NATIVE_PIXEL_BUDGET]) {
+        for (const tier of [1, 0.72, 0.49, 0.3]) {
+          expect(solveRenderScale(budget, full, tier, maxResolutionMP('native'))).toBe(
+            solveRenderScale(budget, full, tier),
+          )
+        }
+      }
+    }
+  })
+
+  it('changes nothing when the cap is at or above the display', () => {
+    const cap = maxResolutionMP('3840x2160')
+    for (const budget of [1.3, 4, NATIVE_PIXEL_BUDGET]) {
+      expect(solveRenderScale(budget, DISPLAYS.monitor, 1, cap)).toBe(solveRenderScale(budget, DISPLAYS.monitor))
+    }
+    expect(capScaleFor(cap, DISPLAYS.monitor)).toBe(1)
+  })
+
+  it('may go below the solver’s floor: 1280x720 on a 5K panel is 0.25', () => {
+    // The floor protects the picture from the solver's guess, not from a choice.
+    expect(solveRenderScale(NATIVE_PIXEL_BUDGET, fiveK, 1, maxResolutionMP('1280x720'))).toBe(0.25)
+    expect(0.25).toBeLessThan(RENDER_SCALE_FLOOR)
+  })
+
+  it('leaves the tier in charge when the tier asks for less than the cap', () => {
+    const cap = maxResolutionMP('2560x1600')
+    const tiered = solveRenderScale(1.3, DISPLAYS.retina, 0.72)
+    expect(tiered).toBeLessThan(capScaleFor(cap, DISPLAYS.retina))
+    expect(solveRenderScale(1.3, DISPLAYS.retina, 0.72, cap)).toBe(tiered)
+  })
+
+  it('still applies when the budget is garbage', () => {
+    const cap = maxResolutionMP('2560x1600')
+    expect(solveRenderScale(NaN, m1, 1, cap)).toBe(0.88)
+    expect(solveRenderScale(0, m1, 1, cap)).toBe(0.88)
+  })
+
+  it('rounds down on the 1/100 grid, so no cap is ever exceeded', () => {
+    for (const full of [m1, fiveK, ...Object.values(DISPLAYS), mp(1512, 982, 2), mp(1280, 800, 1.5)]) {
+      for (const id of ['3840x2160', '2560x1600', '2560x1440', '1920x1080', '1280x720']) {
+        const cap = maxResolutionMP(id)
+        const scale = capScaleFor(cap, full)
+        expect(Math.round(scale * 100) / 100).toBe(scale)
+        expect(full * scale * scale).toBeLessThanOrEqual(cap * (1 + 1e-6))
+        if (scale < 1) expect(full * (scale + 0.01) * (scale + 0.01)).toBeGreaterThan(cap)
+      }
+    }
+  })
+
+  it('reads no usable cap as no cap', () => {
+    for (const bad of [Infinity, NaN, 0, -3]) expect(capScaleFor(bad, m1)).toBe(1)
+    expect(capScaleFor(1e-9, m1)).toBe(0.01)
+  })
+
+  it('flows from the solver’s maxMP into solve()', () => {
+    const s = new RenderScaleSolver()
+    s.setDisplay(1440, 900, 2)
+    s.setSceneBudget(NATIVE_PIXEL_BUDGET)
+    expect(s.solve(1)).toBe(1)
+    s.setMaxMP(maxResolutionMP('2560x1600'))
+    expect(s.solve(1)).toBe(0.88)
+    expect(s.internalMP(s.solve(1))).toBeLessThanOrEqual(maxResolutionMP('2560x1600'))
+    s.setMaxMP(NaN)
+    expect(s.maxMP).toBe(Infinity)
+    expect(s.solve(1)).toBe(1)
+    s.setMaxMP(0)
+    expect(s.solve(1)).toBe(1)
+  })
 })
 
 describe('budget bounds', () => {
@@ -297,135 +420,5 @@ describe('budget bounds', () => {
     // that declare "not fill-bound" would still be downscaled on the largest
     // display anyone runs a show on.
     expect(NATIVE_PIXEL_BUDGET).toBeGreaterThanOrEqual(mp(5120, 2880))
-  })
-})
-
-/**
- * The directional hold (F157).
- *
- * Before this, a demote waited out `RENDER_SCALE_HOLD_SEC` exactly like a
- * promote, so the frame kept paying the failed tier's resolution for up to
- * seven seconds after the governor had already given up on it. Across three
- * sessions, 22 of 26 and then 35 of 41 of the frames over 33 ms sat in that
- * gap. The asymmetry these tests pin is the same one `MAX_RENDER_SCALE_STEP_UP`
- * already states for its own case: shedding load must land immediately.
- */
-describe('decideTierResize', () => {
-  const base = {
-    applied: 0.75,
-    solved: 0.75,
-    p95Ms: 17,
-    refreshMs: 16.67,
-    txActive: false,
-    heldForThisTier: false,
-    heldForSec: 0,
-    emergencyRatio: 3,
-    holdSec: 3,
-  }
-
-  it('applies a SHED immediately — no hold at all', () => {
-    expect(decideTierResize({ ...base, solved: 0.63 })).toBe('apply')
-  })
-
-  it('still holds a CLIMB', () => {
-    expect(decideTierResize({ ...base, solved: 0.91 })).toBe('restart-hold')
-    expect(
-      decideTierResize({ ...base, solved: 0.91, heldForThisTier: true, heldForSec: 1 }),
-    ).toBe('wait')
-    expect(
-      decideTierResize({ ...base, solved: 0.91, heldForThisTier: true, heldForSec: 3 }),
-    ).toBe('apply')
-  })
-
-  it('never lets a cascade of demotes restart the hold clock', () => {
-    // The 7.03 s case: three demotes ~2 s apart, each previously failing
-    // `heldForThisTier` and resetting the clock while the frame kept paying the
-    // top rung's resolution. Every step of that cascade now sheds on sight, so
-    // there is no clock to reset.
-    for (const solved of [0.63, 0.52, 0.48]) {
-      expect(decideTierResize({ ...base, solved, heldForThisTier: false })).toBe('apply')
-    }
-  })
-
-  it('defers a shed while a crossfade is in flight, and resolves right after', () => {
-    // The one case where waiting beats shedding: the commit has already
-    // reallocated, and a second realloc stacked on it was the biggest cluster
-    // of 50-250 ms frames in the older logs.
-    expect(decideTierResize({ ...base, solved: 0.63, txActive: true })).toBe('restart-hold')
-    // Same inputs one frame later with the fade finished — no clock consulted.
-    expect(decideTierResize({ ...base, solved: 0.63, txActive: false })).toBe('apply')
-  })
-
-  it('the emergency overrides everything, including a crossfade', () => {
-    // p95 past 3x the refresh interval is three dropped frames in a row. At
-    // that point one reallocation is unarguably cheaper than what the frame is
-    // already paying.
-    expect(
-      decideTierResize({ ...base, solved: 0.91, p95Ms: 51, txActive: true }),
-    ).toBe('apply')
-  })
-
-  it('treats a sub-quantum move as no move', () => {
-    // 0.005 is half the 0.01 grid `solveRenderScale` rounds to, so this asks
-    // "did the solve actually change", not "is it slightly smaller".
-    expect(decideTierResize({ ...base, applied: 0.75, solved: 0.748 })).toBe('restart-hold')
-  })
-
-  it('a climb is not a shed even when the hold has long expired', () => {
-    // Guards the obvious inversion: reading the direction backwards would make
-    // every promote instant and every demote wait, which is the bug with its
-    // sign flipped.
-    expect(
-      decideTierResize({ ...base, solved: 1.0, heldForThisTier: true, heldForSec: 0.1 }),
-    ).toBe('wait')
-  })
-})
-
-describe('worthReallocating (F162)', () => {
-  it('never gates a shed — relief is not optional', () => {
-    expect(worthReallocating(0.91, 0.75)).toBe(true)
-    expect(worthReallocating(1.0, 0.97)).toBe(true) // 6% of the pixels, still applied
-    expect(worthReallocating(0.41, 0.4)).toBe(true)
-  })
-
-  it('refuses a climb that buys less than a quarter more pixels', () => {
-    // The two the 08-31 session actually paid for.
-    expect(worthReallocating(0.97, 1.0)).toBe(false) // 1.06x pixels
-    expect(worthReallocating(0.75, 0.8)).toBe(false) // 1.14x pixels
-  })
-
-  it('allows a climb worth the reallocation', () => {
-    expect(worthReallocating(0.8, 0.97)).toBe(true) // 1.47x
-    expect(worthReallocating(0.4, 0.5)).toBe(true) // 1.56x
-  })
-
-  it('accepts the largest step MAX_RENDER_SCALE_STEP_UP can produce', () => {
-    // The ratchet caps a climb at 1.25 LINEAR. If the gate were stricter than
-    // that squared, the cap could never take a step the gate would accept and
-    // the scale would stop climbing entirely.
-    expect(MIN_CLIMB_PIXEL_RATIO).toBeLessThan(1.25 * 1.25)
-    for (const from of [0.4, 0.5, 0.63, 0.75, 0.8]) {
-      const capped = Math.round(from * 1.25 * 100) / 100
-      expect(worthReallocating(from, Math.min(1, capped))).toBe(true)
-    }
-  })
-
-  it('measures the gap from what is APPLIED, so a drift accumulates into one resize', () => {
-    // Three 5% climbs are individually refused; against the applied scale the
-    // third one has moved far enough to be worth paying for.
-    expect(worthReallocating(0.7, 0.74)).toBe(false)
-    expect(worthReallocating(0.7, 0.77)).toBe(false)
-    expect(worthReallocating(0.7, 0.79)).toBe(true)
-  })
-
-  it('is total — a nonsense input lets the resize through rather than pinning the canvas', () => {
-    expect(worthReallocating(0, 0.8)).toBe(true)
-    expect(worthReallocating(0.8, 0)).toBe(true)
-    expect(worthReallocating(NaN, 0.8)).toBe(true)
-    expect(worthReallocating(0.8, Infinity)).toBe(true)
-  })
-
-  it('is a no-op when nothing moved', () => {
-    expect(worthReallocating(0.75, 0.75)).toBe(false)
   })
 })

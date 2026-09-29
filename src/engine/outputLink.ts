@@ -116,6 +116,10 @@ export const LOOK_FIELDS = [
   'layerFx',
   'sceneParams',
   'quality',
+  // The max-resolution cap (F272 stage 6) is read by PerfMonitor, which runs
+  // in the window that renders — set on the console, it has to cross like
+  // `quality` does.
+  'maxResolution',
   'autoPilot',
   'moodDrive',
   'cueFollow',

@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
+import { Vector2 } from 'three'
 import { quality } from './quality'
 import { createGpuTimer, type GpuTimer } from './gpuTimer'
-import { decideTierResize, renderScale, worthReallocating } from './renderScale'
+import { renderScale } from './renderScale'
+import { maxResolutionMP } from './maxResolution'
 import { frameSampler } from './frameSampler'
 import { performanceState } from './performanceState'
 import { resourceCache } from './streaming/resourceCache'
@@ -38,115 +40,6 @@ const P95_INTERVAL_SEC = 0.25
 const LEDGER_INTERVAL_SEC = 2
 
 /**
- * How long a TIER change must hold before its share of the render scale is
- * actually applied.
- *
- * A tier bundles two very different kinds of knob. The complexity knobs
- * (raymarch steps, iteration counts, particle fraction) are **free** to change:
- * scenes read `quality.knobs` every frame, so a new value costs nothing beyond
- * the cheaper work it asks for. Device pixel ratio is **expensive** to change:
- * it resizes the renderer and reallocates the post chain's mip pyramid, a
- * multi-hundred-millisecond stall.
- *
- * Applying both together meant every tier step paid the expensive one, and that
- * stall was the single biggest source of the spikes the governor was reacting
- * to. Splitting them lets the cheap relief land immediately — which for the
- * raymarch-heavy roster is the larger lever anyway — while the resize waits for
- * the tier to prove it is not about to move again. A show oscillating between
- * two tiers now pays nothing for it instead of a resize per step.
- *
- * The hold covers the tier ONLY. The other two inputs to the scale — the live
- * composition's combined pixel budget and the display itself — are applied the
- * instant they move, because both are already-committed events rather than
- * guesses about load: a scene switch hides its resize under the crossfade that
- * is running anyway, and a window dragged to another monitor has already
- * stalled. Making those wait three seconds would mean the first three seconds
- * of every scene are rendered at the previous scene's budget.
- *
- * A user-pinned quality change bypasses this entirely: that is an explicit
- * instruction, not a guess, and it should look immediate.
- *
- * ## Climbs only (F157)
- *
- * This delays a tier change that RAISES the solved scale. A change that lowers
- * it applies on the next coalesce tick, because every word of the justification
- * above is about a change that might reverse and cost a reallocation for
- * nothing — and a demote is not a guess about load, it is the governor having
- * already decided. Holding it means rendering at a resolution the controller
- * has just declared unaffordable, which is the state the ladder exists to leave.
- *
- * Three sessions put 22 of 26, then 35 of 41, of their frames over 33 ms inside
- * that gap. See the direction check at the call site for the measurements and
- * for the compounding case this removes.
- */
-const RENDER_SCALE_HOLD_SEC = 3
-
-/**
- * Frame time, as a multiple of the refresh interval, past which the hold above
- * is abandoned and the scale applies on the spot.
- *
- * ## Why the hold needed an escape hatch
- *
- * `RENDER_SCALE_HOLD_SEC` is justified by an argument that is true at the
- * margin and false in a crisis: a resize reallocates the post chain, so it
- * should not be paid for a tier change that might reverse. But the hold is per
- * STEP, and the ladder has five rungs — so a machine that needs to fall all the
- * way to the bottom waits out `SETTLE_SEC + 3` five times over, on the order of
- * twenty seconds, while rendering at a resolution it has already been told it
- * cannot afford.
- *
- * The comment on the apply path makes that survivable by asserting the frame is
- * "getting cheaper this instant either way, since scenes read the complexity
- * knobs live". **That is false for six of the eleven live scenes** (F111): four
- * of them read no quality knob at all, so between the tier changing and the
- * resize landing, absolutely nothing happens. Twenty seconds of an unchanged
- * frame, reported as "it looks great but lags".
- *
- * 3x the refresh interval is 50 ms at 60 Hz — three dropped frames in a row,
- * which no amount of hysteresis should sit through. At that point one
- * reallocation is unarguably cheaper than what the frame is already paying.
- */
-const SCALE_EMERGENCY_RATIO = 3
-
-/**
- * Minimum gap between two actual `applyRenderScale()` calls, regardless of
- * which of the three inputs asked for the second one (F132).
- *
- * The composition-triggered path above is deliberately immediate — a scene
- * commit hides its resize under the crossfade — but "immediate" was reading
- * `renderScale.pairKey` fresh on every frame a transition ran, and a
- * transition's own layer add/remove events (an overlay swapping in, an accent
- * dropping out) each change the combined pixel budget and therefore the pair
- * key. A session log showed the actual cost of that: the worst single frames
- * of a whole set (60-136 ms, several times the 16.7 ms budget) all landed
- * within about a second of a scene commit, next to 2-4 separate `renderScale`
- * changes stacked in that same second — each one a full render-target
- * reallocation, paid on top of the commit's own cost rather than instead of
- * it.
- *
- * This does not change WHEN the hold/emergency logic below decides a resize
- * is warranted, only how often the expensive part of actually doing it may
- * run. The first call in a burst still lands immediately (nothing here delays
- * it), and `applyRenderScale()` always re-reads live state rather than a
- * captured snapshot, so a call that lands after being coalesced still applies
- * whatever the composition's CURRENT budget is, not a stale one — no change
- * is lost, only the redundant intermediate reallocations are.
- *
- * Raised 0.2 -> 0.5: a crossfade's own layer add/drop events fire several
- * `pairKey` changes across the ~1 s it runs, and at 0.2 the session logs still
- * showed 2-3 stacked reallocations landing inside one commit. 0.5 keeps the
- * first one immediate and folds the rest into a single later apply against
- * whatever budget the composition settled on. The tier-driven path is
- * additionally frozen outright while a transition runs — see the frame loop.
- *
- * Since F272 layer add/drop no longer moves the pair key at all
- * (`claimsResolution`), so the bursts described above are mostly gone at the
- * source; this stays as the guard against a commit and a tier change stacking
- * two reallocations, until F272's later stages stop resizing to scale at all.
- */
-const RESIZE_COALESCE_SEC = 0.5
-
-/**
  * Consecutive gated-clean frames required before a GPU-timer poll result is
  * trusted for the post-chain calibration (F238).
  *
@@ -170,23 +63,6 @@ const RESIZE_COALESCE_SEC = 0.5
  */
 const POST_CHAIN_CLEAN_STREAK_FRAMES = 6
 
-/**
- * Largest upward jump in render scale one resize may make, as a multiple of the
- * scale currently on the canvas.
- *
- * `renderScale.solve()` has no memory — it is a pure function of (budget,
- * display, tier) — so when the combined pixel budget rises sharply (layers
- * dropping out, a cheap scene committing) it returns the new target in full and
- * `applyRenderScale` would leap straight there in one reallocation. On a
- * machine that cannot actually hold that target the tier ladder then demotes,
- * the solve climbs again on the next budget change, and the show cascades — a
- * session log caught exactly this (`0.75 -> 1.00`, then tier 0 walked to 4
- * over ~6 s). Capping the per-resize climb at 1.25x lets the ladder catch an
- * over-reach on the first rung instead of the fifth. Downward is never capped:
- * shedding load must land the instant it is asked for.
- */
-const MAX_RENDER_SCALE_STEP_UP = 1.25
-
 /** Live render stats, readable from anywhere (debug panel, fps meter). */
 export const perf = {
   fps: 60,
@@ -194,22 +70,27 @@ export const perf = {
   /**
    * 95th-percentile raw frame time over the last 10 s, refreshed 4×/s.
    *
-   * The hitch metric, and **unfiltered** — it includes scene transitions, DPR
-   * resizes and compiles, because the meter's job is to report what the frame
+   * The hitch metric, and **unfiltered** — it includes scene transitions,
+   * display resizes and compiles, because the meter's job is to report what the frame
    * budget actually did. The governor deliberately reads a different, filtered
    * number; see frameSampler.ts for why those must not be the same value.
    */
   p95: 16.7,
+  /** The canvas's pixel ratio — pinned at base DPR since F272 stage 5 (`renderScale.baseDpr`). */
   dpr: 1,
-  /** Logical tier. Complexity already reflects this; DPR may still be catching up. */
+  /** Logical tier. */
   tier: 1,
-  /** DPR tier currently applied to the canvas. Lags `tier` by up to the hold. */
+  /**
+   * Tier the frame's render scale was last solved at. Since F272 stage 5 the
+   * scale is applied at the start of every frame, so this trails `tier` by at
+   * most the one frame between the governor moving and the next solve.
+   */
   appliedTier: 1,
-  /** Linear internal-resolution scale currently on the canvas (1 = native). */
+  /** Linear render scale of this frame's sub-rect (1 = native). `renderScale.applied`. */
   renderScale: 1,
   /** Combined pixel budget the live composition declared, in megapixels. */
   pixelBudget: 16,
-  /** Megapixels the canvas is actually rendering — the budget as delivered. */
+  /** Megapixels the frame is actually rendering — the budget as delivered. */
   internalMP: 0,
   /** GPU telemetry, copied from renderer.info each frame. */
   drawCalls: 0,
@@ -268,7 +149,7 @@ export function suspendFrameSampling(frames?: number): void {
 
 /**
  * Drives the central {@link quality} governor from the measured frame time, and
- * applies the internal-resolution solve to the canvas DPR.
+ * applies the internal-resolution solve to the frame.
  *
  * Two separate mechanisms meet here, and keeping them separate is the point:
  *
@@ -276,22 +157,29 @@ export function suspendFrameSampling(frames?: number): void {
  *    (raymarch steps, noise octaves, fluid iterations, particle fraction) that
  *    heavy scenes read directly — so under load the expensive work shrinks, not
  *    just the resolution.
- *  - `renderScale` solves the canvas scale from the pixel budget the live
+ *  - `renderScale` solves the frame's scale from the pixel budget the live
  *    composition declared and the display that is actually attached, with the
  *    tier as one multiplier on that budget rather than as the answer.
  *
- * This component owns only the DPR side and the telemetry. Tier logic lives in
- * quality.ts, the solve in renderScale.ts, and the budget is published by
+ * Since F272 stage 5 the scale is not a canvas DPR. The canvas is pinned at base
+ * DPR (Stage.tsx), the post chain renders into a sub-rect of full-size buffers
+ * (frameRect.ts) and `GradePass` upscales it, so applying a scale is a number
+ * written once per frame — no resize, no reallocation, no React re-render, and
+ * nothing for the governor to be shielded from.
+ *
+ * This component owns only that application and the telemetry. Tier logic lives
+ * in quality.ts, the solve in renderScale.ts, and the budget is published by
  * SceneManager.
  */
 export function PerfMonitor() {
-  const setDpr = useThree((s) => s.setDpr)
   const gl = useThree((s) => s.gl)
-  // CSS size of the canvas. R3F re-renders this component when it changes, which
-  // is exactly when the display half of the solve needs re-feeding: a resized
-  // window, a window moved to another monitor, a browser zoom.
+  // CSS size and pixel ratio of the canvas. R3F re-renders this component when
+  // either changes, which is exactly when the governor's rung memory has to be
+  // cleared: a resized window, a window moved to another monitor, a browser zoom.
   const size = useThree((s) => s.size)
+  const dpr = useThree((s) => s.viewport.dpr)
   const storeQuality = useStore((s) => s.quality)
+  const storeMaxRes = useStore((s) => s.maxResolution)
   const ema = useRef(16.7)
   /**
    * F198: a second EMA, filtered the same way `frameSampler`'s governor
@@ -301,7 +189,7 @@ export function PerfMonitor() {
    * already states the intended split: "the governor deliberately reads a
    * different, filtered number" than the display metric, because the
    * display metric's job is to report a real stall (a scene commit's
-   * compile, a DPR resize) unfiltered, while `frameSampler.suspend()` exists
+   * compile, a display resize) unfiltered, while `frameSampler.suspend()` exists
    * so the governor does not mistake that SAME known one-off for steady-state
    * load. That split was real for the p95 axis (`frameSampler.governorP95()`
    * vs `frameSampler.display.percentile()`) and never existed for the mean
@@ -328,25 +216,21 @@ export function PerfMonitor() {
    * one-off; the display copy never should.
    */
   const governorEma = useRef(16.7)
-  const appliedTier = useRef(-1)
   const p95 = useRef(0)
   const lastP95At = useRef(0)
   /** F16: coarser than P95_INTERVAL_SEC — VRAM only moves on a resource
    *  grow, not every frame or even every fourth of a second. */
   const lastLedgerAt = useRef(0)
-  /** Tier waiting out {@link RENDER_SCALE_HOLD_SEC} before its DPR is applied. */
-  const heldTier = useRef(-1)
-  const heldSince = useRef(0)
-  /** (budget, display) pair the applied scale was solved for. See the hold doc. */
-  const appliedPair = useRef('')
-  /** Clock time of the last actual reallocation. See {@link RESIZE_COALESCE_SEC}. */
-  const lastResizeAt = useRef(-Infinity)
+  /** Scratch for the canvas CSS size read every frame — never allocated in the loop. */
+  const cssSize = useRef(new Vector2())
   /** c11b: null on WebGL1 or a GPU/browser without the extension — every use
    *  below already treats that as "no measurement available", not an error. */
   const gpuTimer = useRef<GpuTimer | null>(null)
   /** F238: consecutive frames the post-chain calibration's gate has held. See
    *  {@link POST_CHAIN_CLEAN_STREAK_FRAMES} for why a streak, not a single check. */
   const postChainCleanStreak = useRef(0)
+  /** The render scale the previous frame was drawn at, for the calibration gate. */
+  const prevApplied = useRef(-1)
 
   // Created once per renderer, disposed on unmount or if the renderer itself
   // ever changes (a context loss and recreate, in practice) — the same
@@ -366,62 +250,38 @@ export function PerfMonitor() {
   }, [gl])
 
   /**
-   * Push the current tier's render scale to the canvas.
+   * Solve this frame's render scale and apply it: the frame's sub-rect for
+   * every scene, director and pass that runs after it.
    *
-   * Suspends the governor's sampling first, because this call is the stall: the
-   * resize it triggers reallocates the post chain, and letting the governor see
-   * that cost is precisely the feedback loop frameSampler.ts describes.
+   * The display is re-read from the renderer first, so the rect can never
+   * describe a canvas R3F has already resized (the wrapper resizes the
+   * composer from the same numbers). Cheap enough to run every frame: a few
+   * assignments and a square root.
    */
-  const applyRenderScale = (force = false) => {
-    const solved = renderScale.solve()
-    const prev = renderScale.applied
-    // Ratchet the climb (see MAX_RENDER_SCALE_STEP_UP). A big budget jump can
-    // otherwise leap straight back to native in one resize and overshoot into a
-    // demote cascade; capping the step lets the tier ladder catch it early.
-    // Downward is never clamped. Re-quantised to the 0.01 grid the solve uses so
-    // the convergence walk in the frame loop terminates cleanly.
-    const climbCap = Math.round(prev * MAX_RENDER_SCALE_STEP_UP * 100) / 100
-    const scale = solved > prev ? Math.min(solved, climbCap) : solved
-    // F162: a reallocation measured 50-197 ms at high resolution in
-    // `...08-31-16-47-12`, and a small CLIMB buys about 1 ms of a 16.7 ms frame
-    // plus 3% of linear resolution. Sheds are never gated — see
-    // `worthReallocating`. `force` is the user's own hand on the quality
-    // control or a display change, both of which are facts rather than guesses
-    // and apply whatever the arithmetic says.
-    if (!force && !worthReallocating(prev, scale)) {
-      // The bookkeeping still advances. These refs record "the current inputs
-      // have been consulted", not "a resize happened", and leaving them stale
-      // would re-enter this branch on every subsequent frame for a change this
-      // just decided is not worth making.
-      appliedTier.current = quality.tier
-      appliedPair.current = renderScale.pairKey
-      heldTier.current = -1
-      return
-    }
-    const dpr = renderScale.baseDpr * scale
-    // Published before `setDpr` so a scene that sizes its own offscreen targets
-    // from `renderScale.applied` sees the new value on the same frame the canvas
-    // does, rather than one frame behind it.
+  const applyRenderScale = () => {
+    gl.getSize(cssSize.current)
+    renderScale.setDisplay(cssSize.current.x, cssSize.current.y, gl.getPixelRatio())
+    // Instant, in both directions (the user's call for F272's first version).
+    // F273: the 1-2 s glide on a CLIMB goes here, once the steps are confirmed.
+    const scale = renderScale.solve()
     renderScale.applied = scale
-    perf.dpr = dpr
+    perf.dpr = renderScale.baseDpr
     perf.renderScale = scale
     perf.pixelBudget = renderScale.budgetMP
     perf.internalMP = renderScale.internalMP(scale)
     perf.appliedTier = quality.tier
-    appliedTier.current = quality.tier
-    appliedPair.current = renderScale.pairKey
-    heldTier.current = -1
-    frameSampler.suspend()
-    setDpr(dpr)
   }
 
-  // Re-pin the governor whenever the user changes the quality control. An
-  // explicit choice applies its render scale immediately — the hold exists to
-  // damp the governor's own guessing, not to delay the user.
+  // Re-pin the governor whenever the user changes the quality control, or the
+  // display changes — a display change is a fact, not a guess, and re-solving
+  // against the new full-resolution megapixel count is the whole point of a
+  // budget expressed in megapixels rather than in a scale.
   //
-  // `size` is in the deps for the same reason: a display change is a fact, not
-  // a guess, and re-solving against the new full-resolution megapixel count is
-  // the whole point of a budget expressed in megapixels rather than in a scale.
+  // The max-resolution cap (F272 stage 6) rides the same effect, and so its
+  // change also clears the governor's rung memory through `setMode`. That is
+  // wanted, not incidental: every "this tier cannot hold" record is a claim
+  // about a pixel count, which the cap has just changed exactly as a resize
+  // would.
   //
   // A LAYOUT effect so the display is known before the first frame renders:
   // scenes size their buffers from `renderScale.internalW/H`, which is 1x1
@@ -431,15 +291,21 @@ export function PerfMonitor() {
     // post chain's many render() calls to mean anything.
     gl.info.autoReset = false
     quality.setMode(storeQuality)
-    renderScale.setDisplay(size.width, size.height, Math.min(2, window.devicePixelRatio || 1))
-    applyRenderScale(true)
+    renderScale.setMaxMP(maxResolutionMP(storeMaxRes))
+    applyRenderScale()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeQuality, size.width, size.height])
+  }, [storeQuality, storeMaxRes, size.width, size.height, dpr])
 
   // Opens this frame's GPU timer query before anything else in the frame has
   // had a chance to issue a draw call — see GPU_TIMER_BEGIN_PRIORITY's doc.
+  // The render scale is applied in the same hook for the same reason: it is
+  // the first thing in the frame, so every reader of `renderScale.applied` /
+  // `internalW/H` this frame — the budget walk at -100, the scenes, the post
+  // chain's rect — sees one value. The tier the solve reads is the one the
+  // governor settled on last frame (`quality.tick` runs below, at 0).
   useFrame(() => {
     gpuTimer.current?.begin()
+    applyRenderScale()
   }, GPU_TIMER_BEGIN_PRIORITY)
 
   useFrame(({ clock }, delta) => {
@@ -578,71 +444,6 @@ export function PerfMonitor() {
     // `governorEma`, not the display `ema`, is the mean-axis input — see its
     // own doc above.
     quality.tick(governorEma.current, clock.elapsedTime, p95.current, ms)
-
-    // The scale has three inputs and two urgencies (see RENDER_SCALE_HOLD_SEC).
-    //
-    // A change to the live composition's budget — SceneManager publishes it at
-    // priority -100, so it is already this frame's truth — applies now. A change
-    // that comes only from the tier trails it: complexity knobs have already
-    // taken effect, since scenes read them live, so the frame is getting cheaper
-    // this instant either way and only the resize waits.
-    // Gates every actual reallocation, on top of (not instead of) the
-    // hold/emergency logic below — see RESIZE_COALESCE_SEC. A blocked call
-    // simply leaves its trigger condition true, so the next frame that clears
-    // the cooldown picks it back up against whatever is live by then.
-    const coalesceReady = clock.elapsedTime - lastResizeAt.current >= RESIZE_COALESCE_SEC
-    const applyRenderScaleCoalesced = () => {
-      if (!coalesceReady) return
-      lastResizeAt.current = clock.elapsedTime
-      applyRenderScale()
-    }
-    // Fresh: SceneManager writes this in its priority -100 frame hook, before
-    // this component runs.
-    const txActive = performanceState.transition.active
-    if (renderScale.pairKey !== appliedPair.current) {
-      // The live composition's own budget moved (a primary commit — layers no
-      // longer move it, F272). Already-committed event, applies now;
-      // RESIZE_COALESCE_SEC stops a commit and a tier change landing inside one
-      // transition from each paying a realloc.
-      applyRenderScaleCoalesced()
-    } else if (quality.tier !== appliedTier.current) {
-      // Direction-aware since F157: a tier change that SHEDS load applies on
-      // sight, one that raises it waits out the hold. The reasoning, the
-      // measurements behind it and the crossfade carve-out all live with the
-      // decision in `decideTierResize`. Still gated by RESIZE_COALESCE_SEC, so
-      // "apply" means "within half a second of deciding to", not "every frame".
-      const action = decideTierResize({
-        solved: renderScale.solve(),
-        applied: renderScale.applied,
-        p95Ms: p95.current,
-        refreshMs: quality.refreshIntervalMs,
-        txActive,
-        heldForThisTier: quality.tier === heldTier.current,
-        heldForSec: clock.elapsedTime - heldSince.current,
-        emergencyRatio: SCALE_EMERGENCY_RATIO,
-        holdSec: RENDER_SCALE_HOLD_SEC,
-      })
-      if (action === 'apply') {
-        applyRenderScaleCoalesced()
-      } else if (action === 'restart-hold') {
-        heldTier.current = quality.tier
-        heldSince.current = clock.elapsedTime
-      }
-    } else {
-      heldTier.current = -1
-      // A ratcheted climb (MAX_RENDER_SCALE_STEP_UP) lands short of what the
-      // live inputs now ask for; walk it the rest of the way on the coalesce
-      // cadence. Only when nothing structural is pending — a tier change and a
-      // crossfade both have their own gates above — and never past the
-      // emergency line.
-      if (
-        !txActive &&
-        renderScale.applied < renderScale.solve() - 0.005 &&
-        p95.current <= quality.refreshIntervalMs * SCALE_EMERGENCY_RATIO
-      ) {
-        applyRenderScaleCoalesced()
-      }
-    }
   })
 
   // Closes this frame's GPU timer query after every other priority in the
@@ -661,16 +462,22 @@ export function PerfMonitor() {
     // doc in frameLoad.ts for the full reasoning. Every other claimant on the
     // frame must be provably zero before a GPU reading can stand in for the
     // chain alone: no crossfade/warming overlap, no layers, no effects, trails
-    // at rest, both optical racks and the ISF slot off, and no resize/compile
-    // stall in flight (frameSampler.suspended covers the same "known one-off"
-    // frames the tier governor already refuses to learn from). This is the
-    // default steady-state frame, not a rare one, so the streak below fills
-    // through almost any ordinary session.
+    // at rest, both optical racks and the ISF slot off, no compile stall in
+    // flight (frameSampler.suspended covers the same "known one-off" frames the
+    // tier governor already refuses to learn from), and the render scale the
+    // same as last frame's — a scale step no longer suspends the sampler (F272
+    // stage 5), and the timer's result lags the frame it describes, so the
+    // streak is what keeps a reading from one scale being divided by another.
+    // This is the default steady-state frame, not a rare one, so the streak
+    // below fills through almost any ordinary session.
     //
     // Tracked every frame regardless of whether `ms` resolved this time —
     // see POST_CHAIN_CLEAN_STREAK_FRAMES for why the streak, not this frame's
     // gate alone, is what a poll result is checked against.
+    const settled = renderScale.applied === prevApplied.current
+    prevApplied.current = renderScale.applied
     const gated =
+      settled &&
       !frameSampler.suspended &&
       frameLoad.incoming === 0 &&
       frameLoad.layers === 0 &&
@@ -684,7 +491,12 @@ export function PerfMonitor() {
     if (ms === null) return
     perf.gpuMs = ms
     if (postChainCleanStreak.current >= POST_CHAIN_CLEAN_STREAK_FRAMES) {
-      observePostChainSample(ms, frameLoad.primary, renderScale.internalMP(renderScale.applied))
+      observePostChainSample(
+        ms,
+        frameLoad.primary,
+        renderScale.internalMP(renderScale.applied),
+        renderScale.fullMP,
+      )
     }
   }, GPU_TIMER_END_PRIORITY)
 

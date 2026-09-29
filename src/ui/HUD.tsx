@@ -42,6 +42,7 @@ import {
 import { PALETTES, PALETTE_FAMILIES, getPalettesByFamily } from '../engine/palettes'
 import { BUILTIN_PRESETS, type Preset } from '../engine/presets'
 import { saveScreenshot, type ExportPreset } from '../engine/recorder'
+import { MAX_RESOLUTION_HINT, MAX_RESOLUTION_OPTIONS, type MaxResolution } from '../engine/maxResolution'
 import { buildShareUrl } from '../urlParams'
 import { BpmReadout } from './BpmReadout'
 import { DebugPanel } from './DebugPanel'
@@ -101,6 +102,7 @@ export function HUD() {
   const postFxMeter = useStore((s) => s.postFxMeter)
   const params = useStore((s) => s.params)
   const quality = useStore((s) => s.quality)
+  const maxResolution = useStore((s) => s.maxResolution)
   const autoPilot = useStore((s) => s.autoPilot)
   const moodDrive = useStore((s) => s.moodDrive)
   const layerFx = useStore((s) => s.layerFx)
@@ -641,6 +643,25 @@ export function HUD() {
                           {q}
                         </button>
                       ))}
+                    </div>
+                  </div>
+                  <div className="param-row">
+                    <span>Max res</span>
+                    <div className="quality-row">
+                      <select
+                        className="chip"
+                        value={maxResolution}
+                        title={MAX_RESOLUTION_HINT}
+                        onChange={(e) =>
+                          useStore.getState().setMaxResolution(e.target.value as MaxResolution)
+                        }
+                      >
+                        {MAX_RESOLUTION_OPTIONS.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 </>,

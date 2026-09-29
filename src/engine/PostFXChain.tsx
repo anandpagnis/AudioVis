@@ -17,7 +17,7 @@ import { LensPass } from './LensPass'
 import { MirrorPass } from './MirrorPass'
 import { getPalette } from './palettes'
 import { performanceState } from './performanceState'
-import { renderScale } from './renderScale'
+import { createRectRenderPass } from './RectRenderPass'
 import { TransitionCapture } from './TransitionCapture'
 import { transitionRack, usesRack } from './transitions'
 import { featherFor, shouldCapture, usesWipe } from './transitionWipe'
@@ -92,9 +92,11 @@ export function PostFXChain() {
   // `RenderPass` renders with (its layer mask is saved and restored around
   // each capture — see TransitionCapture.ts).
   const camera = useThree((s) => s.camera)
-  /** Scratch for the renderer size read below — reused, never allocated in the loop. */
+  /** Scratch for the drawing-buffer read below — reused, never allocated in the loop. */
+  const bufferVec = useRef(new Vector2())
+  /** Scratch for the renderer's CSS size, for the same block. */
   const sizeVec = useRef(new Vector2())
-  /** Scratch for the capture-size read in the wipe block below — a second
+  /** Scratch for the capture-size read in the wipe block below — a separate
    *  Vector2 rather than reusing `sizeVec` so neither read can stomp the
    *  other if a future change reorders these blocks. */
   const captureSizeVec = useRef(new Vector2())
@@ -135,8 +137,8 @@ export function PostFXChain() {
   const feedbackTint = useRef(new Color(1, 1, 1))
   /** Eased zoom / rotate / swirl / wobble multipliers of the feedback trail's shape (the mood look's, or 1s), fed to `feedbackPass` each frame. */
   const trailsShape = useRef<TrailsShape>({ zoom: 1, rotate: 1, swirl: 1, wobble: 1 })
-  /** Render scale the composer's buffers were last sized for. */
-  const appliedScale = useRef(-1)
+  /** Drawing-buffer width/height the composer was last sized for. See the frame hook. */
+  const composerBuffer = useRef({ width: -1, height: -1 })
   /** Scratch rack states for a transition in flight — reused, never allocated
    *  in the loop, matching this file's no-allocation-per-frame discipline. */
   const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
@@ -199,31 +201,33 @@ export function PostFXChain() {
   }, [scene])
 
   useFrame((_, delta) => {
-    // Resize the post chain when the QUALITY GOVERNOR moves the render scale.
+    // The composer's buffers are the full drawing buffer and are never resized
+    // for the render scale (F272 stage 5): the scale is a sub-rect of them,
+    // aimed each frame by the chain's RectRenderPass, so a resolution step
+    // reallocates nothing.
     //
-    // The library resizes its own buffers when the canvas's CSS size changes,
-    // but that path is keyed on `size` alone and a DPR-only change never
-    // touches it. `renderScale` works purely by changing DPR, so without this
-    // every render target in the chain — the composer's input/output buffers,
-    // the bloom pyramid (`BloomFinishPass.setSize`, which the composer calls
-    // for every pass from here), the feedback history — stays pinned at whatever an
-    // actual window resize last set, and the entire internal-resolution
-    // governor never reaches the most fill-bound work in the frame.
-    //
-    // Fed the renderer's OWN current size on purpose. `EffectComposer.setSize`
-    // only forwards to `renderer.setSize()` when the dimensions differ from
-    // what the renderer already reports, so handing back its own numbers takes
-    // that branch out of play — R3F stays the sole owner of the canvas element
-    // and its CSS, and this call does nothing but re-derive the chain's buffers
-    // from `getDrawingBufferSize()`, which is where the new DPR shows up.
-    //
-    // Polled in the frame loop rather than via a selector because this
-    // component must not re-render; see constraint 3 in the header. One float
-    // compare on a frame where nothing changed, which is nearly every frame.
-    if (renderScale.applied !== appliedScale.current) {
-      appliedScale.current = renderScale.applied
-      gl.getSize(sizeVec.current)
-      composerRef.current?.setSize(sizeVec.current.width, sizeVec.current.height)
+    // The library resizes them itself when the canvas's CSS size changes. What
+    // it cannot see is a DEVICE PIXEL RATIO change at the same CSS size — a
+    // window dragged to a monitor of another density, a browser zoom — which
+    // changes the drawing buffer the pinned canvas has (Stage's `useBaseDpr`).
+    // This catches that one case: a display change, so one reallocation, like
+    // a window resize. Fed the renderer's own CSS size, so
+    // `EffectComposer.setSize` does not call `renderer.setSize` (R3F stays the
+    // canvas's sole owner) and only re-derives the chain from
+    // `getDrawingBufferSize()`. Polled rather than subscribed, because this
+    // component must not re-render (constraint 3); two integer compares a frame.
+    gl.getDrawingBufferSize(bufferVec.current)
+    const composer = composerRef.current
+    if (
+      composer &&
+      (bufferVec.current.x !== composerBuffer.current.width || bufferVec.current.y !== composerBuffer.current.height)
+    ) {
+      composerBuffer.current.width = bufferVec.current.x
+      composerBuffer.current.height = bufferVec.current.y
+      if (composer.inputBuffer.width !== bufferVec.current.x || composer.inputBuffer.height !== bufferVec.current.y) {
+        gl.getSize(sizeVec.current)
+        composer.setSize(sizeVec.current.width, sizeVec.current.height)
+      }
     }
 
     // F81: MirrorPass/FeedbackPass/LensPass have no colour-space-conversion
@@ -379,7 +383,7 @@ export function PostFXChain() {
   })
 
   return (
-    <EffectComposer ref={composerRef} multisampling={0}>
+    <EffectComposer ref={composerRef} multisampling={0} renderPass={createRectRenderPass}>
       {/*
         FIRST in the chain, ahead of even mirror — see WipeCompositorPass.ts's
         header for the full reasoning. Short version: while a wipe transition is
@@ -420,8 +424,14 @@ export function PostFXChain() {
         vignette used to be three library Effects that
         `@react-three/postprocessing` merged into one EffectPass (composited
         aberration, then bloom, then vignette); `bloomFinishPass` is that merged
-        pass rebuilt in-repo, in the same order, so it can later render into a
-        sub-rect (F272 stage 5).
+        pass rebuilt in-repo, in the same order, so it can render into a
+        sub-rect.
+
+        Every pass reads and writes the frame's sub-rect (F272 stage 5): the
+        scene pass the composer is given (`createRectRenderPass`) aims both
+        buffers at `renderScale.internalW x internalH`, each pass samples its
+        input through frameRect.ts's clamp, and GradePass, last, upscales the
+        rect to the full canvas.
       */}
       <primitive object={mirrorPass} />
       <primitive object={feedbackPass} />
@@ -433,7 +443,7 @@ export function PostFXChain() {
         to.
 
         It needs no per-frame wiring from this component: `EffectComposer.render`
-        hands every pass the frame delta, and the pass reads its own input size
+        hands every pass the frame delta, and the pass reads its input's rect
         off `inputBuffer`, so it tracks the render-scale governor without a
         selector here (constraint 3).
 
@@ -451,7 +461,9 @@ export function PostFXChain() {
         that renders to screen and skips disabled passes before that happens, so
         whatever sits here can never switch itself off — see GradePass's header.
         It applies the exposure servo's gain, which is genuine work rather than
-        the straight copy the lens rack was doing to hold this position.
+        the straight copy the lens rack was doing to hold this position, and
+        since F272 stage 5 it is also the upscale from the frame's sub-rect to
+        the canvas, so it is the one pass that always runs at full resolution.
       */}
       <primitive object={gradePass} />
     </EffectComposer>
