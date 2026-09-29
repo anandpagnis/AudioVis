@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { slew } from '../engine/response'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 import { drastic } from './contract'
 import { effectEnvelope } from './effectEnvelope'
 
@@ -138,8 +138,7 @@ export const FRAG = /* glsl */ `
 `
 
 export function OrbitGlowScene() {
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
+  const mesh = useRef<THREE.Mesh>(null)
   const phase = useRef(0)
   /** Slewed `b.energy` — see the phase update below. */
   const energyEnv = useRef(0)
@@ -171,9 +170,7 @@ export function OrbitGlowScene() {
 
   useDispose(material, geometry)
 
-  useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+  useViewportResolution(mesh, material)
 
   useSceneFrame(({ f, dt, b, col, vis, params, p, role, slotProgress }) => {
     const u = material.uniforms
@@ -244,7 +241,7 @@ export function OrbitGlowScene() {
   })
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>

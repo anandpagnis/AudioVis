@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 
 /**
  * Inversion Machine — a raymarched sphere-inversion fractal ("Kali tiling"),
@@ -203,8 +203,7 @@ const ANCHOR_DISTANCE = 1.4
 const ANCHOR_HEIGHT = 0.15
 
 export function InversionMachineScene() {
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
+  const mesh = useRef<THREE.Mesh>(null)
   const fastClock = useRef(0)
   const slowClock = useRef(0)
   const rightVec = useRef(new THREE.Vector3())
@@ -248,9 +247,7 @@ export function InversionMachineScene() {
 
   useDispose(material, geometry)
 
-  useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+  useViewportResolution(mesh, material)
 
   useSceneFrame(({ dt, b, col, vis, params, camera }) => {
     const u = material.uniforms
@@ -288,7 +285,7 @@ export function InversionMachineScene() {
   })
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>

@@ -343,7 +343,6 @@ export const FRAG = /* glsl */ `
   uniform sampler2D tVel;    // projected velocity .xy, curl .z
   uniform vec2  uDyeTexel;
   uniform vec2  uCell;       // one lattice cell, in uv
-  uniform float uCellPx;     // one lattice cell, in render pixels
   uniform float uPh;         // forcing phase, 0..1
   uniform float uZoom;       // camera push, >= 1
 
@@ -393,7 +392,9 @@ export const FRAG = /* glsl */ `
       // measurement in cell units). Lines take the palette's glow slot.
       float f  = L * 7.0;
       float ln = abs(fract(f) - 0.5) * 2.0;
-      float w  = clamp(28.0 * length(g) / uCellPx, 0.004, 0.45);
+      // One lattice cell in pixels of whatever this draw targets: uRes is
+      // bound per draw, so a wipe capture gets its own size (F272).
+      float w  = clamp(28.0 * length(g) / (uRes.y * uCell.y), 0.004, 0.45);
       col = pal(fract(floor(f) * 0.11 + 0.2)) * (0.28 + 0.5 * smoothstep(0.0, 1.0, L));
       col = mix(vec3(0.02, 0.02, 0.03), col, smoothstep(0.0, 0.02, L));
       col = mix(col, toDisplay(mix(uGlow, vec3(1.0), 0.35)), 1.0 - smoothstep(w, w * 2.4, ln));
@@ -912,7 +913,6 @@ const InkFluidRender = createShaderScene<InkFluidInstance>({
     tVel: { value: null },
     uDyeTexel: { value: new THREE.Vector2(1, 1) },
     uCell: { value: new THREE.Vector2(1, 1) },
-    uCellPx: { value: 1 },
     uPh: { value: 0 },
     uZoom: { value: 1 },
   }),
@@ -938,7 +938,6 @@ const InkFluidRender = createShaderScene<InkFluidInstance>({
     u.tVel.value = tank.velB.texture
     u.uDyeTexel.value.set(1 / tank.dyeW, 1 / tank.dyeH)
     u.uCell.value.set(1 / tank.simW, 1 / tank.simH)
-    u.uCellPx.value = u.uRes.value.y / tank.simH
     u.uPh.value = st.ph
     u.uZoom.value = st.zoom
   },

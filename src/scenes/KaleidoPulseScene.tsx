@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { slew } from '../engine/response'
 import { bipolar, drastic, steps } from './contract'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 
 /**
  * Kaleido Pulse — a centred, symmetric fractal mandala of pulsing rings, built
@@ -143,8 +143,7 @@ export const FRAG = /* glsl */ `
 `
 
 export function KaleidoPulseScene() {
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
+  const mesh = useRef<THREE.Mesh>(null)
   const drift = useRef(0)
   /** Slewed `b.energy` — see the ring-travel update below. */
   const energyEnv = useRef(0)
@@ -178,9 +177,7 @@ export function KaleidoPulseScene() {
 
   useDispose(material, geometry)
 
-  useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+  useViewportResolution(mesh, material)
 
   useSceneFrame(({ f, dt, b, vis, params, p }) => {
     const u = material.uniforms
@@ -238,7 +235,7 @@ export function KaleidoPulseScene() {
   })
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>

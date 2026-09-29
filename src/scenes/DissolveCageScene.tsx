@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { Wireframe } from 'three/examples/jsm/lines/Wireframe.js'
@@ -281,7 +280,6 @@ function extractSurface(): { position: Float32Array; normal: Float32Array } {
 }
 
 export function DissolveCageScene() {
-  const gl = useThree((s) => s.gl)
   const dissolve = useRef(0)
   /** Slewed `b.mid` — see the cage-spin update below. */
   const midEnv = useRef(0)
@@ -442,7 +440,8 @@ export function DissolveCageScene() {
       }
       springStep(cageJolt.current, 0, dt, CAGE_JOLT_STIFFNESS, CAGE_JOLT_DAMPING)
 
-      cageMat.resolution.set(gl.domElement.width, gl.domElement.height)
+      // `resolution` is set by the `Wireframe` itself on every draw — see
+      // WireframeHeroScene's note on its own identical cage.
       // Overdriven colour rather than low opacity — LineMaterial's alpha caps at
       // 1, so brightness has to come from the colour to read as hot phosphor
       // (same reasoning as WireframeHeroScene). The cage stays below the particle

@@ -1,11 +1,11 @@
 import { useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { DJCAM_EXIT_FADE_SEC } from '../engine/DjCamDirector'
 import { djCamSource } from '../engine/djCamSource'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 
 /**
  * DJ Cam — the director's cutaway to a live camera of the DJ. A clean feed,
@@ -79,7 +79,7 @@ export const FRAG = /* glsl */ `
 
   uniform sampler2D uMap;     // THREE.VideoTexture(djCamSource.video) — raw sRGB
   uniform float uReady;       // 1 once djCamSource.ready — black until then
-  uniform vec2  uRes;         // drawing-buffer size, px — cover-fit only
+  uniform vec2  uRes;         // target size, px — cover-fit only
   uniform float uVideoAspect; // video intrinsic width / height
   uniform float uFade;        // ctx.vis * exitEnv — crossfade weight + own dip
 
@@ -107,7 +107,7 @@ export const FRAG = /* glsl */ `
 `
 
 export function DjCamScene() {
-  const gl = useThree((s) => s.gl)
+  const mesh = useRef<THREE.Mesh>(null)
   /** 1 while the cutaway is live, ramping to 0 over DJCAM_EXIT_FADE_SEC once
    *  `performanceState.djCam.releasing` goes true — this scene's own "dip to
    *  black" on the way out, since the engine's `dipToBlack` style is disabled. */
@@ -155,10 +155,13 @@ export function DjCamScene() {
   // Only this mount's own GPU objects — never djCamSource.video.
   useDispose(texture, material, geometry)
 
+  // Cover-fit against the target each draw lands in (viewportResolution.ts),
+  // not the canvas, which stops being the frame in F272 stage 5.
+  useViewportResolution(mesh, material)
+
   useSceneFrame(
     ({ vis, dt, state }) => {
       const u = material.uniforms
-      const el = gl.domElement
 
       // Scene-owned exit dip: ramp toward 0 while the director is releasing,
       // recover toward 1 otherwise (covers a re-entered cutaway reusing a
@@ -173,9 +176,6 @@ export function DjCamScene() {
           : Math.min(target, exitEnv.current + step)
 
       u.uReady.value = djCamSource.ready ? 1 : 0
-      // Live drawing-buffer size, read every frame — PerfMonitor moves DPR as
-      // the quality tier steps, so a mount-time value goes wrong under load.
-      u.uRes.value.set(Math.max(1, el.width), Math.max(1, el.height))
 
       const v = djCamSource.video
       u.uVideoAspect.value =
@@ -190,7 +190,7 @@ export function DjCamScene() {
   )
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>

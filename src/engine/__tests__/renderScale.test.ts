@@ -5,6 +5,7 @@ import {
   MIN_PIXEL_BUDGET,
   NATIVE_PIXEL_BUDGET,
   RENDER_SCALE_FLOOR,
+  RenderScaleSolver,
   bufferScale,
   claimsResolution,
   combinePixelBudgets,
@@ -210,6 +211,78 @@ describe('bufferScale', () => {
   it('never goes below the solver floor or above native', () => {
     expect(bufferScale(0.1)).toBe(RENDER_SCALE_FLOOR)
     expect(bufferScale(2)).toBe(1)
+  })
+})
+
+/**
+ * The frame's pixel size (F272 stage 3). Scenes size their own buffers from
+ * this instead of `size * viewport.dpr`, so today it has to be exactly the
+ * canvas three allocates for the same inputs, integer for integer.
+ */
+describe('RenderScaleSolver.internalW/H', () => {
+  /** What R3F + three give the canvas: `setDpr(baseDpr * scale)`, then `floor(css * pixelRatio)`. */
+  const canvasPx = (css: number, baseDpr: number, scale: number) => Math.floor(css * (baseDpr * scale))
+
+  const solver = (cssW: number, cssH: number, baseDpr: number, applied: number) => {
+    const s = new RenderScaleSolver()
+    s.setDisplay(cssW, cssH, baseDpr)
+    s.applied = applied
+    return s
+  }
+
+  it('floors the scaled size the way the canvas is floored', () => {
+    const s = solver(1440, 900, 2, 0.73)
+    expect(s.internalW).toBe(2102) // 2102.4
+    expect(s.internalH).toBe(1314)
+  })
+
+  it('multiplies the pixel ratio out first, as three does, so it never lands one pixel off', () => {
+    // 1440 * 1.25 * 0.41 floors to 738 evaluated left to right; three floors
+    // 1440 * (1.25 * 0.41) to 737, and that is the canvas.
+    const s = solver(1440, 900, 1.25, 0.41)
+    expect(s.internalW).toBe(canvasPx(1440, 1.25, 0.41))
+    expect(s.internalW).toBe(737)
+  })
+
+  it('equals the canvas across displays, fractional CSS sizes and scales', () => {
+    for (const [w, h, dpr] of [
+      [1920, 1080, 1],
+      [1728, 1117, 2],
+      [1440.5, 899.75, 2],
+      [2560, 1440, 1.5],
+    ]) {
+      for (let scale = RENDER_SCALE_FLOOR; scale <= 1; scale = Math.round((scale + 0.01) * 100) / 100) {
+        const s = solver(w, h, dpr, scale)
+        expect(s.internalW).toBe(canvasPx(w, dpr, scale))
+        expect(s.internalH).toBe(canvasPx(h, dpr, scale))
+      }
+    }
+  })
+
+  it('tracks the applied scale, the base DPR and the CSS size', () => {
+    const s = solver(1000, 500, 2, 1)
+    expect([s.internalW, s.internalH]).toEqual([2000, 1000])
+    s.applied = 0.5
+    expect([s.internalW, s.internalH]).toEqual([1000, 500])
+    s.setDisplay(1000, 500, 1)
+    expect([s.internalW, s.internalH]).toEqual([500, 250])
+    s.setDisplay(800, 600, 1)
+    expect([s.internalW, s.internalH]).toEqual([400, 300])
+  })
+
+  it('is at least 1 before any display is known, so no buffer is sized to zero', () => {
+    const s = new RenderScaleSolver()
+    expect(s.internalW).toBe(1)
+    expect(s.internalH).toBe(1)
+    expect(solver(0.2, 0.2, 1, 0.4).internalW).toBe(1)
+  })
+
+  it('keeps the last good display when handed garbage', () => {
+    const s = solver(1000, 500, 2, 1)
+    s.setDisplay(0, 500, 2)
+    s.setDisplay(NaN, 500, 2)
+    s.setDisplay(1000, 500, 0)
+    expect([s.internalW, s.internalH]).toEqual([2000, 1000])
   })
 })
 

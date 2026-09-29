@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { quality } from '../engine/quality'
@@ -7,6 +6,7 @@ import { slew } from '../engine/response'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { bipolar, drastic } from './contract'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 
 /**
  * Tunnel Drift — a raymarched flythrough down a winding, glowing tunnel.
@@ -246,8 +246,7 @@ const RAIL_BASE = new THREE.Color(0.3, 0.2, 0.1)
 const FOG_BASE = new THREE.Color(0.9, 0.9, 1.1)
 
 export function TunnelDriftScene() {
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
+  const mesh = useRef<THREE.Mesh>(null)
   const clock = useRef(0)
   const dist = useRef(0)
   /** Slewed `b.energy` — see the flight-speed update below. */
@@ -293,9 +292,7 @@ export function TunnelDriftScene() {
 
   useDispose(material, geometry)
 
-  useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+  useViewportResolution(mesh, material)
 
   useSceneFrame(({ f, dt, b, anim, col, vis, params, p }) => {
     const u = material.uniforms
@@ -375,7 +372,7 @@ export function TunnelDriftScene() {
   })
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>

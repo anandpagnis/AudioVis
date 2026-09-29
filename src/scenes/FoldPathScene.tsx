@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
+import { renderScale } from '../engine/renderScale'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
 
@@ -256,7 +257,8 @@ const DISPLAY_FRAG = /* glsl */ `
  * comfortable 2.2 ms despite a far longer shader). Half resolution is a quarter
  * of the pixels, which should land this near ~4 ms.
  *
- * Sized against the DPR-scaled resolution rather than CSS pixels — unlike
+ * Sized against the frame's pixel size (`renderScale.internalW/H`, the canvas
+ * until F272 stage 5) rather than CSS pixels — unlike
  * SynthGrid, which is deliberately DPR-independent to avoid reallocating on
  * every tier change. That trade-off has since flipped: the governor now holds a
  * tier for RENDER_SCALE_HOLD_SEC before touching DPR, so resizes are rare, and
@@ -267,8 +269,6 @@ const RENDER_SCALE = 0.5
 
 export function FoldPathScene() {
   const gl = useThree((s) => s.gl)
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
   const fastClock = useRef(0)
   const pathClock = useRef(0)
 
@@ -335,17 +335,20 @@ export function FoldPathScene() {
 
   useDispose(material, displayMaterial, geometry, rt.target)
 
-  useEffect(() => {
-    const w = Math.max(1, Math.floor(size.width * dpr * RENDER_SCALE))
-    const h = Math.max(1, Math.floor(size.height * dpr * RENDER_SCALE))
-    rt.target.setSize(w, h)
-    // The shader's own idea of resolution is the BUFFER's, not the canvas's —
-    // it drives ray setup, so passing the canvas size here would march a
-    // differently-shaped frustum than the one being written into.
-    material.uniforms.uRes.value.set(w, h)
-  }, [rt, material, size, dpr])
-
   useSceneFrame(({ dt, b, col, vis, params }) => {
+    // Checked every frame rather than in an effect on the canvas DPR, which
+    // stops describing the frame in F272 stage 5. `setSize` reallocates only
+    // when the size really moved — the same rare event the effect ran on.
+    const w = Math.max(1, Math.floor(renderScale.internalW * RENDER_SCALE))
+    const h = Math.max(1, Math.floor(renderScale.internalH * RENDER_SCALE))
+    if (w !== rt.target.width || h !== rt.target.height) {
+      rt.target.setSize(w, h)
+      // The shader's own idea of resolution is the BUFFER's, not the canvas's —
+      // it drives ray setup, so passing the canvas size here would march a
+      // differently-shaped frustum than the one being written into.
+      material.uniforms.uRes.value.set(w, h)
+    }
+
     const u = material.uniforms
     displayMaterial.uniforms.uScene.value = rt.target.texture
 

@@ -13560,7 +13560,29 @@ per-frame canvas heavy enough to distort the reading.
         build's peak, released on the drop; snapped to exactly 0 below
         `IRIS_REST_SNAP`), so a resting frame is no longer resampled — the
         zoom used to ride `vignette` and rest at ~3.4%. Both shaders
-        compile and link on the M1 (ANGLE/Metal). Not yet watched live.
+        compile and link on the M1 (ANGLE/Metal). User watched stages 1-2:
+        "looks great".
+      - Stage 3 done: scenes size from the frame they are drawn into.
+        `renderScale.internalW/H` (= floor(css * baseDpr * applied), the
+        canvas drawing buffer today, the rendered sub-rect from stage 5)
+        replaces `size * viewport.dpr` for the budgeted solve/capacity, the
+        sim buffers and `blitCubicFor`. Pixel-space uniforms of main-frame
+        draws are written per draw from `renderer.getCurrentViewport`
+        (`viewportResolution.ts`), which also fixes wipe transitions cropping
+        the gl_FragCoord scenes (kifs, wingfold, snowflake, mothwings,
+        tribalentity, inkfluid — the capture target is 0.35 x CSS size).
+        inkfluid's contour width derives its cell size per draw. Budgeted
+        rect/capacity can move by 1 px against the old unfloored maths
+        (deliberate: the floored integer is the right input for a sub-rect).
+        LineMaterial `resolution` needs nothing — three's
+        Wireframe/LineSegments2 set it per draw from `getViewport()` (CSS).
+      - **Stage 5 must also:** give `<Canvas>` a fixed `dpr` (R3F's
+        `configure` re-imposes its `[1, 2]` default on every Canvas render
+        when no `dpr` prop is passed — seen on context restore and /demo
+        start); make the composer sub-rect EXACTLY `internalW/H`; move
+        BenchStage's non-profile `setDpr` onto the rect (or the bench frame
+        scales twice); make IsfFilterPass (`uRes` = rect; three filters use
+        gl_FragCoord) and GradePass (`uTexel`) rect-aware.
 
 - [ ] **F273 · REMINDER: add the slow glide-up to resolution changes once the
       user confirms the instant steps** — *2026-09-28, user request*

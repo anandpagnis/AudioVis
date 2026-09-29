@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { quality } from '../engine/quality'
 import { slew } from '../engine/response'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 
 /**
  * Network Constellation — a living web of jittered, sparkling nodes, adapted
@@ -225,8 +225,7 @@ export const FRAG = /* glsl */ `
 `
 
 export function NetworkConstellationScene() {
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
+  const mesh = useRef<THREE.Mesh>(null)
   const slowClock = useRef(0)
   /** Slewed `b.energy`/`b.mid` — see the slow-clock update below. */
   const energyEnv = useRef(0)
@@ -263,9 +262,7 @@ export function NetworkConstellationScene() {
 
   useDispose(material, geometry)
 
-  useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+  useViewportResolution(mesh, material)
 
   useSceneFrame(({ f, dt, b, col, vis, params }) => {
     const u = material.uniforms
@@ -299,7 +296,7 @@ export function NetworkConstellationScene() {
   })
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>

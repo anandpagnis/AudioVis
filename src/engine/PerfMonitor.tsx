@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { quality } from './quality'
 import { createGpuTimer, type GpuTimer } from './gpuTimer'
@@ -422,7 +422,11 @@ export function PerfMonitor() {
   // `size` is in the deps for the same reason: a display change is a fact, not
   // a guess, and re-solving against the new full-resolution megapixel count is
   // the whole point of a budget expressed in megapixels rather than in a scale.
-  useEffect(() => {
+  //
+  // A LAYOUT effect so the display is known before the first frame renders:
+  // scenes size their buffers from `renderScale.internalW/H`, which is 1x1
+  // until `setDisplay` has run (F272).
+  useLayoutEffect(() => {
     // See the F123 note in the frame loop: the counters have to survive the
     // post chain's many render() calls to mean anything.
     gl.info.autoReset = false

@@ -302,6 +302,13 @@ function BenchDriver({ runner, version }: { runner: BenchRunner; version: number
         // pair that disagrees instead of reporting a resolution change as a
         // post-chain cost.
         runner.setInternalMP(renderScale.internalMP(scale))
+      } else {
+        // The DPR stays R3F's default here, so tell `renderScale` what the
+        // canvas really is: scenes size their buffers from its
+        // `internalW/H` (F272 stage 3), which would otherwise describe a
+        // display nobody set.
+        renderScale.setDisplay(size.width, size.height, gl.getPixelRatio())
+        renderScale.applied = 1
       }
       // Particle scenes scale through `performanceState.particleDensity`, which
       // is normally written by PerformanceStateBridge — and the bench does not

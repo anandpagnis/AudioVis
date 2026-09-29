@@ -8,10 +8,12 @@ import { createLilimState, updateLilimState, type LilimAudioState } from './lili
 import { getNoiseLUT, NOISE_LUT_SIZE } from './noiseLUT'
 import type { PaletteBlender } from './palettes'
 import { quality } from './quality'
+import { renderScale } from './renderScale'
 import { useSceneFrame, type SceneFrame } from './sceneFrame'
 import { resolveFactoryDials, useSceneParams, type ResolvedSceneParams } from './sceneParams'
 import { resourceCache } from './streaming/resourceCache'
 import { prewarmShaders } from './streaming/shaderPrewarm'
+import { useViewportResolution, writeResolution } from './viewportResolution'
 
 /**
  * GLSL the factory injects ahead of every scene's fragment source.
@@ -276,9 +278,9 @@ const MIN_RENDER_SCALE = 0.4
  */
 const WARM_RENDERS = 5
 
-/** Solve lilim's `scale = sqrt(budget / fullMP)`, clamped. */
-function solveScale(pixelBudget: number, width: number, height: number, dpr: number): number {
-  const fullMP = (width * dpr * height * dpr) / 1e6
+/** Solve lilim's `scale = sqrt(budget / fullMP)`, clamped, for a frame of `width x height` pixels. */
+function solveScale(pixelBudget: number, width: number, height: number): number {
+  const fullMP = (width * height) / 1e6
   if (!(fullMP > 0)) return 1
   return Math.min(1, Math.max(MIN_RENDER_SCALE, Math.sqrt(pixelBudget / fullMP)))
 }
@@ -382,10 +384,6 @@ function getSceneMaterial<S>(gl: THREE.WebGLRenderer, spec: ShaderSceneSpec<S>):
 /** Shared setup: material, geometry, audio state, parameters, frame driver. */
 function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
   const gl = useThree((s) => s.gl)
-  // Only read for spec.sim's own buffer sizing below — every other scene
-  // (no `sim`) never touches these and pays nothing extra for them being here.
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
   const Pdials = useSceneParams(spec.id)
   // This instance's own copy of the dials, rebuilt every frame with the global speed folded into `speed`.
   // `useSceneParams` returns ONE object per scene id, shared by every instance of it (and rewritten by a store
@@ -473,13 +471,14 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
     // Sim step, before the scene's own update: so tSim already holds THIS
     // frame's fresh result by the time the caller renders the main shader
     // that samples it. Sized off lilim's own choice for the same job
-    // (`getDrawingBufferSize().multiplyScalar(0.6)`) — a simulation buffer
+    // (`getDrawingBufferSize().multiplyScalar(0.6)`), taken of the frame the
+    // scenes are drawn into (`renderScale.internalW/H`) — a simulation buffer
     // does not need to match display resolution 1:1, and this scene's own
     // main offscreen budget (if any) is a separate, later-solved number
     // `runFrame` has no access to here.
     if (spec.sim) {
-      const simW = Math.max(1, Math.floor(size.width * dpr * 0.6))
-      const simH = Math.max(1, Math.floor(size.height * dpr * 0.6))
+      const simW = Math.max(1, Math.floor(renderScale.internalW * 0.6))
+      const simH = Math.max(1, Math.floor(renderScale.internalH * 0.6))
       const rt = getSimRT(gl, spec, spec.sim, simW, simH)
       const prev = rt.flip ? rt.a : rt.b
       const next = rt.flip ? rt.b : rt.a
@@ -524,24 +523,42 @@ function useShaderCore<S>(spec: ShaderSceneSpec<S>) {
 }
 
 /** Full-resolution path: one fullscreen quad straight into the shared graph. */
+/**
+ * One frame of a direct-path scene: the main frame's size onto the uniforms,
+ * THEN the scene's update.
+ *
+ * The per-draw write (viewportResolution.ts) leaves the LAST draw's size
+ * behind, which after a wipe capture is the capture's. `update()` reads these
+ * on the JS side (`inkfluid` sizes its tank from `uAspect` and would reseed it
+ * on a capture's aspect), so it must see the main frame's every frame. The
+ * order is the whole point, which is why this is a function the tests call.
+ */
+export function runDirectSceneFrame<C>(
+  material: THREE.ShaderMaterial,
+  runFrame: (ctx: C) => unknown,
+  ctx: C,
+): void {
+  writeResolution(material, renderScale.internalW, renderScale.internalH)
+  runFrame(ctx)
+}
+
 function createDirectScene<S>(spec: ShaderSceneSpec<S>): ComponentType {
   function ShaderScene() {
-    const size = useThree((s) => s.size)
-    const dpr = useThree((s) => s.viewport.dpr)
     const { material, geometry, runFrame } = useShaderCore(spec)
     // No useDispose(material, geometry) — cached across mounts, see getSceneMaterial.
 
-    useEffect(() => {
-      const w = Math.max(1, Math.floor(size.width * dpr))
-      const h = Math.max(1, Math.floor(size.height * dpr))
-      material.uniforms.uRes.value.set(w, h)
-      material.uniforms.uAspect.value = w / h
-    }, [material, size, dpr])
+    // `uRes`/`uAspect` are the size of the target each draw lands in, written
+    // per draw (viewportResolution.ts): the composer's buffer, or a wipe's
+    // capture target, which a canvas-sized `uRes` used to crop.
+    const mesh = useRef<THREE.Mesh>(null)
+    useViewportResolution(mesh, material)
 
-    useSceneFrame(runFrame)
+    useSceneFrame((ctx) => {
+      runDirectSceneFrame(material, runFrame, ctx)
+    })
 
     return (
-      <mesh frustumCulled={false}>
+      <mesh ref={mesh} frustumCulled={false}>
         <primitive object={geometry} attach="geometry" />
         <primitive object={material} attach="material" />
       </mesh>
@@ -849,8 +866,6 @@ function createBudgetedScene<S>(
 ): ComponentType {
   function ShaderScene() {
     const gl = useThree((s) => s.gl)
-    const size = useThree((s) => s.size)
-    const dpr = useThree((s) => s.viewport.dpr)
     const { material, geometry, runFrame } = useShaderCore(spec)
 
     const rt = useMemo(
@@ -886,12 +901,12 @@ function createBudgetedScene<S>(
     // along the top and right with the picture squashed into the bottom-left.
     // The blit's mapping then was `uUvMax = active / full` (replaced by
     // `uSrcSize`/`uTexel` in F272, same dependency), and in the normal (unclamped) regime the
-    // ACTIVE size is invariant under DPR — `solveScale` divides by `dpr` and
-    // the `w = floor(size.width * dpr * scale)` below multiplies it straight
-    // back out, so `w` reduces to `floor(sqrt(budget * 1e6 * W/H))`, a
-    // function of CSS aspect and budget only. `neededW/H` (the grow check)
-    // does NOT cancel dpr. So every time the governor climbed the render
-    // scale, the target grew, `full` changed, `w`/`h` did not, this guard
+    // ACTIVE size is invariant under DPR — `solveScale` divides by the frame's
+    // pixel count and the `w = floor(frameW * scale)` below multiplies it
+    // straight back out, so `w` reduces to `floor(sqrt(budget * 1e6 * W/H))`,
+    // a function of aspect and budget only. The grow check against
+    // `frameW/H` does NOT cancel the DPR. So every time the governor climbed
+    // the render scale, the target grew, `full` changed, `w`/`h` did not, this guard
     // stayed false, and `uUvMax` kept a ratio computed against the OLD,
     // smaller target — leaving the blit sampling past the rendered rect into
     // never-written texels. Permanent, too, for the fixed-budget scenes
@@ -911,9 +926,13 @@ function createBudgetedScene<S>(
     // it's pure arithmetic with no GPU work unless the active size changed.
     useSceneFrame((ctx) => {
       const budget = typeof pixelBudget === 'function' ? pixelBudget() : pixelBudget
-      const scale = solveScale(budget, size.width, size.height, dpr)
-      const w = Math.max(1, Math.floor(size.width * dpr * scale))
-      const h = Math.max(1, Math.floor(size.height * dpr * scale))
+      // The frame this scene's display pass draws into (F272 stage 3): the
+      // canvas today, the rendered sub-rect from stage 5 on.
+      const frameW = renderScale.internalW
+      const frameH = renderScale.internalH
+      const scale = solveScale(budget, frameW, frameH)
+      const w = Math.max(1, Math.floor(frameW * scale))
+      const h = Math.max(1, Math.floor(frameH * scale))
 
       // Real canvas/DPR change only — NOT a budget/tier change. `setSize()`
       // resets `target.viewport`/`.scissor` to the full new size, which is
@@ -939,10 +958,8 @@ function createBudgetedScene<S>(
       // so only re-pays the stall the next time DPR climbs back up. Same
       // "pay once, keep it" trade F138/F144 already made for the cache these
       // targets and materials live in.
-      const neededW = Math.max(1, Math.round(size.width * dpr))
-      const neededH = Math.max(1, Math.round(size.height * dpr))
-      if (neededW > rt.target.width || neededH > rt.target.height) {
-        rt.target.setSize(Math.max(neededW, rt.target.width), Math.max(neededH, rt.target.height))
+      if (frameW > rt.target.width || frameH > rt.target.height) {
+        rt.target.setSize(Math.max(frameW, rt.target.width), Math.max(frameH, rt.target.height))
         // F16: this target deliberately never goes through resourceCache's
         // acquire/release lifecycle (see that method's own doc comment) —
         // but budgetLedger.ts exists specifically for targets like this one,
@@ -982,7 +999,7 @@ function createBudgetedScene<S>(
       // Bicubic only while the rect is genuinely upscaled and the live
       // resolution tier is a top one (F272). A uniform write, so read every
       // frame to follow the tier without its own change-guard.
-      displayMaterial.uniforms.uCubic.value = blitCubicFor(w, Math.floor(size.width * dpr), quality.resolutionTier)
+      displayMaterial.uniforms.uCubic.value = blitCubicFor(w, frameW, quality.resolutionTier)
       // Cheap Vector4 writes, not a GPU resize — `setRenderTarget()` below
       // reads these directly (three's own dynamic-resolution mechanism).
       rt.target.viewport.set(0, 0, w, h)

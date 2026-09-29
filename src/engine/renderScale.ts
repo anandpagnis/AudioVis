@@ -241,13 +241,16 @@ export function solveRenderScale(budgetMP: number, fullMP: number, tierScale = 1
  * `SceneManager` owns the budget (it is the only component that knows every
  * mounted entry); `PerfMonitor` owns the display and applies the result.
  */
-class RenderScaleSolver {
+export class RenderScaleSolver {
   /** Combined budget of everything currently drawing, in megapixels. */
   budgetMP = NATIVE_PIXEL_BUDGET
   /** Full-resolution megapixels of the live display at base DPR. */
   fullMP = 1
   /** Base device pixel ratio before any scaling — what scale 1 would mean. */
   baseDpr = 1
+  /** CSS size of the live display, from the last {@link setDisplay}. 0 before the first. */
+  cssW = 0
+  cssH = 0
 
   /**
    * The scale actually on the canvas right now, written by `PerfMonitor` when
@@ -281,7 +284,32 @@ class RenderScaleSolver {
   setDisplay(cssWidth: number, cssHeight: number, baseDpr: number): void {
     if (!(cssWidth > 0) || !(cssHeight > 0) || !(baseDpr > 0)) return
     this.baseDpr = baseDpr
+    this.cssW = cssWidth
+    this.cssH = cssHeight
     this.fullMP = (cssWidth * baseDpr * cssHeight * baseDpr) / 1e6 || 1
+  }
+
+  /**
+   * Pixel size of the frame the scenes are drawn into, at the {@link applied}
+   * scale (F272 stage 3).
+   *
+   * Equals the canvas drawing buffer today: R3F's `setDpr` hands three
+   * `baseDpr * applied` as the pixel ratio and three sizes the canvas
+   * `floor(css * pixelRatio)`, which is why the ratio is multiplied out first
+   * here — the same float, floored the same way, gives the same integer. In
+   * F272 stage 5 the canvas is pinned at base DPR and this becomes the
+   * rendered sub-rect instead, so anything that sizes a buffer "to the frame"
+   * reads it from here rather than from `size * viewport.dpr`, which will then
+   * describe the canvas, not the frame. At least 1, so a display not yet laid
+   * out cannot size a zero-pixel target.
+   */
+  get internalW(): number {
+    return Math.max(1, Math.floor(this.cssW * (this.baseDpr * this.applied)))
+  }
+
+  /** See {@link internalW}. */
+  get internalH(): number {
+    return Math.max(1, Math.floor(this.cssH * (this.baseDpr * this.applied)))
   }
 
   /** Tell the solver what is drawing. See {@link combinePixelBudgets}. */

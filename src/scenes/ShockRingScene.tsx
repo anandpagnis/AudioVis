@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 import { effectEnvelope } from './effectEnvelope'
 
 /**
@@ -99,8 +99,7 @@ export const FRAG = /* glsl */ `
 `
 
 export function ShockRingScene() {
-  const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
+  const mesh = useRef<THREE.Mesh>(null)
   const wasEffect = useRef(false)
   /** Captured hit strength, held for the whole firing — see header. */
   const strength = useRef(1)
@@ -129,9 +128,7 @@ export function ShockRingScene() {
   const geometry = useMemo(() => new THREE.PlaneGeometry(2, 2), [])
   useDispose(material, geometry)
 
-  useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+  useViewportResolution(mesh, material)
 
   useSceneFrame(({ b, col, vis, role, slotProgress, state }) => {
     const u = material.uniforms
@@ -166,7 +163,7 @@ export function ShockRingScene() {
   })
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>

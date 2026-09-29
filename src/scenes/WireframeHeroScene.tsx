@@ -1,5 +1,4 @@
 import { useMemo, useRef } from 'react'
-import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { Line2 } from 'three/examples/jsm/lines/Line2.js'
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js'
@@ -222,7 +221,6 @@ function makeWireframe(source: THREE.BufferGeometry, mat: LineMaterial): Wirefra
 }
 
 export function WireframeHeroScene() {
-  const gl = useThree((s) => s.gl)
   const spin = useSpin()
   const dash = useRef(0)
   /** Slewed `b.high` — see the dash-scroll update below. */
@@ -302,13 +300,6 @@ export function WireframeHeroScene() {
       // bins, where `high` averages 2–9 kHz over ~325 mostly-noise-floor bins and
       // so has visibly less dynamic range once normalized.
 
-      // LineMaterial sizes strokes in CSS pixels, which means it needs the live
-      // drawing-buffer size. PerfMonitor changes DPR whenever the quality tier
-      // steps, so a mount-time value goes wrong the moment load changes — set it
-      // every frame and resize/fullscreen/tier changes all stay correct for free.
-      const w = gl.domElement.width
-      const h = gl.domElement.height
-
       // Body lines sit on the primary; the beat pushes them toward the accent, and
       // mid content pulls toward the secondary — so harmonic movement shifts hue
       // independently of rhythm instead of everything keying off the kick.
@@ -317,9 +308,13 @@ export function WireframeHeroScene() {
         .lerp(col.c, Math.min(1, b.pulse * 0.8))
         .lerp(col.b, Math.min(0.6, b.mid * 0.5))
 
-      for (const mat of [heroMat, coreMat, ringMat]) {
-        mat.resolution.set(w, h)
-      }
+      // No `resolution` write: `Wireframe`/`Line2` set it themselves on every
+      // draw, in their own `onBeforeRender`, from `renderer.getViewport()` —
+      // the CSS-pixel viewport — which overwrote the drawing-buffer size this
+      // used to write here before any draw could use it. So `linewidth` is in
+      // CSS pixels of the shown frame and keeps its share of whatever target is
+      // bound: the same stroke at every DPR and render scale, and in a wipe
+      // capture.
 
       // Brightness lives in the COLOUR, not in opacity — and deliberately runs
       // past 1.0. LineMaterial's alpha caps at 1, so opacity alone can only ever

@@ -87,9 +87,10 @@ export class TransitionCapture {
   /**
    * Allocate (or reallocate, on a real size change) both capture targets at
    * `WIPE_CAPTURE_SCALE` of `width`/`height` (the renderer's current size, in
-   * device pixels — same numbers `PostFXChain.tsx` already reads via
-   * `gl.getSize()` for the composer's own resize path, so this piggybacks on
-   * that existing poll rather than adding a second resize mechanism).
+   * CSS pixels — `gl.getSize()`, the same numbers `PostFXChain.tsx` reads for
+   * the composer's own resize path, so this piggybacks on that existing poll
+   * rather than adding a second resize mechanism). Relative to the drawn frame
+   * that is 0.35 / (baseDpr * applied) — 17.5% on a 2x display at native.
    *
    * Safe to call every frame: a call that requests the same size the targets
    * are already at does nothing beyond two integer comparisons. Rounds down

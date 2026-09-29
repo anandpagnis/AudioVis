@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useMemo, useRef } from 'react'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { FULLSCREEN_VERT } from '../engine/glsl'
 import { useSceneFrame } from '../engine/sceneFrame'
 import { useDispose } from '../engine/useDispose'
+import { useViewportResolution } from '../engine/viewportResolution'
 import { effectEnvelope } from './effectEnvelope'
 import { layoutSparks, MAX_SPARKS, pickSparkCount, RECENT_WINDOW } from './transientSparkLayout'
 
@@ -102,7 +103,7 @@ export const FRAG = /* glsl */ `
 
 export function TransientSparkScene() {
   const size = useThree((s) => s.size)
-  const dpr = useThree((s) => s.viewport.dpr)
+  const mesh = useRef<THREE.Mesh>(null)
   const wasEffect = useRef(false)
   /** Captured transient strength, held for the whole firing — see header. */
   const strength = useRef(1)
@@ -137,9 +138,7 @@ export function TransientSparkScene() {
   const geometry = useMemo(() => new THREE.PlaneGeometry(2, 2), [])
   useDispose(material, geometry)
 
-  useEffect(() => {
-    material.uniforms.uRes.value.set(size.width * dpr, size.height * dpr)
-  }, [material, size, dpr])
+  useViewportResolution(mesh, material)
 
   useSceneFrame(({ f, b, col, vis, role, slotProgress, state }) => {
     const u = material.uniforms
@@ -175,7 +174,7 @@ export function TransientSparkScene() {
   })
 
   return (
-    <mesh frustumCulled={false}>
+    <mesh ref={mesh} frustumCulled={false}>
       <primitive object={geometry} attach="geometry" />
       <primitive object={material} attach="material" />
     </mesh>
