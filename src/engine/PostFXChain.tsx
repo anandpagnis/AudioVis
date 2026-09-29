@@ -1,13 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { Color, FogExp2, Vector2 } from 'three'
-import { EffectComposer, Bloom, ChromaticAberration, Vignette } from '@react-three/postprocessing'
-import type {
-  BloomEffect,
-  ChromaticAberrationEffect,
-  EffectComposer as EffectComposerImpl,
-  VignetteEffect,
-} from 'postprocessing'
+import { EffectComposer } from '@react-three/postprocessing'
+import type { EffectComposer as EffectComposerImpl } from 'postprocessing'
+import { BloomFinishPass } from './BloomFinishPass'
 import { EchoPass } from './EchoPass'
 import { FeedbackPass } from './FeedbackPass'
 import { GradePass } from './GradePass'
@@ -28,9 +24,6 @@ import { featherFor, shouldCapture, usesWipe } from './transitionWipe'
 import { useDispose } from './useDispose'
 import { WipeCompositorPass } from './WipeCompositorPass'
 import { useStore } from '../store'
-
-/** Chromatic-aberration offset at mount — starts at zero so no first-frame flash. */
-const CA_INITIAL_OFFSET = new Vector2(0, 0)
 
 /**
  * Owns the post chain. Scenes never touch bloom, aberration, or vignette.
@@ -57,6 +50,12 @@ const CA_INITIAL_OFFSET = new Vector2(0, 0)
  *    rebuilds the composer's merged shader — a multi-hundred-millisecond stall
  *    that, repeated, has lost the WebGL context outright. Quality tiers and
  *    director decisions modulate by *uniform*, never by changing the list.
+ *    Since F272 stage 4 every entry is a raw `Pass` this repo owns (bloom,
+ *    aberration and vignette are `BloomFinishPass`), so there is no merged
+ *    library shader left to rebuild. The rule stands: mounting or unmounting
+ *    any child still makes `@react-three/postprocessing` remove and re-add
+ *    every pass (`buildPasses`), and a new pass compiles its programs on its
+ *    first draw.
  * 3. **Avoid re-rendering this component after mount, though it is no longer
  *    a black-screen risk if it does (F48, fixed 2026-08-29).** Until then,
  *    `@react-three/postprocessing` memoised each wrapped effect's constructor
@@ -82,9 +81,6 @@ const CA_INITIAL_OFFSET = new Vector2(0, 0)
  *    before touching this chain.
  */
 export function PostFXChain() {
-  const bloomRef = useRef<BloomEffect>(null)
-  const caRef = useRef<ChromaticAberrationEffect>(null)
-  const vignetteRef = useRef<VignetteEffect>(null)
   const composerRef = useRef<EffectComposerImpl>(null)
   // Both stable for the session, so subscribing to them cannot re-render this
   // component. See constraint 3 in the header before adding another selector.
@@ -125,6 +121,14 @@ export function PostFXChain() {
    * the composer's list, which is the structural change constraint 1 forbids.
    */
   const isfFilterPass = useMemo(() => new IsfFilterPass(), [])
+  /**
+   * Bloom, chromatic aberration and vignette in one raw pass (F272 stage 4) —
+   * the in-repo rebuild of the library `<Bloom>`/`<ChromaticAberration>`/
+   * `<Vignette>` this chain used to mount; see `BloomFinishPass.ts`'s header
+   * for what it reproduces and its one deliberate difference. `useMemo` with
+   * no deps like every sibling (constraints 1 and 3).
+   */
+  const bloomFinishPass = useMemo(() => new BloomFinishPass(), [])
   const gradePass = useMemo(() => new GradePass(), [])
   /** Eased mood-grade residual (mood target minus what the palette carries), fed to `gradePass` each frame. */
   const gradeTracker = useMemo(() => new GradeResidualTracker(), [])
@@ -137,7 +141,17 @@ export function PostFXChain() {
    *  in the loop, matching this file's no-allocation-per-frame discipline. */
   const txMirror = useRef<MirrorRackState>({ segments: 0, tiles: 0, twist: 0, slice: 0, spin: 0 })
   const txLens = useRef<LensRackState>({ amount: 0, style: 0 })
-  useDispose(feedbackPass, echoPass, mirrorPass, lensPass, isfFilterPass, gradePass, wipeCompositorPass, transitionCapture)
+  useDispose(
+    feedbackPass,
+    echoPass,
+    mirrorPass,
+    lensPass,
+    bloomFinishPass,
+    isfFilterPass,
+    gradePass,
+    wipeCompositorPass,
+    transitionCapture,
+  )
   /** F81 guard: warned about a mis-ordered chain at most once per mount. */
   const warnedChainOrder = useRef(false)
   // Exponential fog, mutated in place — swapping the Scene.fog object per frame
@@ -191,7 +205,8 @@ export function PostFXChain() {
     // but that path is keyed on `size` alone and a DPR-only change never
     // touches it. `renderScale` works purely by changing DPR, so without this
     // every render target in the chain — the composer's input/output buffers,
-    // Bloom's mip pyramid, the feedback history — stays pinned at whatever an
+    // the bloom pyramid (`BloomFinishPass.setSize`, which the composer calls
+    // for every pass from here), the feedback history — stays pinned at whatever an
     // actual window resize last set, and the entire internal-resolution
     // governor never reaches the most fill-bound work in the frame.
     //
@@ -324,18 +339,13 @@ export function PostFXChain() {
     // be where that decision is made.
     echoPass.setEcho(p.echo, p.echoTapSpacingSec, delta)
     echoPass.setTint(feedbackTint.current)
-    if (bloomRef.current) {
-      bloomRef.current.intensity = p.bloom
-      bloomRef.current.luminanceMaterial.threshold = p.bloomThreshold
-    }
+    bloomFinishPass.setBloom(p.bloom, p.bloomThreshold)
     // Same magnitude as before (the old fixed 1.0 : 0.6 ratio has length ~1.166),
     // now steerable — so switching to a directed smear does not also change how
     // strong the aberration reads.
-    if (caRef.current) {
-      const g = p.glitch * 1.166
-      caRef.current.offset.set(Math.cos(p.caAngle) * g, Math.sin(p.caAngle) * g)
-    }
-    if (vignetteRef.current) vignetteRef.current.darkness = p.vignette
+    const g = p.glitch * 1.166
+    bloomFinishPass.setAberration(Math.cos(p.caAngle) * g, Math.sin(p.caAngle) * g)
+    bloomFinishPass.setVignette(p.vignette)
 
     // `p.filter.mix` is already eased by whoever wrote it (see performanceState.ts's
     // doc comment on `filter` — same convention as `p.vignette`/`p.trails`/
@@ -387,13 +397,13 @@ export function PostFXChain() {
       {/*
         A raw Pass, not a merged Effect — see FeedbackPass.ts's header for why
         that distinction is what makes mounting this unconditionally cheap. It
-        sits BEFORE the Bloom/CA/Vignette list so bloom picks up the accumulated
-        trail, not just the current frame, matching lilim's own chain order.
+        sits BEFORE bloomFinishPass so bloom picks up the accumulated trail, not
+        just the current frame, matching lilim's own chain order.
       */}
       {/*
         Chain order is lilim's (plus the wipe compositor prepended — see the
         comment above), and each position is load-bearing:
-        wipe compositor -> mirror -> feedback -> echo -> bloom/CA -> isf filter -> vignette -> lens -> grade.
+        wipe compositor -> mirror -> feedback -> echo -> bloom/CA/vignette -> isf filter -> lens -> grade.
 
         Mirror sits ahead of feedback so the trail accumulates THROUGH the fold
         and the pattern compounds into itself; behind it, symmetry would just be
@@ -405,13 +415,18 @@ export function PostFXChain() {
         ghost of the un-warped scene underneath it. Lens sits after bloom so
         the glow refracts through the material the way light does through real
         optics — that is the difference between glass and a filter.
+
+        Every entry is a raw Pass (F272 stage 4). Bloom, aberration and
+        vignette used to be three library Effects that
+        `@react-three/postprocessing` merged into one EffectPass (composited
+        aberration, then bloom, then vignette); `bloomFinishPass` is that merged
+        pass rebuilt in-repo, in the same order, so it can later render into a
+        sub-rect (F272 stage 5).
       */}
       <primitive object={mirrorPass} />
       <primitive object={feedbackPass} />
       <primitive object={echoPass} />
-      <Bloom ref={bloomRef} intensity={0.8} luminanceThreshold={0.18} mipmapBlur radius={0.75} />
-      <ChromaticAberration ref={caRef} offset={CA_INITIAL_OFFSET} />
-      <Vignette ref={vignetteRef} eskil={false} offset={0.18} darkness={0.85} />
+      <primitive object={bloomFinishPass} />
       {/*
         The ISF filter slot — after bloom, aberration and vignette, so a filter
         sees the fully-lit composited image, which is what a "look" is applied
@@ -422,16 +437,12 @@ export function PostFXChain() {
         off `inputBuffer`, so it tracks the render-scale governor without a
         selector here (constraint 3).
 
-        **It sits BELOW `<Vignette>` for a structural reason, not an aesthetic
-        one, so do not "tidy" it upward.** `@react-three/postprocessing` merges
-        only CONSECUTIVE `Effect` children into a single `EffectPass`
-        (`buildPasses` in its EffectComposer). A raw `Pass` placed between
-        ChromaticAberration and Vignette splits one merged effect pass into two
-        — Bloom+CA, then Vignette — and because that split happens at mount it
-        is structural: `enabled = false` does NOT recover it, so the chain would
-        pay an extra fullscreen draw every frame even with no filter selected.
-        Keeping the three effects adjacent costs nothing when the slot is idle.
-        F110 is on record that fullscreen draws dominate this chain.
+        It used to have to sit below the library `<Vignette>` for a structural
+        reason: `@react-three/postprocessing` merges only CONSECUTIVE `Effect`
+        children into one `EffectPass`, so a raw pass between the three effects
+        would have split one fullscreen draw into two. With all three now inside
+        `bloomFinishPass` there is nothing left to split; the slot stays after it
+        for the product reason above.
       */}
       <primitive object={isfFilterPass} />
       <primitive object={lensPass} />

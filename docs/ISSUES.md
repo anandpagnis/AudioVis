@@ -13576,6 +13576,18 @@ per-frame canvas heavy enough to distort the reading.
         (deliberate: the floored integer is the right input for a sub-rect).
         LineMaterial `resolution` needs nothing — three's
         Wireframe/LineSegments2 set it per draw from `getViewport()` (CSS).
+      - Stage 4 done: `BloomFinishPass.ts` replaces the library `<Bloom>`,
+        `<ChromaticAberration>` and `<Vignette>` with one raw pass (8-level
+        13-tap/9-tap pyramid, composite CA -> bloom ADD -> vignette), the
+        luminance threshold folded into the first downsample (no
+        full-resolution luminance target). Measured on the M1 against the
+        library: CA and vignette match to 2e-6; the whole stage 8.4 -> 7.0 ms
+        at 2880x1800, 3.7 -> 3.2 ms at 1920x1080. The fold is not exact: the
+        mask sees a 2x2 average, so large/soft highlights are within 0.1-2.5%
+        but one-pixel dim lines and per-pixel noise differ 10-50% locally
+        (total bloom energy +3%/-6%) — thin-line scenes are where it could
+        show. Every texture read goes through a per-shader `read*` helper for
+        stage 5.
       - **Stage 5 must also:** give `<Canvas>` a fixed `dpr` (R3F's
         `configure` re-imposes its `[1, 2]` default on every Canvas render
         when no `dpr` prop is passed — seen on context restore and /demo

@@ -94,8 +94,8 @@ export const MAX_PIXEL_BUDGET = 64
 export const NATIVE_PIXEL_BUDGET = 32
 
 /**
- * The post chain's OWN pixel budget — `Bloom({ mipmapBlur })` +
- * `ChromaticAberration` + `Vignette`, plus `FeedbackPass`.
+ * The post chain's OWN pixel budget — bloom + chromatic aberration +
+ * vignette (`BloomFinishPass`), plus `FeedbackPass`.
  *
  * ## Why the fixed cost needs a budget too
  *
@@ -587,7 +587,7 @@ export function decideTierResize(i: TierResizeInput): TierResizeAction {
  *
  * A render-scale change is not a cheap write. `PerfMonitor` moves the canvas
  * DPR and `PostFXChain` re-derives the whole chain from the new drawing-buffer
- * size, which reallocates the composer's read/write buffers, Bloom's mip
+ * size, which reallocates the composer's read/write buffers, the bloom mip
  * pyramid and the feedback history. Measured in
  * `audiovis-session-2026-08-31-16-47-12`, worst frame within 0.15 s of the
  * change, by the scale being LEFT:

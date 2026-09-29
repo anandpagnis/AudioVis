@@ -34,8 +34,9 @@ import {
  * material, the way light smears through real optics, instead of being laid on
  * top of an already-refracted image.
  *
- * In this chain that means it sits after the merged Bloom/CA/Vignette
- * `EffectPass` rather than before it — so it is the last thing in the composer.
+ * In this chain that means it sits after `BloomFinishPass` (bloom, chromatic
+ * aberration and vignette; a merged library `EffectPass` until F272 stage 4)
+ * rather than before it.
  *
  * ## Never mounted, never unmounted
  *

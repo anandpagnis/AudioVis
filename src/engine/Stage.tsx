@@ -183,8 +183,8 @@ function MirrorPublisher() {
  *
  * ## Why `starting` and not just `running`
  *
- * Building the composer means allocating its buffers and compiling the merged
- * effect shader. Doing that on the transition to `running` would land the stall
+ * Building the composer means allocating its buffers and compiling the chain's
+ * shaders (the merged library effect shader until F272 stage 4). Doing that on the transition to `running` would land the stall
  * on the first bar of the track — the single worst moment available. `starting`
  * covers device permission, decode and analysis warm-up, which is both long
  * enough to hide the build and a moment where the user already expects a wait.

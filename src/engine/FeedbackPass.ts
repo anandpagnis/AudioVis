@@ -28,21 +28,22 @@ import { isFeedbackActive, resolveFeedbackKnobs, type FeedbackShape } from './fe
  *  1. **Blend** — reads `inputBuffer` (this frame's scene) and `history`
  *     (last frame's, pre-warped), writes the composited result to
  *     `outputBuffer`. This is what the rest of the post chain (bloom, CA,
- *     vignette) sees.
+ *     vignette — `BloomFinishPass`) sees.
  *  2. **Copy** — reads `outputBuffer` back, writes it into `history` for next
  *     frame. Cheap: an unlit `MeshBasicMaterial` sampling one texture, no
  *     warp math.
  *
  * ## Sits BEFORE bloom, not after
  *
- * `PostFXChain` inserts this pass as a `<primitive>` ahead of the merged
- * `Bloom`/`ChromaticAberration`/`Vignette` effect list — matching lilim's own
- * ordering (`feedbackPass` before `bloomPass` in `main.js`). Bloom then blooms
- * the accumulated trail, not just the current frame, which is most of why the
- * trails read as glowing rather than as a flat ghost image.
+ * `PostFXChain` inserts this pass as a `<primitive>` ahead of
+ * `BloomFinishPass` (bloom, chromatic aberration and vignette) — matching
+ * lilim's own ordering (`feedbackPass` before `bloomPass` in `main.js`). Bloom
+ * then blooms the accumulated trail, not just the current frame, which is most
+ * of why the trails read as glowing rather than as a flat ghost image.
  *
- * A raw `Pass` (this) versus a merged `Effect` (Bloom/CA/Vignette) matters
- * mechanically, not just visually: `@react-three/postprocessing`'s
+ * A raw `Pass` (this) versus a merged `Effect` (what Bloom/CA/Vignette were
+ * until F272 stage 4 moved them into `BloomFinishPass`, itself a raw `Pass`)
+ * matters mechanically, not just visually: `@react-three/postprocessing`'s
  * `<EffectComposer>` merges consecutive `Effect` children into one shader
  * program, and ADDING one is the multi-hundred-millisecond recompile
  * `PostFXChain`'s header warns about. A `Pass` is pushed as its own
@@ -196,9 +197,9 @@ export class FeedbackPass extends Pass {
    * (`if (!pass.enabled) continue`), so the chain keeps reading the correct
    * buffer. Returning early from `render` while `needsSwap` is true would swap
    * anyway and hand the next pass a stale buffer. Toggling `enabled` costs no
-   * recompile — the merged Bloom/CA/Vignette pass is a separate chain entry and
-   * never sees it, which is the point of this being a `Pass` and not an
-   * `Effect` (see the header).
+   * recompile — every other pass (`BloomFinishPass` included) is a separate
+   * chain entry and never sees it, which is the point of this being a `Pass`
+   * and not an `Effect` (see the header).
    *
    * Set from `PostFXChain`'s frame callback at priority 0; the composer
    * renders at priority 1, so a change lands on the same frame it is made.

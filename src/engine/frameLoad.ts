@@ -40,10 +40,11 @@ import { isFeedbackActive } from './feedbackParams'
 /**
  * Post-processing chain, present in every frame.
  *
- * `EffectComposer` with `Bloom({ mipmapBlur })` + `ChromaticAberration` +
- * `Vignette`. The mip pyramid is roughly nine downsamples and nine upsamples;
- * each is cheap individually but they are all fullscreen-derived, and the chain
- * runs whatever else is on screen.
+ * `EffectComposer` with bloom + chromatic aberration + vignette (one raw
+ * `BloomFinishPass` since F272 stage 4; the library `Bloom({ mipmapBlur })` +
+ * `ChromaticAberration` + `Vignette` before). The mip pyramid is eight
+ * downsamples and seven upsamples; each is cheap individually but they are all
+ * fullscreen-derived, and the chain runs whatever else is on screen.
  *
  * **ESTIMATE — still not a `/bench` measurement.** `/bench` deliberately
  * excludes the post chain so that scene costs compare cleanly; see F43 and F90

@@ -77,7 +77,7 @@ The rubric still applies as a quality bar rather than a headcount cap: does it h
 
 ### The grade — attempted and reverted (now `src/engine/EffectsDirector.tsx`)
 
-A filmic chain (selective Bloom → BrightnessContrast → HueSaturation → ToneMapping(AgX) → ChromaticAberration → Scanline → Noise → Vignette) was built and **reverted**: it washed the entire frame to flat grey and hid every scene. The chain is back to the original bloom + aberration + vignette. Three separate failures, each verified by reading real canvas pixels — read this before attempting the grade again:
+A filmic chain (selective Bloom → BrightnessContrast → HueSaturation → ToneMapping(AgX) → ChromaticAberration → Scanline → Noise → Vignette) was built and **reverted**: it washed the entire frame to flat grey and hid every scene. The chain is back to the original bloom + aberration + vignette (since F272 stage 4 one in-repo raw pass, `src/engine/BloomFinishPass.ts`, that reproduces the library's `Bloom`/`ChromaticAberration`/`Vignette` with the luminance threshold folded into the first downsample). Three separate failures, each verified by reading real canvas pixels — read this before attempting the grade again:
 
 1. **Chain order.** AgX is a *display transform* and must come last in the colour pipeline. Grading after it expands an already-mapped signal into clipping — 39% of the frame blown to pure white. Reordering fixed that (0% blown, max luminance 204).
 2. **`BrightnessContrast.brightness` is an additive offset, not exposure.** A negative value (used to try to crush blacks) drives black *negative*, and negative input to AgX's log-space transform comes back as a lifted mid-grey (~193). Verified directly: with all scene output forced to zero, the chain still produced a full-frame grey wash. **Never set it below 0.**
@@ -86,7 +86,7 @@ A filmic chain (selective Bloom → BrightnessContrast → HueSaturation → Ton
 Also true and worth keeping for the next attempt:
 
 - **Bloom threshold 0.18 is far too low** — it blooms the whole image and is a major cause of the grey haze. Raising it is correct, but only meaningful once scenes are exposed sanely (point 3 above).
-- **The effect list must stay structurally fixed.** Adding/removing effects rebuilds the composer's merged shader — a multi-hundred-ms stall — and repeated rebuilds exhausted the GPU and lost the WebGL context outright (observed live during HMR). Modulate by parameter; never remount.
+- **The effect list must stay structurally fixed.** Adding/removing effects rebuilds the composer's merged shader (no library `Effect` is mounted since F272 stage 4, but mounting or unmounting any pass still re-adds the whole pass list and compiles the newcomer on its first draw) — a multi-hundred-ms stall — and repeated rebuilds exhausted the GPU and lost the WebGL context outright (observed live during HMR). Modulate by parameter; never remount.
 - **Effect opacities must be initialized at mount**, not only in `useFrame`. Grain/scanline blend opacity defaults to 1.0, so any frame rendered before the loop ticks shows them at full strength.
 
 ### Still to build

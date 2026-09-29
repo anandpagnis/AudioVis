@@ -287,25 +287,52 @@ describe('the chain position (source order — see this file’s header)', () =>
     return i
   }
 
-  it('sits after every merged Effect, so a filter sees the lit composite', () => {
+  it('sits after the bloom/aberration/vignette pass, so a filter sees the lit composite', () => {
     // The placement is a product decision: a filter should see the fully-lit
     // composited image — bloom, aberration and vignette included.
-    expect(at('<Bloom')).toBeLessThan(at('object={isfFilterPass}'))
-    expect(at('<ChromaticAberration')).toBeLessThan(at('object={isfFilterPass}'))
-    expect(at('<Vignette ref=')).toBeLessThan(at('object={isfFilterPass}'))
+    expect(at('object={bloomFinishPass}')).toBeLessThan(at('object={isfFilterPass}'))
   })
 
-  it('does not split the merged EffectPass — no raw Pass between the effects', () => {
-    // The load-bearing half of the placement, and the reason it must not drift
-    // back up the list. `@react-three/postprocessing`'s `buildPasses` merges
-    // only CONSECUTIVE `Effect` children into one `EffectPass`, so a raw
-    // `<primitive>` between Bloom and Vignette splits one fullscreen pass into
-    // two. That split is decided at mount, so `enabled = false` does not undo
-    // it: the chain would pay the extra draw every frame with no filter even
-    // selected. Asserted on the SPAN rather than on isfFilterPass alone,
-    // because any future pass inserted there costs exactly the same.
-    const span = POST_FX_CHAIN_SRC.slice(at('<Bloom'), at('<Vignette ref='))
-    expect(span).not.toMatch(/<primitive object=\{/)
+  it('mounts the bloom/aberration/vignette pass after the feedback trail and the echo (F272 stage 4)', () => {
+    // Load-bearing: bloom has to bloom the ACCUMULATED trail and echo taps,
+    // not just this frame's scene, and the aberration/vignette sit on top of
+    // both — the order the library effects were mounted in.
+    expect(at('object={feedbackPass}')).toBeLessThan(at('object={echoPass}'))
+    expect(at('object={echoPass}')).toBeLessThan(at('object={bloomFinishPass}'))
+  })
+
+  it('drives the bloom/aberration/vignette pass every frame and disposes it (F272 stage 4)', () => {
+    // Dropping any of these would freeze that dial at its mount value with
+    // nothing else failing. Each must be a live statement (not commented out)
+    // inside the useFrame callback, which has no early return.
+    const frameStart = POST_FX_CHAIN_SRC.indexOf('useFrame(')
+    const frameEnd = POST_FX_CHAIN_SRC.indexOf('\n  return (', frameStart)
+    expect(frameStart).toBeGreaterThan(-1)
+    expect(frameEnd).toBeGreaterThan(frameStart)
+    const frame = POST_FX_CHAIN_SRC.slice(frameStart, frameEnd)
+    expect(frame).toMatch(/^\s*bloomFinishPass\.setBloom\(p\.bloom, p\.bloomThreshold\)$/m)
+    expect(frame).toMatch(/^\s*bloomFinishPass\.setVignette\(p\.vignette\)$/m)
+    // The aberration: the old library offset, (cos, sin)(caAngle) * glitch * 1.166.
+    expect(frame).toMatch(/^\s*const g = p\.glitch \* 1\.166$/m)
+    expect(frame).toMatch(/^\s*bloomFinishPass\.setAberration\(Math\.cos\(p\.caAngle\) \* g, Math\.sin\(p\.caAngle\) \* g\)$/m)
+    // Constraints 1 and 3 (fixed list, no re-render), and freed with its siblings.
+    expect(POST_FX_CHAIN_SRC).toContain('const bloomFinishPass = useMemo(() => new BloomFinishPass(), [])')
+    expect(POST_FX_CHAIN_SRC).toMatch(/useDispose\([^)]*\bbloomFinishPass\b[^)]*\)/)
+  })
+
+  it('mounts no library Effect, so there is no merged EffectPass left to split (F272 stage 4)', () => {
+    // The slot used to have to sit below `<Vignette>`: `buildPasses` merges only
+    // CONSECUTIVE `Effect` children into one `EffectPass`, and a raw pass
+    // between them split one fullscreen draw into two for good. Bloom,
+    // aberration and vignette are now one raw pass (`BloomFinishPass`), so that
+    // hazard only returns if a library Effect is mounted again — which is what
+    // this pins.
+    // Only the composer itself comes from the wrapper package...
+    const wrapperImports = [...POST_FX_CHAIN_SRC.matchAll(/import \{([^}]*)\} from '@react-three\/postprocessing'/g)]
+    expect(wrapperImports.map((m) => m[1].trim())).toEqual(['EffectComposer'])
+    // ...and no effect element is mounted (a JSX element has whitespace after its name; the comments
+    // that name the old effects write them as `<Bloom>`).
+    expect(POST_FX_CHAIN_SRC).not.toMatch(/<(Bloom|ChromaticAberration|Vignette)\s/)
   })
 
   it('leaves GradePass last, which the chain has a runtime assertion about', () => {
